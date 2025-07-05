@@ -1,0 +1,6 @@
+/LillithPortEX
+/vcpkg
+vendored/GekkoNet/
+vendored/minhook/
+vendored/SDL/
+/build

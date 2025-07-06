@@ -4,3 +4,9 @@ vendored/GekkoNet/
 vendored/minhook/
 vendored/SDL/
 /build
+/old
+/sdlwiki
+/docs/quickref/
+go 
+make_build 
+OnlineSession.cpp 

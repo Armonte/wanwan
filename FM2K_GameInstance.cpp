@@ -6,6 +6,36 @@
 #include "FM2K_DLLInjector.h"
 #include "SDL3/SDL.h"
 
+// Fletcher32 checksum implementation
+uint32_t Fletcher32(const uint16_t* data, size_t len) {
+    uint32_t sum1 = 0xFFFF, sum2 = 0xFFFF;
+    size_t words = len / 2;
+
+    while (words) {
+        size_t tlen = words > 359 ? 359 : words;
+        words -= tlen;
+        do {
+            sum1 += *data++;
+            sum2 += sum1;
+        } while (--tlen);
+        
+        sum1 = (sum1 & 0xFFFF) + (sum1 >> 16);
+        sum2 = (sum2 & 0xFFFF) + (sum2 >> 16);
+    }
+
+    // Handle remaining byte if length is odd
+    if (len & 1) {
+        sum1 += *reinterpret_cast<const uint8_t*>(data);
+        sum2 += sum1;
+        sum1 = (sum1 & 0xFFFF) + (sum1 >> 16);
+        sum2 = (sum2 & 0xFFFF) + (sum2 >> 16);
+    }
+
+    sum1 = (sum1 & 0xFFFF) + (sum1 >> 16);
+    sum2 = (sum2 & 0xFFFF) + (sum2 >> 16);
+    return (sum2 << 16) | sum1;
+}
+
 // FM2KGameInstance Implementation
 FM2KGameInstance::FM2KGameInstance() 
     : process_handle_(nullptr)
@@ -334,6 +364,12 @@ void FM2KGameInstance::ProcessIPCEvents() {
             case FM2K::IPC::EventType::STATE_LOADED:
                 OnStateLoaded(event);
                 break;
+            case FM2K::IPC::EventType::HIT_TABLES_INIT:
+                OnHitTablesInit(event);
+                break;
+            case FM2K::IPC::EventType::VISUAL_STATE_CHANGED:
+                OnVisualStateChanged(event);
+                break;
             case FM2K::IPC::EventType::ERROR:
                 OnHookError(event);
                 break;
@@ -363,9 +399,116 @@ void FM2KGameInstance::OnStateLoaded(const FM2K::IPC::Event& event) {
     // TODO: Verify state loaded correctly
 }
 
+void FM2KGameInstance::OnHitTablesInit(const FM2K::IPC::Event& event) {
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
+                 "Hit judge tables initialized: size=%u checksum=0x%08x",
+                 event.data.hit_tables.table_size,
+                 event.data.hit_tables.checksum);
+    
+    // TODO: Verify tables are valid via checksum
+}
+
+void FM2KGameInstance::OnVisualStateChanged(const FM2K::IPC::Event& event) {
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
+                 "Visual state changed: effect=%u duration=%u",
+                 event.data.visual.effect_id,
+                 event.data.visual.duration);
+    
+    // TODO: Track visual state for rollback verification
+}
+
 void FM2KGameInstance::OnHookError(const FM2K::IPC::Event& event) {
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                 "Hook error occurred at frame %u", event.frame_number);
     
     // TODO: Surface error to UI and consider terminating game
+}
+
+uint32_t CalculateStateChecksum() {
+    GameState current_state;
+    if (!SaveState(&current_state, nullptr)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to save state for checksum calculation");
+        return 0;
+    }
+
+    // Calculate Fletcher32 checksum over the entire state structure
+    return Fletcher32(reinterpret_cast<const uint16_t*>(&current_state), sizeof(current_state) / 2);
+}
+
+bool ReadVisualState(VisualState* state) {
+    if (!state) return false;
+
+    // Read active effects bitfield
+    if (!ReadMemory(EFFECT_ACTIVE_FLAGS, &state->active_effects)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to read active effects flags");
+        return false;
+    }
+
+    // Read effect timers array
+    if (!BulkCopyOut(process_handle_, 
+                     state->effect_timers,
+                     EFFECT_TIMERS_BASE, 
+                     sizeof(state->effect_timers))) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to read effect timers");
+        return false;
+    }
+
+    // Read effect colors array
+    if (!BulkCopyOut(process_handle_,
+                     state->color_values,
+                     EFFECT_COLORS_BASE,
+                     sizeof(state->color_values))) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to read effect colors");
+        return false;
+    }
+
+    // Read effect target IDs array
+    if (!BulkCopyOut(process_handle_,
+                     state->target_ids,
+                     EFFECT_TARGETS_BASE,
+                     sizeof(state->target_ids))) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to read effect targets");
+        return false;
+    }
+
+    return true;
+}
+
+bool WriteVisualState(const VisualState* state) {
+    if (!state) return false;
+
+    // Write active effects bitfield
+    if (!WriteMemory(EFFECT_ACTIVE_FLAGS, state->active_effects)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to write active effects flags");
+        return false;
+    }
+
+    // Write effect timers array
+    if (!BulkCopyIn(process_handle_,
+                    EFFECT_TIMERS_BASE,
+                    state->effect_timers,
+                    sizeof(state->effect_timers))) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to write effect timers");
+        return false;
+    }
+
+    // Write effect colors array
+    if (!BulkCopyIn(process_handle_,
+                    EFFECT_COLORS_BASE,
+                    state->color_values,
+                    sizeof(state->color_values))) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to write effect colors");
+        return false;
+    }
+
+    // Write effect target IDs array
+    if (!BulkCopyIn(process_handle_,
+                    EFFECT_TARGETS_BASE,
+                    state->target_ids,
+                    sizeof(state->target_ids))) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to write effect targets");
+        return false;
+    }
+
+    return true;
 } 

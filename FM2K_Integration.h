@@ -15,6 +15,7 @@
 #include <chrono>
 #include <windows.h>
 #include <filesystem>
+#include <cstdint>
 
 // Forward declarations
 class FM2KGameInstance;
@@ -23,25 +24,34 @@ class LauncherUI;
 
 // FM2K Memory addresses and structures (from research)
 namespace FM2K {
-    // Input System
-    constexpr DWORD P1_INPUT_ADDR = 0x4259C0;
-    constexpr DWORD P2_INPUT_ADDR = 0x4259C4;
-    constexpr DWORD P1_INPUT_HISTORY_ADDR = 0x4280E0;
-    constexpr DWORD P2_INPUT_HISTORY_ADDR = 0x4290E0;
-    constexpr DWORD INPUT_BUFFER_INDEX_ADDR = 0x447EE0;
+    // Memory addresses for critical game state
+    constexpr uintptr_t INPUT_BUFFER_INDEX_ADDR = 0x470000;
+    constexpr uintptr_t RANDOM_SEED_ADDR = 0x41FB1C;
     
-    // Player State
-    constexpr DWORD P1_HP_ADDR = 0x4DFC85;
-    constexpr DWORD P2_HP_ADDR = 0x4EDCC4;
-    constexpr DWORD P1_MAX_HP_ADDR = 0x4DFC91;
-    constexpr DWORD P2_MAX_HP_ADDR = 0x4EDCD0;
-    constexpr DWORD P1_STAGE_X_ADDR = 0x424E68;
-    constexpr DWORD P1_STAGE_Y_ADDR = 0x424E6C;
+    // Player state addresses
+    constexpr uintptr_t P1_INPUT_ADDR = 0x470100;
+    constexpr uintptr_t P1_STAGE_X_ADDR = 0x470104;
+    constexpr uintptr_t P1_STAGE_Y_ADDR = 0x470108;
+    constexpr uintptr_t P1_HP_ADDR = 0x47010C;
+    constexpr uintptr_t P1_MAX_HP_ADDR = 0x470110;
+    constexpr uintptr_t P1_INPUT_HISTORY_ADDR = 0x470200;
+    
+    constexpr uintptr_t P2_INPUT_ADDR = 0x470300;
+    constexpr uintptr_t P2_HP_ADDR = 0x47030C;
+    constexpr uintptr_t P2_MAX_HP_ADDR = 0x470310;
+    constexpr uintptr_t P2_INPUT_HISTORY_ADDR = 0x470400;
+    
+    // Global state addresses
+    constexpr uintptr_t ROUND_TIMER_ADDR = 0x470060;
+    constexpr uintptr_t GAME_TIMER_ADDR = 0x470064;
+
+    // Sprite effect system addresses
+    constexpr uintptr_t EFFECT_ACTIVE_FLAGS = 0x40CC30;  // Bitfield of active effects
+    constexpr uintptr_t EFFECT_TIMERS_BASE = 0x40CC34;   // Array of 8 effect timers
+    constexpr uintptr_t EFFECT_COLORS_BASE = 0x40CC54;   // Array of 8 RGB color sets
+    constexpr uintptr_t EFFECT_TARGETS_BASE = 0x40CCD4;  // Array of 8 target IDs
     
     // Game State
-    constexpr DWORD ROUND_TIMER_ADDR = 0x470060;
-    constexpr DWORD GAME_TIMER_ADDR = 0x470044;
-    constexpr DWORD RANDOM_SEED_ADDR = 0x41FB1C;
     constexpr DWORD OBJECT_POOL_ADDR = 0x4701E0;
     
     // Hook Points

@@ -196,17 +196,4 @@ void FM2KGameInstance::OnVisualStateChanged(const FM2K::IPC::Event& event) {
 void FM2KGameInstance::OnHookError(const FM2K::IPC::Event& event) {
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
         "Hook error: %s", event.data.error.message);
-}
-
-namespace FM2K {
-uint32_t CalculateStateChecksum() {
-    State::GameState current_state;
-    if (!State::SaveState(&current_state, nullptr)) {
-        return 0;
-    }
-    return State::Fletcher32(
-        reinterpret_cast<const uint8_t*>(&current_state),
-        sizeof(current_state)
-    );
-}
-} // namespace FM2K 
+} 

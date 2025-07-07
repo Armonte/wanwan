@@ -373,7 +373,7 @@ bool FM2KLauncher::InitializeSDL() {
     // Initialize SDL with all necessary subsystems
     SDL_InitFlags init_flags = SDL_INIT_VIDEO | SDL_INIT_GAMEPAD;
     
-    if (SDL_Init(init_flags) < 0) {
+    if (!SDL_Init(init_flags)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SDL_Init failed: %s", SDL_GetError());
         return false;
     }
@@ -568,7 +568,15 @@ bool FM2KLauncher::StartNetworkSession(const NetworkConfig& config) {
     
     network_session_ = std::make_unique<NetworkSession>();
     
-    if (!network_session_->Start(config)) {
+    // Convert global NetworkConfig to NetworkSession::NetworkConfig
+    NetworkSession::NetworkConfig session_config;
+    session_config.remote_address = config.remote_address;
+    session_config.local_port = static_cast<uint16_t>(config.local_port);
+    session_config.remote_port = 7001;  // Default remote port if not specified
+    session_config.input_delay = static_cast<uint8_t>(config.input_delay);
+    session_config.max_spectators = static_cast<uint8_t>(config.max_spectators);
+    
+    if (!network_session_->Start(session_config)) {
         std::cerr << "Failed to start network session\n";
         network_session_.reset();
         return false;

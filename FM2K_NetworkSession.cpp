@@ -179,33 +179,34 @@ void NetworkSession::HandleGameEvent(GekkoGameEvent* event) {
 
     switch (event->type) {
         case AdvanceEvent: {
-            // Extract inputs from event
-            uint32_t p1_input = event->data.Advance.inputs[0];
-            uint32_t p2_input = event->data.Advance.inputs[1];
-
-            // Inject inputs into game
-            game_instance_->InjectInputs(p1_input, p2_input);
+            if (event->data.adv.inputs) {
+                // GekkoNet provides a pointer to the input array for this frame
+                const uint32_t* inputs = reinterpret_cast<const uint32_t*>(event->data.adv.inputs);
+                uint32_t p1_input = inputs[0];
+                uint32_t p2_input = inputs[1];
+                game_instance_->InjectInputs(p1_input, p2_input);
+            }
             break;
         }
 
         case SaveEvent: {
-            // Save state to buffer
-            if (!game_instance_->SaveState(
-                event->data.save.state,
-                *event->data.save.state_len)) {
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                    "Failed to save state to network buffer");
+            auto& save = event->data.save;
+            // Save state to buffer supplied by GekkoNet
+            if (save.state && save.state_len) {
+                if (!game_instance_->SaveState(save.state, *save.state_len)) {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to save state to network buffer");
+                }
             }
             break;
         }
 
         case LoadEvent: {
+            auto& load = event->data.load;
             // Load state from buffer
-            if (!game_instance_->LoadState(
-                event->data.load.state,
-                event->data.load.state_len)) {
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                    "Failed to load state from network buffer");
+            if (load.state) {
+                if (!game_instance_->LoadState(load.state, load.state_len)) {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to load state from network buffer");
+                }
             }
             break;
         }
@@ -326,7 +327,7 @@ void NetworkSession::HandleGameEvents(FM2KGameInstance* game) {
             case SaveEvent:
                 {
                     // Save current FM2K state
-                    if (ev->data.save.state && *ev->data.save.state_len >= sizeof(FM2K::GameState)) {
+                    if (ev->data.save.state && ev->data.save.state_len && *ev->data.save.state_len >= sizeof(FM2K::GameState)) {
                         game->SaveState(ev->data.save.state, *ev->data.save.state_len);
                     }
                 }
@@ -335,8 +336,7 @@ void NetworkSession::HandleGameEvents(FM2KGameInstance* game) {
             case LoadEvent:
                 {
                     // Load saved FM2K state
-                    if (ev->data.load.state && 
-                        ev->data.load.state_len >= sizeof(FM2K::GameState)) {
+                    if (ev->data.load.state && ev->data.load.state_len >= sizeof(FM2K::GameState)) {
                         game->LoadState(ev->data.load.state, ev->data.load.state_len);
                     }
                 }
@@ -345,11 +345,10 @@ void NetworkSession::HandleGameEvents(FM2KGameInstance* game) {
             case AdvanceEvent:
                 {
                     // Extract inputs from GekkoNet and inject into FM2K
-                    if (ev->data.Advance.input_len >= 2 * sizeof(uint16_t)) {
-                        const uint16_t* inputs = reinterpret_cast<const uint16_t*>(ev->data.Advance.inputs);
+                    if (ev->data.adv.inputs) {
+                        const uint32_t* inputs = reinterpret_cast<const uint32_t*>(ev->data.adv.inputs);
                         uint32_t p1_input = inputs[0];
                         uint32_t p2_input = inputs[1];
-                        
                         // Inject inputs into FM2K
                         game->InjectInputs(p1_input, p2_input);
                     }

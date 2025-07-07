@@ -13,8 +13,8 @@ set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g")
 # Create DLL target
 add_library(FM2KHook SHARED
     src/dllmain.cpp
-    src/fm2k_hook.cpp
-    src/fm2k_hook.h
+    ../FM2K_Hooks.cpp
+    ../FM2K_Hooks.h
     src/ipc.cpp
     src/ipc.h
     src/state_manager.cpp
@@ -36,6 +36,7 @@ target_link_libraries(FM2KHook PRIVATE
 
 # Include directories
 target_include_directories(FM2KHook PRIVATE 
+    ${CMAKE_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/vendored/minhook/include
     ${CMAKE_SOURCE_DIR}/vendored/SDL/include

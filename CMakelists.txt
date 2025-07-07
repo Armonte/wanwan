@@ -174,7 +174,6 @@ add_executable(FM2K_RollbackLauncher
 target_link_libraries(FM2K_RollbackLauncher PRIVATE
     GekkoNet
     SDL3::SDL3
-    imgui
     MinHook
 )
 

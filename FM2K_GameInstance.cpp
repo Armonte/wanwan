@@ -278,4 +278,40 @@ bool FM2KGameInstance::Initialize() {
     }
     
     return true;
+}
+
+bool FM2KGameInstance::LoadGameExecutable(const std::filesystem::path& exe_path) {
+    if (!std::filesystem::exists(exe_path)) {
+        std::cerr << "Game executable not found: " << exe_path << std::endl;
+        return false;
+    }
+    
+    // Create process suspended for hook setup
+    STARTUPINFOA si = {};
+    si.cb = sizeof(si);
+    
+    BOOL result = CreateProcessA(
+        exe_path.string().c_str(),  // lpApplicationName
+        nullptr,                    // lpCommandLine  
+        nullptr,                    // lpProcessAttributes
+        nullptr,                    // lpThreadAttributes
+        FALSE,                      // bInheritHandles
+        CREATE_SUSPENDED,           // dwCreationFlags
+        nullptr,                    // lpEnvironment
+        nullptr,                    // lpCurrentDirectory
+        &si,                        // lpStartupInfo
+        &process_info_              // lpProcessInformation
+    );
+    
+    if (!result) {
+        DWORD error = GetLastError();
+        std::cerr << "Failed to create game process. Error: " << error << std::endl;
+        return false;
+    }
+    
+    process_handle_ = process_info_.hProcess;
+    process_id_ = process_info_.dwProcessId;
+    
+    std::cout << "? Game process created (PID: " << process_id_ << ")" << std::endl;
+    return true;
 } 

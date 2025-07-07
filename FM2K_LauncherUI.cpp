@@ -101,7 +101,8 @@ void LauncherUI::RenderGameSelection() {
     ImGui::Begin("Game Selection");
     
     // Show current directory
-    ImGui::Text("Game Directory: %s", std::filesystem::absolute(".").string().c_str());
+    std::filesystem::path current_dir = std::filesystem::current_path();
+    ImGui::Text("Game Directory: %s", current_dir.string().c_str());
     
     // Game list
     if (ImGui::BeginListBox("##GameList", ImVec2(-1, 200))) {

@@ -1,9 +1,10 @@
+#define SDL_MAIN_USE_CALLBACKS
+#include <SDL3/SDL_main.h>
 #include "SDL3/SDL.h"
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_sdlrenderer3.h"
-#define GEKKONET_STATIC
-#include "gekkonet.h"
+#include "vendored/GekkoNet/GekkoLib/include/gekkonet.h"
 #include "MinHook.h"
 #include "FM2K_Integration.h"
 
@@ -81,7 +82,7 @@ namespace Utils {
         return std::filesystem::exists(path);
     }
     
-    std::string GetFileVersion(const std::string& exe_path) {
+    std::string GetFileVersion(const std::string& exe_path SDL_UNUSED) {
         // TODO: Implement proper version detection
         return "Unknown";
     }
@@ -230,7 +231,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
     return SDL_APP_CONTINUE;
 }
 
-void SDL_AppQuit(void *appstate, SDL_AppResult result) {
+void SDL_AppQuit(void* appstate SDL_UNUSED, SDL_AppResult result SDL_UNUSED) {
     std::cout << "Shutting down FM2K launcher...\n";
     
     if (g_launcher) {
@@ -256,26 +257,34 @@ FM2KLauncher::~FM2KLauncher() {
 }
 
 bool FM2KLauncher::Initialize() {
+    // Set log priorities using SDL_SetLogPriority instead of SDL_LogSetPriority
+    SDL_SetLogPriority(SDL_LOG_CATEGORY_APPLICATION, SDL_LOG_PRIORITY_INFO);
+    SDL_SetLogPriority(SDL_LOG_CATEGORY_ERROR, SDL_LOG_PRIORITY_INFO);
+    SDL_SetLogPriority(SDL_LOG_CATEGORY_RENDER, SDL_LOG_PRIORITY_INFO);
+    SDL_SetLogPriority(SDL_LOG_CATEGORY_VIDEO, SDL_LOG_PRIORITY_INFO);
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Initializing FM2K Launcher...");
+
     if (!InitializeSDL()) {
-        std::cerr << "Failed to initialize SDL3\n";
+        SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize SDL3: %s", SDL_GetError());
         return false;
     }
     
     if (!InitializeImGui()) {
-        std::cerr << "Failed to initialize ImGui\n";
+        SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize ImGui: %s", SDL_GetError());
         return false;
     }
     
     // Initialize MinHook
     if (MH_Initialize() != MH_OK) {
-        std::cerr << "Failed to initialize MinHook\n";
+        SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize MinHook");
         return false;
     }
     
     // Create subsystems
     ui_ = std::make_unique<LauncherUI>();
     if (!ui_->Initialize(window_, renderer_)) {
-        std::cerr << "Failed to initialize UI\n";
+        SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize UI");
         return false;
     }
     
@@ -306,21 +315,21 @@ bool FM2KLauncher::Initialize() {
     discovered_games_ = DiscoverGames();
     ui_->SetGames(discovered_games_);
     
-    std::cout << "? Launcher initialized successfully\n";
-    std::cout << "? Found " << discovered_games_.size() << " FM2K games\n";
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launcher initialized successfully");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Found %d FM2K games", (int)discovered_games_.size());
     
     return true;
 }
 
 void FM2KLauncher::HandleEvent(SDL_Event* event) {
     if (event->type == SDL_EVENT_KEY_DOWN) {
-        if (event->key.key == SDLK_ESCAPE) {
+        if (event->key.scancode == SDL_SCANCODE_ESCAPE) {
             running_ = false;
         }
     }
 }
 
-void FM2KLauncher::Update(float delta_time) {
+void FM2KLauncher::Update(float delta_time SDL_UNUSED) {
     if (network_session_) {
         network_session_->Update();
     }
@@ -348,27 +357,58 @@ void FM2KLauncher::Render() {
 }
 
 bool FM2KLauncher::InitializeSDL() {
-    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
-        SDL_Log("SDL_Init Error: %s\n", SDL_GetError());
+    // Initialize SDL with all necessary subsystems
+    SDL_InitFlags init_flags = SDL_INIT_VIDEO | SDL_INIT_EVENTS;  // VIDEO implies EVENTS
+    
+    if (SDL_Init(init_flags) != 0) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SDL_Init failed: %s", SDL_GetError());
         return false;
     }
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SDL initialized successfully with flags: 0x%x", init_flags);
     
-    window_ = SDL_CreateWindow(
-        "FM2K Rollback Launcher",
-        800, 600,
-        SDL_WINDOW_RESIZABLE
-    );
+    // Set SDL hints for better behavior
+    SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
+    SDL_SetHint("SDL_WINDOWS_DPI_AWARENESS", "system");
+    SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "SDL hints set for compositor and DPI awareness");
     
-    if (!window_) {
-        std::cerr << "SDL_CreateWindow failed: " << SDL_GetError() << std::endl;
+    // Create window and renderer together using SDL_CreateWindowAndRenderer
+    if (SDL_CreateWindowAndRenderer("FM2K Rollback Launcher", 800, 600, 
+        SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN,
+        &window_, &renderer_) != 0) {
+        SDL_LogError(SDL_LOG_CATEGORY_RENDER, "SDL_CreateWindowAndRenderer failed: %s", SDL_GetError());
+        SDL_Quit();
         return false;
     }
+    SDL_LogInfo(SDL_LOG_CATEGORY_RENDER, "Window and renderer created successfully");
     
-    renderer_ = SDL_CreateRenderer(window_, nullptr);
-    if (!renderer_) {
-        std::cerr << "SDL_CreateRenderer failed: " << SDL_GetError() << std::endl;
-        return false;
+    // Center the window after creation
+    SDL_SetWindowPosition(window_, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+    
+    // Show window after creation
+    SDL_ShowWindow(window_);
+    
+    // Enable blend mode for transparency support
+    if (SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND) != 0) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_RENDER, "Failed to set blend mode: %s", SDL_GetError());
     }
+    
+    // Set vsync if requested
+    if (SDL_GetHint(SDL_HINT_RENDER_VSYNC)) {
+        if (SDL_SetRenderVSync(renderer_, 1) != 0) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_RENDER, "Failed to enable VSync: %s", SDL_GetError());
+        } else {
+            SDL_LogInfo(SDL_LOG_CATEGORY_RENDER, "VSync enabled");
+        }
+    }
+    
+    // Get renderer info for debugging
+    int w, h;
+    if (SDL_GetRenderOutputSize(renderer_, &w, &h) == 0) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_RENDER, "Render output size: %dx%d", w, h);
+    }
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SDL initialization complete");
+    SDL_LogInfo(SDL_LOG_CATEGORY_VIDEO, "Video driver: %s", SDL_GetCurrentVideoDriver());
     
     return true;
 }
@@ -382,10 +422,13 @@ bool FM2KLauncher::InitializeImGui() {
     ImGui::StyleColorsDark();
     
     if (!ImGui_ImplSDL3_InitForSDLRenderer(window_, renderer_)) {
+        std::cerr << "Failed to initialize ImGui SDL3 backend\n";
         return false;
     }
     
     if (!ImGui_ImplSDLRenderer3_Init(renderer_)) {
+        std::cerr << "Failed to initialize ImGui SDL3 Renderer backend\n";
+        ImGui_ImplSDL3_Shutdown();
         return false;
     }
     
@@ -494,7 +537,7 @@ bool FM2KLauncher::ValidateGameFiles(FM2KGameInfo& game) {
     return true;
 }
 
-std::string FM2KLauncher::DetectGameVersion(const std::string& exe_path) {
+std::string FM2KLauncher::DetectGameVersion(const std::string& exe_path SDL_UNUSED) {
     // TODO: Implement version detection based on file properties
     return "Unknown";
 }
@@ -558,28 +601,4 @@ void FM2KLauncher::StopNetworkSession() {
         network_session_.reset();
         std::cout << "? Network session stopped\n";
     }
-}
-
-// Template implementations for memory access
-template<typename T>
-bool FM2KGameInstance::ReadMemory(DWORD address, T* value) {
-    if (!process_handle_ || !value) return false;
-    
-    SIZE_T bytes_read;
-    return ReadProcessMemory(process_handle_, (LPVOID)address, value, sizeof(T), &bytes_read) 
-           && bytes_read == sizeof(T);
-}
-
-template<typename T>
-bool FM2KGameInstance::WriteMemory(DWORD address, const T* value) {
-    if (!process_handle_ || !value) return false;
-    
-    SIZE_T bytes_written;
-    return WriteProcessMemory(process_handle_, (LPVOID)address, value, sizeof(T), &bytes_written) 
-           && bytes_written == sizeof(T);
-}
-
-// Move CalculateChecksum implementation to after class definitions
-uint32_t FM2KGameState::CalculateChecksum() const {
-    return Utils::Fletcher32(reinterpret_cast<const uint16_t*>(this), sizeof(*this));
 } 

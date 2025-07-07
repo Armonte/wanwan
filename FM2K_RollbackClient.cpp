@@ -165,7 +165,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
         // Launch first valid game
         bool game_launched = false;
         for (const auto& game : g_launcher->GetDiscoveredGames()) {
-            if (game.is_valid() && g_launcher->LaunchGame(game)) {
+            if (game.is_host && g_launcher->LaunchGame(game)) {
                 game_launched = true;
                 break;
             }
@@ -289,7 +289,7 @@ bool FM2KLauncher::Initialize() {
     }
     
     // Setup UI callbacks
-    ui_->on_game_selected = [this](const FM2KGameInfo& game) {
+    ui_->on_game_selected = [this](const FM2K::FM2KGameInfo& game) {
         if (LaunchGame(game)) {
             SetState(LauncherState::Configuration);
         }
@@ -485,14 +485,14 @@ void FM2KLauncher::Shutdown() {
     MH_Uninitialize();
 }
 
-std::vector<FM2KGameInfo> FM2KLauncher::DiscoverGames() {
-    std::vector<FM2KGameInfo> games;
+std::vector<FM2K::FM2KGameInfo> FM2KLauncher::DiscoverGames() {
+    std::vector<FM2K::FM2KGameInfo> games;
     
     // Look for .kgt files with matching .exe files
     auto kgt_files = Utils::FindFilesWithExtension(".", ".kgt");
     for (const auto& kgt_path : kgt_files) {
-        FM2KGameInfo game;
-        game.kgt_path = kgt_path;
+        FM2K::FM2KGameInfo game;
+        game.dll_path = kgt_path;
         
         // Look for matching exe file
         auto exe_path = std::filesystem::path(kgt_path);
@@ -500,37 +500,12 @@ std::vector<FM2KGameInfo> FM2KLauncher::DiscoverGames() {
         
         if (Utils::FileExists(exe_path.string())) {
             game.exe_path = exe_path.string();
-            game.name = exe_path.stem().string();
-            game.version = Utils::GetFileVersion(game.exe_path);
+            game.process_id = 0;
+            game.is_host = true;
             
             if (ValidateGameFiles(game)) {
                 games.push_back(game);
-                std::cout << "? Found FM2K game: " << game.name << std::endl;
-            }
-        }
-    }
-    
-    // Also look for standalone executables
-    auto exe_files = Utils::FindFilesWithExtension(".", ".exe");
-    for (const auto& exe_path : exe_files) {
-        // Skip if already found via .kgt
-        bool already_found = false;
-        for (const auto& game : games) {
-            if (game.exe_path == exe_path) {
-                already_found = true;
-                break;
-            }
-        }
-        
-        if (!already_found) {
-            FM2KGameInfo game;
-            game.exe_path = exe_path;
-            game.name = std::filesystem::path(exe_path).stem().string();
-            game.version = Utils::GetFileVersion(game.exe_path);
-            
-            if (ValidateGameFiles(game)) {
-                games.push_back(game);
-                std::cout << "? Found FM2K executable: " << game.name << std::endl;
+                std::cout << "? Found FM2K game: " << std::filesystem::path(game.exe_path).stem().string() << std::endl;
             }
         }
     }
@@ -538,18 +513,14 @@ std::vector<FM2KGameInfo> FM2KLauncher::DiscoverGames() {
     return games;
 }
 
-bool FM2KLauncher::ValidateGameFiles(FM2KGameInfo& game) {
+bool FM2KLauncher::ValidateGameFiles(FM2K::FM2KGameInfo& game) {
     // Basic validation - check if executable exists and is readable
     if (!Utils::FileExists(game.exe_path)) {
         return false;
     }
     
     // TODO: Add more sophisticated validation
-    // - Check PE header for expected characteristics
-    // - Look for FM2K-specific strings or patterns
-    // - Verify file size is reasonable
-    
-    game.validated = true;
+    game.is_host = true;
     return true;
 }
 
@@ -558,8 +529,8 @@ std::string FM2KLauncher::DetectGameVersion(const std::string& exe_path SDL_UNUS
     return "Unknown";
 }
 
-bool FM2KLauncher::LaunchGame(const FM2KGameInfo& game) {
-    if (!game.is_valid()) {
+bool FM2KLauncher::LaunchGame(const FM2K::FM2KGameInfo& game) {
+    if (!game.is_host) {
         std::cerr << "Cannot launch invalid game\n";
         return false;
     }
@@ -573,12 +544,12 @@ bool FM2KLauncher::LaunchGame(const FM2KGameInfo& game) {
     game_instance_ = std::make_unique<FM2KGameInstance>();
     
     if (!game_instance_->Launch(game)) {
-        std::cerr << "Failed to launch game: " << game.name << std::endl;
+        std::cerr << "Failed to launch game: " << game.exe_path << std::endl;
         game_instance_.reset();
         return false;
     }
     
-    std::cout << "? Game launched: " << game.name << std::endl;
+    std::cout << "? Game launched: " << game.exe_path << std::endl;
     return true;
 }
 

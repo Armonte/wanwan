@@ -1,7 +1,8 @@
 #include "FM2K_Hooks.h"
-#include "SDL3/SDL.h"
+#include "FM2KHook/src/ipc.h"
+#include "FM2KHook/src/state_manager.h"
+#include <SDL3/SDL.h>
 #include "MinHook.h"
-#include "state_manager.h"
 
 namespace FM2K {
 namespace Hooks {
@@ -56,18 +57,24 @@ static int __stdcall Hook_GameRand()
 // -----------------------------------------------------------------------------
 // Public API
 // -----------------------------------------------------------------------------
-bool Init(HANDLE proc)
+bool Init(HANDLE process)
 {
-    if (!proc) {
+    if (!process) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Invalid process handle");
         return false;
     }
 
-    g_proc = proc;
+    g_proc = process;
 
     // Initialize state manager first
-    if (!State::Init(proc)) {
+    if (!State::Init(process)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize state manager");
+        return false;
+    }
+
+    if (!IPC::Init()) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize IPC");
+        State::Shutdown();
         return false;
     }
 
@@ -126,6 +133,9 @@ void Shutdown()
 
     // Shutdown state manager
     State::Shutdown();
+
+    // Shutdown IPC
+    IPC::Shutdown();
 
     g_proc = nullptr;
     SDL_Log("FM2K hooks removed");

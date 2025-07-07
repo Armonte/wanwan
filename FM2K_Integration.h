@@ -16,6 +16,8 @@
 #include <windows.h>
 #include <filesystem>
 #include <cstdint>
+#include "FM2KHook/src/ipc.h"
+#include <unordered_map>
 
 // Forward declarations
 class FM2KGameInstance;
@@ -58,19 +60,20 @@ namespace FM2K {
     constexpr DWORD FRAME_HOOK_ADDR = 0x4146D0;
     constexpr DWORD UPDATE_GAME_STATE_ADDR = 0x404CD0;
     
+    // Game instance info
+    struct FM2KGameInfo {
+        std::string exe_path;
+        std::string dll_path;
+        uint32_t process_id;
+        bool is_host;
+    };
+
     // Utility functions
-    namespace Utils {
-        std::vector<std::string> FindFilesWithExtension(const std::string& directory, const std::string& extension);
-        bool FileExists(const std::string& path);
-        std::string GetFileVersion(const std::string& exe_path);
-        uint32_t Fletcher32(const uint16_t* data, size_t len);
-        
-        // Timing utilities for 100 FPS
-        float GetFM2KFrameTime(float frames_ahead);
-        std::chrono::milliseconds GetFrameDuration();
-    }
-    
-    // Complete game state structure
+    bool FileExists(const std::string& path);
+    uint32_t Fletcher32(const uint16_t* data, size_t len);
+    float GetFM2KFrameTime(float frames_ahead);
+    std::chrono::milliseconds GetFrameDuration();
+
     struct GameState {
         // Frame and timing state
         uint32_t frame_number;
@@ -89,34 +92,36 @@ namespace FM2K {
             uint32_t input_history[1024];
             uint32_t stage_x, stage_y;
             uint32_t hp, max_hp;
-            uint32_t round_count;
-            uint32_t round_state;
-            uint32_t action_state;
+            uint32_t meter, max_meter;
+            uint32_t combo_counter;
+            uint32_t hitstun_timer;
+            uint32_t blockstun_timer;
+            uint32_t anim_timer;
+            uint32_t move_id;
+            uint32_t state_flags;
         } players[2];
+
+        // Visual effects state
+        IPC::VisualState visual_state;
+
+        // Hit detection tables
+        struct HitBox {
+            int32_t x, y, w, h;
+            uint32_t type;
+            uint32_t damage;
+            uint32_t flags;
+        };
         
-        // Global game state
-        uint32_t round_timer;
-        uint32_t game_timer;
-        uint32_t hit_effect_timer;
-        
-        // Input system state
-        uint32_t input_repeat_timer[8];
-        
-        // Critical object pool state (simplified)
-        struct GameObject {
-            uint32_t object_type;
-            int32_t pos_x, pos_y;
-            int32_t vel_x, vel_y;
-            uint16_t state_flags;
-            uint16_t animation_frame;
-            uint16_t facing_direction;
-        } character_objects[2];
-        
+        static constexpr size_t MAX_HITBOXES = 32;
+        HitBox hit_boxes[MAX_HITBOXES];
+        uint32_t hit_box_count;
+
+        // Calculate state checksum for rollback verification
         uint32_t CalculateChecksum() const {
-            return Utils::Fletcher32(reinterpret_cast<const uint16_t*>(this), sizeof(*this));
+            return Fletcher32(reinterpret_cast<const uint16_t*>(this), sizeof(GameState));
         }
     };
-    
+
     // Input structure (11-bit input mask)
     struct Input {
         union {
@@ -138,37 +143,21 @@ namespace FM2K {
         };
     };
 
-    // Process-memory helper declarations (definitions in FM2K_Memory.cpp)
-    bool ReadMemoryRaw(HANDLE proc, uintptr_t remote_addr, void* out, size_t bytes);
-    bool WriteMemoryRaw(HANDLE proc, uintptr_t remote_addr, const void* in, size_t bytes);
-
-    bool BulkCopyOut(HANDLE proc, void* local_dst, uintptr_t remote_src, size_t bytes);
-    bool BulkCopyIn(HANDLE proc, uintptr_t remote_dst, const void* local_src, size_t bytes);
-
-    // Tiny template helpers for typed access
+    // Memory access functions
     template<typename T>
-    inline bool ReadMemory(HANDLE proc, uintptr_t remote_addr, T& out) {
-        return ReadMemoryRaw(proc, remote_addr, &out, sizeof(T));
+    bool ReadMemory(HANDLE process, uintptr_t address, T& value) {
+        SIZE_T bytes_read;
+        return ReadProcessMemory(process, reinterpret_cast<LPCVOID>(address), 
+            &value, sizeof(T), &bytes_read) && bytes_read == sizeof(T);
     }
 
     template<typename T>
-    inline bool WriteMemory(HANDLE proc, uintptr_t remote_addr, const T& in) {
-        return WriteMemoryRaw(proc, remote_addr, &in, sizeof(T));
+    bool WriteMemory(HANDLE process, uintptr_t address, const T& value) {
+        SIZE_T bytes_written;
+        return WriteProcessMemory(process, reinterpret_cast<LPVOID>(address),
+            &value, sizeof(T), &bytes_written) && bytes_written == sizeof(T);
     }
 }
-
-// Game discovery and management
-struct FM2KGameInfo {
-    std::string name;
-    std::string exe_path;
-    std::string kgt_path;
-    std::string version;
-    bool validated = false;
-    
-    bool is_valid() const {
-        return !exe_path.empty() && !kgt_path.empty() && validated;
-    }
-};
 
 // Launcher states
 enum class LauncherState {
@@ -202,13 +191,13 @@ public:
     void Render();
     void HandleEvent(SDL_Event* event);
     
-    bool LaunchGame(const FM2KGameInfo& game);
+    bool LaunchGame(const FM2K::FM2KGameInfo& game);
     void TerminateGame();
     bool StartNetworkSession(const NetworkConfig& config);
     void StopNetworkSession();
     
-    std::vector<FM2KGameInfo> DiscoverGames();
-    const std::vector<FM2KGameInfo>& GetDiscoveredGames() const { return discovered_games_; }
+    std::vector<FM2K::FM2KGameInfo> DiscoverGames();
+    const std::vector<FM2K::FM2KGameInfo>& GetDiscoveredGames() const { return discovered_games_; }
     
     void SetState(LauncherState state);
     bool IsRunning() const { return running_; }
@@ -222,7 +211,7 @@ private:
     std::unique_ptr<LauncherUI> ui_;
     std::unique_ptr<FM2KGameInstance> game_instance_;
     std::unique_ptr<NetworkSession> network_session_;
-    std::vector<FM2KGameInfo> discovered_games_;
+    std::vector<FM2K::FM2KGameInfo> discovered_games_;
     NetworkConfig network_config_;
     LauncherState current_state_;
     bool running_;
@@ -231,7 +220,7 @@ private:
     std::chrono::steady_clock::time_point last_frame_time_;
     
     // Game discovery helpers
-    bool ValidateGameFiles(FM2KGameInfo& game);
+    bool ValidateGameFiles(FM2K::FM2KGameInfo& game);
     std::string DetectGameVersion(const std::string& exe_path);
 };
 
@@ -242,7 +231,7 @@ public:
     ~FM2KGameInstance();
     
     bool Initialize();
-    bool Launch(const FM2KGameInfo& game);
+    bool Launch(const FM2K::FM2KGameInfo& game);
     void Terminate();
     bool IsRunning() const { return process_handle_ != nullptr; }
     
@@ -261,28 +250,35 @@ public:
     
     // Hook management
     bool InstallHooks();
-    void RemoveHooks();
+    bool UninstallHooks();
     
     // State management
     bool SaveState(void* buffer, size_t buffer_size);
     bool LoadState(const void* buffer, size_t buffer_size);
+    bool AdvanceFrame();
     
     // Input injection
     void InjectInputs(uint32_t p1_input, uint32_t p2_input);
     
-    HANDLE GetProcessHandle() const { return process_handle_; }
-    DWORD GetProcessId() const { return process_id_; }
-    
+    // Event handlers
+    void OnFrameAdvanced(const FM2K::IPC::Event& event);
+    void OnStateSaved(const FM2K::IPC::Event& event);
+    void OnStateLoaded(const FM2K::IPC::Event& event);
+    void OnHitTablesInit(const FM2K::IPC::Event& event);
+    void OnVisualStateChanged(const FM2K::IPC::Event& event);
+    void OnHookError(const FM2K::IPC::Event& event);
+
+protected:
+    // Process management
+    bool SetupProcessForHooking();
+    bool LoadGameExecutable(const std::filesystem::path& exe_path);
+    void ProcessIPCEvents();
+
 private:
     HANDLE process_handle_;
     DWORD process_id_;
     PROCESS_INFORMATION process_info_;
-    std::vector<void*> installed_hooks_;
     std::unique_ptr<FM2K::GameState> game_state_;
-    
-    bool SetupProcessForHooking();
-    bool LoadGameExecutable(const std::filesystem::path& exe_path);
-    static DWORD WINAPI ProcessMonitorThread(LPVOID param);
 };
 
 // Network session management
@@ -291,52 +287,71 @@ public:
     NetworkSession();
     ~NetworkSession();
     
-    bool Start(const NetworkConfig& config);
-    void Stop();
-    bool IsActive() const { return session_ != nullptr; }
-    
-    // GekkoNet integration
-    void Update();
-    void AddLocalInput(uint32_t input);
-    void ProcessEvents(FM2KGameInstance* game);
-    
-    // Statistics
-    struct NetworkStats {
-        float ping = 0.0f;
-        float jitter = 0.0f;
-        int rollbacks_per_second = 0;
-        float frames_ahead = 0.0f;
-        bool connected = false;
+    // Network configuration
+    struct NetworkConfig {
+        std::string remote_address;
+        uint16_t local_port;
+        uint16_t remote_port;
+        uint8_t input_delay;
+        uint8_t max_spectators;
     };
     
+    // Network statistics
+    struct NetworkStats {
+        uint32_t ping;
+        uint32_t jitter;
+        uint32_t frames_ahead;
+        uint32_t rollbacks_per_second;
+        bool connected;
+        
+        NetworkStats()
+            : ping(0)
+            , jitter(0)
+            , frames_ahead(0)
+            , rollbacks_per_second(0)
+            , connected(false)
+        {}
+    };
+    
+    // Session management
+    bool Start(const NetworkConfig& config);
+    void Stop();
+    void Update();
+    bool IsActive() const { return session_ != nullptr; }
+    
+    // Input management
+    void AddLocalInput(uint32_t input);
     NetworkStats GetStats() const;
     
+    // Game instance binding
+    void SetGameInstance(FM2KGameInstance* instance) {
+        game_instance_ = instance;
+    }
+    
 private:
+    // GekkoNet session
     GekkoSession* session_;
-    NetworkConfig config_;
     int local_player_handle_;
     FM2KGameInstance* game_instance_;
     
-    // SDL3 synchronization primitives
-    SDL_Mutex* state_mutex_;           // Protects game state during rollback
-    SDL_RWLock* input_buffer_lock_;    // Protects input history buffer
-    SDL_Thread* rollback_thread_;      // Dedicated rollback thread
-    SDL_Thread* network_thread_;       // Network processing thread
-    SDL_AtomicInt frame_counter_;      // Current frame number
-    SDL_AtomicInt rollback_flag_;      // Signals when rollback is needed
-    SDL_AtomicInt running_;            // Thread control flag
+    // Synchronization
+    SDL_Mutex* state_mutex_;
+    SDL_RWLock* input_buffer_lock_;
+    SDL_Thread* rollback_thread_;
+    SDL_Thread* network_thread_;
     
-    // Timing and synchronization
-    SDL_AtomicInt last_confirmed_frame_;  // Last frame confirmed by remote
-    SDL_AtomicInt prediction_window_;     // Number of frames to predict ahead
+    // State tracking
+    SDL_AtomicInt frame_counter_;
+    SDL_AtomicInt rollback_flag_;
+    SDL_AtomicInt running_;
+    SDL_AtomicInt last_confirmed_frame_;
+    SDL_AtomicInt prediction_window_;
+    NetworkStats cached_stats_;
     
-    // State management
-    std::vector<FM2K::GameState> state_buffer_;  // Circular buffer of game states
-    static const int STATE_BUFFER_SIZE = 128;    // Store 128 frames (~1.28 seconds at 100fps)
-    
-    // Statistics tracking
-    mutable NetworkStats cached_stats_;
-    std::chrono::steady_clock::time_point last_stats_update_;
+    // State buffer for rollbacks
+    static constexpr size_t STATE_BUFFER_SIZE = 128;
+    std::vector<uint8_t> state_buffer_;
+    std::unordered_map<int, std::vector<uint8_t>> saved_states_;  // Frame number -> State data
     
     // Thread functions
     static int RollbackThreadFunction(void* data);
@@ -347,6 +362,7 @@ private:
     void HandleGameEvents(FM2KGameInstance* game);
     void HandleGameEvent(GekkoGameEvent* ev);
     void HandleSessionEvent(GekkoSessionEvent* ev);
+    void ProcessEvents(FM2KGameInstance* game);
     
     // Rollback management
     bool SaveGameState(int frame_number);
@@ -372,20 +388,20 @@ public:
     void Render();
     
     // UI state callbacks
-    std::function<void(const FM2KGameInfo&)> on_game_selected;
+    std::function<void(const FM2K::FM2KGameInfo&)> on_game_selected;
     std::function<void(const NetworkConfig&)> on_network_start;
     std::function<void()> on_network_stop;
     std::function<void()> on_exit;
     
     // Data binding
-    void SetGames(const std::vector<FM2KGameInfo>& games);
+    void SetGames(const std::vector<FM2K::FM2KGameInfo>& games);
     void SetNetworkConfig(const NetworkConfig& config);
     void SetNetworkStats(const NetworkSession::NetworkStats& stats);
     void SetLauncherState(LauncherState state);
     
 private:
     // UI state
-    std::vector<FM2KGameInfo> games_;
+    std::vector<FM2K::FM2KGameInfo> games_;
     NetworkConfig network_config_;
     NetworkSession::NetworkStats network_stats_;
     LauncherState launcher_state_;
@@ -400,7 +416,7 @@ private:
     void RenderMenuBar();
     
     // Helper methods
-    void ShowGameValidationStatus(const FM2KGameInfo& game);
+    void ShowGameValidationStatus(const FM2K::FM2KGameInfo& game);
     void ShowNetworkDiagnostics();
     bool ValidateNetworkConfig();
 }; 

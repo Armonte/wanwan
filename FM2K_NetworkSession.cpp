@@ -2,6 +2,7 @@
 #include "gekkonet.h"
 #include <iostream>
 #include <cstring>
+#include <SDL3/SDL.h>
 
 // NetworkSession Implementation
 NetworkSession::NetworkSession() 
@@ -134,96 +135,84 @@ void NetworkSession::AddLocalInput(uint32_t input) {
     gekko_add_local_input(session_, local_player_handle_, &input);
 }
 
-bool NetworkSession::SaveGameState(int frame_number) {
-    if (frame_number < 0 || frame_number >= STATE_BUFFER_SIZE || !game_instance_) return false;
+bool NetworkSession::SaveGameState(int frame) {
+    if (!game_instance_) return false;
+
+    // Allocate buffer for state
+    std::vector<uint8_t> state_buffer(sizeof(FM2K::GameState));
     
-    SDL_LockMutex(state_mutex_);
-    
-    // Save complete FM2K state
-    FM2K::GameState& state = state_buffer_[frame_number % STATE_BUFFER_SIZE];
-    
-    // Read player states
-    if (!game_instance_->ReadMemory(FM2K::P1_INPUT_ADDR, &state.players[0].input_current) ||
-        !game_instance_->ReadMemory(FM2K::P2_INPUT_ADDR, &state.players[1].input_current)) {
-        SDL_UnlockMutex(state_mutex_);
+    // Save state to buffer
+    if (!game_instance_->SaveState(state_buffer.data(), state_buffer.size())) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+            "Failed to save game state");
         return false;
     }
-    
-    // Read input history (FM2K already maintains 1024 frames)
-    if (!game_instance_->ReadMemory(FM2K::P1_INPUT_HISTORY_ADDR, state.players[0].input_history) ||
-        !game_instance_->ReadMemory(FM2K::P2_INPUT_HISTORY_ADDR, state.players[1].input_history)) {
-        SDL_UnlockMutex(state_mutex_);
-        return false;
-    }
-    
-    // Read critical game state
-    if (!game_instance_->ReadMemory(FM2K::RANDOM_SEED_ADDR, &state.random_seed) ||
-        !game_instance_->ReadMemory(FM2K::ROUND_TIMER_ADDR, &state.round_timer) ||
-        !game_instance_->ReadMemory(FM2K::GAME_TIMER_ADDR, &state.game_timer)) {
-        SDL_UnlockMutex(state_mutex_);
-        return false;
-    }
-    
-    SDL_UnlockMutex(state_mutex_);
+
+    // Store state in history
+    saved_states_[frame] = std::move(state_buffer);
     return true;
 }
 
-bool NetworkSession::LoadGameState(int frame_number) {
-    if (frame_number < 0 || frame_number >= STATE_BUFFER_SIZE || !game_instance_) return false;
-    
-    SDL_LockMutex(state_mutex_);
-    
-    // Load complete FM2K state
-    const FM2K::GameState& state = state_buffer_[frame_number % STATE_BUFFER_SIZE];
-    
-    // Restore player states
-    if (!game_instance_->WriteMemory(FM2K::P1_INPUT_ADDR, &state.players[0].input_current) ||
-        !game_instance_->WriteMemory(FM2K::P2_INPUT_ADDR, &state.players[1].input_current)) {
-        SDL_UnlockMutex(state_mutex_);
+bool NetworkSession::LoadGameState(int frame) {
+    if (!game_instance_) return false;
+
+    // Find state in history
+    auto it = saved_states_.find(frame);
+    if (it == saved_states_.end()) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+            "No saved state found for frame %d", frame);
         return false;
     }
-    
-    // Restore input history
-    if (!game_instance_->WriteMemory(FM2K::P1_INPUT_HISTORY_ADDR, state.players[0].input_history) ||
-        !game_instance_->WriteMemory(FM2K::P2_INPUT_HISTORY_ADDR, state.players[1].input_history)) {
-        SDL_UnlockMutex(state_mutex_);
+
+    // Load state from buffer
+    if (!game_instance_->LoadState(it->second.data(), it->second.size())) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+            "Failed to load game state");
         return false;
     }
-    
-    // Restore critical game state
-    if (!game_instance_->WriteMemory(FM2K::RANDOM_SEED_ADDR, &state.random_seed) ||
-        !game_instance_->WriteMemory(FM2K::ROUND_TIMER_ADDR, &state.round_timer) ||
-        !game_instance_->WriteMemory(FM2K::GAME_TIMER_ADDR, &state.game_timer)) {
-        SDL_UnlockMutex(state_mutex_);
-        return false;
-    }
-    
-    SDL_UnlockMutex(state_mutex_);
+
     return true;
 }
 
 void NetworkSession::HandleGameEvent(GekkoGameEvent* event) {
-    if (!event || !game_instance_) return;
+    if (!game_instance_ || !event) return;
 
     switch (event->type) {
-        case SaveEvent:
-            SaveGameState(event->data.save.frame);
-            break;
+        case AdvanceEvent: {
+            // Extract inputs from event
+            uint32_t p1_input = event->data.Advance.inputs[0];
+            uint32_t p2_input = event->data.Advance.inputs[1];
 
-        case LoadEvent:
-            LoadGameState(event->data.load.frame);
+            // Inject inputs into game
+            game_instance_->InjectInputs(p1_input, p2_input);
             break;
+        }
 
-        case AdvanceEvent:
-            if (event->data.adv.input_len >= 2) {
-                game_instance_->InjectInputs(
-                    event->data.adv.inputs[0],  // P1 input
-                    event->data.adv.inputs[1]   // P2 input
-                );
+        case SaveEvent: {
+            // Save state to buffer
+            if (!game_instance_->SaveState(
+                event->data.save.state,
+                *event->data.save.state_len)) {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                    "Failed to save state to network buffer");
             }
             break;
+        }
+
+        case LoadEvent: {
+            // Load state from buffer
+            if (!game_instance_->LoadState(
+                event->data.load.state,
+                event->data.load.state_len)) {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                    "Failed to load state from network buffer");
+            }
+            break;
+        }
 
         default:
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "Unknown game event type: %d", event->type);
             break;
     }
 }
@@ -356,8 +345,8 @@ void NetworkSession::HandleGameEvents(FM2KGameInstance* game) {
             case AdvanceEvent:
                 {
                     // Extract inputs from GekkoNet and inject into FM2K
-                    if (ev->data.adv.input_len >= 2 * sizeof(uint16_t)) {
-                        const uint16_t* inputs = reinterpret_cast<const uint16_t*>(ev->data.adv.inputs);
+                    if (ev->data.Advance.input_len >= 2 * sizeof(uint16_t)) {
+                        const uint16_t* inputs = reinterpret_cast<const uint16_t*>(ev->data.Advance.inputs);
                         uint32_t p1_input = inputs[0];
                         uint32_t p2_input = inputs[1];
                         
@@ -411,8 +400,8 @@ void NetworkSession::HandleSessionEvents() {
             case DesyncDetected:
                 std::cout << "Desync detected at frame " << ev->data.desynced.frame 
                          << " with player " << ev->data.desynced.remote_handle
-                         << " (local=" << std::hex << ev->data.desynced.local_checksum
-                         << " remote=" << ev->data.desynced.remote_checksum << std::dec
+                         << " (local=0x" << std::hex << ev->data.desynced.local_checksum
+                         << " remote=0x" << ev->data.desynced.remote_checksum << std::dec
                          << ")" << std::endl;
                 break;
                 

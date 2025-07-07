@@ -176,7 +176,7 @@ void LauncherUI::RenderMenuBar() {
         if (network_stats_.connected) {
             ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Connected");
             ImGui::SameLine();
-            ImGui::Text("Ping: %.0fms", network_stats_.ping);
+            ImGui::Text("Ping: %ums", network_stats_.ping);
         } else {
             ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "Disconnected");
         }
@@ -199,7 +199,7 @@ void LauncherUI::RenderGameSelection() {
             ImGui::TextWrapped("Place your FM2K game files (.exe and .kgt) in this directory.");
         } else {
             for (const auto& game : games_) {
-                if (ImGui::Selectable(game.name.c_str())) {
+                if (ImGui::Selectable(std::filesystem::path(game.exe_path).stem().string().c_str())) {
                     if (on_game_selected) {
                         on_game_selected(game);
                     }
@@ -301,10 +301,10 @@ void LauncherUI::RenderConnectionStatus() {
             
             ImGui::Separator();
             ImGui::Text("Network Statistics:");
-            ImGui::Text("Ping: %.1f ms", network_stats_.ping);
-            ImGui::Text("Jitter: %.1f ms", network_stats_.jitter);
-            ImGui::Text("Frames Ahead: %.1f", network_stats_.frames_ahead);
-            ImGui::Text("Rollbacks/sec: %d", network_stats_.rollbacks_per_second);
+            ImGui::Text("Ping: %u ms", network_stats_.ping);
+            ImGui::Text("Jitter: %u ms", network_stats_.jitter);
+            ImGui::Text("Frames Ahead: %u", network_stats_.frames_ahead);
+            ImGui::Text("Rollbacks/sec: %u", network_stats_.rollbacks_per_second);
             
         } else {
             ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "? Connecting...");
@@ -335,8 +335,8 @@ void LauncherUI::RenderInGameUI() {
     ShowNetworkDiagnostics();
 }
 
-void LauncherUI::ShowGameValidationStatus(const FM2KGameInfo& game) {
-    if (game.validated) {
+void LauncherUI::ShowGameValidationStatus(const FM2K::FM2KGameInfo& game) {
+    if (game.is_host) {
         ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Valid");
     } else {
         ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "Invalid");
@@ -361,14 +361,14 @@ void LauncherUI::ShowNetworkDiagnostics() {
         ImGui::Separator();
         
         // Detailed stats
-        ImGui::Text("Ping: %.1f ms", network_stats_.ping);
-        ImGui::Text("Jitter: %.1f ms", network_stats_.jitter);
-        ImGui::Text("Frames Ahead: %.1f", network_stats_.frames_ahead);
+        ImGui::Text("Ping: %u ms", network_stats_.ping);
+        ImGui::Text("Jitter: %u ms", network_stats_.jitter);
+        ImGui::Text("Frames Ahead: %u", network_stats_.frames_ahead);
         
         // Rollback information
         ImGui::Separator();
         ImGui::Text("Rollback Stats:");
-        ImGui::Text("Rollbacks/sec: %d", network_stats_.rollbacks_per_second);
+        ImGui::Text("Rollbacks/sec: %u", network_stats_.rollbacks_per_second);
         
         // Frame timing visualization
         if (ImGui::CollapsingHeader("Frame Timeline")) {
@@ -417,7 +417,7 @@ bool LauncherUI::ValidateNetworkConfig() {
 }
 
 // Data binding methods
-void LauncherUI::SetGames(const std::vector<FM2KGameInfo>& games) {
+void LauncherUI::SetGames(const std::vector<FM2K::FM2KGameInfo>& games) {
     games_ = games;
 }
 

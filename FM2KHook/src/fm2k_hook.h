@@ -1,35 +1,29 @@
 #pragma once
 
 #include <windows.h>
+#include <cstdint>
 
-#ifdef FM2KHOOK_EXPORTS
-#define FM2KHOOK_API __declspec(dllexport)
-#else
-#define FM2KHOOK_API __declspec(dllimport)
-#endif
+namespace FM2K {
+namespace Hooks {
 
-// Error codes
-enum FM2KHookResult {
-    FM2KHOOK_OK = 0,
-    FM2KHOOK_ERROR_MINHOOK_INIT = -1,
-    FM2KHOOK_ERROR_CREATE_HOOK = -2,
-    FM2KHOOK_ERROR_ENABLE_HOOK = -3,
-    FM2KHOOK_ERROR_IPC_INIT = -4
-};
+// Function pointer types for original functions
+typedef void (__stdcall *ProcessGameInputsFn)();
+typedef void (__stdcall *UpdateGameStateFn)();
+typedef int (__stdcall *RNGFn)();
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+// Hook functions
+void __stdcall Hook_ProcessGameInputs();
+void __stdcall Hook_UpdateGameState();
+int __stdcall Hook_RNG();
 
-// Initialize hooks and IPC. Returns FM2KHookResult.
-FM2KHOOK_API int FM2KHook_Init();
+// Initialization/cleanup
+bool Init(HANDLE process);
+void Shutdown();
 
-// Shutdown hooks and IPC. Safe to call multiple times.
-FM2KHOOK_API void FM2KHook_Shutdown();
+// Helper functions
+uint32_t GetFrameNumber();
+bool ShouldSaveState();
+bool VisualStateChanged();
 
-// Get last error message if any operation failed
-FM2KHOOK_API const char* FM2KHook_GetLastError();
-
-#ifdef __cplusplus
-}
-#endif 
+} // namespace Hooks
+} // namespace FM2K 

@@ -10,6 +10,8 @@ LauncherUI::LauncherUI()
     , launcher_state_(LauncherState::GameSelection)
     , renderer_(nullptr)
     , window_(nullptr)
+    , scanning_games_(false)
+    , scan_progress_(0.0f)
 {
     // Initialize callbacks to nullptr
     on_game_selected = nullptr;
@@ -214,8 +216,13 @@ void LauncherUI::RenderGameSelection() {
     ImVec2 list_size = ImGui::GetContentRegionAvail();
     if (ImGui::BeginListBox("##GameList", list_size)) {
         if (games_.empty()) {
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "No FM2K games found!");
-            ImGui::TextWrapped("Add your FM2K games (each with matching .exe and .kgt) inside sub-folders under the 'games' directory.");
+            if (scanning_games_) {
+                ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Scanning for FM2K games...");
+                ImGui::ProgressBar(scan_progress_, ImVec2(-1, 0), nullptr);
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "No FM2K games found!");
+                ImGui::TextWrapped("Add your FM2K games (each with matching .exe and .kgt) inside sub-folders under the 'games' directory.");
+            }
         } else {
             for (size_t idx = 0; idx < games_.size(); ++idx) {
                 const auto& game = games_[idx];
@@ -469,4 +476,8 @@ void LauncherUI::SetNetworkStats(const NetworkSession::NetworkStats& stats) {
 
 void LauncherUI::SetLauncherState(LauncherState state) {
     launcher_state_ = state;
+}
+
+void LauncherUI::SetScanning(bool scanning) {
+    scanning_games_ = scanning;
 } 

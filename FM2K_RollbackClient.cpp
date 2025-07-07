@@ -197,6 +197,52 @@ namespace Utils {
         out << path << std::endl;
     }
 
+    // -------------------------------------------------------------
+    // Lightweight games cache so we can show results instantly on
+    // next launch and avoid rescanning unchanged paths.
+    // -------------------------------------------------------------
+
+    static std::string GetCacheFilePath() {
+        return GetConfigDir() + "games.cache";
+    }
+
+    void SaveGameCache(const std::vector<FM2K::FM2KGameInfo>& games) {
+        std::ofstream out(GetCacheFilePath(), std::ios::trunc);
+        if (!out) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Failed to write game cache");
+            return;
+        }
+
+        for (const auto& g : games) {
+            out << g.exe_path << "|" << g.dll_path << "\n";
+        }
+    }
+
+    std::vector<FM2K::FM2KGameInfo> LoadGameCache() {
+        std::vector<FM2K::FM2KGameInfo> cached;
+        std::ifstream in(GetCacheFilePath());
+        if (!in) return cached; // No cache yet
+
+        std::string line;
+        while (std::getline(in, line)) {
+            size_t sep = line.find('|');
+            if (sep == std::string::npos) continue;
+            std::string exe = line.substr(0, sep);
+            std::string dll = line.substr(sep + 1);
+
+            // Validate paths still exist
+            if (SDL_GetPathInfo(exe.c_str(), nullptr) && SDL_GetPathInfo(dll.c_str(), nullptr)) {
+                FM2K::FM2KGameInfo game;
+                game.exe_path = exe;
+                game.dll_path = dll;
+                game.is_host = true;
+                game.process_id = 0;
+                cached.push_back(std::move(game));
+            }
+        }
+        return cached;
+    }
+
     // Helper to normalize paths for SDL (convert backslashes to forward slashes)
     inline std::string NormalizePath(std::string path) {
         for (auto& ch : path) {
@@ -455,7 +501,10 @@ bool FM2KLauncher::Initialize() {
     
     // Kick-off background discovery so the UI stays responsive. The results
     // will be delivered via the custom SDL event handled in HandleEvent().
-    ui_->SetGames({});        // Clear any previous list while scanning
+    {
+        auto cached_games = Utils::LoadGameCache();
+        ui_->SetGames(cached_games);
+    }
     StartAsyncDiscovery();
     
     //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launcher initialized successfully");
@@ -495,6 +544,8 @@ void FM2KLauncher::HandleEvent(SDL_Event* event) {
         if (ui_) {
             ui_->SetGames(discovered_games_);
         }
+        Utils::SaveGameCache(discovered_games_);
+        if (ui_) ui_->SetScanning(false);
         return; // Event handled; skip further processing
     }
     
@@ -618,6 +669,7 @@ void FM2KLauncher::StartAsyncDiscovery() {
     }
 
     discovery_in_progress_ = true;
+    if (ui_) ui_->SetScanning(true);
 
     // If a previous thread handle exists (shouldn't) ensure it is cleaned up.
     if (discovery_thread_) {
@@ -628,6 +680,7 @@ void FM2KLauncher::StartAsyncDiscovery() {
     discovery_thread_ = SDL_CreateThread(DiscoveryThreadFunc, "FM2KDiscovery", this);
     if (!discovery_thread_) {
         discovery_in_progress_ = false;
+        if (ui_) ui_->SetScanning(false);
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SDL_CreateThread failed: %s", SDL_GetError());
     } else {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Started background discovery thread...");

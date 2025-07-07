@@ -18,6 +18,7 @@
 #include <cstdint>
 #include "FM2KHook/src/ipc.h"
 #include <unordered_map>
+#include <atomic>
 
 // Forward declarations
 class FM2KGameInstance;
@@ -214,6 +215,17 @@ public:
     // thread when done. Implemented in FM2K_RollbackClient.cpp.
     void StartAsyncDiscovery();
     
+    // Scan progress accessors for UI
+    float GetScanProgress() const {
+        int done = dirs_scanned_.load(std::memory_order_relaxed);
+        int pending = dirs_pending_.load(std::memory_order_relaxed);
+        int total = done + pending;
+        return (total > 0) ? static_cast<float>(done) / total : 0.0f;
+    }
+
+    // Flag start/finish of background game scanning.
+    void SetScanning(bool scanning);
+
 private:
     bool InitializeSDL();
     bool InitializeImGui();
@@ -237,6 +249,10 @@ private:
     
     // Games directory (root where FM2K games are located)
     std::string games_root_path_;
+
+    // Background discovery progress counters
+    std::atomic<int> dirs_scanned_{0};
+    std::atomic<int> dirs_pending_{0};
 };
 
 // Game instance management
@@ -414,7 +430,12 @@ public:
     void SetNetworkConfig(const NetworkConfig& config);
     void SetNetworkStats(const NetworkSession::NetworkStats& stats);
     void SetLauncherState(LauncherState state);
+    // Update scanning progress (0-1). Only meaningful while scanning flag is true.
+    void SetScanProgress(float progress);
     
+    // Flag start/finish of background game scanning.
+    void SetScanning(bool scanning);
+
 private:
     // UI state
     std::vector<FM2K::FM2KGameInfo> games_;
@@ -435,4 +456,7 @@ private:
     void ShowGameValidationStatus(const FM2K::FM2KGameInfo& game);
     void ShowNetworkDiagnostics();
     bool ValidateNetworkConfig();
+    
+    bool scanning_games_ = false;  // True while background discovery is running
+    float scan_progress_ = 0.0f;
 }; 

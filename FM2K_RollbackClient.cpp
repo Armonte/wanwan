@@ -19,7 +19,32 @@
 #include <fstream>
 #include <algorithm>
 
+// -----------------------------------------------------------------------------
+// Async game discovery support
+// -----------------------------------------------------------------------------
 
+// Custom SDL event sent from the worker thread once discovery finishes.
+static Uint32 g_event_discovery_complete = 0;
+
+// Worker thread entry-point. Performs blocking discovery on a background thread
+// and notifies the main thread with the resulting vector.
+static int DiscoveryThreadFunc(void* userdata) {
+    FM2KLauncher* launcher = static_cast<FM2KLauncher*>(userdata);
+    if (!launcher) {
+        return -1;
+    }
+
+    // The heavy lifting ? this call walks the filesystem and builds the list.
+    auto games = new std::vector<FM2K::FM2KGameInfo>(launcher->DiscoverGames());
+
+    SDL_Event ev{};
+    ev.type = g_event_discovery_complete;
+    ev.user.data1 = games;   // Ownership transferred to main thread
+    ev.user.code = 0;
+    SDL_PushEvent(&ev);
+
+    return 0;
+}
 
 // FM2K Input Structure (11-bit input mask)
 struct FM2KInput {
@@ -314,6 +339,8 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
         return SDL_APP_SUCCESS;
     }
     
+    // Note: async discovery completion is handled inside FM2KLauncher::HandleEvent.
+
     return SDL_APP_CONTINUE;
 }
 
@@ -337,6 +364,16 @@ FM2KLauncher::FM2KLauncher()
     , renderer_(nullptr)
     , current_state_(LauncherState::GameSelection)
     , running_(true) {
+    // Register the custom event type exactly once per process.
+    if (g_event_discovery_complete == 0) {
+        g_event_discovery_complete = SDL_RegisterEvents(1);
+        if (g_event_discovery_complete == (Uint32)-1) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Failed to register discovery completion event: %s", SDL_GetError());
+        }
+    }
+
+    discovery_thread_ = nullptr;
+    discovery_in_progress_ = false;
     // Load saved games directory (if any) so it can be used before Initialize() completes.
     games_root_path_ = Utils::LoadGamesRootPath();
 }
@@ -439,6 +476,27 @@ void FM2KLauncher::HandleEvent(SDL_Event* event) {
         }
     }
     
+    // Handle completion of background discovery
+    if (event->type == g_event_discovery_complete) {
+        auto games_ptr = static_cast<std::vector<FM2K::FM2KGameInfo>*>(event->user.data1);
+        if (games_ptr) {
+            discovered_games_ = std::move(*games_ptr);
+            delete games_ptr;
+        }
+
+        discovery_in_progress_ = false;
+        if (discovery_thread_) {
+            SDL_WaitThread(discovery_thread_, nullptr);
+            discovery_thread_ = nullptr;
+        }
+
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Async discovery complete: %d games found", (int)discovered_games_.size());
+        if (ui_) {
+            ui_->SetGames(discovered_games_);
+        }
+        return; // Event handled; skip further processing
+    }
+    
     // Only process our events if ImGui isn't capturing input
     ImGuiIO& io = ImGui::GetIO();
     if (!io.WantCaptureMouse && !io.WantCaptureKeyboard) {
@@ -536,6 +594,12 @@ void FM2KLauncher::Shutdown() {
         renderer_ = nullptr;
     }
     
+    // Make sure discovery thread is finished before quitting SDL
+    if (discovery_thread_) {
+        SDL_WaitThread(discovery_thread_, nullptr);
+        discovery_thread_ = nullptr;
+    }
+
     if (window_) {
         SDL_DestroyWindow(window_);
         window_ = nullptr;
@@ -543,6 +607,30 @@ void FM2KLauncher::Shutdown() {
     
     SDL_Quit();
     MH_Uninitialize();
+}
+
+void FM2KLauncher::StartAsyncDiscovery() {
+    // Prevent overlapping scans
+    if (discovery_in_progress_) {
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Discovery already in progress ? ignoring new request");
+        return;
+    }
+
+    discovery_in_progress_ = true;
+
+    // If a previous thread handle exists (shouldn't) ensure it is cleaned up.
+    if (discovery_thread_) {
+        SDL_WaitThread(discovery_thread_, nullptr);
+        discovery_thread_ = nullptr;
+    }
+
+    discovery_thread_ = SDL_CreateThread(DiscoveryThreadFunc, "FM2KDiscovery", this);
+    if (!discovery_thread_) {
+        discovery_in_progress_ = false;
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SDL_CreateThread failed: %s", SDL_GetError());
+    } else {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Started background discovery thread...");
+    }
 }
 
 std::vector<FM2K::FM2KGameInfo> FM2KLauncher::DiscoverGames() {
@@ -718,10 +806,7 @@ void FM2KLauncher::SetGamesRootPath(const std::string& path) {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Set games root path: %s", path.c_str());
     games_root_path_ = path;
     Utils::SaveGamesRootPath(path);
-    // Refresh discovery with new path
-    discovered_games_ = DiscoverGames();
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Game discovery complete: %d games found", (int)discovered_games_.size());
-    if (ui_) {
-        ui_->SetGames(discovered_games_);
-    }
+
+    // Kick off background discovery so the UI stays responsive
+    StartAsyncDiscovery();
 } 

@@ -210,13 +210,17 @@ void LauncherUI::RenderGameSelection() {
         }
     }
     
-    // Game list
-    if (ImGui::BeginListBox("##GameList", ImVec2(-1, 200))) {
+    // Game list ? size to remaining content height so window can be freely resized
+    ImVec2 list_size = ImGui::GetContentRegionAvail();
+    if (ImGui::BeginListBox("##GameList", list_size)) {
         if (games_.empty()) {
             ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "No FM2K games found!");
             ImGui::TextWrapped("Add your FM2K games (each with matching .exe and .kgt) inside sub-folders under the 'games' directory.");
         } else {
-            for (const auto& game : games_) {
+            for (size_t idx = 0; idx < games_.size(); ++idx) {
+                const auto& game = games_[idx];
+                // Push a unique identifier to avoid ImGui ID conflicts even when display names repeat
+                ImGui::PushID(static_cast<int>(idx));
                 // Derive display name by stripping directory and extension
                 std::string display_name = game.exe_path;
                 // Remove directory
@@ -235,6 +239,8 @@ void LauncherUI::RenderGameSelection() {
                 if (ImGui::IsItemHovered()) {
                     ShowGameValidationStatus(game);
                 }
+
+                ImGui::PopID(); // Pop per-item ID
             }
         }
         ImGui::EndListBox();
@@ -404,19 +410,24 @@ void LauncherUI::ShowNetworkDiagnostics() {
             // Simple frame timeline visualization
             for (int i = 0; i < 60; i++) {
                 if (i > 0) ImGui::SameLine();
-                
-                // Mock rollback data - in real implementation this would track actual rollbacks
-                bool was_rollback = (i % 17) == 0;  // Mock some rollbacks
-                
-                ImGui::PushStyleColor(ImGuiCol_Button, 
-                                     was_rollback ? ImVec4(1.0f, 0.4f, 0.4f, 1.0f) 
+
+                // Mock rollback data ? replace with real tracking in production
+                bool was_rollback = (i % 17) == 0;
+
+                // Give each miniature button a unique ID to avoid conflicts
+                ImGui::PushID(i);
+
+                ImGui::PushStyleColor(ImGuiCol_Button,
+                                     was_rollback ? ImVec4(1.0f, 0.4f, 0.4f, 1.0f)
                                                   : ImVec4(0.4f, 1.0f, 0.4f, 1.0f));
                 ImGui::Button("##frame", ImVec2(4, 20));
                 ImGui::PopStyleColor();
-                
+
                 if (ImGui::IsItemHovered()) {
                     ImGui::SetTooltip("Frame %d: %s", i, was_rollback ? "Rollback" : "Normal");
                 }
+
+                ImGui::PopID();
             }
         }
     }

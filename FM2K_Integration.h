@@ -206,6 +206,14 @@ public:
     const std::string& GetGamesRootPath() const { return games_root_path_; }
     void SetGamesRootPath(const std::string& path);
     
+    // ----- Asynchronous game discovery -----
+    SDL_Thread* discovery_thread_ = nullptr; // Worker thread handle
+    bool discovery_in_progress_ = false;     // Flag so we don't launch multiple scans
+
+    // Starts a background SDL thread that will run DiscoverGames() and notify the main
+    // thread when done. Implemented in FM2K_RollbackClient.cpp.
+    void StartAsyncDiscovery();
+    
 private:
     bool InitializeSDL();
     bool InitializeImGui();

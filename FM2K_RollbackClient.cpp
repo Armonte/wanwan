@@ -263,7 +263,7 @@ bool FM2KLauncher::Initialize() {
     SDL_SetLogPriority(SDL_LOG_CATEGORY_RENDER, SDL_LOG_PRIORITY_INFO);
     SDL_SetLogPriority(SDL_LOG_CATEGORY_VIDEO, SDL_LOG_PRIORITY_INFO);
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Initializing FM2K Launcher...");
+    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Initializing FM2K Launcher...");
 
     if (!InitializeSDL()) {
         SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize SDL3: %s", SDL_GetError());
@@ -315,8 +315,8 @@ bool FM2KLauncher::Initialize() {
     discovered_games_ = DiscoverGames();
     ui_->SetGames(discovered_games_);
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launcher initialized successfully");
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Found %d FM2K games", (int)discovered_games_.size());
+    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launcher initialized successfully");
+    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Found %d FM2K games", (int)discovered_games_.size());
     
     return true;
 }
@@ -333,28 +333,26 @@ void FM2KLauncher::Update(float delta_time SDL_UNUSED) {
     if (network_session_) {
         network_session_->Update();
     }
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling ui_->NewFrame()");
+    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling ui_->NewFrame()");
     ui_->NewFrame();
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished ui_->NewFrame(), calling ui_->Render()");
+    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished ui_->NewFrame(), calling ui_->Render()");
     ui_->Render();
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished ui_->Render()");
+    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished ui_->Render()");
 }
 
 void FM2KLauncher::Render() {
-    // Start ImGui frame
-    ImGui_ImplSDLRenderer3_NewFrame();
-    ImGui_ImplSDL3_NewFrame();
-    ImGui::NewFrame();
+    // Clear screen
+    SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
+    SDL_RenderClear(renderer_);
     
     // Render UI
     ui_->Render();
     
-    // Render to screen
-    SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 255);
-    SDL_RenderClear(renderer_);
-    
-    ImGui::Render();
-    ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer_);
+    // Update and Render additional Platform Windows
+    if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+        ImGui::UpdatePlatformWindows();
+        ImGui::RenderPlatformWindowsDefault();
+    }
     
     SDL_RenderPresent(renderer_);
 }
@@ -367,7 +365,7 @@ bool FM2KLauncher::InitializeSDL() {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SDL_Init failed: %s", SDL_GetError());
         return false;
     }
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SDL initialized successfully with flags: 0x%x", init_flags);
+    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SDL initialized successfully with flags: 0x%x", init_flags);
     
     // Set SDL hints for better behavior
     SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
@@ -394,7 +392,7 @@ bool FM2KLauncher::InitializeSDL() {
         return false;
     }
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_RENDER, "Window and renderer created successfully");
+    //SDL_LogInfo(SDL_LOG_CATEGORY_RENDER, "Window and renderer created successfully");
     
     // Center the window after creation
     SDL_SetWindowPosition(window_, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
@@ -409,8 +407,8 @@ bool FM2KLauncher::InitializeSDL() {
         return false;
     }
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SDL initialization complete");
-    SDL_LogInfo(SDL_LOG_CATEGORY_VIDEO, "Video driver: %s", driver);
+    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SDL initialization complete");
+    //SDL_LogInfo(SDL_LOG_CATEGORY_VIDEO, "Video driver: %s", driver);
     
     return true;
 }
@@ -445,7 +443,7 @@ bool FM2KLauncher::InitializeImGui() {
         return false;
     }
 
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ImGui initialized successfully");
+    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ImGui initialized successfully");
     return true;
 }
 

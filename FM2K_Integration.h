@@ -375,7 +375,8 @@ private:
     NetworkConfig network_config_;
     NetworkSession::NetworkStats network_stats_;
     LauncherState launcher_state_;
-    SDL_Renderer* renderer_ = nullptr;
+    SDL_Renderer* renderer_;
+    SDL_Window* window_;
     
     // UI components
     void RenderGameSelection();

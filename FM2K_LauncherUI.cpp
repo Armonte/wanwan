@@ -8,6 +8,7 @@ LauncherUI::LauncherUI()
     , network_stats_{}  // Zero-initialize network stats
     , network_config_{} // Zero-initialize network config
     , renderer_(nullptr)
+    , window_(nullptr)
 {
     // Initialize callbacks to nullptr
     on_game_selected = nullptr;
@@ -26,60 +27,102 @@ bool LauncherUI::Initialize(SDL_Window* window, SDL_Renderer* renderer) {
         return false;
     }
     renderer_ = renderer;
+    window_ = window;
+    
+    // Setup Dear ImGui context
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO(); (void)io;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;         // Enable Docking
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;       // Enable Multi-Viewport / Platform Windows
+    
+    // Setup Dear ImGui style
+    ImGui::StyleColorsDark();
+    
+    // Setup Platform/Renderer backends
+    if (!ImGui_ImplSDL3_InitForSDLRenderer(window, renderer)) {
+        std::cerr << "Failed to initialize ImGui SDL3 backend" << std::endl;
+        return false;
+    }
+    if (!ImGui_ImplSDLRenderer3_Init(renderer)) {
+        std::cerr << "Failed to initialize ImGui SDL3 Renderer backend" << std::endl;
+        ImGui_ImplSDL3_Shutdown();
+        ImGui::DestroyContext();
+        return false;
+    }
     
     std::cout << "LauncherUI initialized" << std::endl;
     return true;
 }
 
 void LauncherUI::Shutdown() {
+    // Cleanup ImGui
+    ImGui_ImplSDLRenderer3_Shutdown();
+    ImGui_ImplSDL3_Shutdown();
+    ImGui::DestroyContext();
+    
     std::cout << "LauncherUI shutdown" << std::endl;
 }
 
 void LauncherUI::NewFrame() {
-    // This is handled by the main launcher
+    // Start the Dear ImGui frame
+    ImGui_ImplSDLRenderer3_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
+    ImGui::NewFrame();
 }
 
 void LauncherUI::Render() {
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] LauncherUI::Render() start");
+    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] LauncherUI::Render() start");
     if (!renderer_) {
         std::cerr << "Renderer is null in LauncherUI::Render!" << std::endl;
         return;
     }
+
+    // Render UI elements
     RenderMenuBar();
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] After RenderMenuBar()");
+    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] After RenderMenuBar()");
+    
     switch (launcher_state_) {
         case LauncherState::GameSelection:
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderGameSelection()");
+            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderGameSelection()");
             RenderGameSelection();
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderGameSelection()");
+            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderGameSelection()");
             break;
         case LauncherState::Configuration:
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderNetworkConfig()");
+            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderNetworkConfig()");
             RenderNetworkConfig();
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderNetworkConfig()");
+            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderNetworkConfig()");
             break;
         case LauncherState::Connecting:
         case LauncherState::InGame:
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderConnectionStatus()");
+            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderConnectionStatus()");
             RenderConnectionStatus();
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderConnectionStatus()");
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderInGameUI()");
+            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderConnectionStatus()");
+            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderInGameUI()");
             RenderInGameUI();
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderInGameUI()");
+            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderInGameUI()");
             break;
         case LauncherState::Disconnected:
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderConnectionStatus() (Disconnected)");
+            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderConnectionStatus() (Disconnected)");
             RenderConnectionStatus();
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderConnectionStatus() (Disconnected)");
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderNetworkConfig() (Disconnected)");
+            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderConnectionStatus() (Disconnected)");
+            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderNetworkConfig() (Disconnected)");
             RenderNetworkConfig();
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderNetworkConfig() (Disconnected)");
+            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderNetworkConfig() (Disconnected)");
             break;
     }
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] LauncherUI::Render() end");
+
+    // Render ImGui
+    ImGui::Render();
+    ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer_);
+    
+    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] LauncherUI::Render() end");
 }
 
 void LauncherUI::RenderMenuBar() {
+    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Entering RenderMenuBar()");
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("Refresh Games")) {
@@ -119,6 +162,7 @@ void LauncherUI::RenderMenuBar() {
         
         ImGui::EndMainMenuBar();
     }
+    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Exiting RenderMenuBar()");
 }
 
 void LauncherUI::RenderGameSelection() {

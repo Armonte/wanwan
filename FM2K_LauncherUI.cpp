@@ -5,7 +5,14 @@
 // LauncherUI Implementation
 LauncherUI::LauncherUI() 
     : launcher_state_(LauncherState::GameSelection)
+    , network_stats_{}  // Zero-initialize network stats
+    , network_config_{} // Zero-initialize network config
 {
+    // Initialize callbacks to nullptr
+    on_game_selected = nullptr;
+    on_network_start = nullptr;
+    on_network_stop = nullptr;
+    on_exit = nullptr;
 }
 
 LauncherUI::~LauncherUI() {
@@ -18,12 +25,12 @@ bool LauncherUI::Initialize(SDL_Window* window, SDL_Renderer* renderer) {
         return false;
     }
     
-    std::cout << "? LauncherUI initialized" << std::endl;
+    std::cout << "LauncherUI initialized" << std::endl;
     return true;
 }
 
 void LauncherUI::Shutdown() {
-    std::cout << "? LauncherUI shutdown" << std::endl;
+    std::cout << "LauncherUI shutdown" << std::endl;
 }
 
 void LauncherUI::NewFrame() {
@@ -106,15 +113,20 @@ void LauncherUI::RenderGameSelection() {
     
     // Game list
     if (ImGui::BeginListBox("##GameList", ImVec2(-1, 200))) {
-        for (const auto& game : games_) {
-            if (ImGui::Selectable(game.name.c_str())) {
-                if (on_game_selected) {
-                    on_game_selected(game);
+        if (games_.empty()) {
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "No FM2K games found!");
+            ImGui::TextWrapped("Place your FM2K game files (.exe and .kgt) in this directory.");
+        } else {
+            for (const auto& game : games_) {
+                if (ImGui::Selectable(game.name.c_str())) {
+                    if (on_game_selected) {
+                        on_game_selected(game);
+                    }
                 }
-            }
-            
-            if (ImGui::IsItemHovered()) {
-                ShowGameValidationStatus(game);
+                
+                if (ImGui::IsItemHovered()) {
+                    ShowGameValidationStatus(game);
+                }
             }
         }
         ImGui::EndListBox();

@@ -358,9 +358,9 @@ void FM2KLauncher::Render() {
 
 bool FM2KLauncher::InitializeSDL() {
     // Initialize SDL with all necessary subsystems
-    SDL_InitFlags init_flags = SDL_INIT_VIDEO | SDL_INIT_EVENTS;  // VIDEO implies EVENTS
+    SDL_InitFlags init_flags = SDL_INIT_VIDEO | SDL_INIT_EVENTS;  // Explicitly include EVENTS
     
-    if (SDL_Init(init_flags) != 0) {
+    if (SDL_Init(init_flags) < 0) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SDL_Init failed: %s", SDL_GetError());
         return false;
     }
@@ -372,13 +372,25 @@ bool FM2KLauncher::InitializeSDL() {
     SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "SDL hints set for compositor and DPI awareness");
     
     // Create window and renderer together using SDL_CreateWindowAndRenderer
-    if (SDL_CreateWindowAndRenderer("FM2K Rollback Launcher", 800, 600, 
+    bool result = SDL_CreateWindowAndRenderer("FM2K Rollback Launcher", 800, 600, 
         SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN,
-        &window_, &renderer_) != 0) {
+        &window_, &renderer_);
+        
+    if (!result) {
         SDL_LogError(SDL_LOG_CATEGORY_RENDER, "SDL_CreateWindowAndRenderer failed: %s", SDL_GetError());
         SDL_Quit();
         return false;
     }
+    
+    // Verify window and renderer were created
+    if (!window_ || !renderer_) {
+        SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Window or renderer is null after creation");
+        if (window_) SDL_DestroyWindow(window_);
+        if (renderer_) SDL_DestroyRenderer(renderer_);
+        SDL_Quit();
+        return false;
+    }
+    
     SDL_LogInfo(SDL_LOG_CATEGORY_RENDER, "Window and renderer created successfully");
     
     // Center the window after creation
@@ -387,51 +399,50 @@ bool FM2KLauncher::InitializeSDL() {
     // Show window after creation
     SDL_ShowWindow(window_);
     
-    // Enable blend mode for transparency support
-    if (SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND) != 0) {
-        SDL_LogWarn(SDL_LOG_CATEGORY_RENDER, "Failed to set blend mode: %s", SDL_GetError());
-    }
-    
-    // Set vsync if requested
-    if (SDL_GetHint(SDL_HINT_RENDER_VSYNC)) {
-        if (SDL_SetRenderVSync(renderer_, 1) != 0) {
-            SDL_LogWarn(SDL_LOG_CATEGORY_RENDER, "Failed to enable VSync: %s", SDL_GetError());
-        } else {
-            SDL_LogInfo(SDL_LOG_CATEGORY_RENDER, "VSync enabled");
-        }
-    }
-    
-    // Get renderer info for debugging
-    int w, h;
-    if (SDL_GetRenderOutputSize(renderer_, &w, &h) == 0) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_RENDER, "Render output size: %dx%d", w, h);
+    // Get video driver info
+    const char* driver = SDL_GetCurrentVideoDriver();
+    if (!driver) {
+        SDL_LogError(SDL_LOG_CATEGORY_VIDEO, "No video driver available");
+        return false;
     }
     
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SDL initialization complete");
-    SDL_LogInfo(SDL_LOG_CATEGORY_VIDEO, "Video driver: %s", SDL_GetCurrentVideoDriver());
+    SDL_LogInfo(SDL_LOG_CATEGORY_VIDEO, "Video driver: %s", driver);
     
     return true;
 }
 
 bool FM2KLauncher::InitializeImGui() {
-    IMGUI_CHECKVERSION();
+    if (!IMGUI_CHECKVERSION()) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ImGui version check failed");
+        return false;
+    }
+
     ImGui::CreateContext();
+    if (!ImGui::GetCurrentContext()) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create ImGui context");
+        return false;
+    }
+
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     
     ImGui::StyleColorsDark();
     
     if (!ImGui_ImplSDL3_InitForSDLRenderer(window_, renderer_)) {
-        std::cerr << "Failed to initialize ImGui SDL3 backend\n";
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize ImGui SDL3 backend");
+        ImGui::DestroyContext();
         return false;
     }
     
     if (!ImGui_ImplSDLRenderer3_Init(renderer_)) {
-        std::cerr << "Failed to initialize ImGui SDL3 Renderer backend\n";
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize ImGui SDL3 Renderer backend");
         ImGui_ImplSDL3_Shutdown();
+        ImGui::DestroyContext();
         return false;
     }
-    
+
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ImGui initialized successfully");
     return true;
 }
 
@@ -451,11 +462,14 @@ void FM2KLauncher::Shutdown() {
         ui_.reset();
     }
     
-    if (renderer_) {
+    // ImGui cleanup
+    if (ImGui::GetCurrentContext()) {
         ImGui_ImplSDLRenderer3_Shutdown();
         ImGui_ImplSDL3_Shutdown();
         ImGui::DestroyContext();
-        
+    }
+    
+    if (renderer_) {
         SDL_DestroyRenderer(renderer_);
         renderer_ = nullptr;
     }

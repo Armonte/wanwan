@@ -10,86 +10,43 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
-# Compiler-specific options
-if(MSVC)
-    add_compile_options(/W4 /permissive-)
-    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
-else()
-    add_compile_options(-Wall -Wextra -Wpedantic)
-endif()
+# MinGW-GCC specific options
+add_compile_options(-Wall -Wextra -Wpedantic)
 
 include(FetchContent)
 
-#SDL 3
+# SDL3 Configuration - Force static building
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
-# SDL3 FetchContent - Download from GitHub (proper setup)
-option(DOWNLOAD_SDL3_FROM_GITHUB "Download SDL3 from GitHub instead of using vendored" OFF)
+# Force static libraries for everything
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
+set(SDL_SHARED OFF CACHE BOOL "Build SDL3 as shared library" FORCE)
+set(SDL_STATIC ON CACHE BOOL "Build SDL3 as static library" FORCE)
+set(SDL3IMAGE_INSTALL OFF CACHE BOOL "Install SDL3_image" FORCE)
+set(SDL3IMAGE_BUILD_SHARED_LIBS OFF CACHE BOOL "Build SDL3_image shared" FORCE)
+set(SDL3IMAGE_VENDORED ON CACHE BOOL "Use vendored libraries in SDL3_image" FORCE)
+set(SDL3IMAGE_AVIF OFF CACHE BOOL "Disable AVIF support" FORCE)
+set(SDL3IMAGE_JXL OFF CACHE BOOL "Disable JXL support" FORCE)
+set(SDL3IMAGE_WEBP OFF CACHE BOOL "Disable WEBP support" FORCE)
 
-if(DOWNLOAD_SDL3_FROM_GITHUB)
-    message(STATUS "Downloading SDL3 from GitHub...")
-    
-    # Configure SDL3 build options
-    set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
-    set(SDL_SHARED OFF CACHE BOOL "Build SDL3 as shared library" FORCE)
-    set(SDL_STATIC ON CACHE BOOL "Build SDL3 as static library" FORCE)
-    
-    # Use FetchContent for SDL3
-    FetchContent_Declare(
-        SDL3
-        GIT_REPOSITORY "https://github.com/libsdl-org/SDL.git"
-        GIT_TAG "main"
-        EXCLUDE_FROM_ALL
-    )
-    
-    # Configure SDL3_image build options
-    set(SDL3IMAGE_INSTALL OFF CACHE BOOL "Install SDL3_image" FORCE)
-    set(SDL3IMAGE_BUILD_SHARED_LIBS OFF CACHE BOOL "Build SDL3_image shared" FORCE)
-    set(SDL3IMAGE_AVIF OFF CACHE BOOL "Disable AVIF support" FORCE)
-    
-    # Use FetchContent for SDL_image
-    FetchContent_Declare(
-        SDL3_image
-        GIT_REPOSITORY "https://github.com/libsdl-org/SDL_image.git"
-        GIT_TAG "main"
-        EXCLUDE_FROM_ALL
-    )
-    
-    # Make SDL3 available
-    FetchContent_MakeAvailable(SDL3)
-    
-    # Make SDL_image available after SDL3
-    FetchContent_MakeAvailable(SDL3_image)
-    
-    message(STATUS "SDL3 successfully configured from GitHub")
-    
-else()
-    # Fallback to vendored sources (original approach)
-    message(STATUS "Using vendored SDL3 sources...")
-    
-    # Use FetchContent for SDL3
-    FetchContent_Declare(
-        SDL3
-        SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendored/SDL
-    )
-    
-    # Configure SDL3_image to build static libraries to match SDL3
-    set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
-    
-    # Use FetchContent for SDL_image
-    FetchContent_Declare(
-        SDL3_image
-        SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendored/SDL_image
-    )
-    
-    # Make SDL3 available
-    FetchContent_MakeAvailable(SDL3)
-    
-    # Make SDL_image available after SDL3
-    FetchContent_MakeAvailable(SDL3_image)
-endif()
+# Use vendored SDL3 sources
+FetchContent_Declare(
+    SDL3
+    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendored/SDL
+)
 
+# Use vendored SDL_image sources
+FetchContent_Declare(
+    SDL3_image
+    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendored/SDL_image
+)
+
+# Make SDL3 available
+FetchContent_MakeAvailable(SDL3)
+
+# Make SDL_image available after SDL3
+FetchContent_MakeAvailable(SDL3_image)
 
 # Include directories
 include_directories(
@@ -111,7 +68,7 @@ set(IMGUI_SOURCES
     vendored/imgui/backends/imgui_impl_sdlrenderer3.cpp
 )
 
-# GekkoNet library
+# GekkoNet library - Build as static
 add_library(GekkoNet STATIC
     vendored/GekkoNet/GekkoLib/src/gekkonet.cpp
     vendored/GekkoNet/GekkoLib/src/backend.cpp
@@ -131,33 +88,29 @@ target_include_directories(GekkoNet PUBLIC
     vendored/GekkoNet/GekkoLib/thirdparty/asio
 )
 
-# Add Windows Socket library for GekkoNet
-if(WIN32)
-    target_link_libraries(GekkoNet PUBLIC ws2_32)
-    target_compile_definitions(GekkoNet PUBLIC
-        _WIN32_WINNT=0x0601  # Target Windows 7 or later
-        WIN32_LEAN_AND_MEAN  # Exclude rarely-used stuff from Windows headers
-        GEKKONET_STATIC      # Static linking
-    )
-endif()
+# Windows-specific configuration for GekkoNet
+target_link_libraries(GekkoNet PUBLIC ws2_32)
+target_compile_definitions(GekkoNet PUBLIC
+    _WIN32_WINNT=0x0601  # Target Windows 7 or later
+    WIN32_LEAN_AND_MEAN  # Exclude rarely-used stuff from Windows headers
+    GEKKONET_STATIC      # Static linking
+)
 
-# MinHook library (Windows only)
-if(WIN32)
-    set(MINHOOK_SOURCES
-        vendored/MinHook/src/buffer.c
-        vendored/MinHook/src/hook.c
-        vendored/MinHook/src/trampoline.c
-        vendored/MinHook/src/hde/hde32.c
-        vendored/MinHook/src/hde/hde64.c
-    )
-    
-    add_library(MinHook STATIC ${MINHOOK_SOURCES})
-    set_target_properties(MinHook PROPERTIES LINKER_LANGUAGE C)
-    
-    target_include_directories(MinHook PUBLIC
-        vendored/MinHook/include
-    )
-endif()
+# MinHook library
+set(MINHOOK_SOURCES
+    vendored/MinHook/src/buffer.c
+    vendored/MinHook/src/hook.c
+    vendored/MinHook/src/trampoline.c
+    vendored/MinHook/src/hde/hde32.c
+    vendored/MinHook/src/hde/hde64.c
+)
+
+add_library(MinHook STATIC ${MINHOOK_SOURCES})
+set_target_properties(MinHook PROPERTIES LINKER_LANGUAGE C)
+
+target_include_directories(MinHook PUBLIC
+    vendored/MinHook/include
+)
 
 # Main executable
 add_executable(FM2K_RollbackLauncher
@@ -171,32 +124,35 @@ add_executable(FM2K_RollbackLauncher
     ${IMGUI_SOURCES}
 )
 
+# Static linking flags for MinGW-GCC
+target_link_options(FM2K_RollbackLauncher PRIVATE 
+    -static 
+    -static-libgcc 
+    -static-libstdc++
+)
+
 target_link_libraries(FM2K_RollbackLauncher PRIVATE
     GekkoNet
-    SDL3::SDL3
+    SDL3::SDL3-static
+    SDL3_image::SDL3_image-static
     MinHook
+    psapi
+    ws2_32
+    winmm
+    gdi32
+    user32
+    shell32
+    ole32
+    setupapi
+    version
+    imm32
+    oleaut32
 )
-
-target_include_directories(FM2K_RollbackLauncher PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    vendored/imgui
-    vendored/imgui/backends
-    vendored/MinHook/include
-)
-
-# Windows-specific libraries
-if(WIN32)
-    target_link_libraries(FM2K_RollbackLauncher PRIVATE
-        MinHook
-        psapi
-        ws2_32
-        winmm
-    )
-endif()
 
 # Preprocessor definitions
 target_compile_definitions(FM2K_RollbackLauncher PRIVATE
     GEKKONET_STATIC
+    SDL_STATIC_LIB
     $<$<CONFIG:Debug>:DEBUG>
     $<$<CONFIG:Release>:NDEBUG>
 )
@@ -205,14 +161,6 @@ target_compile_definitions(FM2K_RollbackLauncher PRIVATE
 install(TARGETS FM2K_RollbackLauncher
     RUNTIME DESTINATION bin
 )
-
-# Copy required DLLs on Windows
-if(WIN32)
-    install(FILES $<TARGET_RUNTIME_DLLS:FM2K_RollbackLauncher>
-        DESTINATION bin
-        COMPONENT Runtime
-    )
-endif()
 
 # Documentation
 install(FILES
@@ -228,28 +176,18 @@ message(STATUS "FM2K Rollback Launcher Configuration Summary:")
 message(STATUS "  Version: ${PROJECT_VERSION}")
 message(STATUS "  Build type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "  C++ standard: ${CMAKE_CXX_STANDARD}")
-message(STATUS "  Compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
+message(STATUS "  Compiler: MinGW-GCC")
 message(STATUS "  Install prefix: ${CMAKE_INSTALL_PREFIX}")
 message(STATUS "")
 message(STATUS "Dependencies:")
-message(STATUS "  SDL3: ${SDL3_VERSION}")
-message(STATUS "  GekkoNet: Vendored")
-message(STATUS "  ImGui: Vendored")
-if(WIN32)
-    message(STATUS "  MinHook: Vendored")
-endif()
+message(STATUS "  SDL3: Static")
+message(STATUS "  SDL3_image: Static")
+message(STATUS "  GekkoNet: Static")
+message(STATUS "  ImGui: Static")
+message(STATUS "  MinHook: Static")
 message(STATUS "")
 message(STATUS "Features:")
 message(STATUS "  Rollback netcode: Enabled (GekkoNet)")
 message(STATUS "  Modern UI: Enabled (Dear ImGui)")
 message(STATUS "  Cross-platform: ${CMAKE_CROSSCOMPILING}")
 message(STATUS "")
-
-# Copy SDL3 DLL to output directory
-if(WIN32)
-    add_custom_command(TARGET FM2K_RollbackLauncher POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        $<TARGET_FILE:SDL3::SDL3>
-        $<TARGET_FILE_DIR:FM2K_RollbackLauncher>
-    )
-endif()

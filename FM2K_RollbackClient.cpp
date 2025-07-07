@@ -453,9 +453,10 @@ bool FM2KLauncher::Initialize() {
         games_root_path_ = base_path + "games";
     }
     
-    // Discover available games (now that games_root_path_ is guaranteed non-empty)
-    discovered_games_ = DiscoverGames();
-    ui_->SetGames(discovered_games_);
+    // Kick-off background discovery so the UI stays responsive. The results
+    // will be delivered via the custom SDL event handled in HandleEvent().
+    ui_->SetGames({});        // Clear any previous list while scanning
+    StartAsyncDiscovery();
     
     //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launcher initialized successfully");
     //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Found %d FM2K games", (int)discovered_games_.size());

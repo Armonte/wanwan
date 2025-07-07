@@ -859,26 +859,33 @@ std::string FM2KLauncher::DetectGameVersion(const std::string& exe_path SDL_UNUS
 }
 
 bool FM2KLauncher::LaunchGame(const FM2K::FM2KGameInfo& game) {
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Attempting to launch game: %s", game.exe_path.c_str());
+    
     if (!game.is_host) {
-        std::cerr << "Cannot launch invalid game\n";
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Cannot launch invalid game - is_host flag is false");
         return false;
     }
     
     // Terminate existing game if running
     if (game_instance_ && game_instance_->IsRunning()) {
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Terminating existing game instance before new launch");
         game_instance_->Terminate();
     }
     
     // Create new game instance
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Creating new FM2KGameInstance");
     game_instance_ = std::make_unique<FM2KGameInstance>();
     
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Launching game with EXE: %s, KGT: %s", 
+                 game.exe_path.c_str(), game.dll_path.c_str());
+                 
     if (!game_instance_->Launch(game)) {
-        std::cerr << "Failed to launch game: " << game.exe_path << std::endl;
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to launch game: %s", game.exe_path.c_str());
         game_instance_.reset();
         return false;
     }
     
-    std::cout << "? Game launched: " << game.exe_path << std::endl;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Game launched successfully: %s", game.exe_path.c_str());
     return true;
 }
 

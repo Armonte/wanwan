@@ -64,6 +64,8 @@ bool FM2KGameInstance::Launch(const FM2K::FM2KGameInfo& game) {
         return false;
     }
 
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Creating game process in suspended state...");
+
     // Convert path to Windows format for CreateProcess
     std::string windows_path = game.exe_path;
     for (char& c : windows_path) {
@@ -73,27 +75,40 @@ bool FM2KGameInstance::Launch(const FM2K::FM2KGameInfo& game) {
     // Create process suspended
     STARTUPINFOW si{};
     si.cb = sizeof(si);
+    
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Launching process: %s", windows_path.c_str());
+    
     if (!CreateProcessW(
         std::filesystem::path(windows_path).wstring().c_str(),
         nullptr, nullptr, nullptr, FALSE,
         CREATE_SUSPENDED | CREATE_NEW_CONSOLE,
         nullptr, nullptr, &si, &process_info_)) {
+        DWORD error = GetLastError();
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-            "Failed to create game process: %lu", GetLastError());
+            "CreateProcessW failed with error code: %lu", error);
         return false;
     }
+
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
+        "Process created successfully - PID: %lu, Handle: %p",
+        process_info_.dwProcessId, process_info_.hProcess);
 
     process_handle_ = process_info_.hProcess;
     process_id_ = process_info_.dwProcessId;
 
     // Set up process for hooking
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Setting up process for hooking...");
     if (!SetupProcessForHooking()) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to setup process for hooking");
         Terminate();
         return false;
     }
 
-    // Resume the process
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Resuming game process thread...");
     ResumeThread(process_info_.hThread);
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+        "Game process launched and hooked successfully - PID: %lu", process_id_);
     return true;
 }
 
@@ -162,7 +177,35 @@ void FM2KGameInstance::InjectInputs(uint32_t p1_input, uint32_t p2_input) {
 }
 
 bool FM2KGameInstance::SetupProcessForHooking() {
-    // TODO: Implement process setup for hooking
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Setting up process for hooking...");
+
+    // Get the path to FM2KHook.dll relative to our executable
+    const char* base_path = SDL_GetBasePath();
+    if (!base_path) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to get base path: %s", SDL_GetError());
+        return false;
+    }
+    
+    std::filesystem::path dll_path = std::filesystem::path(base_path) / "FM2KHook.dll";
+    SDL_free(const_cast<char*>(base_path));
+
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Hook DLL path: %s", dll_path.string().c_str());
+
+    // Check if DLL exists
+    if (!SDL_GetPathInfo(dll_path.string().c_str(), nullptr)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, 
+            "FM2KHook.dll not found at: %s", dll_path.string().c_str());
+        return false;
+    }
+
+    // Inject the DLL into the target process
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Injecting FM2KHook.dll...");
+    if (!FM2K::DLLInjector::InjectAndInit(process_handle_, dll_path.wstring())) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to inject FM2KHook.dll");
+        return false;
+    }
+
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Successfully injected FM2KHook.dll");
     return true;
 }
 

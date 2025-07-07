@@ -11,7 +11,6 @@ LauncherUI::LauncherUI()
     , renderer_(nullptr)
     , window_(nullptr)
     , scanning_games_(false)
-    , scan_progress_(0.0f)
 {
     // Initialize callbacks to nullptr
     on_game_selected = nullptr;
@@ -218,7 +217,10 @@ void LauncherUI::RenderGameSelection() {
         if (games_.empty()) {
             if (scanning_games_) {
                 ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Scanning for FM2K games...");
-                ImGui::ProgressBar(scan_progress_, ImVec2(-1, 0), nullptr);
+                static float prog = 0.0f;
+                prog += ImGui::GetIO().DeltaTime * 0.5f; // Loop every 2s
+                if (prog > 1.0f) prog = 0.0f;
+                ImGui::ProgressBar(prog, ImVec2(-1, 0));
             } else {
                 ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "No FM2K games found!");
                 ImGui::TextWrapped("Add your FM2K games (each with matching .exe and .kgt) inside sub-folders under the 'games' directory.");

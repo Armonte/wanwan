@@ -701,64 +701,26 @@ std::vector<FM2K::FM2KGameInfo> FM2KLauncher::DiscoverGames() {
         return games;
     }
 
-    // ------------------------------------------------------------------
-    // Recursive directory traversal using SDL_EnumerateDirectory
-    // ------------------------------------------------------------------
+    // Fast recursive enumeration using SDL_GlobDirectory.
+    std::string root = games_root; // keep original separators and no trailing slash
 
-    struct Context {
-        std::vector<std::string> pending_dirs;
-        std::vector<FM2K::FM2KGameInfo>* out_games;
-    } ctx;
+    int file_count = 0;
+    char** list = SDL_GlobDirectory(root.c_str(), "*.exe", SDL_GLOB_CASEINSENSITIVE, &file_count);
+    if (!list) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "SDL_GlobDirectory failed for %s: %s", root.c_str(), SDL_GetError());
+        return games;
+    }
 
-    ctx.pending_dirs.push_back(Utils::NormalizePath(games_root));
-    ctx.out_games = &games;
+    for (int i = 0; i < file_count; ++i) {
+        std::string exe_path = list[i];
+        std::string kgt_path = exe_path.substr(0, exe_path.size() - 4) + ".kgt";
 
-    auto callback = [](void* ud, const char* dirname, const char* fname) -> SDL_EnumerationResult {
-        Context* c = static_cast<Context*>(ud);
-        std::string full_path = std::string(dirname) + fname;
-
-        SDL_PathInfo info;
-        if (!SDL_GetPathInfo(full_path.c_str(), &info)) {
-            return SDL_ENUM_CONTINUE;
-        }
-
-        if (info.type == SDL_PATHTYPE_DIRECTORY) {
-            // Skip "." and ".." entries
-            if (fname[0] == '.' && (fname[1] == '\0' || (fname[1] == '.' && fname[2] == '\0'))) {
-                return SDL_ENUM_CONTINUE;
-            }
-            // Queue subdirectory for later enumeration
-            std::string subdir = full_path;
-            if (subdir.back() != '/') subdir.push_back('/');
-            c->pending_dirs.push_back(std::move(subdir));
-        } else if (info.type == SDL_PATHTYPE_FILE) {
-            // Check for .exe files and look for matching .kgt
-            size_t len = full_path.size();
-            if (len > 4 && SDL_strcasecmp(full_path.c_str() + len - 4, ".exe") == 0) {
-                std::string kgt_path = full_path;
-                kgt_path.replace(len - 4, 4, ".kgt");
-                if (SDL_GetPathInfo(kgt_path.c_str(), nullptr)) {
-                    FM2K::FM2KGameInfo game;
-                    game.exe_path = full_path;
-                    game.dll_path = kgt_path;
-                    game.process_id = 0;
-                    game.is_host = true;
-                    c->out_games->push_back(game);
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Discovered FM2K game: %s", fname);
-                }
-            }
-        }
-        return SDL_ENUM_CONTINUE;
-    };
-
-    while (!ctx.pending_dirs.empty()) {
-        std::string dir = std::move(ctx.pending_dirs.back());
-        ctx.pending_dirs.pop_back();
-
-        if (!SDL_EnumerateDirectory(dir.c_str(), callback, &ctx)) {
-            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Failed to enumerate %s: %s", dir.c_str(), SDL_GetError());
+        if (SDL_GetPathInfo(kgt_path.c_str(), nullptr)) {
+            FM2K::FM2KGameInfo game{exe_path, kgt_path, 0, true};
+            games.push_back(std::move(game));
         }
     }
+    SDL_free(list);
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DiscoverGames: %d game(s) found under %s", (int)games.size(), games_root.c_str());
     return games;

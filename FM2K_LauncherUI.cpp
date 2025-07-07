@@ -1,7 +1,7 @@
 #include "FM2K_Integration.h"
 #include <iostream>
 #include <algorithm>
-
+#include "vendored/imgui/imgui.h" 
 // LauncherUI Implementation
 LauncherUI::LauncherUI() 
     : launcher_state_(LauncherState::GameSelection)
@@ -33,13 +33,42 @@ bool LauncherUI::Initialize(SDL_Window* window, SDL_Renderer* renderer) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
+    
+    // Enable features
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;         // Enable Docking
-    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;       // Enable Multi-Viewport / Platform Windows
     
     // Setup Dear ImGui style
     ImGui::StyleColorsDark();
+    
+    // Setup scaling
+    float main_scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.ScaleAllSizes(main_scale);        // Bake a fixed style scale
+    style.FontScaleDpi = main_scale;        // Set initial font scale
+    
+    // Load font
+    const float font_size = 16.0f * main_scale;
+    const char* font_paths[] = {
+        "vendored/imgui/misc/fonts/DroidSans.ttf",
+        "C:/Windows/Fonts/segoeui.ttf"  // Fallback to Segoe UI on Windows
+    };
+    
+    bool font_loaded = false;
+    for (const char* font_path : font_paths) {
+        if (std::filesystem::exists(font_path)) {
+            ImFont* font = io.Fonts->AddFontFromFileTTF(font_path, font_size);
+            if (font != nullptr) {
+                font_loaded = true;
+                break;
+            }
+        }
+    }
+    
+    if (!font_loaded) {
+        io.Fonts->AddFontDefault();
+    }
     
     // Setup Platform/Renderer backends
     if (!ImGui_ImplSDL3_InitForSDLRenderer(window, renderer)) {
@@ -53,15 +82,22 @@ bool LauncherUI::Initialize(SDL_Window* window, SDL_Renderer* renderer) {
         return false;
     }
     
-    std::cout << "LauncherUI initialized" << std::endl;
     return true;
 }
 
 void LauncherUI::Shutdown() {
     // Cleanup ImGui
-    ImGui_ImplSDLRenderer3_Shutdown();
-    ImGui_ImplSDL3_Shutdown();
-    ImGui::DestroyContext();
+    if (ImGui::GetCurrentContext()) {
+        // Make sure we finish any pending viewport operations
+        if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+            ImGui::UpdatePlatformWindows();
+            ImGui::RenderPlatformWindowsDefault();
+        }
+        
+        ImGui_ImplSDLRenderer3_Shutdown();
+        ImGui_ImplSDL3_Shutdown();
+        ImGui::DestroyContext();
+    }
     
     std::cout << "LauncherUI shutdown" << std::endl;
 }
@@ -74,7 +110,6 @@ void LauncherUI::NewFrame() {
 }
 
 void LauncherUI::Render() {
-    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] LauncherUI::Render() start");
     if (!renderer_) {
         std::cerr << "Renderer is null in LauncherUI::Render!" << std::endl;
         return;
@@ -82,47 +117,33 @@ void LauncherUI::Render() {
 
     // Render UI elements
     RenderMenuBar();
-    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] After RenderMenuBar()");
     
     switch (launcher_state_) {
         case LauncherState::GameSelection:
-            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderGameSelection()");
             RenderGameSelection();
-            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderGameSelection()");
             break;
         case LauncherState::Configuration:
-            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderNetworkConfig()");
             RenderNetworkConfig();
-            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderNetworkConfig()");
             break;
         case LauncherState::Connecting:
         case LauncherState::InGame:
-            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderConnectionStatus()");
             RenderConnectionStatus();
-            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderConnectionStatus()");
-            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderInGameUI()");
             RenderInGameUI();
-            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderInGameUI()");
             break;
         case LauncherState::Disconnected:
-            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderConnectionStatus() (Disconnected)");
             RenderConnectionStatus();
-            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderConnectionStatus() (Disconnected)");
-            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderNetworkConfig() (Disconnected)");
             RenderNetworkConfig();
-            //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderNetworkConfig() (Disconnected)");
             break;
     }
 
     // Render ImGui
     ImGui::Render();
+    ImGuiIO& io = ImGui::GetIO();
+    SDL_SetRenderScale(renderer_, io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y);
     ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer_);
-    
-    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] LauncherUI::Render() end");
 }
 
 void LauncherUI::RenderMenuBar() {
-    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Entering RenderMenuBar()");
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("Refresh Games")) {
@@ -162,7 +183,6 @@ void LauncherUI::RenderMenuBar() {
         
         ImGui::EndMainMenuBar();
     }
-    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Exiting RenderMenuBar()");
 }
 
 void LauncherUI::RenderGameSelection() {

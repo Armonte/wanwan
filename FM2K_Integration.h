@@ -170,45 +170,37 @@ public:
     
     bool Initialize();
     void Shutdown();
-    
-    // Event handling for SDL callbacks
-    void HandleEvent(SDL_Event* event);
     void Update(float delta_time);
     void Render();
+    void HandleEvent(SDL_Event* event);
     
-    // Game management
-    std::vector<FM2KGameInfo> DiscoverGames();
     bool LaunchGame(const FM2KGameInfo& game);
     void TerminateGame();
-    
-    // Network management
     bool StartNetworkSession(const NetworkConfig& config);
     void StopNetworkSession();
     
-    // State management
-    LauncherState GetState() const { return current_state_; }
-    void SetState(LauncherState state) { current_state_ = state; }
+    std::vector<FM2KGameInfo> DiscoverGames();
+    const std::vector<FM2KGameInfo>& GetDiscoveredGames() const { return discovered_games_; }
+    
+    void SetState(LauncherState state);
+    bool IsRunning() const { return running_; }
     
 private:
-    // Core systems
+    bool InitializeSDL();
+    bool InitializeImGui();
+    
     SDL_Window* window_;
     SDL_Renderer* renderer_;
     std::unique_ptr<LauncherUI> ui_;
     std::unique_ptr<FM2KGameInstance> game_instance_;
     std::unique_ptr<NetworkSession> network_session_;
-    
-    // State
-    LauncherState current_state_;
     std::vector<FM2KGameInfo> discovered_games_;
     NetworkConfig network_config_;
+    LauncherState current_state_;
+    bool running_;
     
     // Timing
     std::chrono::steady_clock::time_point last_frame_time_;
-    bool running_;
-    
-    // Internal methods
-    bool InitializeSDL();
-    bool InitializeImGui();
     
     // Game discovery helpers
     bool ValidateGameFiles(FM2KGameInfo& game);

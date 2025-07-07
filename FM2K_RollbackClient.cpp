@@ -157,15 +157,14 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     
     // If direct mode, skip UI and go straight to game launch + network
     if (direct_mode) {
-        auto games = g_launcher->DiscoverGames();
-        if (games.empty()) {
+        if (g_launcher->GetDiscoveredGames().empty()) {
             std::cerr << "No FM2K games found for direct mode\n";
             return SDL_APP_FAILURE;
         }
         
         // Launch first valid game
         bool game_launched = false;
-        for (const auto& game : games) {
+        for (const auto& game : g_launcher->GetDiscoveredGames()) {
             if (game.is_valid() && g_launcher->LaunchGame(game)) {
                 game_launched = true;
                 break;
@@ -235,11 +234,12 @@ void SDL_AppQuit(void* appstate SDL_UNUSED, SDL_AppResult result SDL_UNUSED) {
     std::cout << "Shutting down FM2K launcher...\n";
     
     if (g_launcher) {
+        // Perform shutdown
         g_launcher->Shutdown();
         g_launcher.reset();
     }
     
-    std::cout << "? Launcher shutdown complete\n";
+    std::cout << "LauncherUI shutdown\n";
 }
 
 } // extern "C"
@@ -322,9 +322,25 @@ bool FM2KLauncher::Initialize() {
 }
 
 void FM2KLauncher::HandleEvent(SDL_Event* event) {
-    if (event->type == SDL_EVENT_KEY_DOWN) {
-        if (event->key.scancode == SDL_SCANCODE_ESCAPE) {
-            running_ = false;
+    // Let ImGui handle events first
+    ImGui_ImplSDL3_ProcessEvent(event);
+    
+    // Handle window events for DPI changes
+    if (event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
+        if (event->window.windowID == SDL_GetWindowID(window_)) {
+            ImGuiIO& io = ImGui::GetIO();
+            io.DisplaySize.x = static_cast<float>(event->window.data1);
+            io.DisplaySize.y = static_cast<float>(event->window.data2);
+        }
+    }
+    
+    // Only process our events if ImGui isn't capturing input
+    ImGuiIO& io = ImGui::GetIO();
+    if (!io.WantCaptureMouse && !io.WantCaptureKeyboard) {
+        if (event->type == SDL_EVENT_KEY_DOWN) {
+            if (event->key.scancode == SDL_SCANCODE_ESCAPE) {
+                running_ = false;
+            }
         }
     }
 }
@@ -333,11 +349,7 @@ void FM2KLauncher::Update(float delta_time SDL_UNUSED) {
     if (network_session_) {
         network_session_->Update();
     }
-    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling ui_->NewFrame()");
     ui_->NewFrame();
-    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished ui_->NewFrame(), calling ui_->Render()");
-    ui_->Render();
-    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished ui_->Render()");
 }
 
 void FM2KLauncher::Render() {
@@ -359,56 +371,38 @@ void FM2KLauncher::Render() {
 
 bool FM2KLauncher::InitializeSDL() {
     // Initialize SDL with all necessary subsystems
-    SDL_InitFlags init_flags = SDL_INIT_VIDEO | SDL_INIT_EVENTS;  // Explicitly include EVENTS
+    SDL_InitFlags init_flags = SDL_INIT_VIDEO | SDL_INIT_GAMEPAD;
     
     if (SDL_Init(init_flags) < 0) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SDL_Init failed: %s", SDL_GetError());
         return false;
     }
-    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SDL initialized successfully with flags: 0x%x", init_flags);
     
-    // Set SDL hints for better behavior
-    SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
-    SDL_SetHint("SDL_WINDOWS_DPI_AWARENESS", "system");
-    SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "SDL hints set for compositor and DPI awareness");
+    // Create window with SDL_Renderer graphics context
+    float main_scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+    SDL_WindowFlags window_flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
     
-    // Create window and renderer together using SDL_CreateWindowAndRenderer
-    bool result = SDL_CreateWindowAndRenderer("FM2K Rollback Launcher", 800, 600, 
-        SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN,
-        &window_, &renderer_);
+    window_ = SDL_CreateWindow("FM2K Rollback Launcher", 
+        (int)(1280 * main_scale), (int)(720 * main_scale), 
+        window_flags);
         
-    if (!result) {
-        SDL_LogError(SDL_LOG_CATEGORY_RENDER, "SDL_CreateWindowAndRenderer failed: %s", SDL_GetError());
+    if (!window_) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SDL_CreateWindow failed: %s", SDL_GetError());
+        return false;
+    }
+    
+    renderer_ = SDL_CreateRenderer(window_, nullptr);
+    SDL_SetRenderVSync(renderer_, 1);
+    
+    if (!renderer_) {
+        SDL_LogError(SDL_LOG_CATEGORY_RENDER, "SDL_CreateRenderer failed: %s", SDL_GetError());
+        SDL_DestroyWindow(window_);
         SDL_Quit();
         return false;
     }
     
-    // Verify window and renderer were created
-    if (!window_ || !renderer_) {
-        SDL_LogError(SDL_LOG_CATEGORY_RENDER, "Window or renderer is null after creation");
-        if (window_) SDL_DestroyWindow(window_);
-        if (renderer_) SDL_DestroyRenderer(renderer_);
-        SDL_Quit();
-        return false;
-    }
-    
-    //SDL_LogInfo(SDL_LOG_CATEGORY_RENDER, "Window and renderer created successfully");
-    
-    // Center the window after creation
     SDL_SetWindowPosition(window_, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
-    
-    // Show window after creation
     SDL_ShowWindow(window_);
-    
-    // Get video driver info
-    const char* driver = SDL_GetCurrentVideoDriver();
-    if (!driver) {
-        SDL_LogError(SDL_LOG_CATEGORY_VIDEO, "No video driver available");
-        return false;
-    }
-    
-    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SDL initialization complete");
-    //SDL_LogInfo(SDL_LOG_CATEGORY_VIDEO, "Video driver: %s", driver);
     
     return true;
 }
@@ -448,6 +442,7 @@ bool FM2KLauncher::InitializeImGui() {
 }
 
 void FM2KLauncher::Shutdown() {
+    // Stop network and game first
     if (network_session_) {
         network_session_->Stop();
         network_session_.reset();
@@ -458,18 +453,24 @@ void FM2KLauncher::Shutdown() {
         game_instance_.reset();
     }
     
+    // Ensure UI cleanup happens before ImGui shutdown
     if (ui_) {
         ui_->Shutdown();
         ui_.reset();
     }
     
-    // ImGui cleanup
+    // ImGui cleanup - ensure viewports are handled
     if (ImGui::GetCurrentContext()) {
+        // Make sure we finish any pending viewport operations
+        ImGui::UpdatePlatformWindows();
+        ImGui::RenderPlatformWindowsDefault();
+        
         ImGui_ImplSDLRenderer3_Shutdown();
         ImGui_ImplSDL3_Shutdown();
         ImGui::DestroyContext();
     }
     
+    // SDL cleanup
     if (renderer_) {
         SDL_DestroyRenderer(renderer_);
         renderer_ = nullptr;
@@ -615,5 +616,12 @@ void FM2KLauncher::StopNetworkSession() {
         network_session_->Stop();
         network_session_.reset();
         std::cout << "? Network session stopped\n";
+    }
+}
+
+void FM2KLauncher::SetState(LauncherState state) {
+    current_state_ = state;
+    if (ui_) {
+        ui_->SetLauncherState(state);
     }
 } 

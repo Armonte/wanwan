@@ -13,7 +13,6 @@
 #include <vector>
 #include <iostream>
 #include <thread>
-#include <filesystem>
 #include <windows.h>
 #include <psapi.h>
 #include <tlhelp32.h>
@@ -65,21 +64,26 @@ static std::unique_ptr<FM2KLauncher> g_launcher = nullptr;
 // Utility implementations
 namespace Utils {
     std::vector<std::string> FindFilesWithExtension(const std::string& directory, const std::string& extension) {
+        // Non-recursive scan using SDL3's filesystem helper.
         std::vector<std::string> files;
-        try {
-            for (const auto& entry : std::filesystem::directory_iterator(directory)) {
-                if (entry.path().extension() == extension) {
-                    files.push_back(entry.path().string());
-                }
+        int count = 0;
+        std::string pattern = "*" + extension; // e.g., "*.kgt"
+        char **list = SDL_GlobDirectory(directory.c_str(), pattern.c_str(), /*flags=*/0, &count);
+        if (list) {
+            for (int i = 0; i < count; ++i) {
+                if (list[i]) files.emplace_back(list[i]);
             }
-        } catch (const std::exception& e) {
-            std::cerr << "Error scanning directory: " << e.what() << std::endl;
+            SDL_free(list);
         }
         return files;
     }
     
     bool FileExists(const std::string& path) {
-        return std::filesystem::exists(path);
+        if (SDL_GetPathInfo(path.c_str(), nullptr)) {
+            return true;
+        }
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "FileExists check failed for %s: %s", path.c_str(), SDL_GetError());
+        return false;
     }
     
     std::string GetFileVersion(const std::string& exe_path SDL_UNUSED) {
@@ -119,6 +123,77 @@ namespace Utils {
     
     std::chrono::milliseconds GetFrameDuration() {
         return std::chrono::milliseconds(10);  // 100 FPS = 10ms per frame
+    }
+
+    // ---------------------------------------------------------------------
+    // Config handling (persistent games folder)
+    // ---------------------------------------------------------------------
+    static std::string GetConfigDir() {
+        const char *pref = SDL_GetPrefPath("FM2K", "RollbackLauncher");
+        std::string dir = pref ? pref : SDL_GetBasePath();
+        if (pref) SDL_free(const_cast<char*>(pref));
+
+        if (!dir.empty() && dir.back() != '/' && dir.back() != '\\') dir.push_back('/');
+
+        // Ensure directory exists
+        SDL_CreateDirectory(dir.c_str());
+        return dir;
+    }
+
+    static std::string GetConfigFilePath() {
+        return GetConfigDir() + "launcher.cfg";
+    }
+
+    std::string LoadGamesRootPath() {
+        std::string cfg = GetConfigFilePath();
+        if (!SDL_GetPathInfo(cfg.c_str(), nullptr)) {
+            return {};
+        }
+        std::ifstream in(cfg);
+        if (!in) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open config file: %s", cfg.c_str());
+            return {};
+        }
+        std::string line;
+        std::getline(in, line);
+        in.close();
+        return line;
+    }
+
+    void SaveGamesRootPath(const std::string& path) {
+        std::string cfg = GetConfigFilePath();
+        // Ensure directory exists
+        // Directory is guaranteed to exist from GetConfigDir
+        std::ofstream out(cfg, std::ios::trunc);
+        if (!out) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to write config file: %s", cfg.c_str());
+            return;
+        }
+        out << path << std::endl;
+    }
+
+    // Recursively search for files that match the provided extension. This allows the
+    // launcher to pick up games that live inside their own folders under the common
+    // "games" directory (e.g. games/SomeGame/SomeGame.exe + .kgt).
+    inline std::vector<std::string> FindFilesWithExtensionRecursive(const std::string& directory,
+                                                                    const std::string& extension) {
+        std::vector<std::string> files;
+
+        // Prefer SDL3's cross-platform glob helper if available. This will enumerate the
+        // entire directory tree for us and handle platform quirks internally.
+        int count = 0;
+        std::string pattern = "*" + extension; // e.g., "*.kgt"
+        char **list = SDL_GlobDirectory(directory.c_str(), pattern.c_str(), /*flags=*/0, &count);
+        if (list) {
+            for (int i = 0; i < count; ++i) {
+                if (list[i]) files.emplace_back(list[i]);
+            }
+            SDL_free(list);
+            return files;
+        }
+
+        // No fallback ? SDL3 is mandatory for this project.
+        return files;
     }
 }
 
@@ -250,6 +325,8 @@ FM2KLauncher::FM2KLauncher()
     , renderer_(nullptr)
     , current_state_(LauncherState::GameSelection)
     , running_(true) {
+    // Load saved games directory (if any) so it can be used before Initialize() completes.
+    games_root_path_ = Utils::LoadGamesRootPath();
 }
 
 FM2KLauncher::~FM2KLauncher() {
@@ -306,7 +383,28 @@ bool FM2KLauncher::Initialize() {
         running_ = false;
     };
     
-    // Discover available games
+    ui_->on_games_folder_set = [this](const std::string& folder) {
+        SetGamesRootPath(folder);
+    };
+    
+    // If no games directory stored, default to <base>/games before first discovery
+    if (games_root_path_.empty()) {
+        std::string base_path;
+        if (const char *sdl_base = SDL_GetBasePath()) {
+            base_path = sdl_base;
+            SDL_free(const_cast<char *>(sdl_base));
+        } else {
+            const char* cwd = SDL_GetCurrentDirectory();
+            base_path = cwd ? cwd : "";
+            if (cwd) SDL_free(const_cast<char*>(cwd));
+        }
+        if (!base_path.empty() && base_path.back() != '/' && base_path.back() != '\\') {
+            base_path += '/';
+        }
+        games_root_path_ = base_path + "games";
+    }
+    
+    // Discover available games (now that games_root_path_ is guaranteed non-empty)
     discovered_games_ = DiscoverGames();
     ui_->SetGames(discovered_games_);
     
@@ -438,24 +536,59 @@ void FM2KLauncher::Shutdown() {
 std::vector<FM2K::FM2KGameInfo> FM2KLauncher::DiscoverGames() {
     std::vector<FM2K::FM2KGameInfo> games;
     
-    // Look for .kgt files with matching .exe files
-    auto kgt_files = Utils::FindFilesWithExtension(".", ".kgt");
+    // Use SDL_GetBasePath so the launcher works correctly even if the process is started
+    // from another working directory (e.g., via a shortcut).
+    std::string base_path;
+    if (const char *sdl_base = SDL_GetBasePath()) {
+        base_path = sdl_base;
+        SDL_free(const_cast<char *>(sdl_base));
+    } else {
+        const char* cwd = SDL_GetCurrentDirectory();
+        base_path = cwd ? cwd : "";
+        if (cwd) SDL_free(const_cast<char*>(cwd));
+    }
+
+    const std::string& games_root = games_root_path_;
+
+    if (games_root.empty()) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Games root path is empty; skipping discovery");
+        return games;
+    }
+    if (!SDL_GetPathInfo(games_root.c_str(), nullptr)) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Games directory does not exist: %s (%s)", games_root.c_str(), SDL_GetError());
+        return games;
+    }
+
+    // Recursively look for .kgt files with matching .exe files in the same directory
+    auto kgt_files = Utils::FindFilesWithExtensionRecursive(games_root, ".kgt");
     for (const auto& kgt_path : kgt_files) {
         FM2K::FM2KGameInfo game;
         game.dll_path = kgt_path;
         
         // Look for matching exe file
-        auto exe_path = std::filesystem::path(kgt_path);
-        exe_path.replace_extension(".exe");
+        std::string exe_path = kgt_path;
+        if (exe_path.size() >= 4 && exe_path.substr(exe_path.size() - 4) == ".kgt") {
+            exe_path.replace(exe_path.size() - 4, 4, ".exe");
+        } else {
+            exe_path += ".exe"; // Fallback
+        }
         
-        if (Utils::FileExists(exe_path.string())) {
-            game.exe_path = exe_path.string();
+        if (Utils::FileExists(exe_path)) {
+            game.exe_path = exe_path;
             game.process_id = 0;
             game.is_host = true;
             
             if (ValidateGameFiles(game)) {
                 games.push_back(game);
-                std::cout << "? Found FM2K game: " << std::filesystem::path(game.exe_path).stem().string() << std::endl;
+                // Log discovered game name (strip path and extension)
+                {
+                    std::string display_name = game.exe_path;
+                    size_t slash = display_name.find_last_of("/\\");
+                    if (slash != std::string::npos) display_name.erase(0, slash + 1);
+                    size_t dot = display_name.find_last_of('.');
+                    if (dot != std::string::npos) display_name.erase(dot);
+                    std::cout << "? Found FM2K game: " << display_name << std::endl;
+                }
             }
         }
     }
@@ -552,5 +685,15 @@ void FM2KLauncher::SetState(LauncherState state) {
     current_state_ = state;
     if (ui_) {
         ui_->SetLauncherState(state);
+    }
+}
+
+void FM2KLauncher::SetGamesRootPath(const std::string& path) {
+    games_root_path_ = path;
+    Utils::SaveGamesRootPath(path);
+    // Refresh discovery with new path
+    discovered_games_ = DiscoverGames();
+    if (ui_) {
+        ui_->SetGames(discovered_games_);
     }
 } 

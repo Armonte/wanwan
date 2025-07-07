@@ -4,9 +4,10 @@
 #include "vendored/imgui/imgui.h" 
 // LauncherUI Implementation
 LauncherUI::LauncherUI() 
-    : launcher_state_(LauncherState::GameSelection)
-    , network_stats_{}  // Zero-initialize network stats
+    : games_{}
     , network_config_{} // Zero-initialize network config
+    , network_stats_{}  // Zero-initialize network stats
+    , launcher_state_(LauncherState::GameSelection)
     , renderer_(nullptr)
     , window_(nullptr)
 {
@@ -57,7 +58,7 @@ bool LauncherUI::Initialize(SDL_Window* window, SDL_Renderer* renderer) {
     
     bool font_loaded = false;
     for (const char* font_path : font_paths) {
-        if (std::filesystem::exists(font_path)) {
+        if (SDL_GetPathInfo(font_path, nullptr)) {
             ImFont* font = io.Fonts->AddFontFromFileTTF(font_path, font_size);
             if (font != nullptr) {
                 font_loaded = true;
@@ -188,18 +189,44 @@ void LauncherUI::RenderMenuBar() {
 void LauncherUI::RenderGameSelection() {
     ImGui::Begin("Game Selection");
     
-    // Show current directory
-    std::filesystem::path current_dir = std::filesystem::current_path();
-    ImGui::Text("Game Directory: %s", current_dir.string().c_str());
+    // Show games root directory ("games" folder)
+    const char* cwd_c = SDL_GetCurrentDirectory();
+    std::string games_root = cwd_c ? cwd_c : "";
+    if (cwd_c) SDL_free(const_cast<char*>(cwd_c));
+    if (!games_root.empty() && games_root.back() != '/' && games_root.back() != '\\') games_root.push_back('/');
+    games_root += "games";
+    static char path_buf[512] = {0};
+    static bool initialised_path = false;
+    if (!initialised_path) {
+        SDL_strlcpy(path_buf, games_root.c_str(), sizeof(path_buf));
+        initialised_path = true;
+    }
+
+    ImGui::InputText("Games Folder", path_buf, sizeof(path_buf));
+    ImGui::SameLine();
+    if (ImGui::Button("Set##GamesFolder")) {
+        if (on_games_folder_set) {
+            on_games_folder_set(std::string(path_buf));
+        }
+    }
     
     // Game list
     if (ImGui::BeginListBox("##GameList", ImVec2(-1, 200))) {
         if (games_.empty()) {
             ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "No FM2K games found!");
-            ImGui::TextWrapped("Place your FM2K game files (.exe and .kgt) in this directory.");
+            ImGui::TextWrapped("Add your FM2K games (each with matching .exe and .kgt) inside sub-folders under the 'games' directory.");
         } else {
             for (const auto& game : games_) {
-                if (ImGui::Selectable(std::filesystem::path(game.exe_path).stem().string().c_str())) {
+                // Derive display name by stripping directory and extension
+                std::string display_name = game.exe_path;
+                // Remove directory
+                size_t slash = display_name.find_last_of("/\\");
+                if (slash != std::string::npos) display_name.erase(0, slash + 1);
+                // Remove extension
+                size_t dot = display_name.find_last_of('.');
+                if (dot != std::string::npos) display_name.erase(dot);
+
+                if (ImGui::Selectable(display_name.c_str())) {
                     if (on_game_selected) {
                         on_game_selected(game);
                     }

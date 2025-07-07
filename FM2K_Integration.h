@@ -202,6 +202,10 @@ public:
     void SetState(LauncherState state);
     bool IsRunning() const { return running_; }
     
+    // Games directory management
+    const std::string& GetGamesRootPath() const { return games_root_path_; }
+    void SetGamesRootPath(const std::string& path);
+    
 private:
     bool InitializeSDL();
     bool InitializeImGui();
@@ -222,6 +226,9 @@ private:
     // Game discovery helpers
     bool ValidateGameFiles(FM2K::FM2KGameInfo& game);
     std::string DetectGameVersion(const std::string& exe_path);
+    
+    // Games directory (root where FM2K games are located)
+    std::string games_root_path_;
 };
 
 // Game instance management
@@ -392,6 +399,7 @@ public:
     std::function<void(const NetworkConfig&)> on_network_start;
     std::function<void()> on_network_stop;
     std::function<void()> on_exit;
+    std::function<void(const std::string&)> on_games_folder_set;
     
     // Data binding
     void SetGames(const std::vector<FM2K::FM2KGameInfo>& games);

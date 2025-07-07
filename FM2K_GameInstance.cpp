@@ -13,7 +13,7 @@ constexpr uint32_t DLL_INIT_TIMEOUT_MS = 5000;
 constexpr uint32_t IPC_EVENT_TIMEOUT_MS = 100;
 
 // Helper functions
-std::wstring GetDLLPath() {
+[[maybe_unused]] static std::wstring GetDLLPath() {
     wchar_t buffer[MAX_PATH];
     GetModuleFileNameW(nullptr, buffer, MAX_PATH);
     std::filesystem::path exe_path(buffer);
@@ -36,7 +36,7 @@ FM2KGameInstance::~FM2KGameInstance() {
 bool FM2KGameInstance::Initialize() {
     // Initialize SDL if not already done
     if (SDL_WasInit(SDL_INIT_EVENTS) == 0) {
-        if (SDL_Init(SDL_INIT_EVENTS) < 0) {
+        if (SDL_Init(SDL_INIT_EVENTS) != 0) {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                 "Failed to initialize SDL: %s", SDL_GetError());
             return false;
@@ -49,20 +49,24 @@ bool FM2KGameInstance::Initialize() {
 }
 
 bool FM2KGameInstance::Launch(const FM2K::FM2KGameInfo& game) {
-    if (!std::filesystem::exists(game.exe_path)) {
+    // Use SDL3's cross-platform filesystem helpers for existence checks.
+    if (!SDL_GetPathInfo(game.exe_path.c_str(), nullptr)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-            "Game executable not found: %s", game.exe_path.c_str());
+            "Game executable not found: %s (%s)",
+            game.exe_path.c_str(), SDL_GetError());
         return false;
     }
 
-    if (!std::filesystem::exists(game.dll_path)) {
+    if (!SDL_GetPathInfo(game.dll_path.c_str(), nullptr)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-            "Hook DLL not found: %s", game.dll_path.c_str());
+            "Hook DLL not found: %s (%s)",
+            game.dll_path.c_str(), SDL_GetError());
         return false;
     }
 
     // Create process suspended
-    STARTUPINFOW si = { sizeof(STARTUPINFOW) };
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
     if (!CreateProcessW(
         std::filesystem::path(game.exe_path).wstring().c_str(),
         nullptr, nullptr, nullptr, FALSE,
@@ -157,6 +161,7 @@ bool FM2KGameInstance::SetupProcessForHooking() {
 }
 
 bool FM2KGameInstance::LoadGameExecutable(const std::filesystem::path& exe_path) {
+    (void)exe_path; // Unused for now
     // TODO: Implement game executable loading
     return true;
 }
@@ -183,6 +188,7 @@ void FM2KGameInstance::OnStateLoaded(const FM2K::IPC::Event& event) {
 }
 
 void FM2KGameInstance::OnHitTablesInit(const FM2K::IPC::Event& event) {
+    (void)event; // currently unused
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
         "Hit tables initialized");
 }

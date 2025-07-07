@@ -1,4 +1,65 @@
 cmake_minimum_required(VERSION 3.20)
+
+# Enable languages early
+enable_language(C CXX)
+
+# Set target architecture
+set(CMAKE_SYSTEM_PROCESSOR i686 CACHE STRING "Target processor" FORCE)
+
+# Skip compiler tests by pre-setting capabilities
+set(CMAKE_C_COMPILER_FORCED TRUE)
+set(CMAKE_CXX_COMPILER_FORCED TRUE)
+set(CMAKE_C_COMPILER_WORKS TRUE)
+set(CMAKE_CXX_COMPILER_WORKS TRUE)
+
+# Force skip GLIBC check
+set(CMAKE_REQUIRED_DEFINITIONS "-D__GLIBC__=0")
+
+
+# Pre-set GCC feature test results
+set(HAVE_GDWARF_4 TRUE)
+set(HAVE_GCC_WALL TRUE)
+set(HAVE_GCC_WUNDEF TRUE)
+set(HAVE_GCC_WFLOAT_CONVERSION TRUE)
+set(HAVE_GCC_NO_STRICT_ALIASING TRUE)
+set(HAVE_GCC_WDOCUMENTATION FALSE)
+set(HAVE_GCC_WDOCUMENTATION_UNKNOWN_COMMAND FALSE)
+set(HAVE_GCC_COMMENT_BLOCK_COMMANDS FALSE)
+set(HAVE_CLANG_COMMENT_BLOCK_COMMANDS FALSE)
+set(HAVE_GCC_WSHADOW TRUE)
+set(HAVE_GCC_WUNUSED_LOCAL_TYPEDEFS TRUE)
+set(HAVE_GCC_WIMPLICIT_FALLTHROUGH TRUE)
+set(COMPILER_SUPPORTS_FDIAGNOSTICS_COLOR_ALWAYS TRUE)
+set(LINKER_SUPPORTS_VERSION_SCRIPT TRUE)
+set(COMPILER_SUPPORTS_GCC_ATOMICS TRUE)
+set(HAVE_GCC_FVISIBILITY TRUE)
+set(LINKER_SUPPORTS_WL_NO_UNDEFINED TRUE)
+set(COMPILER_SUPPORTS_MMX TRUE)
+set(COMPILER_SUPPORTS_SSE TRUE)
+set(COMPILER_SUPPORTS_SSE2 TRUE)
+set(COMPILER_SUPPORTS_SSE3 TRUE)
+set(COMPILER_SUPPORTS_SSE4_1 TRUE)
+set(COMPILER_SUPPORTS_SSE4_2 TRUE)
+set(COMPILER_SUPPORTS_AVX TRUE)
+set(COMPILER_SUPPORTS_AVX2 TRUE)
+set(COMPILER_SUPPORTS_AVX512F TRUE)
+
+# Pre-set system checks
+set(__GLIBC__ FALSE)
+
+# Pre-set header checks
+set(HAVE_ALLOCA_H FALSE)
+set(HAVE_FLOAT_H TRUE)
+set(HAVE_ICONV_H TRUE)
+set(HAVE_INTTYPES_H TRUE)
+set(HAVE_LIMITS_H TRUE)
+set(HAVE_MALLOC_H TRUE)
+set(HAVE_MATH_H TRUE)
+set(HAVE_MEMORY_H TRUE)
+set(HAVE_SIGNAL_H TRUE)
+set(HAVE_STDARG_H TRUE)
+set(HAVE_STDBOOL_H TRUE)
+
 project(FM2K_RollbackLauncher VERSION 1.0.0 LANGUAGES CXX C)
 
 # Set C++ standard
@@ -89,12 +150,14 @@ target_include_directories(GekkoNet PUBLIC
 )
 
 # Windows-specific configuration for GekkoNet
-target_link_libraries(GekkoNet PUBLIC ws2_32)
-target_compile_definitions(GekkoNet PUBLIC
-    _WIN32_WINNT=0x0601  # Target Windows 7 or later
-    WIN32_LEAN_AND_MEAN  # Exclude rarely-used stuff from Windows headers
-    GEKKONET_STATIC      # Static linking
-)
+if(WIN32)
+    target_link_libraries(GekkoNet PUBLIC ws2_32)
+    target_compile_definitions(GekkoNet PUBLIC
+        _WIN32_WINNT=0x0601  # Target Windows 7 or later
+        WIN32_LEAN_AND_MEAN  # Exclude rarely-used stuff from Windows headers
+        GEKKONET_STATIC      # Static linking
+    )
+endif()
 
 # MinHook library
 set(MINHOOK_SOURCES

@@ -64,11 +64,17 @@ bool FM2KGameInstance::Launch(const FM2K::FM2KGameInfo& game) {
         return false;
     }
 
+    // Convert path to Windows format for CreateProcess
+    std::string windows_path = game.exe_path;
+    for (char& c : windows_path) {
+        if (c == '/') c = '\\';
+    }
+
     // Create process suspended
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     if (!CreateProcessW(
-        std::filesystem::path(game.exe_path).wstring().c_str(),
+        std::filesystem::path(windows_path).wstring().c_str(),
         nullptr, nullptr, nullptr, FALSE,
         CREATE_SUSPENDED | CREATE_NEW_CONSOLE,
         nullptr, nullptr, &si, &process_info_)) {

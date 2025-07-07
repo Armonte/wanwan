@@ -66,6 +66,32 @@ namespace FM2K {
         std::string dll_path;
         uint32_t process_id;
         bool is_host;
+
+        // Helper to get just the filename from the full path
+        std::string GetExeName() const {
+            const char* path = exe_path.c_str();
+            const char* last_slash = SDL_strrchr(path, '/');
+            if (!last_slash) last_slash = SDL_strrchr(path, '\\');
+            return last_slash ? std::string(last_slash + 1) : exe_path;
+        }
+
+        // Helper to get the directory containing the exe
+        std::string GetExeDir() const {
+            const char* path = exe_path.c_str();
+            char* dir = SDL_strdup(path);
+            if (!dir) return "";
+
+            char* last_slash = SDL_strrchr(dir, '/');
+            if (!last_slash) last_slash = SDL_strrchr(dir, '\\');
+            if (last_slash) {
+                *last_slash = '\0';
+                std::string result(dir);
+                SDL_free(dir);
+                return result;
+            }
+            SDL_free(dir);
+            return "";
+        }
     };
 
     // Utility functions
@@ -170,13 +196,31 @@ enum class LauncherState {
 
 // Network configuration
 struct NetworkConfig {
-    std::string local_address = "127.0.0.1";
-    int local_port = 7000;
-    std::string remote_address = "127.0.0.1:7001";
-    int local_player = 0;  // 0 or 1
-    int input_delay = 2;
-    int max_spectators = 8;
-    bool enable_spectators = true;
+    std::string local_address;
+    int local_port;
+    std::string remote_address;
+    int local_player;  // 0 or 1
+    int input_delay;
+    int max_spectators;
+    bool enable_spectators;
+
+    NetworkConfig() 
+        : local_address("127.0.0.1")
+        , local_port(7000)
+        , remote_address("127.0.0.1:7001")
+        , local_player(0)
+        , input_delay(2)
+        , max_spectators(8)
+        , enable_spectators(true)
+    {
+        // Use SDL string functions for initialization
+        char local_addr[32];
+        char remote_addr[32];
+        SDL_strlcpy(local_addr, "127.0.0.1", sizeof(local_addr));
+        SDL_strlcpy(remote_addr, "127.0.0.1:7001", sizeof(remote_addr));
+        local_address = local_addr;
+        remote_address = remote_addr;
+    }
 };
 
 // Main launcher class
@@ -419,6 +463,7 @@ public:
     void SetLauncherState(LauncherState state);
     // Update scanning progress (0-1). Only meaningful while scanning flag is true.
     void SetScanning(bool scanning);
+    void SetGamesRootPath(const std::string& path);
 
 private:
     // UI state
@@ -428,6 +473,7 @@ private:
     LauncherState launcher_state_;
     SDL_Renderer* renderer_;
     SDL_Window* window_;
+    std::string games_root_path_;  // Current games root directory
     
     // UI components
     void RenderGameSelection();

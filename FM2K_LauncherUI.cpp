@@ -11,6 +11,7 @@ LauncherUI::LauncherUI()
     , renderer_(nullptr)
     , window_(nullptr)
     , scanning_games_(false)
+    , games_root_path_("")
 {
     // Initialize callbacks to nullptr
     on_game_selected = nullptr;
@@ -190,16 +191,11 @@ void LauncherUI::RenderMenuBar() {
 void LauncherUI::RenderGameSelection() {
     ImGui::Begin("Game Selection");
     
-    // Show games root directory ("games" folder)
-    const char* cwd_c = SDL_GetCurrentDirectory();
-    std::string games_root = cwd_c ? cwd_c : "";
-    if (cwd_c) SDL_free(const_cast<char*>(cwd_c));
-    if (!games_root.empty() && games_root.back() != '/' && games_root.back() != '\\') games_root.push_back('/');
-    games_root += "games";
+    // Show games root directory
     static char path_buf[512] = {0};
     static bool initialised_path = false;
     if (!initialised_path) {
-        SDL_strlcpy(path_buf, games_root.c_str(), sizeof(path_buf));
+        SDL_strlcpy(path_buf, games_root_path_.c_str(), sizeof(path_buf));
         initialised_path = true;
     }
 
@@ -207,7 +203,8 @@ void LauncherUI::RenderGameSelection() {
     ImGui::SameLine();
     if (ImGui::Button("Set##GamesFolder")) {
         if (on_games_folder_set) {
-            on_games_folder_set(std::string(path_buf));
+            on_games_folder_set(path_buf);
+            SDL_strlcpy(path_buf, games_root_path_.c_str(), sizeof(path_buf));
         }
     }
     
@@ -230,16 +227,25 @@ void LauncherUI::RenderGameSelection() {
                 const auto& game = games_[idx];
                 // Push a unique identifier to avoid ImGui ID conflicts even when display names repeat
                 ImGui::PushID(static_cast<int>(idx));
+                
                 // Derive display name by stripping directory and extension
-                std::string display_name = game.exe_path;
+                const char* exe_path = game.exe_path.c_str();
+                char display_name[256] = {0};
+                SDL_strlcpy(display_name, exe_path, sizeof(display_name));
+                
                 // Remove directory
-                size_t slash = display_name.find_last_of("/\\");
-                if (slash != std::string::npos) display_name.erase(0, slash + 1);
+                char* last_slash = SDL_strrchr(display_name, '/');
+                if (!last_slash) last_slash = SDL_strrchr(display_name, '\\');
+                if (last_slash) {
+                    size_t offset = last_slash - display_name + 1;
+                    SDL_memmove(display_name, last_slash + 1, SDL_strlen(last_slash + 1) + 1);
+                }
+                
                 // Remove extension
-                size_t dot = display_name.find_last_of('.');
-                if (dot != std::string::npos) display_name.erase(dot);
+                char* last_dot = SDL_strrchr(display_name, '.');
+                if (last_dot) *last_dot = '\0';
 
-                if (ImGui::Selectable(display_name.c_str())) {
+                if (ImGui::Selectable(display_name)) {
                     if (on_game_selected) {
                         on_game_selected(game);
                     }
@@ -283,9 +289,8 @@ void LauncherUI::RenderNetworkConfig() {
         if (network_config_.local_port > 65535) network_config_.local_port = 65535;
         
         // Remote address
-        char remote_addr_buffer[256];
-        strncpy(remote_addr_buffer, network_config_.remote_address.c_str(), sizeof(remote_addr_buffer) - 1);
-        remote_addr_buffer[sizeof(remote_addr_buffer) - 1] = '\0';
+        static char remote_addr_buffer[256];
+        SDL_strlcpy(remote_addr_buffer, network_config_.remote_address.c_str(), sizeof(remote_addr_buffer));
         
         if (ImGui::InputText("Remote Address", remote_addr_buffer, sizeof(remote_addr_buffer))) {
             network_config_.remote_address = remote_addr_buffer;
@@ -482,4 +487,8 @@ void LauncherUI::SetLauncherState(LauncherState state) {
 
 void LauncherUI::SetScanning(bool scanning) {
     scanning_games_ = scanning;
+}
+
+void LauncherUI::SetGamesRootPath(const std::string& path) {
+    games_root_path_ = path;
 } 

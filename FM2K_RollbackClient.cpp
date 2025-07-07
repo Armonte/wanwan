@@ -92,8 +92,13 @@ namespace Utils {
         // Non-recursive scan using SDL3's filesystem helper.
         std::vector<std::string> files;
         int count = 0;
-        std::string pattern = "*" + extension; // e.g., "*.kgt"
-        char **list = SDL_GlobDirectory(directory.c_str(), pattern.c_str(), /*flags=*/0, &count);
+        char* pattern = static_cast<char*>(SDL_malloc(SDL_strlen(extension.c_str()) + 2));
+        if (!pattern) return files;
+        
+        SDL_snprintf(pattern, SDL_strlen(extension.c_str()) + 2, "*%s", extension.c_str());
+        char **list = SDL_GlobDirectory(directory.c_str(), pattern, /*flags=*/0, &count);
+        SDL_free(pattern);
+
         if (list) {
             for (int i = 0; i < count; ++i) {
                 if (list[i]) files.emplace_back(list[i]);
@@ -155,10 +160,21 @@ namespace Utils {
     // ---------------------------------------------------------------------
     static std::string GetConfigDir() {
         const char *pref = SDL_GetPrefPath("FM2K", "RollbackLauncher");
-        std::string dir = pref ? pref : SDL_GetBasePath();
-        if (pref) SDL_free(const_cast<char*>(pref));
+        std::string dir;
+        
+        if (pref) {
+            dir = pref;
+            SDL_free(const_cast<char*>(pref));
+        } else {
+            const char* base = SDL_GetBasePath();
+            dir = base ? base : "";
+            if (base) SDL_free(const_cast<char*>(base));
+        }
 
-        if (!dir.empty() && dir.back() != '/' && dir.back() != '\\') dir.push_back('/');
+        size_t len = SDL_strlen(dir.c_str());
+        if (len > 0 && dir[len-1] != '/' && dir[len-1] != '\\') {
+            dir.push_back('/');
+        }
 
         // Ensure directory exists
         SDL_CreateDirectory(dir.c_str());
@@ -174,27 +190,39 @@ namespace Utils {
         if (!SDL_GetPathInfo(cfg.c_str(), nullptr)) {
             return {};
         }
-        std::ifstream in(cfg);
-        if (!in) {
+
+        SDL_IOStream* io = SDL_IOFromFile(cfg.c_str(), "r");
+        if (!io) {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open config file: %s", cfg.c_str());
             return {};
         }
-        std::string line;
-        std::getline(in, line);
-        in.close();
-        return line;
+
+        char buffer[1024];
+        size_t read = SDL_ReadIO(io, buffer, sizeof(buffer) - 1);
+        SDL_CloseIO(io);
+
+        if (read > 0) {
+            buffer[read] = '\0';
+            // Trim newlines
+            while (read > 0 && (buffer[read-1] == '\n' || buffer[read-1] == '\r')) {
+                buffer[--read] = '\0';
+            }
+            return std::string(buffer);
+        }
+        return {};
     }
 
     void SaveGamesRootPath(const std::string& path) {
         std::string cfg = GetConfigFilePath();
-        // Ensure directory exists
-        // Directory is guaranteed to exist from GetConfigDir
-        std::ofstream out(cfg, std::ios::trunc);
-        if (!out) {
+        SDL_IOStream* io = SDL_IOFromFile(cfg.c_str(), "w");
+        if (!io) {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to write config file: %s", cfg.c_str());
             return;
         }
-        out << path << std::endl;
+
+        SDL_WriteIO(io, path.c_str(), SDL_strlen(path.c_str()));
+        SDL_WriteIO(io, "\n", 1);
+        SDL_CloseIO(io);
     }
 
     // -------------------------------------------------------------
@@ -245,37 +273,80 @@ namespace Utils {
 
     // Helper to normalize paths for SDL (convert backslashes to forward slashes)
     inline std::string NormalizePath(std::string path) {
-        for (auto& ch : path) {
-            if (ch == '\\') ch = '/';
+        char* normalized = static_cast<char*>(SDL_malloc(SDL_strlen(path.c_str()) + 1));
+        if (!normalized) return path;
+        
+        SDL_strlcpy(normalized, path.c_str(), SDL_strlen(path.c_str()) + 1);
+        
+        // Special handling for Windows drive letters (C:\ etc)
+        bool has_drive_letter = SDL_strlen(normalized) >= 2 && 
+                              normalized[1] == ':' &&
+                              ((normalized[0] >= 'A' && normalized[0] <= 'Z') ||
+                               (normalized[0] >= 'a' && normalized[0] <= 'z'));
+        
+        // Convert all backslashes to forward slashes, except after drive letter
+        for (size_t i = (has_drive_letter ? 2 : 0); i < SDL_strlen(normalized); ++i) {
+            if (normalized[i] == '\\') normalized[i] = '/';
         }
-        return path;
+        
+        // Remove any double slashes, but preserve network paths
+        char* src = normalized;
+        char* dst = normalized;
+        bool last_was_slash = false;
+        bool is_network_path = SDL_strlen(normalized) >= 2 && 
+                             normalized[0] == '/' && normalized[1] == '/';
+        
+        if (is_network_path) {
+            // Copy first two slashes for network paths
+            *dst++ = *src++;
+            *dst++ = *src++;
+        }
+        
+        while (*src) {
+            if (*src == '/') {
+                if (!last_was_slash) {
+                    *dst++ = *src;
+                }
+                last_was_slash = true;
+            } else {
+                *dst++ = *src;
+                last_was_slash = false;
+            }
+            src++;
+        }
+        *dst = '\0';
+        
+        std::string result(normalized);
+        SDL_free(normalized);
+        return result;
     }
 
-    // Recursively search for files that match the provided extension. This allows the
-    // launcher to pick up games that live inside their own folders under the common
-    // "games" directory (e.g. games/SomeGame/SomeGame.exe + .kgt).
+    // Recursively search for files that match the provided extension
     inline std::vector<std::string> FindFilesWithExtensionRecursive(const std::string& directory,
                                                                     const std::string& extension) {
         std::vector<std::string> files;
-
-        // Prefer SDL3's cross-platform glob helper if available. This will enumerate the
-        // entire directory tree for us and handle platform quirks internally.
         std::string normalized_dir = NormalizePath(directory);
+        
         int count = 0;
-        std::string pattern = "*" + extension; // e.g., "*.kgt"
-        char **list = SDL_GlobDirectory(normalized_dir.c_str(), pattern.c_str(), /*flags=*/0, &count);
+        char* pattern = static_cast<char*>(SDL_malloc(SDL_strlen(extension.c_str()) + 2));
+        if (!pattern) return files;
+        
+        SDL_snprintf(pattern, SDL_strlen(extension.c_str()) + 2, "*%s", extension.c_str());
+        char **list = SDL_GlobDirectory(normalized_dir.c_str(), pattern, /*flags=*/0, &count);
+        SDL_free(pattern);
+
         if (list) {
             for (int i = 0; i < count; ++i) {
                 if (list[i]) files.emplace_back(list[i]);
             }
             SDL_free(list);
-            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "FindFilesWithExtensionRecursive: found %d '%s' under %s", (int)files.size(), extension.c_str(), normalized_dir.c_str());
+            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "FindFilesWithExtensionRecursive: found %d '%s' under %s", 
+                        (int)files.size(), extension.c_str(), normalized_dir.c_str());
             return files;
         }
 
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "SDL_GlobDirectory failed for %s: %s", normalized_dir.c_str(), SDL_GetError());
-
-        // No fallback ? SDL3 is mandatory for this project.
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "SDL_GlobDirectory failed for %s: %s", 
+                    normalized_dir.c_str(), SDL_GetError());
         return files;
     }
 }
@@ -430,8 +501,8 @@ FM2KLauncher::~FM2KLauncher() {
 
 bool FM2KLauncher::Initialize() {
     // Set log priorities using SDL_SetLogPriority instead of SDL_LogSetPriority
-    SDL_SetLogPriority(SDL_LOG_CATEGORY_APPLICATION, SDL_LOG_PRIORITY_INFO);
-    SDL_SetLogPriority(SDL_LOG_CATEGORY_ERROR, SDL_LOG_PRIORITY_INFO);
+    SDL_SetLogPriority(SDL_LOG_CATEGORY_APPLICATION, SDL_LOG_PRIORITY_DEBUG);
+    SDL_SetLogPriority(SDL_LOG_CATEGORY_ERROR, SDL_LOG_PRIORITY_DEBUG);
     SDL_SetLogPriority(SDL_LOG_CATEGORY_RENDER, SDL_LOG_PRIORITY_INFO);
     SDL_SetLogPriority(SDL_LOG_CATEGORY_VIDEO, SDL_LOG_PRIORITY_INFO);
     
@@ -504,6 +575,7 @@ bool FM2KLauncher::Initialize() {
     {
         auto cached_games = Utils::LoadGameCache();
         ui_->SetGames(cached_games);
+        ui_->SetGamesRootPath(games_root_path_);  // Update UI with current path
     }
     StartAsyncDiscovery();
     
@@ -687,42 +759,86 @@ void FM2KLauncher::StartAsyncDiscovery() {
     }
 }
 
-std::vector<FM2K::FM2KGameInfo> FM2KLauncher::DiscoverGames() {
-    std::vector<FM2K::FM2KGameInfo> games;
-
-    const std::string& games_root = games_root_path_;
-
-    if (games_root.empty()) {
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Games root path is empty; skipping discovery");
-        return games;
-    }
-    if (!SDL_GetPathInfo(games_root.c_str(), nullptr)) {
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Games directory does not exist: %s (%s)", games_root.c_str(), SDL_GetError());
-        return games;
+static SDL_EnumerationResult DirectoryEnumerator(void* userdata, const char* origdir, const char* name) {
+    auto* games = static_cast<std::vector<FM2K::FM2KGameInfo>*>(userdata);
+    char* path = nullptr;
+    if (SDL_asprintf(&path, "%s\\%s", origdir, name) < 0 || !path) {
+        return SDL_ENUM_FAILURE; // Allocation failed, stop with failure.
     }
 
-    // Fast recursive enumeration using SDL_GlobDirectory.
-    std::string root = games_root; // keep original separators and no trailing slash
-
-    int file_count = 0;
-    char** list = SDL_GlobDirectory(root.c_str(), "*.exe", SDL_GLOB_CASEINSENSITIVE, &file_count);
-    if (!list) {
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "SDL_GlobDirectory failed for %s: %s", root.c_str(), SDL_GetError());
-        return games;
+    SDL_PathInfo info;
+    if (!SDL_GetPathInfo(path, &info)) {
+        SDL_free(path);
+        return SDL_ENUM_CONTINUE; // Cannot stat, but continue to next.
     }
 
-    for (int i = 0; i < file_count; ++i) {
-        std::string exe_path = list[i];
-        std::string kgt_path = exe_path.substr(0, exe_path.size() - 4) + ".kgt";
+    if (info.type == SDL_PATHTYPE_DIRECTORY) {
+        if (SDL_strcmp(name, ".") != 0 && SDL_strcmp(name, "..") != 0) {
+            // For directories, look for KGT files directly inside
+            int count = 0;
+            char **list = SDL_GlobDirectory(path, "*.kgt", /*flags=*/0, &count);
+            
+            if (list) {
+                for (int i = 0; i < count; ++i) {
+                    if (!list[i]) continue;
+                    
+                    const char* kgt_name = SDL_strrchr(list[i], '/');
+                    if (!kgt_name) kgt_name = SDL_strrchr(list[i], '\\');
+                    kgt_name = kgt_name ? kgt_name + 1 : list[i];  // Skip the slash
+                    
+                    char* exe_path = nullptr;
+                    char* kgt_path = nullptr;
+                    if (SDL_asprintf(&exe_path, "%s\\%.*s.exe", path,
+                                   (int)(SDL_strlen(kgt_name) - 4), // Length without .kgt
+                                   kgt_name) < 0 || !exe_path) {
+                        continue; // Skip if allocation fails
+                    }
+                    
+                    if (SDL_asprintf(&kgt_path, "%s\\%s", path, kgt_name) < 0 || !kgt_path) {
+                        SDL_free(exe_path);
+                        continue; // Skip if allocation fails
+                    }
 
-        if (SDL_GetPathInfo(kgt_path.c_str(), nullptr)) {
-            FM2K::FM2KGameInfo game{exe_path, kgt_path, 0, true};
-            games.push_back(std::move(game));
+                    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Found KGT in '%s': '%s', checking for EXE: '%s'", 
+                                name, kgt_path, exe_path);
+
+                    if (SDL_GetPathInfo(exe_path, nullptr)) {
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Found valid game pair in '%s': EXE='%s', KGT='%s'", 
+                                  name, exe_path, kgt_path);
+                        games->emplace_back(FM2K::FM2KGameInfo{exe_path, kgt_path, 0, true});
+                    }
+                    
+                    SDL_free(exe_path);
+                    SDL_free(kgt_path);
+                }
+                SDL_free(list);
+            }
         }
     }
-    SDL_free(list);
 
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DiscoverGames: %d game(s) found under %s", (int)games.size(), games_root.c_str());
+    SDL_free(path);
+    return SDL_ENUM_CONTINUE; // Continue enumeration
+}
+
+static void DiscoverGamesRecursive(const std::string& dir, std::vector<FM2K::FM2KGameInfo>& games) {
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Scanning directory: '%s'", dir.c_str());
+    SDL_EnumerateDirectory(dir.c_str(), DirectoryEnumerator, &games);
+}
+
+std::vector<FM2K::FM2KGameInfo> FM2KLauncher::DiscoverGames() {
+    std::vector<FM2K::FM2KGameInfo> games;
+    const std::string& games_root = games_root_path_;
+
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Starting game discovery in directory: '%s'", games_root.c_str());
+
+    if (games_root.empty() || !SDL_GetPathInfo(games_root.c_str(), nullptr)) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Games root path is empty or does not exist: '%s'", games_root.c_str());
+        return games;
+    }
+
+    DiscoverGamesRecursive(games_root, games);
+
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DiscoverGames: %d game(s) found under '%s'", (int)games.size(), games_root.c_str());
     return games;
 }
 
@@ -822,7 +938,9 @@ void FM2KLauncher::SetGamesRootPath(const std::string& path) {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Set games root path: %s", path.c_str());
     games_root_path_ = path;
     Utils::SaveGamesRootPath(path);
+    if (ui_) ui_->SetGamesRootPath(path);  // Update UI with new path
 
     // Kick off background discovery so the UI stays responsive
     StartAsyncDiscovery();
 } 
+

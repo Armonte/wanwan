@@ -270,11 +270,6 @@ bool FM2KLauncher::Initialize() {
         return false;
     }
     
-    if (!InitializeImGui()) {
-        SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize ImGui: %s", SDL_GetError());
-        return false;
-    }
-    
     // Initialize MinHook
     if (MH_Initialize() != MH_OK) {
         SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize MinHook");
@@ -407,40 +402,6 @@ bool FM2KLauncher::InitializeSDL() {
     return true;
 }
 
-bool FM2KLauncher::InitializeImGui() {
-    if (!IMGUI_CHECKVERSION()) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ImGui version check failed");
-        return false;
-    }
-
-    ImGui::CreateContext();
-    if (!ImGui::GetCurrentContext()) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create ImGui context");
-        return false;
-    }
-
-    ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    
-    ImGui::StyleColorsDark();
-    
-    if (!ImGui_ImplSDL3_InitForSDLRenderer(window_, renderer_)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize ImGui SDL3 backend");
-        ImGui::DestroyContext();
-        return false;
-    }
-    
-    if (!ImGui_ImplSDLRenderer3_Init(renderer_)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize ImGui SDL3 Renderer backend");
-        ImGui_ImplSDL3_Shutdown();
-        ImGui::DestroyContext();
-        return false;
-    }
-
-    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ImGui initialized successfully");
-    return true;
-}
-
 void FM2KLauncher::Shutdown() {
     // Stop network and game first
     if (network_session_) {
@@ -457,17 +418,6 @@ void FM2KLauncher::Shutdown() {
     if (ui_) {
         ui_->Shutdown();
         ui_.reset();
-    }
-    
-    // ImGui cleanup - ensure viewports are handled
-    if (ImGui::GetCurrentContext()) {
-        // Make sure we finish any pending viewport operations
-        ImGui::UpdatePlatformWindows();
-        ImGui::RenderPlatformWindowsDefault();
-        
-        ImGui_ImplSDLRenderer3_Shutdown();
-        ImGui_ImplSDL3_Shutdown();
-        ImGui::DestroyContext();
     }
     
     // SDL cleanup

@@ -7,6 +7,7 @@ LauncherUI::LauncherUI()
     : launcher_state_(LauncherState::GameSelection)
     , network_stats_{}  // Zero-initialize network stats
     , network_config_{} // Zero-initialize network config
+    , renderer_(nullptr)
 {
     // Initialize callbacks to nullptr
     on_game_selected = nullptr;
@@ -24,6 +25,7 @@ bool LauncherUI::Initialize(SDL_Window* window, SDL_Renderer* renderer) {
         std::cerr << "Invalid SDL window or renderer" << std::endl;
         return false;
     }
+    renderer_ = renderer;
     
     std::cout << "LauncherUI initialized" << std::endl;
     return true;
@@ -38,28 +40,43 @@ void LauncherUI::NewFrame() {
 }
 
 void LauncherUI::Render() {
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] LauncherUI::Render() start");
+    if (!renderer_) {
+        std::cerr << "Renderer is null in LauncherUI::Render!" << std::endl;
+        return;
+    }
     RenderMenuBar();
-    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] After RenderMenuBar()");
     switch (launcher_state_) {
         case LauncherState::GameSelection:
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderGameSelection()");
             RenderGameSelection();
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderGameSelection()");
             break;
-            
         case LauncherState::Configuration:
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderNetworkConfig()");
             RenderNetworkConfig();
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderNetworkConfig()");
             break;
-            
         case LauncherState::Connecting:
         case LauncherState::InGame:
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderConnectionStatus()");
             RenderConnectionStatus();
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderConnectionStatus()");
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderInGameUI()");
             RenderInGameUI();
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderInGameUI()");
             break;
-            
         case LauncherState::Disconnected:
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderConnectionStatus() (Disconnected)");
             RenderConnectionStatus();
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderConnectionStatus() (Disconnected)");
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling RenderNetworkConfig() (Disconnected)");
             RenderNetworkConfig();
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished RenderNetworkConfig() (Disconnected)");
             break;
     }
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] LauncherUI::Render() end");
 }
 
 void LauncherUI::RenderMenuBar() {

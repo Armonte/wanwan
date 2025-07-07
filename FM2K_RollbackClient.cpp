@@ -333,8 +333,11 @@ void FM2KLauncher::Update(float delta_time SDL_UNUSED) {
     if (network_session_) {
         network_session_->Update();
     }
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Calling ui_->NewFrame()");
     ui_->NewFrame();
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished ui_->NewFrame(), calling ui_->Render()");
     ui_->Render();
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[DEBUG] Finished ui_->Render()");
 }
 
 void FM2KLauncher::Render() {

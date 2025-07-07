@@ -13,6 +13,12 @@ namespace Addresses {
     constexpr uintptr_t ROUND_STATE    = 0x47004C;
     constexpr uintptr_t GAME_MODE      = 0x470040;
     constexpr uintptr_t RANDOM_SEED    = 0x41FB1C;
+    
+    // Sprite effect system addresses
+    constexpr uintptr_t EFFECT_ACTIVE_FLAGS = 0x40CC30;
+    constexpr uintptr_t EFFECT_TIMERS_BASE = 0x40CC34;
+    constexpr uintptr_t EFFECT_COLORS_BASE = 0x40CC54;
+    constexpr uintptr_t EFFECT_TARGETS_BASE = 0x40CCD4;
 }
 
 static HANDLE g_process = nullptr;
@@ -66,6 +72,8 @@ bool SaveState(GameState* state, uint32_t* checksum) {
     // Calculate checksum if requested
     if (checksum) {
         *checksum = CalculateStateChecksum();
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
+                    "State saved with checksum: 0x%08x", *checksum);
     }
 
     return true;
@@ -108,16 +116,50 @@ bool LoadState(const GameState* state) {
         return false;
     }
 
+    // Verify state was loaded correctly
+    uint32_t current_checksum = CalculateStateChecksum();
+    uint32_t expected_checksum = Fletcher32(
+        reinterpret_cast<const uint16_t*>(state),
+        sizeof(GameState) / 2
+    );
+
+    if (current_checksum != expected_checksum) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                    "State load verification failed: expected=0x%08x, got=0x%08x",
+                    expected_checksum, current_checksum);
+        return false;
+    }
+
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
+                 "State loaded and verified with checksum: 0x%08x",
+                 current_checksum);
+
     return true;
 }
 
 uint32_t CalculateStateChecksum() {
-    // TODO: Implement Fletcher32 or similar checksum
-    return 0;
+    GameState temp_state;
+    if (!SaveState(&temp_state, nullptr)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                    "Failed to save state for checksum calculation");
+        return 0;
+    }
+
+    return Fletcher32(
+        reinterpret_cast<const uint16_t*>(&temp_state),
+        sizeof(GameState) / 2
+    );
 }
 
 bool VerifyState(uint32_t expected_checksum) {
-    return CalculateStateChecksum() == expected_checksum;
+    uint32_t current_checksum = CalculateStateChecksum();
+    if (current_checksum != expected_checksum) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                    "State verification failed: expected=0x%08x, got=0x%08x",
+                    expected_checksum, current_checksum);
+        return false;
+    }
+    return true;
 }
 
 namespace Memory {
@@ -133,12 +175,86 @@ bool WriteHitJudgeTables(const uint8_t* buffer, size_t size) {
 }
 
 bool ReadVisualState(VisualState* state) {
-    // TODO: Read from sprite effect system memory
+    if (!state || !g_process) return false;
+
+    // Read active effects bitfield
+    if (!ReadMemoryRegion(Addresses::EFFECT_ACTIVE_FLAGS, 
+                         &state->active_effects, 
+                         sizeof(state->active_effects))) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, 
+                    "Failed to read active effects flags");
+        return false;
+    }
+
+    // Read effect timers array
+    if (!ReadMemoryRegion(Addresses::EFFECT_TIMERS_BASE,
+                         state->effect_timers,
+                         sizeof(state->effect_timers))) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                    "Failed to read effect timers");
+        return false;
+    }
+
+    // Read effect colors array
+    if (!ReadMemoryRegion(Addresses::EFFECT_COLORS_BASE,
+                         state->color_values,
+                         sizeof(state->color_values))) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                    "Failed to read effect colors");
+        return false;
+    }
+
+    // Read effect target IDs
+    if (!ReadMemoryRegion(Addresses::EFFECT_TARGETS_BASE,
+                         state->target_ids,
+                         sizeof(state->target_ids))) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                    "Failed to read effect targets");
+        return false;
+    }
+
     return true;
 }
 
 bool WriteVisualState(const VisualState* state) {
-    // TODO: Write to sprite effect system memory
+    if (!state || !g_process) return false;
+
+    // Write active effects bitfield
+    if (!WriteMemoryRegion(Addresses::EFFECT_ACTIVE_FLAGS,
+                          &state->active_effects,
+                          sizeof(state->active_effects))) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                    "Failed to write active effects flags");
+        return false;
+    }
+
+    // Write effect timers array
+    if (!WriteMemoryRegion(Addresses::EFFECT_TIMERS_BASE,
+                          state->effect_timers,
+                          sizeof(state->effect_timers))) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                    "Failed to write effect timers");
+        return false;
+    }
+
+    // Write effect colors array
+    if (!WriteMemoryRegion(Addresses::EFFECT_COLORS_BASE,
+                          state->color_values,
+                          sizeof(state->color_values))) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                    "Failed to write effect colors");
+        return false;
+    }
+
+    // Write effect target IDs
+    if (!WriteMemoryRegion(Addresses::EFFECT_TARGETS_BASE,
+                          state->target_ids,
+                          sizeof(state->target_ids))) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                    "Failed to write effect targets");
+        return false;
+    }
+
     return true;
 }
 
@@ -159,19 +275,25 @@ bool WriteRoundState(uint32_t timer, uint32_t limit,
 }
 
 bool ReadMemoryRegion(uintptr_t address, void* buffer, size_t size) {
+    if (!g_process || !buffer || !size) return false;
+
     SIZE_T bytes_read;
-    return ReadProcessMemory(g_process,
-                            reinterpret_cast<LPCVOID>(address),
-                            buffer, size, &bytes_read) &&
-           bytes_read == size;
+    if (!ReadProcessMemory(g_process, (LPCVOID)address, buffer, size, &bytes_read) ||
+        bytes_read != size) {
+        return false;
+    }
+    return true;
 }
 
 bool WriteMemoryRegion(uintptr_t address, const void* buffer, size_t size) {
+    if (!g_process || !buffer || !size) return false;
+
     SIZE_T bytes_written;
-    return WriteProcessMemory(g_process,
-                             reinterpret_cast<LPVOID>(address),
-                             buffer, size, &bytes_written) &&
-           bytes_written == size;
+    if (!WriteProcessMemory(g_process, (LPVOID)address, buffer, size, &bytes_written) ||
+        bytes_written != size) {
+        return false;
+    }
+    return true;
 }
 
 } // namespace Memory

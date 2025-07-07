@@ -1,6 +1,7 @@
 #include "FM2K_Hooks.h"
 #include "SDL3/SDL.h"
 #include "MinHook.h"
+#include "state_manager.h"
 
 namespace FM2K {
 namespace Hooks {
@@ -57,60 +58,77 @@ static int __stdcall Hook_GameRand()
 // -----------------------------------------------------------------------------
 bool Init(HANDLE proc)
 {
+    if (!proc) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Invalid process handle");
+        return false;
+    }
+
     g_proc = proc;
 
-    if (!g_proc) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Hooks::Init - invalid process handle");
+    // Initialize state manager first
+    if (!State::Init(proc)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize state manager");
         return false;
     }
 
-    // Ensure MinHook initialized (idempotent)
-    if (MH_Initialize() != MH_OK && MH_Initialize() != MH_ERROR_ALREADY_INITIALIZED) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "MinHook initialization failed");
+    // Install hooks
+    MH_STATUS status;
+
+    // Process inputs hook (primary rollback entry)
+    status = MH_CreateHook(
+        reinterpret_cast<LPVOID>(0x4146D0),
+        reinterpret_cast<LPVOID>(&Hook_ProcessGameInputs),
+        reinterpret_cast<LPVOID*>(&original_process_inputs)
+    );
+    if (status != MH_OK) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create process inputs hook");
         return false;
     }
 
-    auto create = [&](LPVOID target, LPVOID detour, LPVOID* orig) -> bool {
-        return MH_CreateHook(target, detour, orig) == MH_OK;
-    };
-    auto enable = [&](LPVOID target) -> bool {
-        return MH_EnableHook(target) == MH_OK;
-    };
-
-    if (!create((LPVOID)FM2K::FRAME_HOOK_ADDR,  &Hook_ProcessGameInputs, (LPVOID*)&original_process_inputs) ||
-        !create((LPVOID)FM2K::UPDATE_GAME_STATE_ADDR, &Hook_UpdateGameState, (LPVOID*)&original_update_game) ||
-        !create((LPVOID)FM2K::RANDOM_SEED_ADDR /* RNG fn addr */, &Hook_GameRand, (LPVOID*)&original_rand_func)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Hook creation failed");
+    // Update game state hook
+    status = MH_CreateHook(
+        reinterpret_cast<LPVOID>(0x404CD0),
+        reinterpret_cast<LPVOID>(&Hook_UpdateGameState),
+        reinterpret_cast<LPVOID*>(&original_update_game)
+    );
+    if (status != MH_OK) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create update game hook");
         return false;
     }
 
-    if (!enable((LPVOID)FM2K::FRAME_HOOK_ADDR) ||
-        !enable((LPVOID)FM2K::UPDATE_GAME_STATE_ADDR) ||
-        !enable((LPVOID)FM2K::RANDOM_SEED_ADDR)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Hook enable failed");
+    // RNG function hook
+    status = MH_CreateHook(
+        reinterpret_cast<LPVOID>(0x417A22),
+        reinterpret_cast<LPVOID>(&Hook_GameRand),
+        reinterpret_cast<LPVOID*>(&original_rand_func)
+    );
+    if (status != MH_OK) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create RNG hook");
         return false;
     }
 
-    SDL_Log("FM2K Hooks installed");
+    // Enable all hooks
+    status = MH_EnableHook(MH_ALL_HOOKS);
+    if (status != MH_OK) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to enable hooks");
+        return false;
+    }
+
+    SDL_Log("FM2K hooks installed successfully");
     return true;
 }
 
 void Shutdown()
 {
-    auto disableRemove = [](LPVOID target) {
-        MH_DisableHook(target);
-        MH_RemoveHook(target);
-    };
+    // Disable and remove hooks
+    MH_DisableHook(MH_ALL_HOOKS);
+    MH_Uninitialize();
 
-    disableRemove((LPVOID)FM2K::FRAME_HOOK_ADDR);
-    disableRemove((LPVOID)FM2K::UPDATE_GAME_STATE_ADDR);
-    disableRemove((LPVOID)FM2K::RANDOM_SEED_ADDR);
+    // Shutdown state manager
+    State::Shutdown();
 
-    original_process_inputs = nullptr;
-    original_update_game    = nullptr;
-    original_rand_func      = nullptr;
-
-    SDL_Log("FM2K Hooks removed");
+    g_proc = nullptr;
+    SDL_Log("FM2K hooks removed");
 }
 
 } // namespace Hooks

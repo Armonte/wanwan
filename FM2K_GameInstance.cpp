@@ -414,12 +414,13 @@ void FM2KGameInstance::OnVisualStateChanged(const FM2K::IPC::Event& event) {
                  event.data.visual.effect_id,
                  event.data.visual.duration);
     
-    // TODO: Track visual state for rollback verification
+    // TODO: Notify GekkoNet of visual state change
 }
 
 void FM2KGameInstance::OnHookError(const FM2K::IPC::Event& event) {
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                "Hook error occurred at frame %u", event.frame_number);
+                 "Hook error occurred: frame=%u time=%u",
+                 event.frame_number, event.timestamp_ms);
     
     // TODO: Surface error to UI and consider terminating game
 }
@@ -433,82 +434,4 @@ uint32_t CalculateStateChecksum() {
 
     // Calculate Fletcher32 checksum over the entire state structure
     return Fletcher32(reinterpret_cast<const uint16_t*>(&current_state), sizeof(current_state) / 2);
-}
-
-bool ReadVisualState(VisualState* state) {
-    if (!state) return false;
-
-    // Read active effects bitfield
-    if (!ReadMemory(EFFECT_ACTIVE_FLAGS, &state->active_effects)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to read active effects flags");
-        return false;
-    }
-
-    // Read effect timers array
-    if (!BulkCopyOut(process_handle_, 
-                     state->effect_timers,
-                     EFFECT_TIMERS_BASE, 
-                     sizeof(state->effect_timers))) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to read effect timers");
-        return false;
-    }
-
-    // Read effect colors array
-    if (!BulkCopyOut(process_handle_,
-                     state->color_values,
-                     EFFECT_COLORS_BASE,
-                     sizeof(state->color_values))) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to read effect colors");
-        return false;
-    }
-
-    // Read effect target IDs array
-    if (!BulkCopyOut(process_handle_,
-                     state->target_ids,
-                     EFFECT_TARGETS_BASE,
-                     sizeof(state->target_ids))) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to read effect targets");
-        return false;
-    }
-
-    return true;
-}
-
-bool WriteVisualState(const VisualState* state) {
-    if (!state) return false;
-
-    // Write active effects bitfield
-    if (!WriteMemory(EFFECT_ACTIVE_FLAGS, state->active_effects)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to write active effects flags");
-        return false;
-    }
-
-    // Write effect timers array
-    if (!BulkCopyIn(process_handle_,
-                    EFFECT_TIMERS_BASE,
-                    state->effect_timers,
-                    sizeof(state->effect_timers))) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to write effect timers");
-        return false;
-    }
-
-    // Write effect colors array
-    if (!BulkCopyIn(process_handle_,
-                    EFFECT_COLORS_BASE,
-                    state->color_values,
-                    sizeof(state->color_values))) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to write effect colors");
-        return false;
-    }
-
-    // Write effect target IDs array
-    if (!BulkCopyIn(process_handle_,
-                    EFFECT_TARGETS_BASE,
-                    state->target_ids,
-                    sizeof(state->target_ids))) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to write effect targets");
-        return false;
-    }
-
-    return true;
 } 

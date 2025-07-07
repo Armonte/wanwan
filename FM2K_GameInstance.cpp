@@ -2,12 +2,16 @@
 #include <iostream>
 #include <thread>
 #include <filesystem>
+#include "FM2K_Hooks.h"
+#include "FM2K_DLLInjector.h"
+#include "SDL3/SDL.h"
 
 // FM2KGameInstance Implementation
 FM2KGameInstance::FM2KGameInstance() 
     : process_handle_(nullptr)
     , process_id_(0)
     , process_info_{}
+    , event_buffer_(nullptr)
 {
 }
 
@@ -121,24 +125,18 @@ bool FM2KGameInstance::InstallHooks() {
         std::cerr << "Cannot install hooks - game not running" << std::endl;
         return false;
     }
-    
-    // TODO: Implement MinHook installation
-    // Key hook points from research:
-    // - 0x4146D0: process_game_inputs (PRIMARY HOOK)
-    // - 0x404CD0: update_game_state
-    // - 0x417A22: random number generation
-    
-    std::cout << "? Hooks installed (placeholder)" << std::endl;
+
+    if (!FM2K::Hooks::Init(process_handle_)) {
+        std::cerr << "Failed to install FM2K hooks" << std::endl;
+        return false;
+    }
+
+    std::cout << "? Hooks installed" << std::endl;
     return true;
 }
 
 void FM2KGameInstance::RemoveHooks() {
-    // TODO: Remove all installed hooks
-    for (auto hook : installed_hooks_) {
-        // MH_RemoveHook(hook);
-    }
-    installed_hooks_.clear();
-    
+    FM2K::Hooks::Shutdown();
     std::cout << "? Hooks removed" << std::endl;
 }
 
@@ -314,4 +312,60 @@ bool FM2KGameInstance::LoadGameExecutable(const std::filesystem::path& exe_path)
     
     std::cout << "? Game process created (PID: " << process_id_ << ")" << std::endl;
     return true;
+}
+
+void FM2KGameInstance::ProcessIPCEvents() {
+    if (!event_buffer_) return;
+
+    // Process all available events
+    while (true) {
+        FM2K::IPC::Event event;
+        if (!FM2K::IPC::ReadEvent(event_buffer_, &event)) {
+            break;  // No more events
+        }
+
+        switch (event.type) {
+            case FM2K::IPC::EventType::FRAME_ADVANCED:
+                OnFrameAdvanced(event);
+                break;
+            case FM2K::IPC::EventType::STATE_SAVED:
+                OnStateSaved(event);
+                break;
+            case FM2K::IPC::EventType::STATE_LOADED:
+                OnStateLoaded(event);
+                break;
+            case FM2K::IPC::EventType::ERROR:
+                OnHookError(event);
+                break;
+        }
+    }
+}
+
+void FM2KGameInstance::OnFrameAdvanced(const FM2K::IPC::Event& event) {
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
+                 "Frame advanced: player=%u frame=%u time=%u",
+                 event.player_index, event.frame_number, event.timestamp_ms);
+    
+    // TODO: Notify GekkoNet that frame is ready
+}
+
+void FM2KGameInstance::OnStateSaved(const FM2K::IPC::Event& event) {
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
+                 "State saved: frame=%u", event.frame_number);
+    
+    // TODO: Copy state from shared memory to GekkoNet buffer
+}
+
+void FM2KGameInstance::OnStateLoaded(const FM2K::IPC::Event& event) {
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
+                 "State loaded: frame=%u", event.frame_number);
+    
+    // TODO: Verify state loaded correctly
+}
+
+void FM2KGameInstance::OnHookError(const FM2K::IPC::Event& event) {
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                "Hook error occurred at frame %u", event.frame_number);
+    
+    // TODO: Surface error to UI and consider terminating game
 } 

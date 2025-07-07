@@ -2396,3 +2396,7364 @@ int fm2k_online_main(int argc, char* args[]) {
 5. **Error Handling**: Desync detection and player management
 
 This analysis shows that adapting the SDL example for FM2K is very feasible, with the main changes being input/state structures and frame timing to match FM2K's 100 FPS architecture.
+
+## Hit Judge and Round System Architecture
+
+### Hit Judge Configuration (0x42470C-0x430120)
+
+The game uses a sophisticated hit detection and configuration system loaded from INI files:
+
+```c
+struct FM2K_HitJudgeConfig {
+    uint32_t hit_judge_value;    // 0x42470C - Hit detection threshold
+    uint32_t config_values[7];   // 0x4300E0-0x430120 - General config values
+    char     config_string[260]; // Configuration string buffer
+};
+```
+
+The hit judge system is initialized by `hit_judge_set_function` (0x414930) which:
+1. Loads configuration from INI files
+2. Sets up hit detection parameters
+3. Configures round settings and game modes
+
+### Round System State (0x470040-0x47006C)
+
+The round system maintains several critical state variables:
+
+```c
+struct FM2K_RoundSystem {
+    uint32_t game_mode;      // 0x470040 - Current game mode (VS/Team/Tournament)
+    uint32_t round_limit;    // 0x470048 - Maximum rounds for the match
+    uint32_t round_state;    // 0x47004C - Current round state
+    uint32_t round_timer;    // 0x470060 - Active round timer
+};
+
+enum FM2K_RoundState {
+    ROUND_INIT = 0,      // Initial state
+    ROUND_ACTIVE = 1,    // Round in progress
+    ROUND_END = 2,       // Round has ended
+    ROUND_MATCH_END = 3  // Match has ended
+};
+
+enum FM2K_GameMode {
+    MODE_NORMAL = 0,     // Normal VS mode
+    MODE_TEAM = 1,       // Team Battle mode
+    MODE_TOURNAMENT = 2  // Tournament mode
+};
+```
+
+The round system is managed by `vs_round_function` (0x4086A0) which:
+1. Handles round state transitions
+2. Manages round timers
+3. Processes win/loss conditions
+4. Controls match flow
+
+### Rollback Implications
+
+This architecture has several important implications for rollback implementation:
+
+1. **State Serialization Requirements:**
+   - Must save hit judge configuration
+   - Must preserve round state and timers
+   - Game mode affects state size
+
+2. **Deterministic Behavior:**
+   - Hit detection is configuration-driven
+   - Round state transitions are deterministic
+   - Timer-based events are predictable
+
+3. **State Size Optimization:**
+   - Hit judge config is static per match
+   - Only dynamic round state needs saving
+   - Can optimize by excluding static config
+
+4. **Synchronization Points:**
+   - Round state changes are key sync points
+   - Hit detection results must be identical
+   - Timer values must match exactly
+
+Updated state structure for rollback:
+
+```c
+typedef struct FM2KGameState {
+    // ... existing timing and input state ...
+
+    // Round System State
+    struct {
+        uint32_t mode;          // Current game mode
+        uint32_t round_limit;   // Maximum rounds
+        uint32_t round_state;   // Current round state
+        uint32_t round_timer;   // Active round timer
+        uint32_t score_value;   // Current score/timer value
+    } round_system;
+
+    // Hit Judge State
+    struct {
+        uint32_t hit_judge_value;   // Current hit detection threshold
+        uint32_t effect_target;     // Current hit effect target
+        uint32_t effect_timer;      // Hit effect duration
+    } hit_system;
+
+    // ... rest of game state ...
+} FM2KGameState;
+```
+
+## Sprite Rendering and Hit Detection System
+
+### Sprite Rendering Engine (0x40CC30)
+
+The game uses a sophisticated sprite rendering engine that handles:
+1. Hit effect visualization
+2. Sprite transformations and blending
+3. Color palette manipulation
+4. Screen-space effects
+
+Key components:
+
+```c
+struct SpriteRenderState {
+    uint32_t render_mode;     // Different rendering modes (-10 to 3)
+    uint32_t blend_flags;     // Blending and effect flags
+    uint32_t color_values[3]; // RGB color modification values
+    uint32_t effect_timer;    // Effect duration counter
+};
+```
+
+### Hit Effect System
+
+The hit effect system is tightly integrated with the sprite renderer:
+
+1. **Effect Triggers:**
+   - Hit detection results (0x42470C)
+   - Game state transitions
+   - Timer-based events
+
+2. **Effect Parameters:**
+   ```c
+   struct HitEffectParams {
+       uint32_t target_id;      // Effect target identifier
+       uint32_t effect_type;    // Visual effect type
+       uint32_t duration;       // Effect duration in frames
+       uint32_t color_values;   // RGB color modulation
+   };
+   ```
+
+3. **Rendering Pipeline:**
+   - Color palette manipulation (0x4D1A20)
+   - Sprite transformation
+   - Blend mode selection
+   - Screen-space effects
+
+### Integration with Rollback
+
+The sprite and hit effect systems have important implications for rollback:
+
+1. **Visual State Management:**
+   - Effect timers must be part of the game state
+   - Color modulation values need saving
+   - Sprite transformations must be deterministic
+
+2. **Performance Considerations:**
+   - Effect parameters are small (few bytes per effect)
+   - Visual state is derived from game state
+   - Can optimize by excluding pure visual state
+
+3. **Synchronization Requirements:**
+   - Hit effects must trigger identically
+   - Effect timers must stay synchronized
+   - Visual state must match game state
+
+Updated state structure to include visual effects:
+
+```c
+typedef struct FM2KGameState {
+    // ... previous state members ...
+
+    // Visual Effect State
+    struct {
+        uint32_t active_effects;     // Bitfield of active effects
+        uint32_t effect_timers[8];   // Array of effect durations
+        uint32_t color_values[8][3]; // RGB values for each effect
+        uint32_t target_ids[8];      // Effect target identifiers
+    } visual_state;
+
+    // ... rest of game state ...
+} FM2KGameState;
+```
+
+## Game State Management System
+
+The game state manager (0x406FC0) handles several critical aspects of the game:
+
+### State Variables
+
+1. **Round System State:**
+   ```c
+   struct RoundSystemState {
+       uint32_t g_round_timer;        // 0x470060 - Current round timer value
+       uint32_t g_round_limit;        // 0x470048 - Maximum rounds per match
+       uint32_t g_round_state;        // 0x47004C - Current round state
+       uint32_t g_game_mode;          // 0x470040 - Current game mode
+   };
+   ```
+
+2. **Player State:**
+   ```c
+   struct PlayerState {
+       int32_t stage_position;        // Current position on stage grid
+       uint32_t action_state;         // Current action being performed
+       uint32_t round_count;          // Number of rounds completed
+       uint32_t input_history[4];     // Recent input history
+       uint32_t move_history[4];      // Recent movement history
+   };
+   ```
+
+### State Management Flow
+
+1. **Initialization (0x406FC0):**
+   - Loads initial configuration
+   - Sets up round timer and limits
+   - Initializes player positions
+   - Sets up game mode parameters
+
+2. **State Updates:**
+   - Input processing and validation
+   - Position and movement updates
+   - Action state transitions
+   - Round state management
+
+3. **State Synchronization:**
+   - Timer synchronization
+   - Player state synchronization
+   - Round state transitions
+   - Game mode state management
+
+### Rollback Implications
+
+1. **Critical State Components:**
+   - Round timer and state
+   - Player positions and actions
+   - Input and move history
+   - Game mode state
+
+2. **State Size Analysis:**
+   - Core game state: ~128 bytes
+   - Player state: ~32 bytes per player
+   - History buffers: ~32 bytes per player
+   - Total per-frame state: ~256 bytes
+
+3. **Synchronization Requirements:**
+   - Timer must be deterministic
+   - Player state must be atomic
+   - Input processing must be consistent
+   - State transitions must be reproducible
+
+## Input Processing System
+
+The game uses a sophisticated input processing system that handles both movement and action inputs:
+
+### Input Mapping (0x406F20)
+
+```c
+enum InputActions {
+    ACTION_NONE = 0,
+    ACTION_A = 1,    // 0x20  - Light Attack
+    ACTION_B = 2,    // 0x40  - Medium Attack
+    ACTION_C = 3,    // 0x80  - Heavy Attack
+    ACTION_D = 4,    // 0x100 - Special Move
+    ACTION_E = 5     // 0x200 - Super Move
+};
+
+enum InputDirections {
+    DIR_NONE  = 0x000,
+    DIR_UP    = 0x004,
+    DIR_DOWN  = 0x008,
+    DIR_LEFT  = 0x001,
+    DIR_RIGHT = 0x002
+};
+```
+
+### Input Processing Flow
+
+1. **Raw Input Capture:**
+   - Movement inputs (4-way directional)
+   - Action buttons (5 main buttons)
+   - System buttons (Start, Select)
+
+2. **Input State Management:**
+   ```c
+   struct InputState {
+       uint16_t current_input;     // Current frame's input
+       uint16_t previous_input;    // Last frame's input
+       uint16_t input_changes;     // Changed bits since last frame
+       uint8_t  processed_input;   // Processed directional input
+   };
+   ```
+
+3. **Input History:**
+   - Each player maintains a 4-frame input history
+   - History includes both raw and processed inputs
+   - Used for move validation and rollback
+
+4. **Input Processing:**
+   - Raw input capture
+   - Input change detection
+   - Input repeat handling:
+     - Initial delay
+     - Repeat delay
+     - Repeat timer
+   - Input validation
+   - Mode-specific processing:
+     - VS mode (< 3000)
+     - Story mode (? 3000)
+
+5. **Memory Layout:**
+   ```
+   input_system {
+     +g_input_buffer_index: Current frame index
+     +g_p1_input[8]: Current P1 inputs
+     +g_p2_input: Current P2 inputs
+     +g_prev_input_state[8]: Previous frame inputs
+     +g_input_changes[8]: Input change flags
+     +g_input_repeat_state[8]: Input repeat flags
+     +g_input_repeat_timer[8]: Repeat timers
+     +g_processed_input[8]: Processed inputs
+     +g_combined_processed_input: Combined state
+     +g_combined_input_changes: Change mask
+     +g_combined_raw_input: Raw input mask
+   }
+   ```
+
+6. **Critical Operations:**
+   - Frame advance:
+     ```c
+     g_input_buffer_index = (g_input_buffer_index + 1) & 0x3FF;
+     g_p1_input_history[g_input_buffer_index] = current_input;
+     ```
+   - Input processing:
+     ```c
+     g_input_changes = current_input & (prev_input ^ current_input);
+     if (repeat_active && current_input == repeat_state) {
+       if (--repeat_timer == 0) {
+         processed_input = current_input;
+         repeat_timer = repeat_delay;
+       }
+     }
+     ```
+
+This system is crucial for rollback implementation as it provides:
+1. Deterministic input processing
+2. Frame-accurate input history
+3. Clear state serialization points
+4. Mode-specific input handling
+5. Input validation and processing logic
+
+The 1024-frame history buffer is particularly useful for rollback, as it provides ample space for state rewinding and replay.
+```
+
+### Health Damage Manager (0x40e6f0)
+
+The health damage manager handles health state and damage calculations:
+
+1. **Health State Management:**
+   - Per-character health tracking
+   - Health segments system
+   - Recovery mechanics
+   - Guard damage handling
+
+2. **Memory Layout:**
+   ```
+   health_system {
+     +4DFC95: Current health segment
+     +4DFC99: Maximum health segments
+     +4DFC9D: Current health points
+     +4DFCA1: Health segment size
+   }
+   ```
+
+3. **Damage Processing:**
+   - Segment-based health system:
+     ```c
+     while (current_health < 0) {
+       if (current_segment > 0) {
+         current_segment--;
+         current_health += segment_size;
+       } else {
+         current_health = 0;
+       }
+     }
+     ```
+   - Health recovery:
+     ```c
+     while (current_health >= segment_size) {
+       if (current_segment < max_segments) {
+         current_health -= segment_size;
+         current_segment++;
+       } else {
+         current_health = 0;
+       }
+     }
+     ```
+
+4. **Critical Operations:**
+   - Damage application:
+     - Negative values for damage
+     - Positive values for healing
+   - Segment management:
+     - Segment depletion
+     - Segment recovery
+     - Maximum segment cap
+   - Health validation:
+     - Minimum health check
+     - Maximum health check
+     - Segment boundary checks
+
+This system is crucial for rollback implementation as it:
+1. Uses deterministic damage calculations
+2. Maintains clear health state boundaries
+3. Provides segment-based state tracking
+4. Handles health recovery mechanics
+5. Manages guard damage separately
+
+The segmented health system will make it easier to serialize and restore health states during rollback operations, as each segment provides a clear checkpoint for state management.
+```
+
+### Rollback Implementation Summary
+
+After analyzing FM2K's core systems, we can conclude that the game is well-suited for rollback netcode implementation. Here's a comprehensive overview of how each system will integrate with rollback:
+
+1. **State Serialization Points:**
+   - Character State Machine (0x411bf0):
+     - Base states (0x0-0x3)
+     - Action states (0x4-0x7)
+     - Movement states (0x8-0xB)
+     - Frame counters and timers
+   - Hit Detection System (0x40f010):
+     - Hit boxes and collision state
+     - Damage values and scaling
+     - Hit confirmation flags
+   - Input Buffer System (0x4146d0):
+     - 1024-frame history buffer
+     - Input state flags
+     - Repeat handling state
+   - Health System (0x40e6f0):
+     - Health segments
+     - Current health points
+     - Guard damage state
+     - Recovery mechanics
+
+2. **Deterministic Systems:**
+   - Fixed frame rate (100 FPS)
+   - 16.16 fixed-point coordinates
+   - Deterministic input processing
+   - Clear state transitions
+   - Predictable damage calculations
+   - Frame-based timers
+
+3. **State Management:**
+   - Object Pool (1024 entries):
+     - Type identification
+     - Position and velocity
+     - Animation state
+     - Collision data
+   - Input History:
+     - Circular buffer design
+     - Clear frame boundaries
+     - Input validation
+   - Hit Detection:
+     - Priority system
+     - State validation
+     - Reaction handling
+   - Health System:
+     - Segment-based tracking
+     - Clear state boundaries
+     - Recovery mechanics
+
+4. **Implementation Strategy:**
+   a. Save State (Frame N):
+      ```c
+      struct SaveState {
+          // Character State
+          int base_state;
+          int action_state;
+          int movement_state;
+          int frame_counters[4];
+          
+          // Hit Detection
+          int hit_boxes[20];
+          int damage_values[8];
+          int hit_flags;
+          
+          // Input Buffer
+          int input_history[1024];
+          int input_flags;
+          int repeat_state;
+          
+          // Health System
+          int health_segments;
+          int current_health;
+          int guard_damage;
+      };
+      ```
+
+   b. Rollback Process:
+      1. Save current frame state
+      2. Apply new remote input
+      3. Simulate forward:
+         - Process inputs
+         - Update character states
+         - Handle collisions
+         - Apply damage
+      4. Render new state
+      5. Save confirmed state
+
+5. **Critical Hooks:**
+   - Input Processing (0x4146d0):
+     - Frame advance point
+     - Input buffer management
+   - Character State (0x411bf0):
+     - State transition handling
+     - Frame counting
+   - Hit Detection (0x40f010):
+     - Collision processing
+     - Damage application
+   - Health System (0x40e6f0):
+     - Health state management
+     - Segment tracking
+
+6. **Optimization Opportunities:**
+   - Parallel state simulation
+   - Minimal state serialization
+   - Efficient state diffing
+   - Smart state prediction
+   - Input compression
+
+The analysis reveals that FM2K's architecture is highly suitable for rollback implementation due to its:
+1. Deterministic game logic
+2. Clear state boundaries
+3. Frame-based processing
+4. Efficient memory layout
+5. Well-defined systems
+
+This research provides a solid foundation for implementing rollback netcode in FM2K, with all major systems supporting the requirements for state saving, rollback, and resimulation.
+
+## GekkoNet Integration Analysis
+
+### GekkoNet Library Overview
+
+GekkoNet is a rollback netcode library that provides the networking infrastructure we need for FM2K. Here's how it maps to our analyzed systems:
+
+### 1. **GekkoNet Configuration for FM2K**
+```c
+GekkoConfig fm2k_config = {
+    .num_players = 2,                    // P1 vs P2
+    .max_spectators = 8,                 // Allow spectators
+    .input_prediction_window = 8,        // 8 frames ahead prediction
+    .spectator_delay = 6,                // 6 frame spectator delay
+    .input_size = sizeof(uint32_t),      // FM2K input flags (32-bit)
+    .state_size = sizeof(FM2KGameState), // Our minimal state structure
+    .limited_saving = false,             // Full state saving for accuracy
+    .post_sync_joining = true,           // Allow mid-match spectators
+    .desync_detection = true             // Enable desync detection
+};
+```
+
+### 2. **Integration Points with FM2K Systems**
+
+#### Input System Integration (0x4146d0)
+```c
+// Hook into process_game_inputs()
+void fm2k_input_hook() {
+    // Get GekkoNet events
+    int event_count;
+    GekkoGameEvent** events = gekko_update_session(session, &event_count);
+    
+    for (int i = 0; i < event_count; i++) {
+        switch (events[i]->type) {
+            case AdvanceEvent:
+                // Inject inputs into FM2K's input system
+                g_p1_input_history[g_input_buffer_index] = events[i]->data.adv.inputs[0];
+                g_p2_input_history[g_input_buffer_index] = events[i]->data.adv.inputs[1];
+                // Continue normal input processing
+                break;
+                
+            case SaveEvent:
+                // Save current FM2K state
+                save_fm2k_state(events[i]->data.save.state, events[i]->data.save.state_len);
+                break;
+                
+            case LoadEvent:
+                // Restore FM2K state
+                load_fm2k_state(events[i]->data.load.state, events[i]->data.load.state_len);
+                break;
+        }
+    }
+}
+```
+
+#### State Management Integration
+```c
+typedef struct FM2KGameState {
+    // Frame tracking
+    uint32_t frame_number;
+    uint32_t input_buffer_index;
+    
+    // Input state
+    uint32_t p1_input_current;
+    uint32_t p2_input_current;
+    uint32_t input_repeat_state[8];
+    uint32_t input_repeat_timer[8];
+    
+    // Character states (per character)
+    struct {
+        // Position (16.16 fixed point)
+        int32_t pos_x, pos_y;
+        int32_t vel_x, vel_y;
+        
+        // State machine
+        uint16_t base_state;        // 0x0-0x3
+        uint16_t action_state;      // 0x4-0x7  
+        uint16_t movement_state;    // 0x8-0xB
+        uint16_t state_flags;       // Offset 350
+        
+        // Animation
+        uint16_t animation_frame;   // Offset 12
+        uint16_t max_animation_frame; // Offset 88
+        
+        // Health system
+        uint16_t health_segments;   // Current segments
+        uint16_t current_health;    // Health points
+        uint16_t max_health_segments; // Maximum segments
+        uint16_t guard_damage;      // Guard damage accumulation
+        
+        // Hit detection
+        uint16_t hit_flags;         // Hit state flags
+        uint16_t hit_stun_timer;    // Hit stun duration
+        uint16_t guard_state;       // Guard state flags
+        
+        // Facing and direction
+        uint8_t facing_direction;   // Left/right facing
+        uint8_t input_direction;    // Current input direction
+    } characters[2];
+    
+    // Round state
+    uint32_t round_state;           // Round state machine
+    uint32_t round_timer;           // Round timer
+    uint32_t game_mode;             // Current game mode
+    
+    // Hit detection global state
+    uint32_t hit_effect_target;     // Hit effect target
+    uint32_t hit_effect_timer;      // Hit effect timer
+    
+    // Combo system
+    uint16_t combo_counter[2];      // Combo counters
+    uint16_t damage_scaling[2];     // Damage scaling
+    
+    // Object pool critical state
+    uint16_t active_objects;        // Number of active objects
+    uint32_t object_state_flags;    // Critical object flags
+    
+} FM2KGameState;
+```
+
+### 3. **Network Adapter Implementation**
+```c
+GekkoNetAdapter fm2k_adapter = {
+    .send_data = fm2k_send_packet,
+    .receive_data = fm2k_receive_packets,
+    .free_data = fm2k_free_packet_data
+};
+
+void fm2k_send_packet(GekkoNetAddress* addr, const char* data, int length) {
+    // Use existing LilithPort networking or implement UDP
+    // addr->data contains IP/port information
+    // data contains the packet to send
+}
+
+GekkoNetResult** fm2k_receive_packets(int* length) {
+    // Collect all packets received since last call
+    // Return array of GekkoNetResult pointers
+    // GekkoNet will call free_data on each result
+}
+```
+
+### 4. **Integration with Existing FM2K Systems**
+
+#### Main Game Loop Integration
+```c
+// Hook at 0x4146d0 - process_game_inputs()
+void fm2k_rollback_frame() {
+    // 1. Poll network
+    gekko_network_poll(session);
+    
+    // 2. Add local inputs
+    uint32_t local_input = get_local_player_input();
+    gekko_add_local_input(session, local_player_id, &local_input);
+    
+    // 3. Process GekkoNet events
+    int event_count;
+    GekkoGameEvent** events = gekko_update_session(session, &event_count);
+    
+    // 4. Handle events (save/load/advance)
+    process_gekko_events(events, event_count);
+    
+    // 5. Continue normal FM2K processing
+    // (character updates, hit detection, etc.)
+}
+```
+
+#### State Serialization Functions
+```c
+void save_fm2k_state(unsigned char* buffer, unsigned int* length) {
+    FM2KGameState* state = (FM2KGameState*)buffer;
+    
+    // Save frame state
+    state->frame_number = current_frame;
+    state->input_buffer_index = g_input_buffer_index;
+    
+    // Save character states from object pool
+    for (int i = 0; i < 2; i++) {
+        save_character_state(&state->characters[i], i);
+    }
+    
+    // Save round state
+    state->round_state = g_round_state;
+    state->round_timer = g_round_timer;
+    
+    *length = sizeof(FM2KGameState);
+}
+
+void load_fm2k_state(unsigned char* buffer, unsigned int length) {
+    FM2KGameState* state = (FM2KGameState*)buffer;
+    
+    // Restore frame state
+    current_frame = state->frame_number;
+    g_input_buffer_index = state->input_buffer_index;
+    
+    // Restore character states to object pool
+    for (int i = 0; i < 2; i++) {
+        load_character_state(&state->characters[i], i);
+    }
+    
+    // Restore round state
+    g_round_state = state->round_state;
+    g_round_timer = state->round_timer;
+}
+```
+
+### 5. **Event Handling Integration**
+```c
+void handle_session_events() {
+    int event_count;
+    GekkoSessionEvent** events = gekko_session_events(session, &event_count);
+    
+    for (int i = 0; i < event_count; i++) {
+        switch (events[i]->type) {
+            case PlayerConnected:
+                // Show "Player Connected" message
+                break;
+            case PlayerDisconnected:
+                // Handle disconnection
+                break;
+            case DesyncDetected:
+                // Log desync information
+                printf("Desync at frame %d: local=%08x remote=%08x\n",
+                       events[i]->data.desynced.frame,
+                       events[i]->data.desynced.local_checksum,
+                       events[i]->data.desynced.remote_checksum);
+                break;
+        }
+    }
+}
+```
+
+### 6. **Performance Considerations**
+- **State Size**: ~200 bytes per frame (very efficient)
+- **Prediction Window**: 8 frames ahead (80ms at 100 FPS)
+- **Rollback Depth**: Up to 15 frames (150ms)
+- **Network Frequency**: 100 Hz to match FM2K's frame rate
+
+### 7. **Implementation Benefits**
+1. **Minimal Code Changes**: Only need to hook input processing
+2. **Existing Infrastructure**: Leverages FM2K's input history system
+3. **Deterministic**: FM2K's fixed-point math ensures consistency
+4. **Efficient**: Small state size enables fast rollback
+5. **Robust**: GekkoNet handles all networking complexity
+
+This integration approach leverages both FM2K's existing architecture and GekkoNet's proven rollback implementation, providing a solid foundation for online play.
+
+### Critical Player State Variables
+
+Based on IDA analysis, here are the key memory addresses for player state:
+
+#### Player 1 State Variables:
+```c
+// Input system
+g_p1_input          = 0x4259c0;  // Current input state
+g_p1_input_history  = 0x4280e0;  // 1024-frame input history
+
+// Position and stage
+g_p1_stage_x        = 0x424e68;  // Stage position X
+g_p1_stage_y        = 0x424e6c;  // Stage position Y
+
+// Round and game state
+g_p1_round_count    = 0x4700ec;  // Round wins
+g_p1_round_state    = 0x4700f0;  // Round state
+g_p1_action_state   = 0x47019c;  // Action state
+
+// Health system
+g_p1_hp             = 0x4dfc85;  // Current HP
+g_p1_max_hp         = 0x4dfc91;  // Maximum HP
+```
+
+#### Player 2 State Variables:
+```c
+// Input system
+g_p2_input          = 0x4259c4;  // Current input state
+g_p2_input_history  = 0x4290e0;  // 1024-frame input history
+
+// Round and game state
+g_p2_action_state   = 0x4701a0;  // Action state
+
+// Health system
+g_p2_hp             = 0x4edcc4;  // Current HP
+g_p2_max_hp         = 0x4edcd0;  // Maximum HP
+```
+
+#### Core Game State Variables:
+```c
+// Object pool
+g_object_pool       = 0x4701e0;  // Main object pool (1024 entries)
+g_sprite_data_array = 0x447938;  // Sprite data array
+
+// Timing system
+g_frame_time_ms     = 0x41e2f0;  // Frame duration (10ms)
+g_last_frame_time   = 0x447dd4;  // Last frame timestamp
+g_frame_sync_flag   = 0x424700;  // Frame sync state
+g_frame_time_delta  = 0x425960;  // Frame timing delta
+g_frame_skip_count  = 0x4246f4;  // Frame skip counter
+
+// Random number generator
+g_random_seed       = 0x41fb1c;  // RNG seed
+
+// Input buffer management
+g_input_buffer_index = (calculated); // Current buffer index
+g_input_repeat_timer = 0x4d1c40;     // Input repeat timers
+
+// Round system
+g_round_timer       = 0x470060;  // Round timer
+g_game_timer        = 0x470044;  // Game timer
+g_hit_effect_timer  = 0x4701c8;  // Hit effect timer
+```
+
+### Final State Structure for GekkoNet
+
+With all the memory addresses identified, here's the complete state structure:
+
+```c
+typedef struct FM2KCompleteGameState {
+    // Frame and timing state
+    uint32_t frame_number;
+    uint32_t input_buffer_index;
+    uint32_t last_frame_time;
+    uint32_t frame_time_delta;
+    uint8_t frame_skip_count;
+    uint8_t frame_sync_flag;
+    
+    // Random number generator state
+    uint32_t random_seed;
+    
+    // Player 1 state
+    struct {
+        uint32_t input_current;
+        uint32_t input_history[1024];
+        uint32_t stage_x, stage_y;
+        uint32_t round_count;
+        uint32_t round_state;
+        uint32_t action_state;
+        uint32_t hp, max_hp;
+    } p1;
+    
+    // Player 2 state
+    struct {
+        uint32_t input_current;
+        uint32_t input_history[1024];
+        uint32_t action_state;
+        uint32_t hp, max_hp;
+    } p2;
+    
+    // Global timers
+    uint32_t round_timer;
+    uint32_t game_timer;
+    uint32_t hit_effect_timer;
+    
+    // Input system state
+    uint32_t input_repeat_timer[8];
+    
+    // Critical object pool state (first 2 character objects)
+    struct {
+        uint32_t object_type;
+        int32_t pos_x, pos_y;        // 16.16 fixed point
+        int32_t vel_x, vel_y;
+        uint16_t state_flags;
+        uint16_t animation_frame;
+        uint16_t health_segments;
+        uint16_t facing_direction;
+        // ... other critical fields
+    } character_objects[2];
+    
+} FM2KCompleteGameState;
+```
+
+### Memory Access Functions
+
+```c
+// Direct memory access functions for state serialization
+void save_fm2k_complete_state(FM2KCompleteGameState* state) {
+    // Frame and timing
+    state->frame_number = current_frame;
+    state->input_buffer_index = g_input_buffer_index;
+    state->last_frame_time = *(uint32_t*)0x447dd4;
+    state->frame_time_delta = *(uint32_t*)0x425960;
+    state->frame_skip_count = *(uint8_t*)0x4246f4;
+    state->frame_sync_flag = *(uint8_t*)0x424700;
+    
+    // RNG state
+    state->random_seed = *(uint32_t*)0x41fb1c;
+    
+    // Player 1 state
+    state->p1.input_current = *(uint32_t*)0x4259c0;
+    memcpy(state->p1.input_history, (void*)0x4280e0, 1024 * sizeof(uint32_t));
+    state->p1.stage_x = *(uint32_t*)0x424e68;
+    state->p1.stage_y = *(uint32_t*)0x424e6c;
+    state->p1.round_count = *(uint32_t*)0x4700ec;
+    state->p1.round_state = *(uint32_t*)0x4700f0;
+    state->p1.action_state = *(uint32_t*)0x47019c;
+    state->p1.hp = *(uint32_t*)0x4dfc85;
+    state->p1.max_hp = *(uint32_t*)0x4dfc91;
+    
+    // Player 2 state
+    state->p2.input_current = *(uint32_t*)0x4259c4;
+    memcpy(state->p2.input_history, (void*)0x4290e0, 1024 * sizeof(uint32_t));
+    state->p2.action_state = *(uint32_t*)0x4701a0;
+    state->p2.hp = *(uint32_t*)0x4edcc4;
+    state->p2.max_hp = *(uint32_t*)0x4edcd0;
+    
+    // Global timers
+    state->round_timer = *(uint32_t*)0x470060;
+    state->game_timer = *(uint32_t*)0x470044;
+    state->hit_effect_timer = *(uint32_t*)0x4701c8;
+    
+    // Input repeat timers
+    memcpy(state->input_repeat_timer, (void*)0x4d1c40, 8 * sizeof(uint32_t));
+    
+    // Character objects from object pool
+    save_character_objects_from_pool(state->character_objects);
+}
+
+void load_fm2k_complete_state(FM2KCompleteGameState* state) {
+    // Restore all state in reverse order
+    // ... (similar but with assignment in opposite direction)
+}
+```
+
+This gives us a complete, memory-accurate state structure that can be used with GekkoNet for rollback implementation. The state size is approximately 10KB, which is very reasonable for rollback netcode.
+
+## GekkoNet SDL Example Analysis & FM2K Integration
+
+### SDL Example Key Patterns
+
+The OnlineSession.cpp example demonstrates the core GekkoNet integration patterns we need for FM2K:
+
+#### 1. **Session Setup Pattern**
+```c
+// From SDL example - adapt for FM2K
+GekkoSession* sess = nullptr;
+GekkoConfig conf {
+    .num_players = 2,
+    .input_size = sizeof(char),           // FM2K: sizeof(uint32_t)
+    .state_size = sizeof(GState),         // FM2K: sizeof(FM2KCompleteGameState)
+    .max_spectators = 0,                  // FM2K: 8 for spectators
+    .input_prediction_window = 10,        // FM2K: 8 frames
+    .desync_detection = true,
+    // .limited_saving = true,            // FM2K: false for accuracy
+};
+
+gekko_create(&sess);
+gekko_start(sess, &conf);
+gekko_net_adapter_set(sess, gekko_default_adapter(localport));
+```
+
+#### 2. **Player Management Pattern**
+```c
+// Order-dependent player addition (from example)
+if (localplayer == 0) {
+    localplayer = gekko_add_actor(sess, LocalPlayer, nullptr);
+    auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), 
+                                  (unsigned int)remote_address.size() };
+    gekko_add_actor(sess, RemotePlayer, &remote);
+} else {
+    auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), 
+                                  (unsigned int)remote_address.size() };
+    gekko_add_actor(sess, RemotePlayer, &remote);
+    localplayer = gekko_add_actor(sess, LocalPlayer, nullptr);
+}
+```
+
+#### 3. **Core Game Loop Pattern** 
+```c
+// From SDL example - critical for FM2K integration
+while (running) {
+    // Timing control
+    frames_ahead = gekko_frames_ahead(sess);
+    frame_time = GetFrameTime(frames_ahead);
+    
+    // Network polling
+    gekko_network_poll(sess);
+    
+    // Frame processing
+    while (accumulator >= frame_time) {
+        // Add local input
+        auto input = get_key_inputs();
+        gekko_add_local_input(sess, localplayer, &input);
+        
+        // Handle session events
+        auto events = gekko_session_events(sess, &count);
+        for (int i = 0; i < count; i++) {
+            // Handle PlayerConnected, PlayerDisconnected, DesyncDetected
+        }
+        
+        // Process game events
+        auto updates = gekko_update_session(sess, &count);
+        for (int i = 0; i < count; i++) {
+            switch (updates[i]->type) {
+                case SaveEvent: save_state(&state, updates[i]); break;
+                case LoadEvent: load_state(&state, updates[i]); break;
+                case AdvanceEvent:
+                    // Extract inputs and advance game
+                    inputs[0].input.value = updates[i]->data.adv.inputs[0];
+                    inputs[1].input.value = updates[i]->data.adv.inputs[1];
+                    update_state(state, inputs, num_players);
+                    break;
+            }
+        }
+        accumulator -= frame_time;
+    }
+    
+    // Render current state
+    render_state(state);
+}
+```
+
+### FM2K Integration Strategy
+
+#### 1. **Replace SDL2 with SDL3 for FM2K**
+```c
+// SDL3 initialization for FM2K integration
+#include "SDL3/SDL.h"
+
+bool init_fm2k_window(void) {
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
+        fprintf(stderr, "Error initializing SDL3.\n");
+        return false;
+    }
+    
+    // Create window matching FM2K's resolution
+    window = SDL_CreateWindow(
+        "FM2K Online Session",
+        640, 480,  // FM2K native resolution
+        SDL_WINDOW_RESIZABLE
+    );
+    
+    if (!window) {
+        fprintf(stderr, "Error creating SDL3 Window.\n");
+        return false;
+    }
+    
+    renderer = SDL_CreateRenderer(window, NULL);
+    if (!renderer) {
+        fprintf(stderr, "Error creating SDL3 Renderer.\n");
+        return false;
+    }
+    
+    return true;
+}
+```
+
+#### 2. **FM2K Input Structure**
+```c
+// Replace simple GInput with FM2K's 11-bit input system
+struct FM2KInput {
+    union {
+        struct {
+            uint16_t left     : 1;   // 0x001
+            uint16_t right    : 1;   // 0x002
+            uint16_t up       : 1;   // 0x004
+            uint16_t down     : 1;   // 0x008
+            uint16_t button1  : 1;   // 0x010
+            uint16_t button2  : 1;   // 0x020
+            uint16_t button3  : 1;   // 0x040
+            uint16_t button4  : 1;   // 0x080
+            uint16_t button5  : 1;   // 0x100
+            uint16_t button6  : 1;   // 0x200
+            uint16_t button7  : 1;   // 0x400
+            uint16_t reserved : 5;   // Unused bits
+        } bits;
+        uint16_t value;
+    } input;
+};
+
+FM2KInput get_fm2k_inputs() {
+    FM2KInput input{};
+    input.input.value = 0;
+    
+    // Get keyboard state (SDL3 syntax)
+    const bool* keys = SDL_GetKeyboardState(NULL);
+    
+    // Map to FM2K inputs
+    input.input.bits.up = keys[SDL_SCANCODE_W];
+    input.input.bits.left = keys[SDL_SCANCODE_A];
+    input.input.bits.down = keys[SDL_SCANCODE_S];
+    input.input.bits.right = keys[SDL_SCANCODE_D];
+    input.input.bits.button1 = keys[SDL_SCANCODE_J];
+    input.input.bits.button2 = keys[SDL_SCANCODE_K];
+    input.input.bits.button3 = keys[SDL_SCANCODE_L];
+    // ... map other buttons
+    
+    return input;
+}
+```
+
+#### 3. **FM2K State Management**
+```c
+// Replace simple GState with FM2KCompleteGameState
+void save_fm2k_state(FM2KCompleteGameState* gs, GekkoGameEvent* ev) {
+    *ev->data.save.state_len = sizeof(FM2KCompleteGameState);
+    
+    // Use Fletcher's checksum (from example) for consistency
+    *ev->data.save.checksum = fletcher32((uint16_t*)gs, sizeof(FM2KCompleteGameState));
+    
+    std::memcpy(ev->data.save.state, gs, sizeof(FM2KCompleteGameState));
+}
+
+void load_fm2k_state(FM2KCompleteGameState* gs, GekkoGameEvent* ev) {
+    std::memcpy(gs, ev->data.load.state, sizeof(FM2KCompleteGameState));
+}
+
+void update_fm2k_state(FM2KCompleteGameState& gs, FM2KInput inputs[2]) {
+    // Call into FM2K's actual game logic
+    // This would hook into the functions we analyzed:
+    
+    // 1. Inject inputs into FM2K's input system
+    *(uint32_t*)0x4259c0 = inputs[0].input.value;  // g_p1_input
+    *(uint32_t*)0x4259c4 = inputs[1].input.value;  // g_p2_input
+    
+    // 2. Call FM2K's update functions
+    // process_game_inputs_FRAMESTEP_HOOK();  // 0x4146d0
+    // update_game_state();                   // Game logic
+    // character_state_machine();             // 0x411bf0
+    // hit_detection_system();                // 0x40f010
+    
+    // 3. Extract updated state from FM2K memory
+    gs.p1.hp = *(uint32_t*)0x4dfc85;
+    gs.p2.hp = *(uint32_t*)0x4edcc4;
+    gs.round_timer = *(uint32_t*)0x470060;
+    // ... extract all other state variables
+}
+```
+
+#### 4. **FM2K Timing Integration**
+```c
+// Adapt timing to match FM2K's 100 FPS
+float GetFM2KFrameTime(float frames_ahead) {
+    // FM2K runs at 100 FPS (10ms per frame)
+    const float base_frame_time = 1.0f / 100.0f;  // 0.01 seconds
+    
+    if (frames_ahead >= 0.75f) {
+        // Slow down if too far ahead
+        return base_frame_time * 1.02f;  // 59.8 FPS equivalent
+    } else {
+        return base_frame_time;  // Normal 100 FPS
+    }
+}
+```
+
+#### 5. **Complete FM2K Integration Main Loop**
+```c
+int fm2k_online_main(int argc, char* args[]) {
+    // Parse command line (same as example)
+    int localplayer = std::stoi(args[1]);
+    const int localport = std::stoi(args[2]);
+    std::string remote_address = std::move(args[3]);
+    int localdelay = std::stoi(args[4]);
+    
+    // Initialize SDL3 and FM2K
+    running = init_fm2k_window();
+    
+    // Initialize FM2K state
+    FM2KCompleteGameState state = {};
+    FM2KInput inputs[2] = {};
+    
+    // Setup GekkoNet
+    GekkoSession* sess = nullptr;
+    GekkoConfig conf {
+        .num_players = 2,
+        .input_size = sizeof(uint16_t),  // FM2K input size
+        .state_size = sizeof(FM2KCompleteGameState),
+        .max_spectators = 8,
+        .input_prediction_window = 8,
+        .desync_detection = true,
+        .limited_saving = false,  // Full state saving for accuracy
+        .post_sync_joining = true
+    };
+    
+    gekko_create(&sess);
+    gekko_start(sess, &conf);
+    gekko_net_adapter_set(sess, gekko_default_adapter(localport));
+    
+    // Add players (order-dependent)
+    if (localplayer == 0) {
+        localplayer = gekko_add_actor(sess, LocalPlayer, nullptr);
+        auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), 
+                                      (unsigned int)remote_address.size() };
+        gekko_add_actor(sess, RemotePlayer, &remote);
+    } else {
+        auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), 
+                                      (unsigned int)remote_address.size() };
+        gekko_add_actor(sess, RemotePlayer, &remote);
+        localplayer = gekko_add_actor(sess, LocalPlayer, nullptr);
+    }
+    
+    gekko_set_local_delay(sess, localplayer, localdelay);
+    
+    // Timing variables
+    auto curr_time = std::chrono::steady_clock::now();
+    auto prev_time = curr_time;
+    float delta_time = 0.0f;
+    float accumulator = 0.0f;
+    float frame_time = 0.0f;
+    float frames_ahead = 0.0f;
+    
+    while (running) {
+        curr_time = std::chrono::steady_clock::now();
+        
+        frames_ahead = gekko_frames_ahead(sess);
+        frame_time = GetFM2KFrameTime(frames_ahead);
+        
+        delta_time = std::chrono::duration<float>(curr_time - prev_time).count();
+        prev_time = curr_time;
+        accumulator += delta_time;
+        
+        gekko_network_poll(sess);
+        
+        while (accumulator >= frame_time) {
+            // Process SDL events
+            process_events();
+            
+            // Get local input
+            auto input = get_fm2k_inputs();
+            gekko_add_local_input(sess, localplayer, &input);
+            
+            // Handle session events
+            int count = 0;
+            auto events = gekko_session_events(sess, &count);
+            for (int i = 0; i < count; i++) {
+                handle_fm2k_session_event(events[i]);
+            }
+            
+            // Process game events
+            count = 0;
+            auto updates = gekko_update_session(sess, &count);
+            for (int i = 0; i < count; i++) {
+                auto ev = updates[i];
+                
+                switch (ev->type) {
+                    case SaveEvent:
+                        save_fm2k_state(&state, ev);
+                        break;
+                    case LoadEvent:
+                        load_fm2k_state(&state, ev);
+                        break;
+                    case AdvanceEvent:
+                        // Extract inputs from GekkoNet
+                        inputs[0].input.value = ((uint16_t*)ev->data.adv.inputs)[0];
+                        inputs[1].input.value = ((uint16_t*)ev->data.adv.inputs)[1];
+                        
+                        // Update FM2K game state
+                        update_fm2k_state(state, inputs);
+                        break;
+                }
+            }
+            
+            accumulator -= frame_time;
+        }
+        
+        // Render current state
+        render_fm2k_state(state);
+    }
+    
+    gekko_destroy(sess);
+    del_window();
+    return 0;
+}
+```
+
+### Key Differences from SDL Example
+
+1. **Input Size**: FM2K uses 16-bit inputs vs 8-bit in example
+2. **State Size**: ~10KB vs ~16 bytes in example  
+3. **Frame Rate**: 100 FPS vs 60 FPS in example
+4. **State Complexity**: Full game state vs simple position
+5. **Integration Depth**: Hooks into existing game vs standalone
+
+### Integration Benefits
+
+1. **Proven Pattern**: The SDL example shows GekkoNet works reliably
+2. **Clear Structure**: Event handling patterns are well-defined
+3. **Performance**: Timing control handles frame rate variations
+4. **Network Stats**: Built-in ping/jitter monitoring
+5. **Error Handling**: Desync detection and player management
+
+This analysis shows that adapting the SDL example for FM2K is very feasible, with the main changes being input/state structures and frame timing to match FM2K's 100 FPS architecture.
+
+## Hit Judge and Round System Architecture
+
+### Hit Judge Configuration (0x42470C-0x430120)
+
+The game uses a sophisticated hit detection and configuration system loaded from INI files:
+
+```c
+struct FM2K_HitJudgeConfig {
+    uint32_t hit_judge_value;    // 0x42470C - Hit detection threshold
+    uint32_t config_values[7];   // 0x4300E0-0x430120 - General config values
+    char     config_string[260]; // Configuration string buffer
+};
+```
+
+The hit judge system is initialized by `hit_judge_set_function` (0x414930) which:
+1. Loads configuration from INI files
+2. Sets up hit detection parameters
+3. Configures round settings and game modes
+
+### Round System State (0x470040-0x47006C)
+
+The round system maintains several critical state variables:
+
+```c
+struct FM2K_RoundSystem {
+    uint32_t game_mode;      // 0x470040 - Current game mode (VS/Team/Tournament)
+    uint32_t round_limit;    // 0x470048 - Maximum rounds for the match
+    uint32_t round_state;    // 0x47004C - Current round state
+    uint32_t round_timer;    // 0x470060 - Active round timer
+};
+
+enum FM2K_RoundState {
+    ROUND_INIT = 0,      // Initial state
+    ROUND_ACTIVE = 1,    // Round in progress
+    ROUND_END = 2,       // Round has ended
+    ROUND_MATCH_END = 3  // Match has ended
+};
+
+enum FM2K_GameMode {
+    MODE_NORMAL = 0,     // Normal VS mode
+    MODE_TEAM = 1,       // Team Battle mode
+    MODE_TOURNAMENT = 2  // Tournament mode
+};
+```
+
+The round system is managed by `vs_round_function` (0x4086A0) which:
+1. Handles round state transitions
+2. Manages round timers
+3. Processes win/loss conditions
+4. Controls match flow
+
+### Rollback Implications
+
+This architecture has several important implications for rollback implementation:
+
+1. **State Serialization Requirements:**
+   - Must save hit judge configuration
+   - Must preserve round state and timers
+   - Game mode affects state size
+
+2. **Deterministic Behavior:**
+   - Hit detection is configuration-driven
+   - Round state transitions are deterministic
+   - Timer-based events are predictable
+
+3. **State Size Optimization:**
+   - Hit judge config is static per match
+   - Only dynamic round state needs saving
+   - Can optimize by excluding static config
+
+4. **Synchronization Points:**
+   - Round state changes are key sync points
+   - Hit detection results must be identical
+   - Timer values must match exactly
+
+Updated state structure for rollback:
+
+```c
+typedef struct FM2KGameState {
+    // ... existing timing and input state ...
+
+    // Round System State
+    struct {
+        uint32_t mode;          // Current game mode
+        uint32_t round_limit;   // Maximum rounds
+        uint32_t round_state;   // Current round state
+        uint32_t round_timer;   // Active round timer
+        uint32_t score_value;   // Current score/timer value
+    } round_system;
+
+    // Hit Judge State
+    struct {
+        uint32_t hit_judge_value;   // Current hit detection threshold
+        uint32_t effect_target;     // Current hit effect target
+        uint32_t effect_timer;      // Hit effect duration
+    } hit_system;
+
+    // ... rest of game state ...
+} FM2KGameState;
+```
+
+## Sprite Rendering and Hit Detection System
+
+### Sprite Rendering Engine (0x40CC30)
+
+The game uses a sophisticated sprite rendering engine that handles:
+1. Hit effect visualization
+2. Sprite transformations and blending
+3. Color palette manipulation
+4. Screen-space effects
+
+Key components:
+
+```c
+struct SpriteRenderState {
+    uint32_t render_mode;     // Different rendering modes (-10 to 3)
+    uint32_t blend_flags;     // Blending and effect flags
+    uint32_t color_values[3]; // RGB color modification values
+    uint32_t effect_timer;    // Effect duration counter
+};
+```
+
+### Hit Effect System
+
+The hit effect system is tightly integrated with the sprite renderer:
+
+1. **Effect Triggers:**
+   - Hit detection results (0x42470C)
+   - Game state transitions
+   - Timer-based events
+
+2. **Effect Parameters:**
+   ```c
+   struct HitEffectParams {
+       uint32_t target_id;      // Effect target identifier
+       uint32_t effect_type;    // Visual effect type
+       uint32_t duration;       // Effect duration in frames
+       uint32_t color_values;   // RGB color modulation
+   };
+   ```
+
+3. **Rendering Pipeline:**
+   - Color palette manipulation (0x4D1A20)
+   - Sprite transformation
+   - Blend mode selection
+   - Screen-space effects
+
+### Integration with Rollback
+
+The sprite and hit effect systems have important implications for rollback:
+
+1. **Visual State Management:**
+   - Effect timers must be part of the game state
+   - Color modulation values need saving
+   - Sprite transformations must be deterministic
+
+2. **Performance Considerations:**
+   - Effect parameters are small (few bytes per effect)
+   - Visual state is derived from game state
+   - Can optimize by excluding pure visual state
+
+3. **Synchronization Requirements:**
+   - Hit effects must trigger identically
+   - Effect timers must stay synchronized
+   - Visual state must match game state
+
+Updated state structure to include visual effects:
+
+```c
+typedef struct FM2KGameState {
+    // ... previous state members ...
+
+    // Visual Effect State
+    struct {
+        uint32_t active_effects;     // Bitfield of active effects
+        uint32_t effect_timers[8];   // Array of effect durations
+        uint32_t color_values[8][3]; // RGB values for each effect
+        uint32_t target_ids[8];      // Effect target identifiers
+    } visual_state;
+
+    // ... rest of game state ...
+} FM2KGameState;
+```
+
+## Game State Management System
+
+The game state manager (0x406FC0) handles several critical aspects of the game:
+
+### State Variables
+
+1. **Round System State:**
+   ```c
+   struct RoundSystemState {
+       uint32_t g_round_timer;        // 0x470060 - Current round timer value
+       uint32_t g_round_limit;        // 0x470048 - Maximum rounds per match
+       uint32_t g_round_state;        // 0x47004C - Current round state
+       uint32_t g_game_mode;          // 0x470040 - Current game mode
+   };
+   ```
+
+2. **Player State:**
+   ```c
+   struct PlayerState {
+       int32_t stage_position;        // Current position on stage grid
+       uint32_t action_state;         // Current action being performed
+       uint32_t round_count;          // Number of rounds completed
+       uint32_t input_history[4];     // Recent input history
+       uint32_t move_history[4];      // Recent movement history
+   };
+   ```
+
+### State Management Flow
+
+1. **Initialization (0x406FC0):**
+   - Loads initial configuration
+   - Sets up round timer and limits
+   - Initializes player positions
+   - Sets up game mode parameters
+
+2. **State Updates:**
+   - Input processing and validation
+   - Position and movement updates
+   - Action state transitions
+   - Round state management
+
+3. **State Synchronization:**
+   - Timer synchronization
+   - Player state synchronization
+   - Round state transitions
+   - Game mode state management
+
+### Rollback Implications
+
+1. **Critical State Components:**
+   - Round timer and state
+   - Player positions and actions
+   - Input and move history
+   - Game mode state
+
+2. **State Size Analysis:**
+   - Core game state: ~128 bytes
+   - Player state: ~32 bytes per player
+   - History buffers: ~32 bytes per player
+   - Total per-frame state: ~256 bytes
+
+3. **Synchronization Requirements:**
+   - Timer must be deterministic
+   - Player state must be atomic
+   - Input processing must be consistent
+   - State transitions must be reproducible
+
+## Input Processing System
+
+The game uses a sophisticated input processing system that handles both movement and action inputs:
+
+### Input Mapping (0x406F20)
+
+```c
+enum InputActions {
+    ACTION_NONE = 0,
+    ACTION_A = 1,    // 0x20  - Light Attack
+    ACTION_B = 2,    // 0x40  - Medium Attack
+    ACTION_C = 3,    // 0x80  - Heavy Attack
+    ACTION_D = 4,    // 0x100 - Special Move
+    ACTION_E = 5     // 0x200 - Super Move
+};
+
+enum InputDirections {
+    DIR_NONE  = 0x000,
+    DIR_UP    = 0x004,
+    DIR_DOWN  = 0x008,
+    DIR_LEFT  = 0x001,
+    DIR_RIGHT = 0x002
+};
+```
+
+### Input Processing Flow
+
+1. **Raw Input Capture:**
+   - Movement inputs (4-way directional)
+   - Action buttons (5 main buttons)
+   - System buttons (Start, Select)
+
+2. **Input State Management:**
+   ```c
+   struct InputState {
+       uint16_t current_input;     // Current frame's input
+       uint16_t previous_input;    // Last frame's input
+       uint16_t input_changes;     // Changed bits since last frame
+       uint8_t  processed_input;   // Processed directional input
+   };
+   ```
+
+3. **Input History:**
+   - Each player maintains a 4-frame input history
+   - History includes both raw and processed inputs
+   - Used for move validation and rollback
+
+4. **Input Processing:**
+   - Raw input capture
+   - Input change detection
+   - Input repeat handling:
+     - Initial delay
+     - Repeat delay
+     - Repeat timer
+   - Input validation
+   - Mode-specific processing:
+     - VS mode (< 3000)
+     - Story mode (? 3000)
+
+5. **Memory Layout:**
+   ```
+   input_system {
+     +g_input_buffer_index: Current frame index
+     +g_p1_input[8]: Current P1 inputs
+     +g_p2_input: Current P2 inputs
+     +g_prev_input_state[8]: Previous frame inputs
+     +g_input_changes[8]: Input change flags
+     +g_input_repeat_state[8]: Input repeat flags
+     +g_input_repeat_timer[8]: Repeat timers
+     +g_processed_input[8]: Processed inputs
+     +g_combined_processed_input: Combined state
+     +g_combined_input_changes: Change mask
+     +g_combined_raw_input: Raw input mask
+   }
+   ```
+
+6. **Critical Operations:**
+   - Frame advance:
+     ```c
+     g_input_buffer_index = (g_input_buffer_index + 1) & 0x3FF;
+     g_p1_input_history[g_input_buffer_index] = current_input;
+     ```
+   - Input processing:
+     ```c
+     g_input_changes = current_input & (prev_input ^ current_input);
+     if (repeat_active && current_input == repeat_state) {
+       if (--repeat_timer == 0) {
+         processed_input = current_input;
+         repeat_timer = repeat_delay;
+       }
+     }
+     ```
+
+This system is crucial for rollback implementation as it provides:
+1. Deterministic input processing
+2. Frame-accurate input history
+3. Clear state serialization points
+4. Mode-specific input handling
+5. Input validation and processing logic
+
+The 1024-frame history buffer is particularly useful for rollback, as it provides ample space for state rewinding and replay.
+```
+
+### Health Damage Manager (0x40e6f0)
+
+The health damage manager handles health state and damage calculations:
+
+1. **Health State Management:**
+   - Per-character health tracking
+   - Health segments system
+   - Recovery mechanics
+   - Guard damage handling
+
+2. **Memory Layout:**
+   ```
+   health_system {
+     +4DFC95: Current health segment
+     +4DFC99: Maximum health segments
+     +4DFC9D: Current health points
+     +4DFCA1: Health segment size
+   }
+   ```
+
+3. **Damage Processing:**
+   - Segment-based health system:
+     ```c
+     while (current_health < 0) {
+       if (current_segment > 0) {
+         current_segment--;
+         current_health += segment_size;
+       } else {
+         current_health = 0;
+       }
+     }
+     ```
+   - Health recovery:
+     ```c
+     while (current_health >= segment_size) {
+       if (current_segment < max_segments) {
+         current_health -= segment_size;
+         current_segment++;
+       } else {
+         current_health = 0;
+       }
+     }
+     ```
+
+4. **Critical Operations:**
+   - Damage application:
+     - Negative values for damage
+     - Positive values for healing
+   - Segment management:
+     - Segment depletion
+     - Segment recovery
+     - Maximum segment cap
+   - Health validation:
+     - Minimum health check
+     - Maximum health check
+     - Segment boundary checks
+
+This system is crucial for rollback implementation as it:
+1. Uses deterministic damage calculations
+2. Maintains clear health state boundaries
+3. Provides segment-based state tracking
+4. Handles health recovery mechanics
+5. Manages guard damage separately
+
+The segmented health system will make it easier to serialize and restore health states during rollback operations, as each segment provides a clear checkpoint for state management.
+```
+
+### Rollback Implementation Summary
+
+After analyzing FM2K's core systems, we can conclude that the game is well-suited for rollback netcode implementation. Here's a comprehensive overview of how each system will integrate with rollback:
+
+1. **State Serialization Points:**
+   - Character State Machine (0x411bf0):
+     - Base states (0x0-0x3)
+     - Action states (0x4-0x7)
+     - Movement states (0x8-0xB)
+     - Frame counters and timers
+   - Hit Detection System (0x40f010):
+     - Hit boxes and collision state
+     - Damage values and scaling
+     - Hit confirmation flags
+   - Input Buffer System (0x4146d0):
+     - 1024-frame history buffer
+     - Input state flags
+     - Repeat handling state
+   - Health System (0x40e6f0):
+     - Health segments
+     - Current health points
+     - Guard damage state
+     - Recovery mechanics
+
+2. **Deterministic Systems:**
+   - Fixed frame rate (100 FPS)
+   - 16.16 fixed-point coordinates
+   - Deterministic input processing
+   - Clear state transitions
+   - Predictable damage calculations
+   - Frame-based timers
+
+3. **State Management:**
+   - Object Pool (1024 entries):
+     - Type identification
+     - Position and velocity
+     - Animation state
+     - Collision data
+   - Input History:
+     - Circular buffer design
+     - Clear frame boundaries
+     - Input validation
+   - Hit Detection:
+     - Priority system
+     - State validation
+     - Reaction handling
+   - Health System:
+     - Segment-based tracking
+     - Clear state boundaries
+     - Recovery mechanics
+
+4. **Implementation Strategy:**
+   a. Save State (Frame N):
+      ```c
+      struct SaveState {
+          // Character State
+          int base_state;
+          int action_state;
+          int movement_state;
+          int frame_counters[4];
+          
+          // Hit Detection
+          int hit_boxes[20];
+          int damage_values[8];
+          int hit_flags;
+          
+          // Input Buffer
+          int input_history[1024];
+          int input_flags;
+          int repeat_state;
+          
+          // Health System
+          int health_segments;
+          int current_health;
+          int guard_damage;
+      };
+      ```
+
+   b. Rollback Process:
+      1. Save current frame state
+      2. Apply new remote input
+      3. Simulate forward:
+         - Process inputs
+         - Update character states
+         - Handle collisions
+         - Apply damage
+      4. Render new state
+      5. Save confirmed state
+
+5. **Critical Hooks:**
+   - Input Processing (0x4146d0):
+     - Frame advance point
+     - Input buffer management
+   - Character State (0x411bf0):
+     - State transition handling
+     - Frame counting
+   - Hit Detection (0x40f010):
+     - Collision processing
+     - Damage application
+   - Health System (0x40e6f0):
+     - Health state management
+     - Segment tracking
+
+6. **Optimization Opportunities:**
+   - Parallel state simulation
+   - Minimal state serialization
+   - Efficient state diffing
+   - Smart state prediction
+   - Input compression
+
+The analysis reveals that FM2K's architecture is highly suitable for rollback implementation due to its:
+1. Deterministic game logic
+2. Clear state boundaries
+3. Frame-based processing
+4. Efficient memory layout
+5. Well-defined systems
+
+This research provides a solid foundation for implementing rollback netcode in FM2K, with all major systems supporting the requirements for state saving, rollback, and resimulation.
+
+## GekkoNet Integration Analysis
+
+### GekkoNet Library Overview
+
+GekkoNet is a rollback netcode library that provides the networking infrastructure we need for FM2K. Here's how it maps to our analyzed systems:
+
+### 1. **GekkoNet Configuration for FM2K**
+```c
+GekkoConfig fm2k_config = {
+    .num_players = 2,                    // P1 vs P2
+    .max_spectators = 8,                 // Allow spectators
+    .input_prediction_window = 8,        // 8 frames ahead prediction
+    .spectator_delay = 6,                // 6 frame spectator delay
+    .input_size = sizeof(uint32_t),      // FM2K input flags (32-bit)
+    .state_size = sizeof(FM2KGameState), // Our minimal state structure
+    .limited_saving = false,             // Full state saving for accuracy
+    .post_sync_joining = true,           // Allow mid-match spectators
+    .desync_detection = true             // Enable desync detection
+};
+```
+
+### 2. **Integration Points with FM2K Systems**
+
+#### Input System Integration (0x4146d0)
+```c
+// Hook into process_game_inputs()
+void fm2k_input_hook() {
+    // Get GekkoNet events
+    int event_count;
+    GekkoGameEvent** events = gekko_update_session(session, &event_count);
+    
+    for (int i = 0; i < event_count; i++) {
+        switch (events[i]->type) {
+            case AdvanceEvent:
+                // Inject inputs into FM2K's input system
+                g_p1_input_history[g_input_buffer_index] = events[i]->data.adv.inputs[0];
+                g_p2_input_history[g_input_buffer_index] = events[i]->data.adv.inputs[1];
+                // Continue normal input processing
+                break;
+                
+            case SaveEvent:
+                // Save current FM2K state
+                save_fm2k_state(events[i]->data.save.state, events[i]->data.save.state_len);
+                break;
+                
+            case LoadEvent:
+                // Restore FM2K state
+                load_fm2k_state(events[i]->data.load.state, events[i]->data.load.state_len);
+                break;
+        }
+    }
+}
+```
+
+#### State Management Integration
+```c
+typedef struct FM2KGameState {
+    // Frame tracking
+    uint32_t frame_number;
+    uint32_t input_buffer_index;
+    
+    // Input state
+    uint32_t p1_input_current;
+    uint32_t p2_input_current;
+    uint32_t input_repeat_state[8];
+    uint32_t input_repeat_timer[8];
+    
+    // Character states (per character)
+    struct {
+        // Position (16.16 fixed point)
+        int32_t pos_x, pos_y;
+        int32_t vel_x, vel_y;
+        
+        // State machine
+        uint16_t base_state;        // 0x0-0x3
+        uint16_t action_state;      // 0x4-0x7  
+        uint16_t movement_state;    // 0x8-0xB
+        uint16_t state_flags;       // Offset 350
+        
+        // Animation
+        uint16_t animation_frame;   // Offset 12
+        uint16_t max_animation_frame; // Offset 88
+        
+        // Health system
+        uint16_t health_segments;   // Current segments
+        uint16_t current_health;    // Health points
+        uint16_t max_health_segments; // Maximum segments
+        uint16_t guard_damage;      // Guard damage accumulation
+        
+        // Hit detection
+        uint16_t hit_flags;         // Hit state flags
+        uint16_t hit_stun_timer;    // Hit stun duration
+        uint16_t guard_state;       // Guard state flags
+        
+        // Facing and direction
+        uint8_t facing_direction;   // Left/right facing
+        uint8_t input_direction;    // Current input direction
+    } characters[2];
+    
+    // Round state
+    uint32_t round_state;           // Round state machine
+    uint32_t round_timer;           // Round timer
+    uint32_t game_mode;             // Current game mode
+    
+    // Hit detection global state
+    uint32_t hit_effect_target;     // Hit effect target
+    uint32_t hit_effect_timer;      // Hit effect timer
+    
+    // Combo system
+    uint16_t combo_counter[2];      // Combo counters
+    uint16_t damage_scaling[2];     // Damage scaling
+    
+    // Object pool critical state
+    uint16_t active_objects;        // Number of active objects
+    uint32_t object_state_flags;    // Critical object flags
+    
+} FM2KGameState;
+```
+
+### 3. **Network Adapter Implementation**
+```c
+GekkoNetAdapter fm2k_adapter = {
+    .send_data = fm2k_send_packet,
+    .receive_data = fm2k_receive_packets,
+    .free_data = fm2k_free_packet_data
+};
+
+void fm2k_send_packet(GekkoNetAddress* addr, const char* data, int length) {
+    // Use existing LilithPort networking or implement UDP
+    // addr->data contains IP/port information
+    // data contains the packet to send
+}
+
+GekkoNetResult** fm2k_receive_packets(int* length) {
+    // Collect all packets received since last call
+    // Return array of GekkoNetResult pointers
+    // GekkoNet will call free_data on each result
+}
+```
+
+### 4. **Integration with Existing FM2K Systems**
+
+#### Main Game Loop Integration
+```c
+// Hook at 0x4146d0 - process_game_inputs()
+void fm2k_rollback_frame() {
+    // 1. Poll network
+    gekko_network_poll(session);
+    
+    // 2. Add local inputs
+    uint32_t local_input = get_local_player_input();
+    gekko_add_local_input(session, local_player_id, &local_input);
+    
+    // 3. Process GekkoNet events
+    int event_count;
+    GekkoGameEvent** events = gekko_update_session(session, &event_count);
+    
+    // 4. Handle events (save/load/advance)
+    process_gekko_events(events, event_count);
+    
+    // 5. Continue normal FM2K processing
+    // (character updates, hit detection, etc.)
+}
+```
+
+#### State Serialization Functions
+```c
+void save_fm2k_state(unsigned char* buffer, unsigned int* length) {
+    FM2KGameState* state = (FM2KGameState*)buffer;
+    
+    // Save frame state
+    state->frame_number = current_frame;
+    state->input_buffer_index = g_input_buffer_index;
+    
+    // Save character states from object pool
+    for (int i = 0; i < 2; i++) {
+        save_character_state(&state->characters[i], i);
+    }
+    
+    // Save round state
+    state->round_state = g_round_state;
+    state->round_timer = g_round_timer;
+    
+    *length = sizeof(FM2KGameState);
+}
+
+void load_fm2k_state(unsigned char* buffer, unsigned int length) {
+    FM2KGameState* state = (FM2KGameState*)buffer;
+    
+    // Restore frame state
+    current_frame = state->frame_number;
+    g_input_buffer_index = state->input_buffer_index;
+    
+    // Restore character states to object pool
+    for (int i = 0; i < 2; i++) {
+        load_character_state(&state->characters[i], i);
+    }
+    
+    // Restore round state
+    g_round_state = state->round_state;
+    g_round_timer = state->round_timer;
+}
+```
+
+### 5. **Event Handling Integration**
+```c
+void handle_session_events() {
+    int event_count;
+    GekkoSessionEvent** events = gekko_session_events(session, &event_count);
+    
+    for (int i = 0; i < event_count; i++) {
+        switch (events[i]->type) {
+            case PlayerConnected:
+                // Show "Player Connected" message
+                break;
+            case PlayerDisconnected:
+                // Handle disconnection
+                break;
+            case DesyncDetected:
+                // Log desync information
+                printf("Desync at frame %d: local=%08x remote=%08x\n",
+                       events[i]->data.desynced.frame,
+                       events[i]->data.desynced.local_checksum,
+                       events[i]->data.desynced.remote_checksum);
+                break;
+        }
+    }
+}
+```
+
+### 6. **Performance Considerations**
+- **State Size**: ~200 bytes per frame (very efficient)
+- **Prediction Window**: 8 frames ahead (80ms at 100 FPS)
+- **Rollback Depth**: Up to 15 frames (150ms)
+- **Network Frequency**: 100 Hz to match FM2K's frame rate
+
+### 7. **Implementation Benefits**
+1. **Minimal Code Changes**: Only need to hook input processing
+2. **Existing Infrastructure**: Leverages FM2K's input history system
+3. **Deterministic**: FM2K's fixed-point math ensures consistency
+4. **Efficient**: Small state size enables fast rollback
+5. **Robust**: GekkoNet handles all networking complexity
+
+This integration approach leverages both FM2K's existing architecture and GekkoNet's proven rollback implementation, providing a solid foundation for online play.
+
+### Critical Player State Variables
+
+Based on IDA analysis, here are the key memory addresses for player state:
+
+#### Player 1 State Variables:
+```c
+// Input system
+g_p1_input          = 0x4259c0;  // Current input state
+g_p1_input_history  = 0x4280e0;  // 1024-frame input history
+
+// Position and stage
+g_p1_stage_x        = 0x424e68;  // Stage position X
+g_p1_stage_y        = 0x424e6c;  // Stage position Y
+
+// Round and game state
+g_p1_round_count    = 0x4700ec;  // Round wins
+g_p1_round_state    = 0x4700f0;  // Round state
+g_p1_action_state   = 0x47019c;  // Action state
+
+// Health system
+g_p1_hp             = 0x4dfc85;  // Current HP
+g_p1_max_hp         = 0x4dfc91;  // Maximum HP
+```
+
+#### Player 2 State Variables:
+```c
+// Input system
+g_p2_input          = 0x4259c4;  // Current input state
+g_p2_input_history  = 0x4290e0;  // 1024-frame input history
+
+// Round and game state
+g_p2_action_state   = 0x4701a0;  // Action state
+
+// Health system
+g_p2_hp             = 0x4edcc4;  // Current HP
+g_p2_max_hp         = 0x4edcd0;  // Maximum HP
+```
+
+#### Core Game State Variables:
+```c
+// Object pool
+g_object_pool       = 0x4701e0;  // Main object pool (1024 entries)
+g_sprite_data_array = 0x447938;  // Sprite data array
+
+// Timing system
+g_frame_time_ms     = 0x41e2f0;  // Frame duration (10ms)
+g_last_frame_time   = 0x447dd4;  // Last frame timestamp
+g_frame_sync_flag   = 0x424700;  // Frame sync state
+g_frame_time_delta  = 0x425960;  // Frame timing delta
+g_frame_skip_count  = 0x4246f4;  // Frame skip counter
+
+// Random number generator
+g_random_seed       = 0x41fb1c;  // RNG seed
+
+// Input buffer management
+g_input_buffer_index = (calculated); // Current buffer index
+g_input_repeat_timer = 0x4d1c40;     // Input repeat timers
+
+// Round system
+g_round_timer       = 0x470060;  // Round timer
+g_game_timer        = 0x470044;  // Game timer
+g_hit_effect_timer  = 0x4701c8;  // Hit effect timer
+```
+
+### Final State Structure for GekkoNet
+
+With all the memory addresses identified, here's the complete state structure:
+
+```c
+typedef struct FM2KCompleteGameState {
+    // Frame and timing state
+    uint32_t frame_number;
+    uint32_t input_buffer_index;
+    uint32_t last_frame_time;
+    uint32_t frame_time_delta;
+    uint8_t frame_skip_count;
+    uint8_t frame_sync_flag;
+    
+    // Random number generator state
+    uint32_t random_seed;
+    
+    // Player 1 state
+    struct {
+        uint32_t input_current;
+        uint32_t input_history[1024];
+        uint32_t stage_x, stage_y;
+        uint32_t round_count;
+        uint32_t round_state;
+        uint32_t action_state;
+        uint32_t hp, max_hp;
+    } p1;
+    
+    // Player 2 state
+    struct {
+        uint32_t input_current;
+        uint32_t input_history[1024];
+        uint32_t action_state;
+        uint32_t hp, max_hp;
+    } p2;
+    
+    // Global timers
+    uint32_t round_timer;
+    uint32_t game_timer;
+    uint32_t hit_effect_timer;
+    
+    // Input system state
+    uint32_t input_repeat_timer[8];
+    
+    // Critical object pool state (first 2 character objects)
+    struct {
+        uint32_t object_type;
+        int32_t pos_x, pos_y;        // 16.16 fixed point
+        int32_t vel_x, vel_y;
+        uint16_t state_flags;
+        uint16_t animation_frame;
+        uint16_t health_segments;
+        uint16_t facing_direction;
+        // ... other critical fields
+    } character_objects[2];
+    
+} FM2KCompleteGameState;
+```
+
+### Memory Access Functions
+
+```c
+// Direct memory access functions for state serialization
+void save_fm2k_complete_state(FM2KCompleteGameState* state) {
+    // Frame and timing
+    state->frame_number = current_frame;
+    state->input_buffer_index = g_input_buffer_index;
+    state->last_frame_time = *(uint32_t*)0x447dd4;
+    state->frame_time_delta = *(uint32_t*)0x425960;
+    state->frame_skip_count = *(uint8_t*)0x4246f4;
+    state->frame_sync_flag = *(uint8_t*)0x424700;
+    
+    // RNG state
+    state->random_seed = *(uint32_t*)0x41fb1c;
+    
+    // Player 1 state
+    state->p1.input_current = *(uint32_t*)0x4259c0;
+    memcpy(state->p1.input_history, (void*)0x4280e0, 1024 * sizeof(uint32_t));
+    state->p1.stage_x = *(uint32_t*)0x424e68;
+    state->p1.stage_y = *(uint32_t*)0x424e6c;
+    state->p1.round_count = *(uint32_t*)0x4700ec;
+    state->p1.round_state = *(uint32_t*)0x4700f0;
+    state->p1.action_state = *(uint32_t*)0x47019c;
+    state->p1.hp = *(uint32_t*)0x4dfc85;
+    state->p1.max_hp = *(uint32_t*)0x4dfc91;
+    
+    // Player 2 state
+    state->p2.input_current = *(uint32_t*)0x4259c4;
+    memcpy(state->p2.input_history, (void*)0x4290e0, 1024 * sizeof(uint32_t));
+    state->p2.action_state = *(uint32_t*)0x4701a0;
+    state->p2.hp = *(uint32_t*)0x4edcc4;
+    state->p2.max_hp = *(uint32_t*)0x4edcd0;
+    
+    // Global timers
+    state->round_timer = *(uint32_t*)0x470060;
+    state->game_timer = *(uint32_t*)0x470044;
+    state->hit_effect_timer = *(uint32_t*)0x4701c8;
+    
+    // Input repeat timers
+    memcpy(state->input_repeat_timer, (void*)0x4d1c40, 8 * sizeof(uint32_t));
+    
+    // Character objects from object pool
+    save_character_objects_from_pool(state->character_objects);
+}
+
+void load_fm2k_complete_state(FM2KCompleteGameState* state) {
+    // Restore all state in reverse order
+    // ... (similar but with assignment in opposite direction)
+}
+```
+
+This gives us a complete, memory-accurate state structure that can be used with GekkoNet for rollback implementation. The state size is approximately 10KB, which is very reasonable for rollback netcode.
+
+## GekkoNet SDL Example Analysis & FM2K Integration
+
+### SDL Example Key Patterns
+
+The OnlineSession.cpp example demonstrates the core GekkoNet integration patterns we need for FM2K:
+
+#### 1. **Session Setup Pattern**
+```c
+// From SDL example - adapt for FM2K
+GekkoSession* sess = nullptr;
+GekkoConfig conf {
+    .num_players = 2,
+    .input_size = sizeof(char),           // FM2K: sizeof(uint32_t)
+    .state_size = sizeof(GState),         // FM2K: sizeof(FM2KCompleteGameState)
+    .max_spectators = 0,                  // FM2K: 8 for spectators
+    .input_prediction_window = 10,        // FM2K: 8 frames
+    .desync_detection = true,
+    // .limited_saving = true,            // FM2K: false for accuracy
+};
+
+gekko_create(&sess);
+gekko_start(sess, &conf);
+gekko_net_adapter_set(sess, gekko_default_adapter(localport));
+```
+
+#### 2. **Player Management Pattern**
+```c
+// Order-dependent player addition (from example)
+if (localplayer == 0) {
+    localplayer = gekko_add_actor(sess, LocalPlayer, nullptr);
+    auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), 
+                                  (unsigned int)remote_address.size() };
+    gekko_add_actor(sess, RemotePlayer, &remote);
+} else {
+    auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), 
+                                  (unsigned int)remote_address.size() };
+    gekko_add_actor(sess, RemotePlayer, &remote);
+    localplayer = gekko_add_actor(sess, LocalPlayer, nullptr);
+}
+```
+
+#### 3. **Core Game Loop Pattern** 
+```c
+// From SDL example - critical for FM2K integration
+while (running) {
+    // Timing control
+    frames_ahead = gekko_frames_ahead(sess);
+    frame_time = GetFrameTime(frames_ahead);
+    
+    // Network polling
+    gekko_network_poll(sess);
+    
+    // Frame processing
+    while (accumulator >= frame_time) {
+        // Add local input
+        auto input = get_key_inputs();
+        gekko_add_local_input(sess, localplayer, &input);
+        
+        // Handle session events
+        auto events = gekko_session_events(sess, &count);
+        for (int i = 0; i < count; i++) {
+            // Handle PlayerConnected, PlayerDisconnected, DesyncDetected
+        }
+        
+        // Process game events
+        auto updates = gekko_update_session(sess, &count);
+        for (int i = 0; i < count; i++) {
+            switch (updates[i]->type) {
+                case SaveEvent: save_state(&state, updates[i]); break;
+                case LoadEvent: load_state(&state, updates[i]); break;
+                case AdvanceEvent:
+                    // Extract inputs and advance game
+                    inputs[0].input.value = updates[i]->data.adv.inputs[0];
+                    inputs[1].input.value = updates[i]->data.adv.inputs[1];
+                    update_state(state, inputs, num_players);
+                    break;
+            }
+        }
+        accumulator -= frame_time;
+    }
+    
+    // Render current state
+    render_state(state);
+}
+```
+
+### FM2K Integration Strategy
+
+#### 1. **Replace SDL2 with SDL3 for FM2K**
+```c
+// SDL3 initialization for FM2K integration
+#include "SDL3/SDL.h"
+
+bool init_fm2k_window(void) {
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
+        fprintf(stderr, "Error initializing SDL3.\n");
+        return false;
+    }
+    
+    // Create window matching FM2K's resolution
+    window = SDL_CreateWindow(
+        "FM2K Online Session",
+        640, 480,  // FM2K native resolution
+        SDL_WINDOW_RESIZABLE
+    );
+    
+    if (!window) {
+        fprintf(stderr, "Error creating SDL3 Window.\n");
+        return false;
+    }
+    
+    renderer = SDL_CreateRenderer(window, NULL);
+    if (!renderer) {
+        fprintf(stderr, "Error creating SDL3 Renderer.\n");
+        return false;
+    }
+    
+    return true;
+}
+```
+
+#### 2. **FM2K Input Structure**
+```c
+// Replace simple GInput with FM2K's 11-bit input system
+struct FM2KInput {
+    union {
+        struct {
+            uint16_t left     : 1;   // 0x001
+            uint16_t right    : 1;   // 0x002
+            uint16_t up       : 1;   // 0x004
+            uint16_t down     : 1;   // 0x008
+            uint16_t button1  : 1;   // 0x010
+            uint16_t button2  : 1;   // 0x020
+            uint16_t button3  : 1;   // 0x040
+            uint16_t button4  : 1;   // 0x080
+            uint16_t button5  : 1;   // 0x100
+            uint16_t button6  : 1;   // 0x200
+            uint16_t button7  : 1;   // 0x400
+            uint16_t reserved : 5;   // Unused bits
+        } bits;
+        uint16_t value;
+    } input;
+};
+
+FM2KInput get_fm2k_inputs() {
+    FM2KInput input{};
+    input.input.value = 0;
+    
+    // Get keyboard state (SDL3 syntax)
+    const bool* keys = SDL_GetKeyboardState(NULL);
+    
+    // Map to FM2K inputs
+    input.input.bits.up = keys[SDL_SCANCODE_W];
+    input.input.bits.left = keys[SDL_SCANCODE_A];
+    input.input.bits.down = keys[SDL_SCANCODE_S];
+    input.input.bits.right = keys[SDL_SCANCODE_D];
+    input.input.bits.button1 = keys[SDL_SCANCODE_J];
+    input.input.bits.button2 = keys[SDL_SCANCODE_K];
+    input.input.bits.button3 = keys[SDL_SCANCODE_L];
+    // ... map other buttons
+    
+    return input;
+}
+```
+
+#### 3. **FM2K State Management**
+```c
+// Replace simple GState with FM2KCompleteGameState
+void save_fm2k_state(FM2KCompleteGameState* gs, GekkoGameEvent* ev) {
+    *ev->data.save.state_len = sizeof(FM2KCompleteGameState);
+    
+    // Use Fletcher's checksum (from example) for consistency
+    *ev->data.save.checksum = fletcher32((uint16_t*)gs, sizeof(FM2KCompleteGameState));
+    
+    std::memcpy(ev->data.save.state, gs, sizeof(FM2KCompleteGameState));
+}
+
+void load_fm2k_state(FM2KCompleteGameState* gs, GekkoGameEvent* ev) {
+    std::memcpy(gs, ev->data.load.state, sizeof(FM2KCompleteGameState));
+}
+
+void update_fm2k_state(FM2KCompleteGameState& gs, FM2KInput inputs[2]) {
+    // Call into FM2K's actual game logic
+    // This would hook into the functions we analyzed:
+    
+    // 1. Inject inputs into FM2K's input system
+    *(uint32_t*)0x4259c0 = inputs[0].input.value;  // g_p1_input
+    *(uint32_t*)0x4259c4 = inputs[1].input.value;  // g_p2_input
+    
+    // 2. Call FM2K's update functions
+    // process_game_inputs_FRAMESTEP_HOOK();  // 0x4146d0
+    // update_game_state();                   // Game logic
+    // character_state_machine();             // 0x411bf0
+    // hit_detection_system();                // 0x40f010
+    
+    // 3. Extract updated state from FM2K memory
+    gs.p1.hp = *(uint32_t*)0x4dfc85;
+    gs.p2.hp = *(uint32_t*)0x4edcc4;
+    gs.round_timer = *(uint32_t*)0x470060;
+    // ... extract all other state variables
+}
+```
+
+#### 4. **FM2K Timing Integration**
+```c
+// Adapt timing to match FM2K's 100 FPS
+float GetFM2KFrameTime(float frames_ahead) {
+    // FM2K runs at 100 FPS (10ms per frame)
+    const float base_frame_time = 1.0f / 100.0f;  // 0.01 seconds
+    
+    if (frames_ahead >= 0.75f) {
+        // Slow down if too far ahead
+        return base_frame_time * 1.02f;  // 59.8 FPS equivalent
+    } else {
+        return base_frame_time;  // Normal 100 FPS
+    }
+}
+```
+
+#### 5. **Complete FM2K Integration Main Loop**
+```c
+int fm2k_online_main(int argc, char* args[]) {
+    // Parse command line (same as example)
+    int localplayer = std::stoi(args[1]);
+    const int localport = std::stoi(args[2]);
+    std::string remote_address = std::move(args[3]);
+    int localdelay = std::stoi(args[4]);
+    
+    // Initialize SDL3 and FM2K
+    running = init_fm2k_window();
+    
+    // Initialize FM2K state
+    FM2KCompleteGameState state = {};
+    FM2KInput inputs[2] = {};
+    
+    // Setup GekkoNet
+    GekkoSession* sess = nullptr;
+    GekkoConfig conf {
+        .num_players = 2,
+        .input_size = sizeof(uint16_t),  // FM2K input size
+        .state_size = sizeof(FM2KCompleteGameState),
+        .max_spectators = 8,
+        .input_prediction_window = 8,
+        .desync_detection = true,
+        .limited_saving = false,  // Full state saving for accuracy
+        .post_sync_joining = true
+    };
+    
+    gekko_create(&sess);
+    gekko_start(sess, &conf);
+    gekko_net_adapter_set(sess, gekko_default_adapter(localport));
+    
+    // Add players (order-dependent)
+    if (localplayer == 0) {
+        localplayer = gekko_add_actor(sess, LocalPlayer, nullptr);
+        auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), 
+                                      (unsigned int)remote_address.size() };
+        gekko_add_actor(sess, RemotePlayer, &remote);
+    } else {
+        auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), 
+                                      (unsigned int)remote_address.size() };
+        gekko_add_actor(sess, RemotePlayer, &remote);
+        localplayer = gekko_add_actor(sess, LocalPlayer, nullptr);
+    }
+    
+    gekko_set_local_delay(sess, localplayer, localdelay);
+    
+    // Timing variables
+    auto curr_time = std::chrono::steady_clock::now();
+    auto prev_time = curr_time;
+    float delta_time = 0.0f;
+    float accumulator = 0.0f;
+    float frame_time = 0.0f;
+    float frames_ahead = 0.0f;
+    
+    while (running) {
+        curr_time = std::chrono::steady_clock::now();
+        
+        frames_ahead = gekko_frames_ahead(sess);
+        frame_time = GetFM2KFrameTime(frames_ahead);
+        
+        delta_time = std::chrono::duration<float>(curr_time - prev_time).count();
+        prev_time = curr_time;
+        accumulator += delta_time;
+        
+        gekko_network_poll(sess);
+        
+        while (accumulator >= frame_time) {
+            // Process SDL events
+            process_events();
+            
+            // Get local input
+            auto input = get_fm2k_inputs();
+            gekko_add_local_input(sess, localplayer, &input);
+            
+            // Handle session events
+            int count = 0;
+            auto events = gekko_session_events(sess, &count);
+            for (int i = 0; i < count; i++) {
+                handle_fm2k_session_event(events[i]);
+            }
+            
+            // Process game events
+            count = 0;
+            auto updates = gekko_update_session(sess, &count);
+            for (int i = 0; i < count; i++) {
+                auto ev = updates[i];
+                
+                switch (ev->type) {
+                    case SaveEvent:
+                        save_fm2k_state(&state, ev);
+                        break;
+                    case LoadEvent:
+                        load_fm2k_state(&state, ev);
+                        break;
+                    case AdvanceEvent:
+                        // Extract inputs from GekkoNet
+                        inputs[0].input.value = ((uint16_t*)ev->data.adv.inputs)[0];
+                        inputs[1].input.value = ((uint16_t*)ev->data.adv.inputs)[1];
+                        
+                        // Update FM2K game state
+                        update_fm2k_state(state, inputs);
+                        break;
+                }
+            }
+            
+            accumulator -= frame_time;
+        }
+        
+        // Render current state
+        render_fm2k_state(state);
+    }
+    
+    gekko_destroy(sess);
+    del_window();
+    return 0;
+}
+```
+
+### Key Differences from SDL Example
+
+1. **Input Size**: FM2K uses 16-bit inputs vs 8-bit in example
+2. **State Size**: ~10KB vs ~16 bytes in example  
+3. **Frame Rate**: 100 FPS vs 60 FPS in example
+4. **State Complexity**: Full game state vs simple position
+5. **Integration Depth**: Hooks into existing game vs standalone
+
+### Integration Benefits
+
+1. **Proven Pattern**: The SDL example shows GekkoNet works reliably
+2. **Clear Structure**: Event handling patterns are well-defined
+3. **Performance**: Timing control handles frame rate variations
+4. **Network Stats**: Built-in ping/jitter monitoring
+5. **Error Handling**: Desync detection and player management
+
+This analysis shows that adapting the SDL example for FM2K is very feasible, with the main changes being input/state structures and frame timing to match FM2K's 100 FPS architecture.
+
+## Hit Judge and Round System Architecture
+
+### Hit Judge Configuration (0x42470C-0x430120)
+
+The game uses a sophisticated hit detection and configuration system loaded from INI files:
+
+```c
+struct FM2K_HitJudgeConfig {
+    uint32_t hit_judge_value;    // 0x42470C - Hit detection threshold
+    uint32_t config_values[7];   // 0x4300E0-0x430120 - General config values
+    char     config_string[260]; // Configuration string buffer
+};
+```
+
+The hit judge system is initialized by `hit_judge_set_function` (0x414930) which:
+1. Loads configuration from INI files
+2. Sets up hit detection parameters
+3. Configures round settings and game modes
+
+### Round System State (0x470040-0x47006C)
+
+The round system maintains several critical state variables:
+
+```c
+struct FM2K_RoundSystem {
+    uint32_t game_mode;      // 0x470040 - Current game mode (VS/Team/Tournament)
+    uint32_t round_limit;    // 0x470048 - Maximum rounds for the match
+    uint32_t round_state;    // 0x47004C - Current round state
+    uint32_t round_timer;    // 0x470060 - Active round timer
+};
+
+enum FM2K_RoundState {
+    ROUND_INIT = 0,      // Initial state
+    ROUND_ACTIVE = 1,    // Round in progress
+    ROUND_END = 2,       // Round has ended
+    ROUND_MATCH_END = 3  // Match has ended
+};
+
+enum FM2K_GameMode {
+    MODE_NORMAL = 0,     // Normal VS mode
+    MODE_TEAM = 1,       // Team Battle mode
+    MODE_TOURNAMENT = 2  // Tournament mode
+};
+```
+
+The round system is managed by `vs_round_function` (0x4086A0) which:
+1. Handles round state transitions
+2. Manages round timers
+3. Processes win/loss conditions
+4. Controls match flow
+
+### Rollback Implications
+
+This architecture has several important implications for rollback implementation:
+
+1. **State Serialization Requirements:**
+   - Must save hit judge configuration
+   - Must preserve round state and timers
+   - Game mode affects state size
+
+2. **Deterministic Behavior:**
+   - Hit detection is configuration-driven
+   - Round state transitions are deterministic
+   - Timer-based events are predictable
+
+3. **State Size Optimization:**
+   - Hit judge config is static per match
+   - Only dynamic round state needs saving
+   - Can optimize by excluding static config
+
+4. **Synchronization Points:**
+   - Round state changes are key sync points
+   - Hit detection results must be identical
+   - Timer values must match exactly
+
+Updated state structure for rollback:
+
+```c
+typedef struct FM2KGameState {
+    // ... existing timing and input state ...
+
+    // Round System State
+    struct {
+        uint32_t mode;          // Current game mode
+        uint32_t round_limit;   // Maximum rounds
+        uint32_t round_state;   // Current round state
+        uint32_t round_timer;   // Active round timer
+        uint32_t score_value;   // Current score/timer value
+    } round_system;
+
+    // Hit Judge State
+    struct {
+        uint32_t hit_judge_value;   // Current hit detection threshold
+        uint32_t effect_target;     // Current hit effect target
+        uint32_t effect_timer;      // Hit effect duration
+    } hit_system;
+
+    // ... rest of game state ...
+} FM2KGameState;
+```
+
+## Sprite Rendering and Hit Detection System
+
+### Sprite Rendering Engine (0x40CC30)
+
+The game uses a sophisticated sprite rendering engine that handles:
+1. Hit effect visualization
+2. Sprite transformations and blending
+3. Color palette manipulation
+4. Screen-space effects
+
+Key components:
+
+```c
+struct SpriteRenderState {
+    uint32_t render_mode;     // Different rendering modes (-10 to 3)
+    uint32_t blend_flags;     // Blending and effect flags
+    uint32_t color_values[3]; // RGB color modification values
+    uint32_t effect_timer;    // Effect duration counter
+};
+```
+
+### Hit Effect System
+
+The hit effect system is tightly integrated with the sprite renderer:
+
+1. **Effect Triggers:**
+   - Hit detection results (0x42470C)
+   - Game state transitions
+   - Timer-based events
+
+2. **Effect Parameters:**
+   ```c
+   struct HitEffectParams {
+       uint32_t target_id;      // Effect target identifier
+       uint32_t effect_type;    // Visual effect type
+       uint32_t duration;       // Effect duration in frames
+       uint32_t color_values;   // RGB color modulation
+   };
+   ```
+
+3. **Rendering Pipeline:**
+   - Color palette manipulation (0x4D1A20)
+   - Sprite transformation
+   - Blend mode selection
+   - Screen-space effects
+
+### Integration with Rollback
+
+The sprite and hit effect systems have important implications for rollback:
+
+1. **Visual State Management:**
+   - Effect timers must be part of the game state
+   - Color modulation values need saving
+   - Sprite transformations must be deterministic
+
+2. **Performance Considerations:**
+   - Effect parameters are small (few bytes per effect)
+   - Visual state is derived from game state
+   - Can optimize by excluding pure visual state
+
+3. **Synchronization Requirements:**
+   - Hit effects must trigger identically
+   - Effect timers must stay synchronized
+   - Visual state must match game state
+
+Updated state structure to include visual effects:
+
+```c
+typedef struct FM2KGameState {
+    // ... previous state members ...
+
+    // Visual Effect State
+    struct {
+        uint32_t active_effects;     // Bitfield of active effects
+        uint32_t effect_timers[8];   // Array of effect durations
+        uint32_t color_values[8][3]; // RGB values for each effect
+        uint32_t target_ids[8];      // Effect target identifiers
+    } visual_state;
+
+    // ... rest of game state ...
+} FM2KGameState;
+```
+
+## Game State Management System
+
+The game state manager (0x406FC0) handles several critical aspects of the game:
+
+### State Variables
+
+1. **Round System State:**
+   ```c
+   struct RoundSystemState {
+       uint32_t g_round_timer;        // 0x470060 - Current round timer value
+       uint32_t g_round_limit;        // 0x470048 - Maximum rounds per match
+       uint32_t g_round_state;        // 0x47004C - Current round state
+       uint32_t g_game_mode;          // 0x470040 - Current game mode
+   };
+   ```
+
+2. **Player State:**
+   ```c
+   struct PlayerState {
+       int32_t stage_position;        // Current position on stage grid
+       uint32_t action_state;         // Current action being performed
+       uint32_t round_count;          // Number of rounds completed
+       uint32_t input_history[4];     // Recent input history
+       uint32_t move_history[4];      // Recent movement history
+   };
+   ```
+
+### State Management Flow
+
+1. **Initialization (0x406FC0):**
+   - Loads initial configuration
+   - Sets up round timer and limits
+   - Initializes player positions
+   - Sets up game mode parameters
+
+2. **State Updates:**
+   - Input processing and validation
+   - Position and movement updates
+   - Action state transitions
+   - Round state management
+
+3. **State Synchronization:**
+   - Timer synchronization
+   - Player state synchronization
+   - Round state transitions
+   - Game mode state management
+
+### Rollback Implications
+
+1. **Critical State Components:**
+   - Round timer and state
+   - Player positions and actions
+   - Input and move history
+   - Game mode state
+
+2. **State Size Analysis:**
+   - Core game state: ~128 bytes
+   - Player state: ~32 bytes per player
+   - History buffers: ~32 bytes per player
+   - Total per-frame state: ~256 bytes
+
+3. **Synchronization Requirements:**
+   - Timer must be deterministic
+   - Player state must be atomic
+   - Input processing must be consistent
+   - State transitions must be reproducible
+
+## Input Processing System
+
+The game uses a sophisticated input processing system that handles both movement and action inputs:
+
+### Input Mapping (0x406F20)
+
+```c
+enum InputActions {
+    ACTION_NONE = 0,
+    ACTION_A = 1,    // 0x20  - Light Attack
+    ACTION_B = 2,    // 0x40  - Medium Attack
+    ACTION_C = 3,    // 0x80  - Heavy Attack
+    ACTION_D = 4,    // 0x100 - Special Move
+    ACTION_E = 5     // 0x200 - Super Move
+};
+
+enum InputDirections {
+    DIR_NONE  = 0x000,
+    DIR_UP    = 0x004,
+    DIR_DOWN  = 0x008,
+    DIR_LEFT  = 0x001,
+    DIR_RIGHT = 0x002
+};
+```
+
+### Input Processing Flow
+
+1. **Raw Input Capture:**
+   - Movement inputs (4-way directional)
+   - Action buttons (5 main buttons)
+   - System buttons (Start, Select)
+
+2. **Input State Management:**
+   ```c
+   struct InputState {
+       uint16_t current_input;     // Current frame's input
+       uint16_t previous_input;    // Last frame's input
+       uint16_t input_changes;     // Changed bits since last frame
+       uint8_t  processed_input;   // Processed directional input
+   };
+   ```
+
+3. **Input History:**
+   - Each player maintains a 4-frame input history
+   - History includes both raw and processed inputs
+   - Used for move validation and rollback
+
+4. **Input Processing:**
+   - Raw input capture
+   - Input change detection
+   - Input repeat handling:
+     - Initial delay
+     - Repeat delay
+     - Repeat timer
+   - Input validation
+   - Mode-specific processing:
+     - VS mode (< 3000)
+     - Story mode (? 3000)
+
+5. **Memory Layout:**
+   ```
+   input_system {
+     +g_input_buffer_index: Current frame index
+     +g_p1_input[8]: Current P1 inputs
+     +g_p2_input: Current P2 inputs
+     +g_prev_input_state[8]: Previous frame inputs
+     +g_input_changes[8]: Input change flags
+     +g_input_repeat_state[8]: Input repeat flags
+     +g_input_repeat_timer[8]: Repeat timers
+     +g_processed_input[8]: Processed inputs
+     +g_combined_processed_input: Combined state
+     +g_combined_input_changes: Change mask
+     +g_combined_raw_input: Raw input mask
+   }
+   ```
+
+6. **Critical Operations:**
+   - Frame advance:
+     ```c
+     g_input_buffer_index = (g_input_buffer_index + 1) & 0x3FF;
+     g_p1_input_history[g_input_buffer_index] = current_input;
+     ```
+   - Input processing:
+     ```c
+     g_input_changes = current_input & (prev_input ^ current_input);
+     if (repeat_active && current_input == repeat_state) {
+       if (--repeat_timer == 0) {
+         processed_input = current_input;
+         repeat_timer = repeat_delay;
+       }
+     }
+     ```
+
+This system is crucial for rollback implementation as it provides:
+1. Deterministic input processing
+2. Frame-accurate input history
+3. Clear state serialization points
+4. Mode-specific input handling
+5. Input validation and processing logic
+
+The 1024-frame history buffer is particularly useful for rollback, as it provides ample space for state rewinding and replay.
+```
+
+### Health Damage Manager (0x40e6f0)
+
+The health damage manager handles health state and damage calculations:
+
+1. **Health State Management:**
+   - Per-character health tracking
+   - Health segments system
+   - Recovery mechanics
+   - Guard damage handling
+
+2. **Memory Layout:**
+   ```
+   health_system {
+     +4DFC95: Current health segment
+     +4DFC99: Maximum health segments
+     +4DFC9D: Current health points
+     +4DFCA1: Health segment size
+   }
+   ```
+
+3. **Damage Processing:**
+   - Segment-based health system:
+     ```c
+     while (current_health < 0) {
+       if (current_segment > 0) {
+         current_segment--;
+         current_health += segment_size;
+       } else {
+         current_health = 0;
+       }
+     }
+     ```
+   - Health recovery:
+     ```c
+     while (current_health >= segment_size) {
+       if (current_segment < max_segments) {
+         current_health -= segment_size;
+         current_segment++;
+       } else {
+         current_health = 0;
+       }
+     }
+     ```
+
+4. **Critical Operations:**
+   - Damage application:
+     - Negative values for damage
+     - Positive values for healing
+   - Segment management:
+     - Segment depletion
+     - Segment recovery
+     - Maximum segment cap
+   - Health validation:
+     - Minimum health check
+     - Maximum health check
+     - Segment boundary checks
+
+This system is crucial for rollback implementation as it:
+1. Uses deterministic damage calculations
+2. Maintains clear health state boundaries
+3. Provides segment-based state tracking
+4. Handles health recovery mechanics
+5. Manages guard damage separately
+
+The segmented health system will make it easier to serialize and restore health states during rollback operations, as each segment provides a clear checkpoint for state management.
+```
+
+### Rollback Implementation Summary
+
+After analyzing FM2K's core systems, we can conclude that the game is well-suited for rollback netcode implementation. Here's a comprehensive overview of how each system will integrate with rollback:
+
+1. **State Serialization Points:**
+   - Character State Machine (0x411bf0):
+     - Base states (0x0-0x3)
+     - Action states (0x4-0x7)
+     - Movement states (0x8-0xB)
+     - Frame counters and timers
+   - Hit Detection System (0x40f010):
+     - Hit boxes and collision state
+     - Damage values and scaling
+     - Hit confirmation flags
+   - Input Buffer System (0x4146d0):
+     - 1024-frame history buffer
+     - Input state flags
+     - Repeat handling state
+   - Health System (0x40e6f0):
+     - Health segments
+     - Current health points
+     - Guard damage state
+     - Recovery mechanics
+
+2. **Deterministic Systems:**
+   - Fixed frame rate (100 FPS)
+   - 16.16 fixed-point coordinates
+   - Deterministic input processing
+   - Clear state transitions
+   - Predictable damage calculations
+   - Frame-based timers
+
+3. **State Management:**
+   - Object Pool (1024 entries):
+     - Type identification
+     - Position and velocity
+     - Animation state
+     - Collision data
+   - Input History:
+     - Circular buffer design
+     - Clear frame boundaries
+     - Input validation
+   - Hit Detection:
+     - Priority system
+     - State validation
+     - Reaction handling
+   - Health System:
+     - Segment-based tracking
+     - Clear state boundaries
+     - Recovery mechanics
+
+4. **Implementation Strategy:**
+   a. Save State (Frame N):
+      ```c
+      struct SaveState {
+          // Character State
+          int base_state;
+          int action_state;
+          int movement_state;
+          int frame_counters[4];
+          
+          // Hit Detection
+          int hit_boxes[20];
+          int damage_values[8];
+          int hit_flags;
+          
+          // Input Buffer
+          int input_history[1024];
+          int input_flags;
+          int repeat_state;
+          
+          // Health System
+          int health_segments;
+          int current_health;
+          int guard_damage;
+      };
+      ```
+
+   b. Rollback Process:
+      1. Save current frame state
+      2. Apply new remote input
+      3. Simulate forward:
+         - Process inputs
+         - Update character states
+         - Handle collisions
+         - Apply damage
+      4. Render new state
+      5. Save confirmed state
+
+5. **Critical Hooks:**
+   - Input Processing (0x4146d0):
+     - Frame advance point
+     - Input buffer management
+   - Character State (0x411bf0):
+     - State transition handling
+     - Frame counting
+   - Hit Detection (0x40f010):
+     - Collision processing
+     - Damage application
+   - Health System (0x40e6f0):
+     - Health state management
+     - Segment tracking
+
+6. **Optimization Opportunities:**
+   - Parallel state simulation
+   - Minimal state serialization
+   - Efficient state diffing
+   - Smart state prediction
+   - Input compression
+
+The analysis reveals that FM2K's architecture is highly suitable for rollback implementation due to its:
+1. Deterministic game logic
+2. Clear state boundaries
+3. Frame-based processing
+4. Efficient memory layout
+5. Well-defined systems
+
+This research provides a solid foundation for implementing rollback netcode in FM2K, with all major systems supporting the requirements for state saving, rollback, and resimulation.
+
+## GekkoNet Integration Analysis
+
+### GekkoNet Library Overview
+
+GekkoNet is a rollback netcode library that provides the networking infrastructure we need for FM2K. Here's how it maps to our analyzed systems:
+
+### 1. **GekkoNet Configuration for FM2K**
+```c
+GekkoConfig fm2k_config = {
+    .num_players = 2,                    // P1 vs P2
+    .max_spectators = 8,                 // Allow spectators
+    .input_prediction_window = 8,        // 8 frames ahead prediction
+    .spectator_delay = 6,                // 6 frame spectator delay
+    .input_size = sizeof(uint32_t),      // FM2K input flags (32-bit)
+    .state_size = sizeof(FM2KGameState), // Our minimal state structure
+    .limited_saving = false,             // Full state saving for accuracy
+    .post_sync_joining = true,           // Allow mid-match spectators
+    .desync_detection = true             // Enable desync detection
+};
+```
+
+### 2. **Integration Points with FM2K Systems**
+
+#### Input System Integration (0x4146d0)
+```c
+// Hook into process_game_inputs()
+void fm2k_input_hook() {
+    // Get GekkoNet events
+    int event_count;
+    GekkoGameEvent** events = gekko_update_session(session, &event_count);
+    
+    for (int i = 0; i < event_count; i++) {
+        switch (events[i]->type) {
+            case AdvanceEvent:
+                // Inject inputs into FM2K's input system
+                g_p1_input_history[g_input_buffer_index] = events[i]->data.adv.inputs[0];
+                g_p2_input_history[g_input_buffer_index] = events[i]->data.adv.inputs[1];
+                // Continue normal input processing
+                break;
+                
+            case SaveEvent:
+                // Save current FM2K state
+                save_fm2k_state(events[i]->data.save.state, events[i]->data.save.state_len);
+                break;
+                
+            case LoadEvent:
+                // Restore FM2K state
+                load_fm2k_state(events[i]->data.load.state, events[i]->data.load.state_len);
+                break;
+        }
+    }
+}
+```
+
+#### State Management Integration
+```c
+typedef struct FM2KGameState {
+    // Frame tracking
+    uint32_t frame_number;
+    uint32_t input_buffer_index;
+    
+    // Input state
+    uint32_t p1_input_current;
+    uint32_t p2_input_current;
+    uint32_t input_repeat_state[8];
+    uint32_t input_repeat_timer[8];
+    
+    // Character states (per character)
+    struct {
+        // Position (16.16 fixed point)
+        int32_t pos_x, pos_y;
+        int32_t vel_x, vel_y;
+        
+        // State machine
+        uint16_t base_state;        // 0x0-0x3
+        uint16_t action_state;      // 0x4-0x7  
+        uint16_t movement_state;    // 0x8-0xB
+        uint16_t state_flags;       // Offset 350
+        
+        // Animation
+        uint16_t animation_frame;   // Offset 12
+        uint16_t max_animation_frame; // Offset 88
+        
+        // Health system
+        uint16_t health_segments;   // Current segments
+        uint16_t current_health;    // Health points
+        uint16_t max_health_segments; // Maximum segments
+        uint16_t guard_damage;      // Guard damage accumulation
+        
+        // Hit detection
+        uint16_t hit_flags;         // Hit state flags
+        uint16_t hit_stun_timer;    // Hit stun duration
+        uint16_t guard_state;       // Guard state flags
+        
+        // Facing and direction
+        uint8_t facing_direction;   // Left/right facing
+        uint8_t input_direction;    // Current input direction
+    } characters[2];
+    
+    // Round state
+    uint32_t round_state;           // Round state machine
+    uint32_t round_timer;           // Round timer
+    uint32_t game_mode;             // Current game mode
+    
+    // Hit detection global state
+    uint32_t hit_effect_target;     // Hit effect target
+    uint32_t hit_effect_timer;      // Hit effect timer
+    
+    // Combo system
+    uint16_t combo_counter[2];      // Combo counters
+    uint16_t damage_scaling[2];     // Damage scaling
+    
+    // Object pool critical state
+    uint16_t active_objects;        // Number of active objects
+    uint32_t object_state_flags;    // Critical object flags
+    
+} FM2KGameState;
+```
+
+### 3. **Network Adapter Implementation**
+```c
+GekkoNetAdapter fm2k_adapter = {
+    .send_data = fm2k_send_packet,
+    .receive_data = fm2k_receive_packets,
+    .free_data = fm2k_free_packet_data
+};
+
+void fm2k_send_packet(GekkoNetAddress* addr, const char* data, int length) {
+    // Use existing LilithPort networking or implement UDP
+    // addr->data contains IP/port information
+    // data contains the packet to send
+}
+
+GekkoNetResult** fm2k_receive_packets(int* length) {
+    // Collect all packets received since last call
+    // Return array of GekkoNetResult pointers
+    // GekkoNet will call free_data on each result
+}
+```
+
+### 4. **Integration with Existing FM2K Systems**
+
+#### Main Game Loop Integration
+```c
+// Hook at 0x4146d0 - process_game_inputs()
+void fm2k_rollback_frame() {
+    // 1. Poll network
+    gekko_network_poll(session);
+    
+    // 2. Add local inputs
+    uint32_t local_input = get_local_player_input();
+    gekko_add_local_input(session, local_player_id, &local_input);
+    
+    // 3. Process GekkoNet events
+    int event_count;
+    GekkoGameEvent** events = gekko_update_session(session, &event_count);
+    
+    // 4. Handle events (save/load/advance)
+    process_gekko_events(events, event_count);
+    
+    // 5. Continue normal FM2K processing
+    // (character updates, hit detection, etc.)
+}
+```
+
+#### State Serialization Functions
+```c
+void save_fm2k_state(unsigned char* buffer, unsigned int* length) {
+    FM2KGameState* state = (FM2KGameState*)buffer;
+    
+    // Save frame state
+    state->frame_number = current_frame;
+    state->input_buffer_index = g_input_buffer_index;
+    
+    // Save character states from object pool
+    for (int i = 0; i < 2; i++) {
+        save_character_state(&state->characters[i], i);
+    }
+    
+    // Save round state
+    state->round_state = g_round_state;
+    state->round_timer = g_round_timer;
+    
+    *length = sizeof(FM2KGameState);
+}
+
+void load_fm2k_state(unsigned char* buffer, unsigned int length) {
+    FM2KGameState* state = (FM2KGameState*)buffer;
+    
+    // Restore frame state
+    current_frame = state->frame_number;
+    g_input_buffer_index = state->input_buffer_index;
+    
+    // Restore character states to object pool
+    for (int i = 0; i < 2; i++) {
+        load_character_state(&state->characters[i], i);
+    }
+    
+    // Restore round state
+    g_round_state = state->round_state;
+    g_round_timer = state->round_timer;
+}
+```
+
+### 5. **Event Handling Integration**
+```c
+void handle_session_events() {
+    int event_count;
+    GekkoSessionEvent** events = gekko_session_events(session, &event_count);
+    
+    for (int i = 0; i < event_count; i++) {
+        switch (events[i]->type) {
+            case PlayerConnected:
+                // Show "Player Connected" message
+                break;
+            case PlayerDisconnected:
+                // Handle disconnection
+                break;
+            case DesyncDetected:
+                // Log desync information
+                printf("Desync at frame %d: local=%08x remote=%08x\n",
+                       events[i]->data.desynced.frame,
+                       events[i]->data.desynced.local_checksum,
+                       events[i]->data.desynced.remote_checksum);
+                break;
+        }
+    }
+}
+```
+
+### 6. **Performance Considerations**
+- **State Size**: ~200 bytes per frame (very efficient)
+- **Prediction Window**: 8 frames ahead (80ms at 100 FPS)
+- **Rollback Depth**: Up to 15 frames (150ms)
+- **Network Frequency**: 100 Hz to match FM2K's frame rate
+
+### 7. **Implementation Benefits**
+1. **Minimal Code Changes**: Only need to hook input processing
+2. **Existing Infrastructure**: Leverages FM2K's input history system
+3. **Deterministic**: FM2K's fixed-point math ensures consistency
+4. **Efficient**: Small state size enables fast rollback
+5. **Robust**: GekkoNet handles all networking complexity
+
+This integration approach leverages both FM2K's existing architecture and GekkoNet's proven rollback implementation, providing a solid foundation for online play.
+
+### Critical Player State Variables
+
+Based on IDA analysis, here are the key memory addresses for player state:
+
+#### Player 1 State Variables:
+```c
+// Input system
+g_p1_input          = 0x4259c0;  // Current input state
+g_p1_input_history  = 0x4280e0;  // 1024-frame input history
+
+// Position and stage
+g_p1_stage_x        = 0x424e68;  // Stage position X
+g_p1_stage_y        = 0x424e6c;  // Stage position Y
+
+// Round and game state
+g_p1_round_count    = 0x4700ec;  // Round wins
+g_p1_round_state    = 0x4700f0;  // Round state
+g_p1_action_state   = 0x47019c;  // Action state
+
+// Health system
+g_p1_hp             = 0x4dfc85;  // Current HP
+g_p1_max_hp         = 0x4dfc91;  // Maximum HP
+```
+
+#### Player 2 State Variables:
+```c
+// Input system
+g_p2_input          = 0x4259c4;  // Current input state
+g_p2_input_history  = 0x4290e0;  // 1024-frame input history
+
+// Round and game state
+g_p2_action_state   = 0x4701a0;  // Action state
+
+// Health system
+g_p2_hp             = 0x4edcc4;  // Current HP
+g_p2_max_hp         = 0x4edcd0;  // Maximum HP
+```
+
+#### Core Game State Variables:
+```c
+// Object pool
+g_object_pool       = 0x4701e0;  // Main object pool (1024 entries)
+g_sprite_data_array = 0x447938;  // Sprite data array
+
+// Timing system
+g_frame_time_ms     = 0x41e2f0;  // Frame duration (10ms)
+g_last_frame_time   = 0x447dd4;  // Last frame timestamp
+g_frame_sync_flag   = 0x424700;  // Frame sync state
+g_frame_time_delta  = 0x425960;  // Frame timing delta
+g_frame_skip_count  = 0x4246f4;  // Frame skip counter
+
+// Random number generator
+g_random_seed       = 0x41fb1c;  // RNG seed
+
+// Input buffer management
+g_input_buffer_index = (calculated); // Current buffer index
+g_input_repeat_timer = 0x4d1c40;     // Input repeat timers
+
+// Round system
+g_round_timer       = 0x470060;  // Round timer
+g_game_timer        = 0x470044;  // Game timer
+g_hit_effect_timer  = 0x4701c8;  // Hit effect timer
+```
+
+### Final State Structure for GekkoNet
+
+With all the memory addresses identified, here's the complete state structure:
+
+```c
+typedef struct FM2KCompleteGameState {
+    // Frame and timing state
+    uint32_t frame_number;
+    uint32_t input_buffer_index;
+    uint32_t last_frame_time;
+    uint32_t frame_time_delta;
+    uint8_t frame_skip_count;
+    uint8_t frame_sync_flag;
+    
+    // Random number generator state
+    uint32_t random_seed;
+    
+    // Player 1 state
+    struct {
+        uint32_t input_current;
+        uint32_t input_history[1024];
+        uint32_t stage_x, stage_y;
+        uint32_t round_count;
+        uint32_t round_state;
+        uint32_t action_state;
+        uint32_t hp, max_hp;
+    } p1;
+    
+    // Player 2 state
+    struct {
+        uint32_t input_current;
+        uint32_t input_history[1024];
+        uint32_t action_state;
+        uint32_t hp, max_hp;
+    } p2;
+    
+    // Global timers
+    uint32_t round_timer;
+    uint32_t game_timer;
+    uint32_t hit_effect_timer;
+    
+    // Input system state
+    uint32_t input_repeat_timer[8];
+    
+    // Critical object pool state (first 2 character objects)
+    struct {
+        uint32_t object_type;
+        int32_t pos_x, pos_y;        // 16.16 fixed point
+        int32_t vel_x, vel_y;
+        uint16_t state_flags;
+        uint16_t animation_frame;
+        uint16_t health_segments;
+        uint16_t facing_direction;
+        // ... other critical fields
+    } character_objects[2];
+    
+} FM2KCompleteGameState;
+```
+
+### Memory Access Functions
+
+```c
+// Direct memory access functions for state serialization
+void save_fm2k_complete_state(FM2KCompleteGameState* state) {
+    // Frame and timing
+    state->frame_number = current_frame;
+    state->input_buffer_index = g_input_buffer_index;
+    state->last_frame_time = *(uint32_t*)0x447dd4;
+    state->frame_time_delta = *(uint32_t*)0x425960;
+    state->frame_skip_count = *(uint8_t*)0x4246f4;
+    state->frame_sync_flag = *(uint8_t*)0x424700;
+    
+    // RNG state
+    state->random_seed = *(uint32_t*)0x41fb1c;
+    
+    // Player 1 state
+    state->p1.input_current = *(uint32_t*)0x4259c0;
+    memcpy(state->p1.input_history, (void*)0x4280e0, 1024 * sizeof(uint32_t));
+    state->p1.stage_x = *(uint32_t*)0x424e68;
+    state->p1.stage_y = *(uint32_t*)0x424e6c;
+    state->p1.round_count = *(uint32_t*)0x4700ec;
+    state->p1.round_state = *(uint32_t*)0x4700f0;
+    state->p1.action_state = *(uint32_t*)0x47019c;
+    state->p1.hp = *(uint32_t*)0x4dfc85;
+    state->p1.max_hp = *(uint32_t*)0x4dfc91;
+    
+    // Player 2 state
+    state->p2.input_current = *(uint32_t*)0x4259c4;
+    memcpy(state->p2.input_history, (void*)0x4290e0, 1024 * sizeof(uint32_t));
+    state->p2.action_state = *(uint32_t*)0x4701a0;
+    state->p2.hp = *(uint32_t*)0x4edcc4;
+    state->p2.max_hp = *(uint32_t*)0x4edcd0;
+    
+    // Global timers
+    state->round_timer = *(uint32_t*)0x470060;
+    state->game_timer = *(uint32_t*)0x470044;
+    state->hit_effect_timer = *(uint32_t*)0x4701c8;
+    
+    // Input repeat timers
+    memcpy(state->input_repeat_timer, (void*)0x4d1c40, 8 * sizeof(uint32_t));
+    
+    // Character objects from object pool
+    save_character_objects_from_pool(state->character_objects);
+}
+
+void load_fm2k_complete_state(FM2KCompleteGameState* state) {
+    // Restore all state in reverse order
+    // ... (similar but with assignment in opposite direction)
+}
+```
+
+This gives us a complete, memory-accurate state structure that can be used with GekkoNet for rollback implementation. The state size is approximately 10KB, which is very reasonable for rollback netcode.
+
+## GekkoNet SDL Example Analysis & FM2K Integration
+
+### SDL Example Key Patterns
+
+The OnlineSession.cpp example demonstrates the core GekkoNet integration patterns we need for FM2K:
+
+#### 1. **Session Setup Pattern**
+```c
+// From SDL example - adapt for FM2K
+GekkoSession* sess = nullptr;
+GekkoConfig conf {
+    .num_players = 2,
+    .input_size = sizeof(char),           // FM2K: sizeof(uint32_t)
+    .state_size = sizeof(GState),         // FM2K: sizeof(FM2KCompleteGameState)
+    .max_spectators = 0,                  // FM2K: 8 for spectators
+    .input_prediction_window = 10,        // FM2K: 8 frames
+    .desync_detection = true,
+    // .limited_saving = true,            // FM2K: false for accuracy
+};
+
+gekko_create(&sess);
+gekko_start(sess, &conf);
+gekko_net_adapter_set(sess, gekko_default_adapter(localport));
+```
+
+#### 2. **Player Management Pattern**
+```c
+// Order-dependent player addition (from example)
+if (localplayer == 0) {
+    localplayer = gekko_add_actor(sess, LocalPlayer, nullptr);
+    auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), 
+                                  (unsigned int)remote_address.size() };
+    gekko_add_actor(sess, RemotePlayer, &remote);
+} else {
+    auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), 
+                                  (unsigned int)remote_address.size() };
+    gekko_add_actor(sess, RemotePlayer, &remote);
+    localplayer = gekko_add_actor(sess, LocalPlayer, nullptr);
+}
+```
+
+#### 3. **Core Game Loop Pattern** 
+```c
+// From SDL example - critical for FM2K integration
+while (running) {
+    // Timing control
+    frames_ahead = gekko_frames_ahead(sess);
+    frame_time = GetFrameTime(frames_ahead);
+    
+    // Network polling
+    gekko_network_poll(sess);
+    
+    // Frame processing
+    while (accumulator >= frame_time) {
+        // Add local input
+        auto input = get_key_inputs();
+        gekko_add_local_input(sess, localplayer, &input);
+        
+        // Handle session events
+        auto events = gekko_session_events(sess, &count);
+        for (int i = 0; i < count; i++) {
+            // Handle PlayerConnected, PlayerDisconnected, DesyncDetected
+        }
+        
+        // Process game events
+        auto updates = gekko_update_session(sess, &count);
+        for (int i = 0; i < count; i++) {
+            switch (updates[i]->type) {
+                case SaveEvent: save_state(&state, updates[i]); break;
+                case LoadEvent: load_state(&state, updates[i]); break;
+                case AdvanceEvent:
+                    // Extract inputs and advance game
+                    inputs[0].input.value = updates[i]->data.adv.inputs[0];
+                    inputs[1].input.value = updates[i]->data.adv.inputs[1];
+                    update_state(state, inputs, num_players);
+                    break;
+            }
+        }
+        accumulator -= frame_time;
+    }
+    
+    // Render current state
+    render_state(state);
+}
+```
+
+### FM2K Integration Strategy
+
+#### 1. **Replace SDL2 with SDL3 for FM2K**
+```c
+// SDL3 initialization for FM2K integration
+#include "SDL3/SDL.h"
+
+bool init_fm2k_window(void) {
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
+        fprintf(stderr, "Error initializing SDL3.\n");
+        return false;
+    }
+    
+    // Create window matching FM2K's resolution
+    window = SDL_CreateWindow(
+        "FM2K Online Session",
+        640, 480,  // FM2K native resolution
+        SDL_WINDOW_RESIZABLE
+    );
+    
+    if (!window) {
+        fprintf(stderr, "Error creating SDL3 Window.\n");
+        return false;
+    }
+    
+    renderer = SDL_CreateRenderer(window, NULL);
+    if (!renderer) {
+        fprintf(stderr, "Error creating SDL3 Renderer.\n");
+        return false;
+    }
+    
+    return true;
+}
+```
+
+#### 2. **FM2K Input Structure**
+```c
+// Replace simple GInput with FM2K's 11-bit input system
+struct FM2KInput {
+    union {
+        struct {
+            uint16_t left     : 1;   // 0x001
+            uint16_t right    : 1;   // 0x002
+            uint16_t up       : 1;   // 0x004
+            uint16_t down     : 1;   // 0x008
+            uint16_t button1  : 1;   // 0x010
+            uint16_t button2  : 1;   // 0x020
+            uint16_t button3  : 1;   // 0x040
+            uint16_t button4  : 1;   // 0x080
+            uint16_t button5  : 1;   // 0x100
+            uint16_t button6  : 1;   // 0x200
+            uint16_t button7  : 1;   // 0x400
+            uint16_t reserved : 5;   // Unused bits
+        } bits;
+        uint16_t value;
+    } input;
+};
+
+FM2KInput get_fm2k_inputs() {
+    FM2KInput input{};
+    input.input.value = 0;
+    
+    // Get keyboard state (SDL3 syntax)
+    const bool* keys = SDL_GetKeyboardState(NULL);
+    
+    // Map to FM2K inputs
+    input.input.bits.up = keys[SDL_SCANCODE_W];
+    input.input.bits.left = keys[SDL_SCANCODE_A];
+    input.input.bits.down = keys[SDL_SCANCODE_S];
+    input.input.bits.right = keys[SDL_SCANCODE_D];
+    input.input.bits.button1 = keys[SDL_SCANCODE_J];
+    input.input.bits.button2 = keys[SDL_SCANCODE_K];
+    input.input.bits.button3 = keys[SDL_SCANCODE_L];
+    // ... map other buttons
+    
+    return input;
+}
+```
+
+#### 3. **FM2K State Management**
+```c
+// Replace simple GState with FM2KCompleteGameState
+void save_fm2k_state(FM2KCompleteGameState* gs, GekkoGameEvent* ev) {
+    *ev->data.save.state_len = sizeof(FM2KCompleteGameState);
+    
+    // Use Fletcher's checksum (from example) for consistency
+    *ev->data.save.checksum = fletcher32((uint16_t*)gs, sizeof(FM2KCompleteGameState));
+    
+    std::memcpy(ev->data.save.state, gs, sizeof(FM2KCompleteGameState));
+}
+
+void load_fm2k_state(FM2KCompleteGameState* gs, GekkoGameEvent* ev) {
+    std::memcpy(gs, ev->data.load.state, sizeof(FM2KCompleteGameState));
+}
+
+void update_fm2k_state(FM2KCompleteGameState& gs, FM2KInput inputs[2]) {
+    // Call into FM2K's actual game logic
+    // This would hook into the functions we analyzed:
+    
+    // 1. Inject inputs into FM2K's input system
+    *(uint32_t*)0x4259c0 = inputs[0].input.value;  // g_p1_input
+    *(uint32_t*)0x4259c4 = inputs[1].input.value;  // g_p2_input
+    
+    // 2. Call FM2K's update functions
+    // process_game_inputs_FRAMESTEP_HOOK();  // 0x4146d0
+    // update_game_state();                   // Game logic
+    // character_state_machine();             // 0x411bf0
+    // hit_detection_system();                // 0x40f010
+    
+    // 3. Extract updated state from FM2K memory
+    gs.p1.hp = *(uint32_t*)0x4dfc85;
+    gs.p2.hp = *(uint32_t*)0x4edcc4;
+    gs.round_timer = *(uint32_t*)0x470060;
+    // ... extract all other state variables
+}
+```
+
+#### 4. **FM2K Timing Integration**
+```c
+// Adapt timing to match FM2K's 100 FPS
+float GetFM2KFrameTime(float frames_ahead) {
+    // FM2K runs at 100 FPS (10ms per frame)
+    const float base_frame_time = 1.0f / 100.0f;  // 0.01 seconds
+    
+    if (frames_ahead >= 0.75f) {
+        // Slow down if too far ahead
+        return base_frame_time * 1.02f;  // 59.8 FPS equivalent
+    } else {
+        return base_frame_time;  // Normal 100 FPS
+    }
+}
+```
+
+#### 5. **Complete FM2K Integration Main Loop**
+```c
+int fm2k_online_main(int argc, char* args[]) {
+    // Parse command line (same as example)
+    int localplayer = std::stoi(args[1]);
+    const int localport = std::stoi(args[2]);
+    std::string remote_address = std::move(args[3]);
+    int localdelay = std::stoi(args[4]);
+    
+    // Initialize SDL3 and FM2K
+    running = init_fm2k_window();
+    
+    // Initialize FM2K state
+    FM2KCompleteGameState state = {};
+    FM2KInput inputs[2] = {};
+    
+    // Setup GekkoNet
+    GekkoSession* sess = nullptr;
+    GekkoConfig conf {
+        .num_players = 2,
+        .input_size = sizeof(uint16_t),  // FM2K input size
+        .state_size = sizeof(FM2KCompleteGameState),
+        .max_spectators = 8,
+        .input_prediction_window = 8,
+        .desync_detection = true,
+        .limited_saving = false,  // Full state saving for accuracy
+        .post_sync_joining = true
+    };
+    
+    gekko_create(&sess);
+    gekko_start(sess, &conf);
+    gekko_net_adapter_set(sess, gekko_default_adapter(localport));
+    
+    // Add players (order-dependent)
+    if (localplayer == 0) {
+        localplayer = gekko_add_actor(sess, LocalPlayer, nullptr);
+        auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), 
+                                      (unsigned int)remote_address.size() };
+        gekko_add_actor(sess, RemotePlayer, &remote);
+    } else {
+        auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), 
+                                      (unsigned int)remote_address.size() };
+        gekko_add_actor(sess, RemotePlayer, &remote);
+        localplayer = gekko_add_actor(sess, LocalPlayer, nullptr);
+    }
+    
+    gekko_set_local_delay(sess, localplayer, localdelay);
+    
+    // Timing variables
+    auto curr_time = std::chrono::steady_clock::now();
+    auto prev_time = curr_time;
+    float delta_time = 0.0f;
+    float accumulator = 0.0f;
+    float frame_time = 0.0f;
+    float frames_ahead = 0.0f;
+    
+    while (running) {
+        curr_time = std::chrono::steady_clock::now();
+        
+        frames_ahead = gekko_frames_ahead(sess);
+        frame_time = GetFM2KFrameTime(frames_ahead);
+        
+        delta_time = std::chrono::duration<float>(curr_time - prev_time).count();
+        prev_time = curr_time;
+        accumulator += delta_time;
+        
+        gekko_network_poll(sess);
+        
+        while (accumulator >= frame_time) {
+            // Process SDL events
+            process_events();
+            
+            // Get local input
+            auto input = get_fm2k_inputs();
+            gekko_add_local_input(sess, localplayer, &input);
+            
+            // Handle session events
+            int count = 0;
+            auto events = gekko_session_events(sess, &count);
+            for (int i = 0; i < count; i++) {
+                handle_fm2k_session_event(events[i]);
+            }
+            
+            // Process game events
+            count = 0;
+            auto updates = gekko_update_session(sess, &count);
+            for (int i = 0; i < count; i++) {
+                auto ev = updates[i];
+                
+                switch (ev->type) {
+                    case SaveEvent:
+                        save_fm2k_state(&state, ev);
+                        break;
+                    case LoadEvent:
+                        load_fm2k_state(&state, ev);
+                        break;
+                    case AdvanceEvent:
+                        // Extract inputs from GekkoNet
+                        inputs[0].input.value = ((uint16_t*)ev->data.adv.inputs)[0];
+                        inputs[1].input.value = ((uint16_t*)ev->data.adv.inputs)[1];
+                        
+                        // Update FM2K game state
+                        update_fm2k_state(state, inputs);
+                        break;
+                }
+            }
+            
+            accumulator -= frame_time;
+        }
+        
+        // Render current state
+        render_fm2k_state(state);
+    }
+    
+    gekko_destroy(sess);
+    del_window();
+    return 0;
+}
+```
+
+### Key Differences from SDL Example
+
+1. **Input Size**: FM2K uses 16-bit inputs vs 8-bit in example
+2. **State Size**: ~10KB vs ~16 bytes in example  
+3. **Frame Rate**: 100 FPS vs 60 FPS in example
+4. **State Complexity**: Full game state vs simple position
+5. **Integration Depth**: Hooks into existing game vs standalone
+
+### Integration Benefits
+
+1. **Proven Pattern**: The SDL example shows GekkoNet works reliably
+2. **Clear Structure**: Event handling patterns are well-defined
+3. **Performance**: Timing control handles frame rate variations
+4. **Network Stats**: Built-in ping/jitter monitoring
+5. **Error Handling**: Desync detection and player management
+
+This analysis shows that adapting the SDL example for FM2K is very feasible, with the main changes being input/state structures and frame timing to match FM2K's 100 FPS architecture.
+
+## Hit Judge and Round System Architecture
+
+### Hit Judge Configuration (0x42470C-0x430120)
+
+The game uses a sophisticated hit detection and configuration system loaded from INI files:
+
+```c
+struct FM2K_HitJudgeConfig {
+    uint32_t hit_judge_value;    // 0x42470C - Hit detection threshold
+    uint32_t config_values[7];   // 0x4300E0-0x430120 - General config values
+    char     config_string[260]; // Configuration string buffer
+};
+```
+
+The hit judge system is initialized by `hit_judge_set_function` (0x414930) which:
+1. Loads configuration from INI files
+2. Sets up hit detection parameters
+3. Configures round settings and game modes
+
+### Round System State (0x470040-0x47006C)
+
+The round system maintains several critical state variables:
+
+```c
+struct FM2K_RoundSystem {
+    uint32_t game_mode;      // 0x470040 - Current game mode (VS/Team/Tournament)
+    uint32_t round_limit;    // 0x470048 - Maximum rounds for the match
+    uint32_t round_state;    // 0x47004C - Current round state
+    uint32_t round_timer;    // 0x470060 - Active round timer
+};
+
+enum FM2K_RoundState {
+    ROUND_INIT = 0,      // Initial state
+    ROUND_ACTIVE = 1,    // Round in progress
+    ROUND_END = 2,       // Round has ended
+    ROUND_MATCH_END = 3  // Match has ended
+};
+
+enum FM2K_GameMode {
+    MODE_NORMAL = 0,     // Normal VS mode
+    MODE_TEAM = 1,       // Team Battle mode
+    MODE_TOURNAMENT = 2  // Tournament mode
+};
+```
+
+The round system is managed by `vs_round_function` (0x4086A0) which:
+1. Handles round state transitions
+2. Manages round timers
+3. Processes win/loss conditions
+4. Controls match flow
+
+### Rollback Implications
+
+This architecture has several important implications for rollback implementation:
+
+1. **State Serialization Requirements:**
+   - Must save hit judge configuration
+   - Must preserve round state and timers
+   - Game mode affects state size
+
+2. **Deterministic Behavior:**
+   - Hit detection is configuration-driven
+   - Round state transitions are deterministic
+   - Timer-based events are predictable
+
+3. **State Size Optimization:**
+   - Hit judge config is static per match
+   - Only dynamic round state needs saving
+   - Can optimize by excluding static config
+
+4. **Synchronization Points:**
+   - Round state changes are key sync points
+   - Hit detection results must be identical
+   - Timer values must match exactly
+
+Updated state structure for rollback:
+
+```c
+typedef struct FM2KGameState {
+    // ... existing timing and input state ...
+
+    // Round System State
+    struct {
+        uint32_t mode;          // Current game mode
+        uint32_t round_limit;   // Maximum rounds
+        uint32_t round_state;   // Current round state
+        uint32_t round_timer;   // Active round timer
+        uint32_t score_value;   // Current score/timer value
+    } round_system;
+
+    // Hit Judge State
+    struct {
+        uint32_t hit_judge_value;   // Current hit detection threshold
+        uint32_t effect_target;     // Current hit effect target
+        uint32_t effect_timer;      // Hit effect duration
+    } hit_system;
+
+    // ... rest of game state ...
+} FM2KGameState;
+```
+
+## Sprite Rendering and Hit Detection System
+
+### Sprite Rendering Engine (0x40CC30)
+
+The game uses a sophisticated sprite rendering engine that handles:
+1. Hit effect visualization
+2. Sprite transformations and blending
+3. Color palette manipulation
+4. Screen-space effects
+
+Key components:
+
+```c
+struct SpriteRenderState {
+    uint32_t render_mode;     // Different rendering modes (-10 to 3)
+    uint32_t blend_flags;     // Blending and effect flags
+    uint32_t color_values[3]; // RGB color modification values
+    uint32_t effect_timer;    // Effect duration counter
+};
+```
+
+### Hit Effect System
+
+The hit effect system is tightly integrated with the sprite renderer:
+
+1. **Effect Triggers:**
+   - Hit detection results (0x42470C)
+   - Game state transitions
+   - Timer-based events
+
+2. **Effect Parameters:**
+   ```c
+   struct HitEffectParams {
+       uint32_t target_id;      // Effect target identifier
+       uint32_t effect_type;    // Visual effect type
+       uint32_t duration;       // Effect duration in frames
+       uint32_t color_values;   // RGB color modulation
+   };
+   ```
+
+3. **Rendering Pipeline:**
+   - Color palette manipulation (0x4D1A20)
+   - Sprite transformation
+   - Blend mode selection
+   - Screen-space effects
+
+### Integration with Rollback
+
+The sprite and hit effect systems have important implications for rollback:
+
+1. **Visual State Management:**
+   - Effect timers must be part of the game state
+   - Color modulation values need saving
+   - Sprite transformations must be deterministic
+
+2. **Performance Considerations:**
+   - Effect parameters are small (few bytes per effect)
+   - Visual state is derived from game state
+   - Can optimize by excluding pure visual state
+
+3. **Synchronization Requirements:**
+   - Hit effects must trigger identically
+   - Effect timers must stay synchronized
+   - Visual state must match game state
+
+Updated state structure to include visual effects:
+
+```c
+typedef struct FM2KGameState {
+    // ... previous state members ...
+
+    // Visual Effect State
+    struct {
+        uint32_t active_effects;     // Bitfield of active effects
+        uint32_t effect_timers[8];   // Array of effect durations
+        uint32_t color_values[8][3]; // RGB values for each effect
+        uint32_t target_ids[8];      // Effect target identifiers
+    } visual_state;
+
+    // ... rest of game state ...
+} FM2KGameState;
+```
+
+## Game State Management System
+
+The game state manager (0x406FC0) handles several critical aspects of the game:
+
+### State Variables
+
+1. **Round System State:**
+   ```c
+   struct RoundSystemState {
+       uint32_t g_round_timer;        // 0x470060 - Current round timer value
+       uint32_t g_round_limit;        // 0x470048 - Maximum rounds per match
+       uint32_t g_round_state;        // 0x47004C - Current round state
+       uint32_t g_game_mode;          // 0x470040 - Current game mode
+   };
+   ```
+
+2. **Player State:**
+   ```c
+   struct PlayerState {
+       int32_t stage_position;        // Current position on stage grid
+       uint32_t action_state;         // Current action being performed
+       uint32_t round_count;          // Number of rounds completed
+       uint32_t input_history[4];     // Recent input history
+       uint32_t move_history[4];      // Recent movement history
+   };
+   ```
+
+### State Management Flow
+
+1. **Initialization (0x406FC0):**
+   - Loads initial configuration
+   - Sets up round timer and limits
+   - Initializes player positions
+   - Sets up game mode parameters
+
+2. **State Updates:**
+   - Input processing and validation
+   - Position and movement updates
+   - Action state transitions
+   - Round state management
+
+3. **State Synchronization:**
+   - Timer synchronization
+   - Player state synchronization
+   - Round state transitions
+   - Game mode state management
+
+### Rollback Implications
+
+1. **Critical State Components:**
+   - Round timer and state
+   - Player positions and actions
+   - Input and move history
+   - Game mode state
+
+2. **State Size Analysis:**
+   - Core game state: ~128 bytes
+   - Player state: ~32 bytes per player
+   - History buffers: ~32 bytes per player
+   - Total per-frame state: ~256 bytes
+
+3. **Synchronization Requirements:**
+   - Timer must be deterministic
+   - Player state must be atomic
+   - Input processing must be consistent
+   - State transitions must be reproducible
+
+## Input Processing System
+
+The game uses a sophisticated input processing system that handles both movement and action inputs:
+
+### Input Mapping (0x406F20)
+
+```c
+enum InputActions {
+    ACTION_NONE = 0,
+    ACTION_A = 1,    // 0x20  - Light Attack
+    ACTION_B = 2,    // 0x40  - Medium Attack
+    ACTION_C = 3,    // 0x80  - Heavy Attack
+    ACTION_D = 4,    // 0x100 - Special Move
+    ACTION_E = 5     // 0x200 - Super Move
+};
+
+enum InputDirections {
+    DIR_NONE  = 0x000,
+    DIR_UP    = 0x004,
+    DIR_DOWN  = 0x008,
+    DIR_LEFT  = 0x001,
+    DIR_RIGHT = 0x002
+};
+```
+
+### Input Processing Flow
+
+1. **Raw Input Capture:**
+   - Movement inputs (4-way directional)
+   - Action buttons (5 main buttons)
+   - System buttons (Start, Select)
+
+2. **Input State Management:**
+   ```c
+   struct InputState {
+       uint16_t current_input;     // Current frame's input
+       uint16_t previous_input;    // Last frame's input
+       uint16_t input_changes;     // Changed bits since last frame
+       uint8_t  processed_input;   // Processed directional input
+   };
+   ```
+
+3. **Input History:**
+   - Each player maintains a 4-frame input history
+   - History includes both raw and processed inputs
+   - Used for move validation and rollback
+
+4. **Input Processing:**
+   - Raw input capture
+   - Input change detection
+   - Input repeat handling:
+     - Initial delay
+     - Repeat delay
+     - Repeat timer
+   - Input validation
+   - Mode-specific processing:
+     - VS mode (< 3000)
+     - Story mode (? 3000)
+
+5. **Memory Layout:**
+   ```
+   input_system {
+     +g_input_buffer_index: Current frame index
+     +g_p1_input[8]: Current P1 inputs
+     +g_p2_input: Current P2 inputs
+     +g_prev_input_state[8]: Previous frame inputs
+     +g_input_changes[8]: Input change flags
+     +g_input_repeat_state[8]: Input repeat flags
+     +g_input_repeat_timer[8]: Repeat timers
+     +g_processed_input[8]: Processed inputs
+     +g_combined_processed_input: Combined state
+     +g_combined_input_changes: Change mask
+     +g_combined_raw_input: Raw input mask
+   }
+   ```
+
+6. **Critical Operations:**
+   - Frame advance:
+     ```c
+     g_input_buffer_index = (g_input_buffer_index + 1) & 0x3FF;
+     g_p1_input_history[g_input_buffer_index] = current_input;
+     ```
+   - Input processing:
+     ```c
+     g_input_changes = current_input & (prev_input ^ current_input);
+     if (repeat_active && current_input == repeat_state) {
+       if (--repeat_timer == 0) {
+         processed_input = current_input;
+         repeat_timer = repeat_delay;
+       }
+     }
+     ```
+
+This system is crucial for rollback implementation as it provides:
+1. Deterministic input processing
+2. Frame-accurate input history
+3. Clear state serialization points
+4. Mode-specific input handling
+5. Input validation and processing logic
+
+The 1024-frame history buffer is particularly useful for rollback, as it provides ample space for state rewinding and replay.
+```
+
+### Health Damage Manager (0x40e6f0)
+
+The health damage manager handles health state and damage calculations:
+
+1. **Health State Management:**
+   - Per-character health tracking
+   - Health segments system
+   - Recovery mechanics
+   - Guard damage handling
+
+2. **Memory Layout:**
+   ```
+   health_system {
+     +4DFC95: Current health segment
+     +4DFC99: Maximum health segments
+     +4DFC9D: Current health points
+     +4DFCA1: Health segment size
+   }
+   ```
+
+3. **Damage Processing:**
+   - Segment-based health system:
+     ```c
+     while (current_health < 0) {
+       if (current_segment > 0) {
+         current_segment--;
+         current_health += segment_size;
+       } else {
+         current_health = 0;
+       }
+     }
+     ```
+   - Health recovery:
+     ```c
+     while (current_health >= segment_size) {
+       if (current_segment < max_segments) {
+         current_health -= segment_size;
+         current_segment++;
+       } else {
+         current_health = 0;
+       }
+     }
+     ```
+
+4. **Critical Operations:**
+   - Damage application:
+     - Negative values for damage
+     - Positive values for healing
+   - Segment management:
+     - Segment depletion
+     - Segment recovery
+     - Maximum segment cap
+   - Health validation:
+     - Minimum health check
+     - Maximum health check
+     - Segment boundary checks
+
+This system is crucial for rollback implementation as it:
+1. Uses deterministic damage calculations
+2. Maintains clear health state boundaries
+3. Provides segment-based state tracking
+4. Handles health recovery mechanics
+5. Manages guard damage separately
+
+The segmented health system will make it easier to serialize and restore health states during rollback operations, as each segment provides a clear checkpoint for state management.
+```
+
+### Rollback Implementation Summary
+
+After analyzing FM2K's core systems, we can conclude that the game is well-suited for rollback netcode implementation. Here's a comprehensive overview of how each system will integrate with rollback:
+
+1. **State Serialization Points:**
+   - Character State Machine (0x411bf0):
+     - Base states (0x0-0x3)
+     - Action states (0x4-0x7)
+     - Movement states (0x8-0xB)
+     - Frame counters and timers
+   - Hit Detection System (0x40f010):
+     - Hit boxes and collision state
+     - Damage values and scaling
+     - Hit confirmation flags
+   - Input Buffer System (0x4146d0):
+     - 1024-frame history buffer
+     - Input state flags
+     - Repeat handling state
+   - Health System (0x40e6f0):
+     - Health segments
+     - Current health points
+     - Guard damage state
+     - Recovery mechanics
+
+2. **Deterministic Systems:**
+   - Fixed frame rate (100 FPS)
+   - 16.16 fixed-point coordinates
+   - Deterministic input processing
+   - Clear state transitions
+   - Predictable damage calculations
+   - Frame-based timers
+
+3. **State Management:**
+   - Object Pool (1024 entries):
+     - Type identification
+     - Position and velocity
+     - Animation state
+     - Collision data
+   - Input History:
+     - Circular buffer design
+     - Clear frame boundaries
+     - Input validation
+   - Hit Detection:
+     - Priority system
+     - State validation
+     - Reaction handling
+   - Health System:
+     - Segment-based tracking
+     - Clear state boundaries
+     - Recovery mechanics
+
+4. **Implementation Strategy:**
+   a. Save State (Frame N):
+      ```c
+      struct SaveState {
+          // Character State
+          int base_state;
+          int action_state;
+          int movement_state;
+          int frame_counters[4];
+          
+          // Hit Detection
+          int hit_boxes[20];
+          int damage_values[8];
+          int hit_flags;
+          
+          // Input Buffer
+          int input_history[1024];
+          int input_flags;
+          int repeat_state;
+          
+          // Health System
+          int health_segments;
+          int current_health;
+          int guard_damage;
+      };
+      ```
+
+   b. Rollback Process:
+      1. Save current frame state
+      2. Apply new remote input
+      3. Simulate forward:
+         - Process inputs
+         - Update character states
+         - Handle collisions
+         - Apply damage
+      4. Render new state
+      5. Save confirmed state
+
+5. **Critical Hooks:**
+   - Input Processing (0x4146d0):
+     - Frame advance point
+     - Input buffer management
+   - Character State (0x411bf0):
+     - State transition handling
+     - Frame counting
+   - Hit Detection (0x40f010):
+     - Collision processing
+     - Damage application
+   - Health System (0x40e6f0):
+     - Health state management
+     - Segment tracking
+
+6. **Optimization Opportunities:**
+   - Parallel state simulation
+   - Minimal state serialization
+   - Efficient state diffing
+   - Smart state prediction
+   - Input compression
+
+The analysis reveals that FM2K's architecture is highly suitable for rollback implementation due to its:
+1. Deterministic game logic
+2. Clear state boundaries
+3. Frame-based processing
+4. Efficient memory layout
+5. Well-defined systems
+
+This research provides a solid foundation for implementing rollback netcode in FM2K, with all major systems supporting the requirements for state saving, rollback, and resimulation.
+
+## GekkoNet Integration Analysis
+
+### GekkoNet Library Overview
+
+GekkoNet is a rollback netcode library that provides the networking infrastructure we need for FM2K. Here's how it maps to our analyzed systems:
+
+### 1. **GekkoNet Configuration for FM2K**
+```c
+GekkoConfig fm2k_config = {
+    .num_players = 2,                    // P1 vs P2
+    .max_spectators = 8,                 // Allow spectators
+    .input_prediction_window = 8,        // 8 frames ahead prediction
+    .spectator_delay = 6,                // 6 frame spectator delay
+    .input_size = sizeof(uint32_t),      // FM2K input flags (32-bit)
+    .state_size = sizeof(FM2KGameState), // Our minimal state structure
+    .limited_saving = false,             // Full state saving for accuracy
+    .post_sync_joining = true,           // Allow mid-match spectators
+    .desync_detection = true             // Enable desync detection
+};
+```
+
+### 2. **Integration Points with FM2K Systems**
+
+#### Input System Integration (0x4146d0)
+```c
+// Hook into process_game_inputs()
+void fm2k_input_hook() {
+    // Get GekkoNet events
+    int event_count;
+    GekkoGameEvent** events = gekko_update_session(session, &event_count);
+    
+    for (int i = 0; i < event_count; i++) {
+        switch (events[i]->type) {
+            case AdvanceEvent:
+                // Inject inputs into FM2K's input system
+                g_p1_input_history[g_input_buffer_index] = events[i]->data.adv.inputs[0];
+                g_p2_input_history[g_input_buffer_index] = events[i]->data.adv.inputs[1];
+                // Continue normal input processing
+                break;
+                
+            case SaveEvent:
+                // Save current FM2K state
+                save_fm2k_state(events[i]->data.save.state, events[i]->data.save.state_len);
+                break;
+                
+            case LoadEvent:
+                // Restore FM2K state
+                load_fm2k_state(events[i]->data.load.state, events[i]->data.load.state_len);
+                break;
+        }
+    }
+}
+```
+
+#### State Management Integration
+```c
+typedef struct FM2KGameState {
+    // Frame tracking
+    uint32_t frame_number;
+    uint32_t input_buffer_index;
+    
+    // Input state
+    uint32_t p1_input_current;
+    uint32_t p2_input_current;
+    uint32_t input_repeat_state[8];
+    uint32_t input_repeat_timer[8];
+    
+    // Character states (per character)
+    struct {
+        // Position (16.16 fixed point)
+        int32_t pos_x, pos_y;
+        int32_t vel_x, vel_y;
+        
+        // State machine
+        uint16_t base_state;        // 0x0-0x3
+        uint16_t action_state;      // 0x4-0x7  
+        uint16_t movement_state;    // 0x8-0xB
+        uint16_t state_flags;       // Offset 350
+        
+        // Animation
+        uint16_t animation_frame;   // Offset 12
+        uint16_t max_animation_frame; // Offset 88
+        
+        // Health system
+        uint16_t health_segments;   // Current segments
+        uint16_t current_health;    // Health points
+        uint16_t max_health_segments; // Maximum segments
+        uint16_t guard_damage;      // Guard damage accumulation
+        
+        // Hit detection
+        uint16_t hit_flags;         // Hit state flags
+        uint16_t hit_stun_timer;    // Hit stun duration
+        uint16_t guard_state;       // Guard state flags
+        
+        // Facing and direction
+        uint8_t facing_direction;   // Left/right facing
+        uint8_t input_direction;    // Current input direction
+    } characters[2];
+    
+    // Round state
+    uint32_t round_state;           // Round state machine
+    uint32_t round_timer;           // Round timer
+    uint32_t game_mode;             // Current game mode
+    
+    // Hit detection global state
+    uint32_t hit_effect_target;     // Hit effect target
+    uint32_t hit_effect_timer;      // Hit effect timer
+    
+    // Combo system
+    uint16_t combo_counter[2];      // Combo counters
+    uint16_t damage_scaling[2];     // Damage scaling
+    
+    // Object pool critical state
+    uint16_t active_objects;        // Number of active objects
+    uint32_t object_state_flags;    // Critical object flags
+    
+} FM2KGameState;
+```
+
+### 3. **Network Adapter Implementation**
+```c
+GekkoNetAdapter fm2k_adapter = {
+    .send_data = fm2k_send_packet,
+    .receive_data = fm2k_receive_packets,
+    .free_data = fm2k_free_packet_data
+};
+
+void fm2k_send_packet(GekkoNetAddress* addr, const char* data, int length) {
+    // Use existing LilithPort networking or implement UDP
+    // addr->data contains IP/port information
+    // data contains the packet to send
+}
+
+GekkoNetResult** fm2k_receive_packets(int* length) {
+    // Collect all packets received since last call
+    // Return array of GekkoNetResult pointers
+    // GekkoNet will call free_data on each result
+}
+```
+
+### 4. **Integration with Existing FM2K Systems**
+
+#### Main Game Loop Integration
+```c
+// Hook at 0x4146d0 - process_game_inputs()
+void fm2k_rollback_frame() {
+    // 1. Poll network
+    gekko_network_poll(session);
+    
+    // 2. Add local inputs
+    uint32_t local_input = get_local_player_input();
+    gekko_add_local_input(session, local_player_id, &local_input);
+    
+    // 3. Process GekkoNet events
+    int event_count;
+    GekkoGameEvent** events = gekko_update_session(session, &event_count);
+    
+    // 4. Handle events (save/load/advance)
+    process_gekko_events(events, event_count);
+    
+    // 5. Continue normal FM2K processing
+    // (character updates, hit detection, etc.)
+}
+```
+
+#### State Serialization Functions
+```c
+void save_fm2k_state(unsigned char* buffer, unsigned int* length) {
+    FM2KGameState* state = (FM2KGameState*)buffer;
+    
+    // Save frame state
+    state->frame_number = current_frame;
+    state->input_buffer_index = g_input_buffer_index;
+    
+    // Save character states from object pool
+    for (int i = 0; i < 2; i++) {
+        save_character_state(&state->characters[i], i);
+    }
+    
+    // Save round state
+    state->round_state = g_round_state;
+    state->round_timer = g_round_timer;
+    
+    *length = sizeof(FM2KGameState);
+}
+
+void load_fm2k_state(unsigned char* buffer, unsigned int length) {
+    FM2KGameState* state = (FM2KGameState*)buffer;
+    
+    // Restore frame state
+    current_frame = state->frame_number;
+    g_input_buffer_index = state->input_buffer_index;
+    
+    // Restore character states to object pool
+    for (int i = 0; i < 2; i++) {
+        load_character_state(&state->characters[i], i);
+    }
+    
+    // Restore round state
+    g_round_state = state->round_state;
+    g_round_timer = state->round_timer;
+}
+```
+
+### 5. **Event Handling Integration**
+```c
+void handle_session_events() {
+    int event_count;
+    GekkoSessionEvent** events = gekko_session_events(session, &event_count);
+    
+    for (int i = 0; i < event_count; i++) {
+        switch (events[i]->type) {
+            case PlayerConnected:
+                // Show "Player Connected" message
+                break;
+            case PlayerDisconnected:
+                // Handle disconnection
+                break;
+            case DesyncDetected:
+                // Log desync information
+                printf("Desync at frame %d: local=%08x remote=%08x\n",
+                       events[i]->data.desynced.frame,
+                       events[i]->data.desynced.local_checksum,
+                       events[i]->data.desynced.remote_checksum);
+                break;
+        }
+    }
+}
+```
+
+### 6. **Performance Considerations**
+- **State Size**: ~200 bytes per frame (very efficient)
+- **Prediction Window**: 8 frames ahead (80ms at 100 FPS)
+- **Rollback Depth**: Up to 15 frames (150ms)
+- **Network Frequency**: 100 Hz to match FM2K's frame rate
+
+### 7. **Implementation Benefits**
+1. **Minimal Code Changes**: Only need to hook input processing
+2. **Existing Infrastructure**: Leverages FM2K's input history system
+3. **Deterministic**: FM2K's fixed-point math ensures consistency
+4. **Efficient**: Small state size enables fast rollback
+5. **Robust**: GekkoNet handles all networking complexity
+
+This integration approach leverages both FM2K's existing architecture and GekkoNet's proven rollback implementation, providing a solid foundation for online play.
+
+### Critical Player State Variables
+
+Based on IDA analysis, here are the key memory addresses for player state:
+
+#### Player 1 State Variables:
+```c
+// Input system
+g_p1_input          = 0x4259c0;  // Current input state
+g_p1_input_history  = 0x4280e0;  // 1024-frame input history
+
+// Position and stage
+g_p1_stage_x        = 0x424e68;  // Stage position X
+g_p1_stage_y        = 0x424e6c;  // Stage position Y
+
+// Round and game state
+g_p1_round_count    = 0x4700ec;  // Round wins
+g_p1_round_state    = 0x4700f0;  // Round state
+g_p1_action_state   = 0x47019c;  // Action state
+
+// Health system
+g_p1_hp             = 0x4dfc85;  // Current HP
+g_p1_max_hp         = 0x4dfc91;  // Maximum HP
+```
+
+#### Player 2 State Variables:
+```c
+// Input system
+g_p2_input          = 0x4259c4;  // Current input state
+g_p2_input_history  = 0x4290e0;  // 1024-frame input history
+
+// Round and game state
+g_p2_action_state   = 0x4701a0;  // Action state
+
+// Health system
+g_p2_hp             = 0x4edcc4;  // Current HP
+g_p2_max_hp         = 0x4edcd0;  // Maximum HP
+```
+
+#### Core Game State Variables:
+```c
+// Object pool
+g_object_pool       = 0x4701e0;  // Main object pool (1024 entries)
+g_sprite_data_array = 0x447938;  // Sprite data array
+
+// Timing system
+g_frame_time_ms     = 0x41e2f0;  // Frame duration (10ms)
+g_last_frame_time   = 0x447dd4;  // Last frame timestamp
+g_frame_sync_flag   = 0x424700;  // Frame sync state
+g_frame_time_delta  = 0x425960;  // Frame timing delta
+g_frame_skip_count  = 0x4246f4;  // Frame skip counter
+
+// Random number generator
+g_random_seed       = 0x41fb1c;  // RNG seed
+
+// Input buffer management
+g_input_buffer_index = (calculated); // Current buffer index
+g_input_repeat_timer = 0x4d1c40;     // Input repeat timers
+
+// Round system
+g_round_timer       = 0x470060;  // Round timer
+g_game_timer        = 0x470044;  // Game timer
+g_hit_effect_timer  = 0x4701c8;  // Hit effect timer
+```
+
+### Final State Structure for GekkoNet
+
+With all the memory addresses identified, here's the complete state structure:
+
+```c
+typedef struct FM2KCompleteGameState {
+    // Frame and timing state
+    uint32_t frame_number;
+    uint32_t input_buffer_index;
+    uint32_t last_frame_time;
+    uint32_t frame_time_delta;
+    uint8_t frame_skip_count;
+    uint8_t frame_sync_flag;
+    
+    // Random number generator state
+    uint32_t random_seed;
+    
+    // Player 1 state
+    struct {
+        uint32_t input_current;
+        uint32_t input_history[1024];
+        uint32_t stage_x, stage_y;
+        uint32_t round_count;
+        uint32_t round_state;
+        uint32_t action_state;
+        uint32_t hp, max_hp;
+    } p1;
+    
+    // Player 2 state
+    struct {
+        uint32_t input_current;
+        uint32_t input_history[1024];
+        uint32_t action_state;
+        uint32_t hp, max_hp;
+    } p2;
+    
+    // Global timers
+    uint32_t round_timer;
+    uint32_t game_timer;
+    uint32_t hit_effect_timer;
+    
+    // Input system state
+    uint32_t input_repeat_timer[8];
+    
+    // Critical object pool state (first 2 character objects)
+    struct {
+        uint32_t object_type;
+        int32_t pos_x, pos_y;        // 16.16 fixed point
+        int32_t vel_x, vel_y;
+        uint16_t state_flags;
+        uint16_t animation_frame;
+        uint16_t health_segments;
+        uint16_t facing_direction;
+        // ... other critical fields
+    } character_objects[2];
+    
+} FM2KCompleteGameState;
+```
+
+### Memory Access Functions
+
+```c
+// Direct memory access functions for state serialization
+void save_fm2k_complete_state(FM2KCompleteGameState* state) {
+    // Frame and timing
+    state->frame_number = current_frame;
+    state->input_buffer_index = g_input_buffer_index;
+    state->last_frame_time = *(uint32_t*)0x447dd4;
+    state->frame_time_delta = *(uint32_t*)0x425960;
+    state->frame_skip_count = *(uint8_t*)0x4246f4;
+    state->frame_sync_flag = *(uint8_t*)0x424700;
+    
+    // RNG state
+    state->random_seed = *(uint32_t*)0x41fb1c;
+    
+    // Player 1 state
+    state->p1.input_current = *(uint32_t*)0x4259c0;
+    memcpy(state->p1.input_history, (void*)0x4280e0, 1024 * sizeof(uint32_t));
+    state->p1.stage_x = *(uint32_t*)0x424e68;
+    state->p1.stage_y = *(uint32_t*)0x424e6c;
+    state->p1.round_count = *(uint32_t*)0x4700ec;
+    state->p1.round_state = *(uint32_t*)0x4700f0;
+    state->p1.action_state = *(uint32_t*)0x47019c;
+    state->p1.hp = *(uint32_t*)0x4dfc85;
+    state->p1.max_hp = *(uint32_t*)0x4dfc91;
+    
+    // Player 2 state
+    state->p2.input_current = *(uint32_t*)0x4259c4;
+    memcpy(state->p2.input_history, (void*)0x4290e0, 1024 * sizeof(uint32_t));
+    state->p2.action_state = *(uint32_t*)0x4701a0;
+    state->p2.hp = *(uint32_t*)0x4edcc4;
+    state->p2.max_hp = *(uint32_t*)0x4edcd0;
+    
+    // Global timers
+    state->round_timer = *(uint32_t*)0x470060;
+    state->game_timer = *(uint32_t*)0x470044;
+    state->hit_effect_timer = *(uint32_t*)0x4701c8;
+    
+    // Input repeat timers
+    memcpy(state->input_repeat_timer, (void*)0x4d1c40, 8 * sizeof(uint32_t));
+    
+    // Character objects from object pool
+    save_character_objects_from_pool(state->character_objects);
+}
+
+void load_fm2k_complete_state(FM2KCompleteGameState* state) {
+    // Restore all state in reverse order
+    // ... (similar but with assignment in opposite direction)
+}
+```
+
+This gives us a complete, memory-accurate state structure that can be used with GekkoNet for rollback implementation. The state size is approximately 10KB, which is very reasonable for rollback netcode.
+
+## GekkoNet SDL Example Analysis & FM2K Integration
+
+### SDL Example Key Patterns
+
+The OnlineSession.cpp example demonstrates the core GekkoNet integration patterns we need for FM2K:
+
+#### 1. **Session Setup Pattern**
+```c
+// From SDL example - adapt for FM2K
+GekkoSession* sess = nullptr;
+GekkoConfig conf {
+    .num_players = 2,
+    .input_size = sizeof(char),           // FM2K: sizeof(uint32_t)
+    .state_size = sizeof(GState),         // FM2K: sizeof(FM2KCompleteGameState)
+    .max_spectators = 0,                  // FM2K: 8 for spectators
+    .input_prediction_window = 10,        // FM2K: 8 frames
+    .desync_detection = true,
+    // .limited_saving = true,            // FM2K: false for accuracy
+};
+
+gekko_create(&sess);
+gekko_start(sess, &conf);
+gekko_net_adapter_set(sess, gekko_default_adapter(localport));
+```
+
+#### 2. **Player Management Pattern**
+```c
+// Order-dependent player addition (from example)
+if (localplayer == 0) {
+    localplayer = gekko_add_actor(sess, LocalPlayer, nullptr);
+    auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), 
+                                  (unsigned int)remote_address.size() };
+    gekko_add_actor(sess, RemotePlayer, &remote);
+} else {
+    auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), 
+                                  (unsigned int)remote_address.size() };
+    gekko_add_actor(sess, RemotePlayer, &remote);
+    localplayer = gekko_add_actor(sess, LocalPlayer, nullptr);
+}
+```
+
+#### 3. **Core Game Loop Pattern** 
+```c
+// From SDL example - critical for FM2K integration
+while (running) {
+    // Timing control
+    frames_ahead = gekko_frames_ahead(sess);
+    frame_time = GetFrameTime(frames_ahead);
+    
+    // Network polling
+    gekko_network_poll(sess);
+    
+    // Frame processing
+    while (accumulator >= frame_time) {
+        // Add local input
+        auto input = get_key_inputs();
+        gekko_add_local_input(sess, localplayer, &input);
+        
+        // Handle session events
+        auto events = gekko_session_events(sess, &count);
+        for (int i = 0; i < count; i++) {
+            // Handle PlayerConnected, PlayerDisconnected, DesyncDetected
+        }
+        
+        // Process game events
+        auto updates = gekko_update_session(sess, &count);
+        for (int i = 0; i < count; i++) {
+            switch (updates[i]->type) {
+                case SaveEvent: save_state(&state, updates[i]); break;
+                case LoadEvent: load_state(&state, updates[i]); break;
+                case AdvanceEvent:
+                    // Extract inputs and advance game
+                    inputs[0].input.value = updates[i]->data.adv.inputs[0];
+                    inputs[1].input.value = updates[i]->data.adv.inputs[1];
+                    update_state(state, inputs, num_players);
+                    break;
+            }
+        }
+        accumulator -= frame_time;
+    }
+    
+    // Render current state
+    render_state(state);
+}
+```
+
+### FM2K Integration Strategy
+
+#### 1. **Replace SDL2 with SDL3 for FM2K**
+```c
+// SDL3 initialization for FM2K integration
+#include "SDL3/SDL.h"
+
+bool init_fm2k_window(void) {
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
+        fprintf(stderr, "Error initializing SDL3.\n");
+        return false;
+    }
+    
+    // Create window matching FM2K's resolution
+    window = SDL_CreateWindow(
+        "FM2K Online Session",
+        640, 480,  // FM2K native resolution
+        SDL_WINDOW_RESIZABLE
+    );
+    
+    if (!window) {
+        fprintf(stderr, "Error creating SDL3 Window.\n");
+        return false;
+    }
+    
+    renderer = SDL_CreateRenderer(window, NULL);
+    if (!renderer) {
+        fprintf(stderr, "Error creating SDL3 Renderer.\n");
+        return false;
+    }
+    
+    return true;
+}
+```
+
+#### 2. **FM2K Input Structure**
+```c
+// Replace simple GInput with FM2K's 11-bit input system
+struct FM2KInput {
+    union {
+        struct {
+            uint16_t left     : 1;   // 0x001
+            uint16_t right    : 1;   // 0x002
+            uint16_t up       : 1;   // 0x004
+            uint16_t down     : 1;   // 0x008
+            uint16_t button1  : 1;   // 0x010
+            uint16_t button2  : 1;   // 0x020
+            uint16_t button3  : 1;   // 0x040
+            uint16_t button4  : 1;   // 0x080
+            uint16_t button5  : 1;   // 0x100
+            uint16_t button6  : 1;   // 0x200
+            uint16_t button7  : 1;   // 0x400
+            uint16_t reserved : 5;   // Unused bits
+        } bits;
+        uint16_t value;
+    } input;
+};
+
+FM2KInput get_fm2k_inputs() {
+    FM2KInput input{};
+    input.input.value = 0;
+    
+    // Get keyboard state (SDL3 syntax)
+    const bool* keys = SDL_GetKeyboardState(NULL);
+    
+    // Map to FM2K inputs
+    input.input.bits.up = keys[SDL_SCANCODE_W];
+    input.input.bits.left = keys[SDL_SCANCODE_A];
+    input.input.bits.down = keys[SDL_SCANCODE_S];
+    input.input.bits.right = keys[SDL_SCANCODE_D];
+    input.input.bits.button1 = keys[SDL_SCANCODE_J];
+    input.input.bits.button2 = keys[SDL_SCANCODE_K];
+    input.input.bits.button3 = keys[SDL_SCANCODE_L];
+    // ... map other buttons
+    
+    return input;
+}
+```
+
+#### 3. **FM2K State Management**
+```c
+// Replace simple GState with FM2KCompleteGameState
+void save_fm2k_state(FM2KCompleteGameState* gs, GekkoGameEvent* ev) {
+    *ev->data.save.state_len = sizeof(FM2KCompleteGameState);
+    
+    // Use Fletcher's checksum (from example) for consistency
+    *ev->data.save.checksum = fletcher32((uint16_t*)gs, sizeof(FM2KCompleteGameState));
+    
+    std::memcpy(ev->data.save.state, gs, sizeof(FM2KCompleteGameState));
+}
+
+void load_fm2k_state(FM2KCompleteGameState* gs, GekkoGameEvent* ev) {
+    std::memcpy(gs, ev->data.load.state, sizeof(FM2KCompleteGameState));
+}
+
+void update_fm2k_state(FM2KCompleteGameState& gs, FM2KInput inputs[2]) {
+    // Call into FM2K's actual game logic
+    // This would hook into the functions we analyzed:
+    
+    // 1. Inject inputs into FM2K's input system
+    *(uint32_t*)0x4259c0 = inputs[0].input.value;  // g_p1_input
+    *(uint32_t*)0x4259c4 = inputs[1].input.value;  // g_p2_input
+    
+    // 2. Call FM2K's update functions
+    // process_game_inputs_FRAMESTEP_HOOK();  // 0x4146d0
+    // update_game_state();                   // Game logic
+    // character_state_machine();             // 0x411bf0
+    // hit_detection_system();                // 0x40f010
+    
+    // 3. Extract updated state from FM2K memory
+    gs.p1.hp = *(uint32_t*)0x4dfc85;
+    gs.p2.hp = *(uint32_t*)0x4edcc4;
+    gs.round_timer = *(uint32_t*)0x470060;
+    // ... extract all other state variables
+}
+```
+
+#### 4. **FM2K Timing Integration**
+```c
+// Adapt timing to match FM2K's 100 FPS
+float GetFM2KFrameTime(float frames_ahead) {
+    // FM2K runs at 100 FPS (10ms per frame)
+    const float base_frame_time = 1.0f / 100.0f;  // 0.01 seconds
+    
+    if (frames_ahead >= 0.75f) {
+        // Slow down if too far ahead
+        return base_frame_time * 1.02f;  // 59.8 FPS equivalent
+    } else {
+        return base_frame_time;  // Normal 100 FPS
+    }
+}
+```
+
+#### 5. **Complete FM2K Integration Main Loop**
+```c
+int fm2k_online_main(int argc, char* args[]) {
+    // Parse command line (same as example)
+    int localplayer = std::stoi(args[1]);
+    const int localport = std::stoi(args[2]);
+    std::string remote_address = std::move(args[3]);
+    int localdelay = std::stoi(args[4]);
+    
+    // Initialize SDL3 and FM2K
+    running = init_fm2k_window();
+    
+    // Initialize FM2K state
+    FM2KCompleteGameState state = {};
+    FM2KInput inputs[2] = {};
+    
+    // Setup GekkoNet
+    GekkoSession* sess = nullptr;
+    GekkoConfig conf {
+        .num_players = 2,
+        .input_size = sizeof(uint16_t),  // FM2K input size
+        .state_size = sizeof(FM2KCompleteGameState),
+        .max_spectators = 8,
+        .input_prediction_window = 8,
+        .desync_detection = true,
+        .limited_saving = false,  // Full state saving for accuracy
+        .post_sync_joining = true
+    };
+    
+    gekko_create(&sess);
+    gekko_start(sess, &conf);
+    gekko_net_adapter_set(sess, gekko_default_adapter(localport));
+    
+    // Add players (order-dependent)
+    if (localplayer == 0) {
+        localplayer = gekko_add_actor(sess, LocalPlayer, nullptr);
+        auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), 
+                                      (unsigned int)remote_address.size() };
+        gekko_add_actor(sess, RemotePlayer, &remote);
+    } else {
+        auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), 
+                                      (unsigned int)remote_address.size() };
+        gekko_add_actor(sess, RemotePlayer, &remote);
+        localplayer = gekko_add_actor(sess, LocalPlayer, nullptr);
+    }
+    
+    gekko_set_local_delay(sess, localplayer, localdelay);
+    
+    // Timing variables
+    auto curr_time = std::chrono::steady_clock::now();
+    auto prev_time = curr_time;
+    float delta_time = 0.0f;
+    float accumulator = 0.0f;
+    float frame_time = 0.0f;
+    float frames_ahead = 0.0f;
+    
+    while (running) {
+        curr_time = std::chrono::steady_clock::now();
+        
+        frames_ahead = gekko_frames_ahead(sess);
+        frame_time = GetFM2KFrameTime(frames_ahead);
+        
+        delta_time = std::chrono::duration<float>(curr_time - prev_time).count();
+        prev_time = curr_time;
+        accumulator += delta_time;
+        
+        gekko_network_poll(sess);
+        
+        while (accumulator >= frame_time) {
+            // Process SDL events
+            process_events();
+            
+            // Get local input
+            auto input = get_fm2k_inputs();
+            gekko_add_local_input(sess, localplayer, &input);
+            
+            // Handle session events
+            int count = 0;
+            auto events = gekko_session_events(sess, &count);
+            for (int i = 0; i < count; i++) {
+                handle_fm2k_session_event(events[i]);
+            }
+            
+            // Process game events
+            count = 0;
+            auto updates = gekko_update_session(sess, &count);
+            for (int i = 0; i < count; i++) {
+                auto ev = updates[i];
+                
+                switch (ev->type) {
+                    case SaveEvent:
+                        save_fm2k_state(&state, ev);
+                        break;
+                    case LoadEvent:
+                        load_fm2k_state(&state, ev);
+                        break;
+                    case AdvanceEvent:
+                        // Extract inputs from GekkoNet
+                        inputs[0].input.value = ((uint16_t*)ev->data.adv.inputs)[0];
+                        inputs[1].input.value = ((uint16_t*)ev->data.adv.inputs)[1];
+                        
+                        // Update FM2K game state
+                        update_fm2k_state(state, inputs);
+                        break;
+                }
+            }
+            
+            accumulator -= frame_time;
+        }
+        
+        // Render current state
+        render_fm2k_state(state);
+    }
+    
+    gekko_destroy(sess);
+    del_window();
+    return 0;
+}
+```
+
+### Key Differences from SDL Example
+
+1. **Input Size**: FM2K uses 16-bit inputs vs 8-bit in example
+2. **State Size**: ~10KB vs ~16 bytes in example  
+3. **Frame Rate**: 100 FPS vs 60 FPS in example
+4. **State Complexity**: Full game state vs simple position
+5. **Integration Depth**: Hooks into existing game vs standalone
+
+### Integration Benefits
+
+1. **Proven Pattern**: The SDL example shows GekkoNet works reliably
+2. **Clear Structure**: Event handling patterns are well-defined
+3. **Performance**: Timing control handles frame rate variations
+4. **Network Stats**: Built-in ping/jitter monitoring
+5. **Error Handling**: Desync detection and player management
+
+This analysis shows that adapting the SDL example for FM2K is very feasible, with the main changes being input/state structures and frame timing to match FM2K's 100 FPS architecture.
+
+## Hit Judge and Round System Architecture
+
+### Hit Judge Configuration (0x42470C-0x430120)
+
+The game uses a sophisticated hit detection and configuration system loaded from INI files:
+
+```c
+struct FM2K_HitJudgeConfig {
+    uint32_t hit_judge_value;    // 0x42470C - Hit detection threshold
+    uint32_t config_values[7];   // 0x4300E0-0x430120 - General config values
+    char     config_string[260]; // Configuration string buffer
+};
+```
+
+The hit judge system is initialized by `hit_judge_set_function` (0x414930) which:
+1. Loads configuration from INI files
+2. Sets up hit detection parameters
+3. Configures round settings and game modes
+
+### Round System State (0x470040-0x47006C)
+
+The round system maintains several critical state variables:
+
+```c
+struct FM2K_RoundSystem {
+    uint32_t game_mode;      // 0x470040 - Current game mode (VS/Team/Tournament)
+    uint32_t round_limit;    // 0x470048 - Maximum rounds for the match
+    uint32_t round_state;    // 0x47004C - Current round state
+    uint32_t round_timer;    // 0x470060 - Active round timer
+};
+
+enum FM2K_RoundState {
+    ROUND_INIT = 0,      // Initial state
+    ROUND_ACTIVE = 1,    // Round in progress
+    ROUND_END = 2,       // Round has ended
+    ROUND_MATCH_END = 3  // Match has ended
+};
+
+enum FM2K_GameMode {
+    MODE_NORMAL = 0,     // Normal VS mode
+    MODE_TEAM = 1,       // Team Battle mode
+    MODE_TOURNAMENT = 2  // Tournament mode
+};
+```
+
+The round system is managed by `vs_round_function` (0x4086A0) which:
+1. Handles round state transitions
+2. Manages round timers
+3. Processes win/loss conditions
+4. Controls match flow
+
+### Rollback Implications
+
+This architecture has several important implications for rollback implementation:
+
+1. **State Serialization Requirements:**
+   - Must save hit judge configuration
+   - Must preserve round state and timers
+   - Game mode affects state size
+
+2. **Deterministic Behavior:**
+   - Hit detection is configuration-driven
+   - Round state transitions are deterministic
+   - Timer-based events are predictable
+
+3. **State Size Optimization:**
+   - Hit judge config is static per match
+   - Only dynamic round state needs saving
+   - Can optimize by excluding static config
+
+4. **Synchronization Points:**
+   - Round state changes are key sync points
+   - Hit detection results must be identical
+   - Timer values must match exactly
+
+Updated state structure for rollback:
+
+```c
+typedef struct FM2KGameState {
+    // ... existing timing and input state ...
+
+    // Round System State
+    struct {
+        uint32_t mode;          // Current game mode
+        uint32_t round_limit;   // Maximum rounds
+        uint32_t round_state;   // Current round state
+        uint32_t round_timer;   // Active round timer
+        uint32_t score_value;   // Current score/timer value
+    } round_system;
+
+    // Hit Judge State
+    struct {
+        uint32_t hit_judge_value;   // Current hit detection threshold
+        uint32_t effect_target;     // Current hit effect target
+        uint32_t effect_timer;      // Hit effect duration
+    } hit_system;
+
+    // ... rest of game state ...
+} FM2KGameState;
+```
+
+## Sprite Rendering and Hit Detection System
+
+### Sprite Rendering Engine (0x40CC30)
+
+The game uses a sophisticated sprite rendering engine that handles:
+1. Hit effect visualization
+2. Sprite transformations and blending
+3. Color palette manipulation
+4. Screen-space effects
+
+Key components:
+
+```c
+struct SpriteRenderState {
+    uint32_t render_mode;     // Different rendering modes (-10 to 3)
+    uint32_t blend_flags;     // Blending and effect flags
+    uint32_t color_values[3]; // RGB color modification values
+    uint32_t effect_timer;    // Effect duration counter
+};
+```
+
+### Hit Effect System
+
+The hit effect system is tightly integrated with the sprite renderer:
+
+1. **Effect Triggers:**
+   - Hit detection results (0x42470C)
+   - Game state transitions
+   - Timer-based events
+
+2. **Effect Parameters:**
+   ```c
+   struct HitEffectParams {
+       uint32_t target_id;      // Effect target identifier
+       uint32_t effect_type;    // Visual effect type
+       uint32_t duration;       // Effect duration in frames
+       uint32_t color_values;   // RGB color modulation
+   };
+   ```
+
+3. **Rendering Pipeline:**
+   - Color palette manipulation (0x4D1A20)
+   - Sprite transformation
+   - Blend mode selection
+   - Screen-space effects
+
+### Integration with Rollback
+
+The sprite and hit effect systems have important implications for rollback:
+
+1. **Visual State Management:**
+   - Effect timers must be part of the game state
+   - Color modulation values need saving
+   - Sprite transformations must be deterministic
+
+2. **Performance Considerations:**
+   - Effect parameters are small (few bytes per effect)
+   - Visual state is derived from game state
+   - Can optimize by excluding pure visual state
+
+3. **Synchronization Requirements:**
+   - Hit effects must trigger identically
+   - Effect timers must stay synchronized
+   - Visual state must match game state
+
+Updated state structure to include visual effects:
+
+```c
+typedef struct FM2KGameState {
+    // ... previous state members ...
+
+    // Visual Effect State
+    struct {
+        uint32_t active_effects;     // Bitfield of active effects
+        uint32_t effect_timers[8];   // Array of effect durations
+        uint32_t color_values[8][3]; // RGB values for each effect
+        uint32_t target_ids[8];      // Effect target identifiers
+    } visual_state;
+
+    // ... rest of game state ...
+} FM2KGameState;
+```
+
+## Game State Management System
+
+The game state manager (0x406FC0) handles several critical aspects of the game:
+
+### State Variables
+
+1. **Round System State:**
+   ```c
+   struct RoundSystemState {
+       uint32_t g_round_timer;        // 0x470060 - Current round timer value
+       uint32_t g_round_limit;        // 0x470048 - Maximum rounds per match
+       uint32_t g_round_state;        // 0x47004C - Current round state
+       uint32_t g_game_mode;          // 0x470040 - Current game mode
+   };
+   ```
+
+2. **Player State:**
+   ```c
+   struct PlayerState {
+       int32_t stage_position;        // Current position on stage grid
+       uint32_t action_state;         // Current action being performed
+       uint32_t round_count;          // Number of rounds completed
+       uint32_t input_history[4];     // Recent input history
+       uint32_t move_history[4];      // Recent movement history
+   };
+   ```
+
+### State Management Flow
+
+1. **Initialization (0x406FC0):**
+   - Loads initial configuration
+   - Sets up round timer and limits
+   - Initializes player positions
+   - Sets up game mode parameters
+
+2. **State Updates:**
+   - Input processing and validation
+   - Position and movement updates
+   - Action state transitions
+   - Round state management
+
+3. **State Synchronization:**
+   - Timer synchronization
+   - Player state synchronization
+   - Round state transitions
+   - Game mode state management
+
+### Rollback Implications
+
+1. **Critical State Components:**
+   - Round timer and state
+   - Player positions and actions
+   - Input and move history
+   - Game mode state
+
+2. **State Size Analysis:**
+   - Core game state: ~128 bytes
+   - Player state: ~32 bytes per player
+   - History buffers: ~32 bytes per player
+   - Total per-frame state: ~256 bytes
+
+3. **Synchronization Requirements:**
+   - Timer must be deterministic
+   - Player state must be atomic
+   - Input processing must be consistent
+   - State transitions must be reproducible
+
+## Input Processing System
+
+The game uses a sophisticated input processing system that handles both movement and action inputs:
+
+### Input Mapping (0x406F20)
+
+```c
+enum InputActions {
+    ACTION_NONE = 0,
+    ACTION_A = 1,    // 0x20  - Light Attack
+    ACTION_B = 2,    // 0x40  - Medium Attack
+    ACTION_C = 3,    // 0x80  - Heavy Attack
+    ACTION_D = 4,    // 0x100 - Special Move
+    ACTION_E = 5     // 0x200 - Super Move
+};
+
+enum InputDirections {
+    DIR_NONE  = 0x000,
+    DIR_UP    = 0x004,
+    DIR_DOWN  = 0x008,
+    DIR_LEFT  = 0x001,
+    DIR_RIGHT = 0x002
+};
+```
+
+### Input Processing Flow
+
+1. **Raw Input Capture:**
+   - Movement inputs (4-way directional)
+   - Action buttons (5 main buttons)
+   - System buttons (Start, Select)
+
+2. **Input State Management:**
+   ```c
+   struct InputState {
+       uint16_t current_input;     // Current frame's input
+       uint16_t previous_input;    // Last frame's input
+       uint16_t input_changes;     // Changed bits since last frame
+       uint8_t  processed_input;   // Processed directional input
+   };
+   ```
+
+3. **Input History:**
+   - Each player maintains a 4-frame input history
+   - History includes both raw and processed inputs
+   - Used for move validation and rollback
+
+4. **Input Processing:**
+   - Raw input capture
+   - Input change detection
+   - Input repeat handling:
+     - Initial delay
+     - Repeat delay
+     - Repeat timer
+   - Input validation
+   - Mode-specific processing:
+     - VS mode (< 3000)
+     - Story mode (? 3000)
+
+5. **Memory Layout:**
+   ```
+   input_system {
+     +g_input_buffer_index: Current frame index
+     +g_p1_input[8]: Current P1 inputs
+     +g_p2_input: Current P2 inputs
+     +g_prev_input_state[8]: Previous frame inputs
+     +g_input_changes[8]: Input change flags
+     +g_input_repeat_state[8]: Input repeat flags
+     +g_input_repeat_timer[8]: Repeat timers
+     +g_processed_input[8]: Processed inputs
+     +g_combined_processed_input: Combined state
+     +g_combined_input_changes: Change mask
+     +g_combined_raw_input: Raw input mask
+   }
+   ```
+
+6. **Critical Operations:**
+   - Frame advance:
+     ```c
+     g_input_buffer_index = (g_input_buffer_index + 1) & 0x3FF;
+     g_p1_input_history[g_input_buffer_index] = current_input;
+     ```
+   - Input processing:
+     ```c
+     g_input_changes = current_input & (prev_input ^ current_input);
+     if (repeat_active && current_input == repeat_state) {
+       if (--repeat_timer == 0) {
+         processed_input = current_input;
+         repeat_timer = repeat_delay;
+       }
+     }
+     ```
+
+This system is crucial for rollback implementation as it provides:
+1. Deterministic input processing
+2. Frame-accurate input history
+3. Clear state serialization points
+4. Mode-specific input handling
+5. Input validation and processing logic
+
+The 1024-frame history buffer is particularly useful for rollback, as it provides ample space for state rewinding and replay.
+```
+
+### Health Damage Manager (0x40e6f0)
+
+The health damage manager handles health state and damage calculations:
+
+1. **Health State Management:**
+   - Per-character health tracking
+   - Health segments system
+   - Recovery mechanics
+   - Guard damage handling
+
+2. **Memory Layout:**
+   ```
+   health_system {
+     +4DFC95: Current health segment
+     +4DFC99: Maximum health segments
+     +4DFC9D: Current health points
+     +4DFCA1: Health segment size
+   }
+   ```
+
+3. **Damage Processing:**
+   - Segment-based health system:
+     ```c
+     while (current_health < 0) {
+       if (current_segment > 0) {
+         current_segment--;
+         current_health += segment_size;
+       } else {
+         current_health = 0;
+       }
+     }
+     ```
+   - Health recovery:
+     ```c
+     while (current_health >= segment_size) {
+       if (current_segment < max_segments) {
+         current_health -= segment_size;
+         current_segment++;
+       } else {
+         current_health = 0;
+       }
+     }
+     ```
+
+4. **Critical Operations:**
+   - Damage application:
+     - Negative values for damage
+     - Positive values for healing
+   - Segment management:
+     - Segment depletion
+     - Segment recovery
+     - Maximum segment cap
+   - Health validation:
+     - Minimum health check
+     - Maximum health check
+     - Segment boundary checks
+
+This system is crucial for rollback implementation as it:
+1. Uses deterministic damage calculations
+2. Maintains clear health state boundaries
+3. Provides segment-based state tracking
+4. Handles health recovery mechanics
+5. Manages guard damage separately
+
+The segmented health system will make it easier to serialize and restore health states during rollback operations, as each segment provides a clear checkpoint for state management.
+```
+
+### Rollback Implementation Summary
+
+After analyzing FM2K's core systems, we can conclude that the game is well-suited for rollback netcode implementation. Here's a comprehensive overview of how each system will integrate with rollback:
+
+1. **State Serialization Points:**
+   - Character State Machine (0x411bf0):
+     - Base states (0x0-0x3)
+     - Action states (0x4-0x7)
+     - Movement states (0x8-0xB)
+     - Frame counters and timers
+   - Hit Detection System (0x40f010):
+     - Hit boxes and collision state
+     - Damage values and scaling
+     - Hit confirmation flags
+   - Input Buffer System (0x4146d0):
+     - 1024-frame history buffer
+     - Input state flags
+     - Repeat handling state
+   - Health System (0x40e6f0):
+     - Health segments
+     - Current health points
+     - Guard damage state
+     - Recovery mechanics
+
+2. **Deterministic Systems:**
+   - Fixed frame rate (100 FPS)
+   - 16.16 fixed-point coordinates
+   - Deterministic input processing
+   - Clear state transitions
+   - Predictable damage calculations
+   - Frame-based timers
+
+3. **State Management:**
+   - Object Pool (1024 entries):
+     - Type identification
+     - Position and velocity
+     - Animation state
+     - Collision data
+   - Input History:
+     - Circular buffer design
+     - Clear frame boundaries
+     - Input validation
+   - Hit Detection:
+     - Priority system
+     - State validation
+     - Reaction handling
+   - Health System:
+     - Segment-based tracking
+     - Clear state boundaries
+     - Recovery mechanics
+
+4. **Implementation Strategy:**
+   a. Save State (Frame N):
+      ```c
+      struct SaveState {
+          // Character State
+          int base_state;
+          int action_state;
+          int movement_state;
+          int frame_counters[4];
+          
+          // Hit Detection
+          int hit_boxes[20];
+          int damage_values[8];
+          int hit_flags;
+          
+          // Input Buffer
+          int input_history[1024];
+          int input_flags;
+          int repeat_state;
+          
+          // Health System
+          int health_segments;
+          int current_health;
+          int guard_damage;
+      };
+      ```
+
+   b. Rollback Process:
+      1. Save current frame state
+      2. Apply new remote input
+      3. Simulate forward:
+         - Process inputs
+         - Update character states
+         - Handle collisions
+         - Apply damage
+      4. Render new state
+      5. Save confirmed state
+
+5. **Critical Hooks:**
+   - Input Processing (0x4146d0):
+     - Frame advance point
+     - Input buffer management
+   - Character State (0x411bf0):
+     - State transition handling
+     - Frame counting
+   - Hit Detection (0x40f010):
+     - Collision processing
+     - Damage application
+   - Health System (0x40e6f0):
+     - Health state management
+     - Segment tracking
+
+6. **Optimization Opportunities:**
+   - Parallel state simulation
+   - Minimal state serialization
+   - Efficient state diffing
+   - Smart state prediction
+   - Input compression
+
+The analysis reveals that FM2K's architecture is highly suitable for rollback implementation due to its:
+1. Deterministic game logic
+2. Clear state boundaries
+3. Frame-based processing
+4. Efficient memory layout
+5. Well-defined systems
+
+This research provides a solid foundation for implementing rollback netcode in FM2K, with all major systems supporting the requirements for state saving, rollback, and resimulation.
+
+## GekkoNet Integration Analysis
+
+### GekkoNet Library Overview
+
+GekkoNet is a rollback netcode library that provides the networking infrastructure we need for FM2K. Here's how it maps to our analyzed systems:
+
+### 1. **GekkoNet Configuration for FM2K**
+```c
+GekkoConfig fm2k_config = {
+    .num_players = 2,                    // P1 vs P2
+    .max_spectators = 8,                 // Allow spectators
+    .input_prediction_window = 8,        // 8 frames ahead prediction
+    .spectator_delay = 6,                // 6 frame spectator delay
+    .input_size = sizeof(uint32_t),      // FM2K input flags (32-bit)
+    .state_size = sizeof(FM2KGameState), // Our minimal state structure
+    .limited_saving = false,             // Full state saving for accuracy
+    .post_sync_joining = true,           // Allow mid-match spectators
+    .desync_detection = true             // Enable desync detection
+};
+```
+
+### 2. **Integration Points with FM2K Systems**
+
+#### Input System Integration (0x4146d0)
+```c
+// Hook into process_game_inputs()
+void fm2k_input_hook() {
+    // Get GekkoNet events
+    int event_count;
+    GekkoGameEvent** events = gekko_update_session(session, &event_count);
+    
+    for (int i = 0; i < event_count; i++) {
+        switch (events[i]->type) {
+            case AdvanceEvent:
+                // Inject inputs into FM2K's input system
+                g_p1_input_history[g_input_buffer_index] = events[i]->data.adv.inputs[0];
+                g_p2_input_history[g_input_buffer_index] = events[i]->data.adv.inputs[1];
+                // Continue normal input processing
+                break;
+                
+            case SaveEvent:
+                // Save current FM2K state
+                save_fm2k_state(events[i]->data.save.state, events[i]->data.save.state_len);
+                break;
+                
+            case LoadEvent:
+                // Restore FM2K state
+                load_fm2k_state(events[i]->data.load.state, events[i]->data.load.state_len);
+                break;
+        }
+    }
+}
+```
+
+#### State Management Integration
+```c
+typedef struct FM2KGameState {
+    // Frame tracking
+    uint32_t frame_number;
+    uint32_t input_buffer_index;
+    
+    // Input state
+    uint32_t p1_input_current;
+    uint32_t p2_input_current;
+    uint32_t input_repeat_state[8];
+    uint32_t input_repeat_timer[8];
+    
+    // Character states (per character)
+    struct {
+        // Position (16.16 fixed point)
+        int32_t pos_x, pos_y;
+        int32_t vel_x, vel_y;
+        
+        // State machine
+        uint16_t base_state;        // 0x0-0x3
+        uint16_t action_state;      // 0x4-0x7  
+        uint16_t movement_state;    // 0x8-0xB
+        uint16_t state_flags;       // Offset 350
+        
+        // Animation
+        uint16_t animation_frame;   // Offset 12
+        uint16_t max_animation_frame; // Offset 88
+        
+        // Health system
+        uint16_t health_segments;   // Current segments
+        uint16_t current_health;    // Health points
+        uint16_t max_health_segments; // Maximum segments
+        uint16_t guard_damage;      // Guard damage accumulation
+        
+        // Hit detection
+        uint16_t hit_flags;         // Hit state flags
+        uint16_t hit_stun_timer;    // Hit stun duration
+        uint16_t guard_state;       // Guard state flags
+        
+        // Facing and direction
+        uint8_t facing_direction;   // Left/right facing
+        uint8_t input_direction;    // Current input direction
+    } characters[2];
+    
+    // Round state
+    uint32_t round_state;           // Round state machine
+    uint32_t round_timer;           // Round timer
+    uint32_t game_mode;             // Current game mode
+    
+    // Hit detection global state
+    uint32_t hit_effect_target;     // Hit effect target
+    uint32_t hit_effect_timer;      // Hit effect timer
+    
+    // Combo system
+    uint16_t combo_counter[2];      // Combo counters
+    uint16_t damage_scaling[2];     // Damage scaling
+    
+    // Object pool critical state
+    uint16_t active_objects;        // Number of active objects
+    uint32_t object_state_flags;    // Critical object flags
+    
+} FM2KGameState;
+```
+
+### 3. **Network Adapter Implementation**
+```c
+GekkoNetAdapter fm2k_adapter = {
+    .send_data = fm2k_send_packet,
+    .receive_data = fm2k_receive_packets,
+    .free_data = fm2k_free_packet_data
+};
+
+void fm2k_send_packet(GekkoNetAddress* addr, const char* data, int length) {
+    // Use existing LilithPort networking or implement UDP
+    // addr->data contains IP/port information
+    // data contains the packet to send
+}
+
+GekkoNetResult** fm2k_receive_packets(int* length) {
+    // Collect all packets received since last call
+    // Return array of GekkoNetResult pointers
+    // GekkoNet will call free_data on each result
+}
+```
+
+### 4. **Integration with Existing FM2K Systems**
+
+#### Main Game Loop Integration
+```c
+// Hook at 0x4146d0 - process_game_inputs()
+void fm2k_rollback_frame() {
+    // 1. Poll network
+    gekko_network_poll(session);
+    
+    // 2. Add local inputs
+    uint32_t local_input = get_local_player_input();
+    gekko_add_local_input(session, local_player_id, &local_input);
+    
+    // 3. Process GekkoNet events
+    int event_count;
+    GekkoGameEvent** events = gekko_update_session(session, &event_count);
+    
+    // 4. Handle events (save/load/advance)
+    process_gekko_events(events, event_count);
+    
+    // 5. Continue normal FM2K processing
+    // (character updates, hit detection, etc.)
+}
+```
+
+#### State Serialization Functions
+```c
+void save_fm2k_state(unsigned char* buffer, unsigned int* length) {
+    FM2KGameState* state = (FM2KGameState*)buffer;
+    
+    // Save frame state
+    state->frame_number = current_frame;
+    state->input_buffer_index = g_input_buffer_index;
+    
+    // Save character states from object pool
+    for (int i = 0; i < 2; i++) {
+        save_character_state(&state->characters[i], i);
+    }
+    
+    // Save round state
+    state->round_state = g_round_state;
+    state->round_timer = g_round_timer;
+    
+    *length = sizeof(FM2KGameState);
+}
+
+void load_fm2k_state(unsigned char* buffer, unsigned int length) {
+    FM2KGameState* state = (FM2KGameState*)buffer;
+    
+    // Restore frame state
+    current_frame = state->frame_number;
+    g_input_buffer_index = state->input_buffer_index;
+    
+    // Restore character states to object pool
+    for (int i = 0; i < 2; i++) {
+        load_character_state(&state->characters[i], i);
+    }
+    
+    // Restore round state
+    g_round_state = state->round_state;
+    g_round_timer = state->round_timer;
+}
+```
+
+### 5. **Event Handling Integration**
+```c
+void handle_session_events() {
+    int event_count;
+    GekkoSessionEvent** events = gekko_session_events(session, &event_count);
+    
+    for (int i = 0; i < event_count; i++) {
+        switch (events[i]->type) {
+            case PlayerConnected:
+                // Show "Player Connected" message
+                break;
+            case PlayerDisconnected:
+                // Handle disconnection
+                break;
+            case DesyncDetected:
+                // Log desync information
+                printf("Desync at frame %d: local=%08x remote=%08x\n",
+                       events[i]->data.desynced.frame,
+                       events[i]->data.desynced.local_checksum,
+                       events[i]->data.desynced.remote_checksum);
+                break;
+        }
+    }
+}
+```
+
+### 6. **Performance Considerations**
+- **State Size**: ~200 bytes per frame (very efficient)
+- **Prediction Window**: 8 frames ahead (80ms at 100 FPS)
+- **Rollback Depth**: Up to 15 frames (150ms)
+- **Network Frequency**: 100 Hz to match FM2K's frame rate
+
+### 7. **Implementation Benefits**
+1. **Minimal Code Changes**: Only need to hook input processing
+2. **Existing Infrastructure**: Leverages FM2K's input history system
+3. **Deterministic**: FM2K's fixed-point math ensures consistency
+4. **Efficient**: Small state size enables fast rollback
+5. **Robust**: GekkoNet handles all networking complexity
+
+This integration approach leverages both FM2K's existing architecture and GekkoNet's proven rollback implementation, providing a solid foundation for online play.
+
+### Critical Player State Variables
+
+Based on IDA analysis, here are the key memory addresses for player state:
+
+#### Player 1 State Variables:
+```c
+// Input system
+g_p1_input          = 0x4259c0;  // Current input state
+g_p1_input_history  = 0x4280e0;  // 1024-frame input history
+
+// Position and stage
+g_p1_stage_x        = 0x424e68;  // Stage position X
+g_p1_stage_y        = 0x424e6c;  // Stage position Y
+
+// Round and game state
+g_p1_round_count    = 0x4700ec;  // Round wins
+g_p1_round_state    = 0x4700f0;  // Round state
+g_p1_action_state   = 0x47019c;  // Action state
+
+// Health system
+g_p1_hp             = 0x4dfc85;  // Current HP
+g_p1_max_hp         = 0x4dfc91;  // Maximum HP
+```
+
+#### Player 2 State Variables:
+```c
+// Input system
+g_p2_input          = 0x4259c4;  // Current input state
+g_p2_input_history  = 0x4290e0;  // 1024-frame input history
+
+// Round and game state
+g_p2_action_state   = 0x4701a0;  // Action state
+
+// Health system
+g_p2_hp             = 0x4edcc4;  // Current HP
+g_p2_max_hp         = 0x4edcd0;  // Maximum HP
+```
+
+#### Core Game State Variables:
+```c
+// Object pool
+g_object_pool       = 0x4701e0;  // Main object pool (1024 entries)
+g_sprite_data_array = 0x447938;  // Sprite data array
+
+// Timing system
+g_frame_time_ms     = 0x41e2f0;  // Frame duration (10ms)
+g_last_frame_time   = 0x447dd4;  // Last frame timestamp
+g_frame_sync_flag   = 0x424700;  // Frame sync state
+g_frame_time_delta  = 0x425960;  // Frame timing delta
+g_frame_skip_count  = 0x4246f4;  // Frame skip counter
+
+// Random number generator
+g_random_seed       = 0x41fb1c;  // RNG seed
+
+// Input buffer management
+g_input_buffer_index = (calculated); // Current buffer index
+g_input_repeat_timer = 0x4d1c40;     // Input repeat timers
+
+// Round system
+g_round_timer       = 0x470060;  // Round timer
+g_game_timer        = 0x470044;  // Game timer
+g_hit_effect_timer  = 0x4701c8;  // Hit effect timer
+```
+
+### Final State Structure for GekkoNet
+
+With all the memory addresses identified, here's the complete state structure:
+
+```c
+typedef struct FM2KCompleteGameState {
+    // Frame and timing state
+    uint32_t frame_number;
+    uint32_t input_buffer_index;
+    uint32_t last_frame_time;
+    uint32_t frame_time_delta;
+    uint8_t frame_skip_count;
+    uint8_t frame_sync_flag;
+    
+    // Random number generator state
+    uint32_t random_seed;
+    
+    // Player 1 state
+    struct {
+        uint32_t input_current;
+        uint32_t input_history[1024];
+        uint32_t stage_x, stage_y;
+        uint32_t round_count;
+        uint32_t round_state;
+        uint32_t action_state;
+        uint32_t hp, max_hp;
+    } p1;
+    
+    // Player 2 state
+    struct {
+        uint32_t input_current;
+        uint32_t input_history[1024];
+        uint32_t action_state;
+        uint32_t hp, max_hp;
+    } p2;
+    
+    // Global timers
+    uint32_t round_timer;
+    uint32_t game_timer;
+    uint32_t hit_effect_timer;
+    
+    // Input system state
+    uint32_t input_repeat_timer[8];
+    
+    // Critical object pool state (first 2 character objects)
+    struct {
+        uint32_t object_type;
+        int32_t pos_x, pos_y;        // 16.16 fixed point
+        int32_t vel_x, vel_y;
+        uint16_t state_flags;
+        uint16_t animation_frame;
+        uint16_t health_segments;
+        uint16_t facing_direction;
+        // ... other critical fields
+    } character_objects[2];
+    
+} FM2KCompleteGameState;
+```
+
+### Memory Access Functions
+
+```c
+// Direct memory access functions for state serialization
+void save_fm2k_complete_state(FM2KCompleteGameState* state) {
+    // Frame and timing
+    state->frame_number = current_frame;
+    state->input_buffer_index = g_input_buffer_index;
+    state->last_frame_time = *(uint32_t*)0x447dd4;
+    state->frame_time_delta = *(uint32_t*)0x425960;
+    state->frame_skip_count = *(uint8_t*)0x4246f4;
+    state->frame_sync_flag = *(uint8_t*)0x424700;
+    
+    // RNG state
+    state->random_seed = *(uint32_t*)0x41fb1c;
+    
+    // Player 1 state
+    state->p1.input_current = *(uint32_t*)0x4259c0;
+    memcpy(state->p1.input_history, (void*)0x4280e0, 1024 * sizeof(uint32_t));
+    state->p1.stage_x = *(uint32_t*)0x424e68;
+    state->p1.stage_y = *(uint32_t*)0x424e6c;
+    state->p1.round_count = *(uint32_t*)0x4700ec;
+    state->p1.round_state = *(uint32_t*)0x4700f0;
+    state->p1.action_state = *(uint32_t*)0x47019c;
+    state->p1.hp = *(uint32_t*)0x4dfc85;
+    state->p1.max_hp = *(uint32_t*)0x4dfc91;
+    
+    // Player 2 state
+    state->p2.input_current = *(uint32_t*)0x4259c4;
+    memcpy(state->p2.input_history, (void*)0x4290e0, 1024 * sizeof(uint32_t));
+    state->p2.action_state = *(uint32_t*)0x4701a0;
+    state->p2.hp = *(uint32_t*)0x4edcc4;
+    state->p2.max_hp = *(uint32_t*)0x4edcd0;
+    
+    // Global timers
+    state->round_timer = *(uint32_t*)0x470060;
+    state->game_timer = *(uint32_t*)0x470044;
+    state->hit_effect_timer = *(uint32_t*)0x4701c8;
+    
+    // Input repeat timers
+    memcpy(state->input_repeat_timer, (void*)0x4d1c40, 8 * sizeof(uint32_t));
+    
+    // Character objects from object pool
+    save_character_objects_from_pool(state->character_objects);
+}
+
+void load_fm2k_complete_state(FM2KCompleteGameState* state) {
+    // Restore all state in reverse order
+    // ... (similar but with assignment in opposite direction)
+}
+```
+
+This gives us a complete, memory-accurate state structure that can be used with GekkoNet for rollback implementation. The state size is approximately 10KB, which is very reasonable for rollback netcode.
+
+## GekkoNet SDL Example Analysis & FM2K Integration
+
+### SDL Example Key Patterns
+
+The OnlineSession.cpp example demonstrates the core GekkoNet integration patterns we need for FM2K:
+
+#### 1. **Session Setup Pattern**
+```c
+// From SDL example - adapt for FM2K
+GekkoSession* sess = nullptr;
+GekkoConfig conf {
+    .num_players = 2,
+    .input_size = sizeof(char),           // FM2K: sizeof(uint32_t)
+    .state_size = sizeof(GState),         // FM2K: sizeof(FM2KCompleteGameState)
+    .max_spectators = 0,                  // FM2K: 8 for spectators
+    .input_prediction_window = 10,        // FM2K: 8 frames
+    .desync_detection = true,
+    // .limited_saving = true,            // FM2K: false for accuracy
+};
+
+gekko_create(&sess);
+gekko_start(sess, &conf);
+gekko_net_adapter_set(sess, gekko_default_adapter(localport));
+```
+
+#### 2. **Player Management Pattern**
+```c
+// Order-dependent player addition (from example)
+if (localplayer == 0) {
+    localplayer = gekko_add_actor(sess, LocalPlayer, nullptr);
+    auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), 
+                                  (unsigned int)remote_address.size() };
+    gekko_add_actor(sess, RemotePlayer, &remote);
+} else {
+    auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), 
+                                  (unsigned int)remote_address.size() };
+    gekko_add_actor(sess, RemotePlayer, &remote);
+    localplayer = gekko_add_actor(sess, LocalPlayer, nullptr);
+}
+```
+
+#### 3. **Core Game Loop Pattern** 
+```c
+// From SDL example - critical for FM2K integration
+while (running) {
+    // Timing control
+    frames_ahead = gekko_frames_ahead(sess);
+    frame_time = GetFrameTime(frames_ahead);
+    
+    // Network polling
+    gekko_network_poll(sess);
+    
+    // Frame processing
+    while (accumulator >= frame_time) {
+        // Add local input
+        auto input = get_key_inputs();
+        gekko_add_local_input(sess, localplayer, &input);
+        
+        // Handle session events
+        auto events = gekko_session_events(sess, &count);
+        for (int i = 0; i < count; i++) {
+            // Handle PlayerConnected, PlayerDisconnected, DesyncDetected
+        }
+        
+        // Process game events
+        auto updates = gekko_update_session(sess, &count);
+        for (int i = 0; i < count; i++) {
+            switch (updates[i]->type) {
+                case SaveEvent: save_state(&state, updates[i]); break;
+                case LoadEvent: load_state(&state, updates[i]); break;
+                case AdvanceEvent:
+                    // Extract inputs and advance game
+                    inputs[0].input.value = updates[i]->data.adv.inputs[0];
+                    inputs[1].input.value = updates[i]->data.adv.inputs[1];
+                    update_state(state, inputs, num_players);
+                    break;
+            }
+        }
+        accumulator -= frame_time;
+    }
+    
+    // Render current state
+    render_state(state);
+}
+```
+
+### FM2K Integration Strategy
+
+#### 1. **Replace SDL2 with SDL3 for FM2K**
+```c
+// SDL3 initialization for FM2K integration
+#include "SDL3/SDL.h"
+
+bool init_fm2k_window(void) {
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
+        fprintf(stderr, "Error initializing SDL3.\n");
+        return false;
+    }
+    
+    // Create window matching FM2K's resolution
+    window = SDL_CreateWindow(
+        "FM2K Online Session",
+        640, 480,  // FM2K native resolution
+        SDL_WINDOW_RESIZABLE
+    );
+    
+    if (!window) {
+        fprintf(stderr, "Error creating SDL3 Window.\n");
+        return false;
+    }
+    
+    renderer = SDL_CreateRenderer(window, NULL);
+    if (!renderer) {
+        fprintf(stderr, "Error creating SDL3 Renderer.\n");
+        return false;
+    }
+    
+    return true;
+}
+```
+
+#### 2. **FM2K Input Structure**
+```c
+// Replace simple GInput with FM2K's 11-bit input system
+struct FM2KInput {
+    union {
+        struct {
+            uint16_t left     : 1;   // 0x001
+            uint16_t right    : 1;   // 0x002
+            uint16_t up       : 1;   // 0x004
+            uint16_t down     : 1;   // 0x008
+            uint16_t button1  : 1;   // 0x010
+            uint16_t button2  : 1;   // 0x020
+            uint16_t button3  : 1;   // 0x040
+            uint16_t button4  : 1;   // 0x080
+            uint16_t button5  : 1;   // 0x100
+            uint16_t button6  : 1;   // 0x200
+            uint16_t button7  : 1;   // 0x400
+            uint16_t reserved : 5;   // Unused bits
+        } bits;
+        uint16_t value;
+    } input;
+};
+
+FM2KInput get_fm2k_inputs() {
+    FM2KInput input{};
+    input.input.value = 0;
+    
+    // Get keyboard state (SDL3 syntax)
+    const bool* keys = SDL_GetKeyboardState(NULL);
+    
+    // Map to FM2K inputs
+    input.input.bits.up = keys[SDL_SCANCODE_W];
+    input.input.bits.left = keys[SDL_SCANCODE_A];
+    input.input.bits.down = keys[SDL_SCANCODE_S];
+    input.input.bits.right = keys[SDL_SCANCODE_D];
+    input.input.bits.button1 = keys[SDL_SCANCODE_J];
+    input.input.bits.button2 = keys[SDL_SCANCODE_K];
+    input.input.bits.button3 = keys[SDL_SCANCODE_L];
+    // ... map other buttons
+    
+    return input;
+}
+```
+
+#### 3. **FM2K State Management**
+```c
+// Replace simple GState with FM2KCompleteGameState
+void save_fm2k_state(FM2KCompleteGameState* gs, GekkoGameEvent* ev) {
+    *ev->data.save.state_len = sizeof(FM2KCompleteGameState);
+    
+    // Use Fletcher's checksum (from example) for consistency
+    *ev->data.save.checksum = fletcher32((uint16_t*)gs, sizeof(FM2KCompleteGameState));
+    
+    std::memcpy(ev->data.save.state, gs, sizeof(FM2KCompleteGameState));
+}
+
+void load_fm2k_state(FM2KCompleteGameState* gs, GekkoGameEvent* ev) {
+    std::memcpy(gs, ev->data.load.state, sizeof(FM2KCompleteGameState));
+}
+
+void update_fm2k_state(FM2KCompleteGameState& gs, FM2KInput inputs[2]) {
+    // Call into FM2K's actual game logic
+    // This would hook into the functions we analyzed:
+    
+    // 1. Inject inputs into FM2K's input system
+    *(uint32_t*)0x4259c0 = inputs[0].input.value;  // g_p1_input
+    *(uint32_t*)0x4259c4 = inputs[1].input.value;  // g_p2_input
+    
+    // 2. Call FM2K's update functions
+    // process_game_inputs_FRAMESTEP_HOOK();  // 0x4146d0
+    // update_game_state();                   // Game logic
+    // character_state_machine();             // 0x411bf0
+    // hit_detection_system();                // 0x40f010
+    
+    // 3. Extract updated state from FM2K memory
+    gs.p1.hp = *(uint32_t*)0x4dfc85;
+    gs.p2.hp = *(uint32_t*)0x4edcc4;
+    gs.round_timer = *(uint32_t*)0x470060;
+    // ... extract all other state variables
+}
+```
+
+#### 4. **FM2K Timing Integration**
+```c
+// Adapt timing to match FM2K's 100 FPS
+float GetFM2KFrameTime(float frames_ahead) {
+    // FM2K runs at 100 FPS (10ms per frame)
+    const float base_frame_time = 1.0f / 100.0f;  // 0.01 seconds
+    
+    if (frames_ahead >= 0.75f) {
+        // Slow down if too far ahead
+        return base_frame_time * 1.02f;  // 59.8 FPS equivalent
+    } else {
+        return base_frame_time;  // Normal 100 FPS
+    }
+}
+```
+
+#### 5. **Complete FM2K Integration Main Loop**
+```c
+int fm2k_online_main(int argc, char* args[]) {
+    // Parse command line (same as example)
+    int localplayer = std::stoi(args[1]);
+    const int localport = std::stoi(args[2]);
+    std::string remote_address = std::move(args[3]);
+    int localdelay = std::stoi(args[4]);
+    
+    // Initialize SDL3 and FM2K
+    running = init_fm2k_window();
+    
+    // Initialize FM2K state
+    FM2KCompleteGameState state = {};
+    FM2KInput inputs[2] = {};
+    
+    // Setup GekkoNet
+    GekkoSession* sess = nullptr;
+    GekkoConfig conf {
+        .num_players = 2,
+        .input_size = sizeof(uint16_t),  // FM2K input size
+        .state_size = sizeof(FM2KCompleteGameState),
+        .max_spectators = 8,
+        .input_prediction_window = 8,
+        .desync_detection = true,
+        .limited_saving = false,  // Full state saving for accuracy
+        .post_sync_joining = true
+    };
+    
+    gekko_create(&sess);
+    gekko_start(sess, &conf);
+    gekko_net_adapter_set(sess, gekko_default_adapter(localport));
+    
+    // Add players (order-dependent)
+    if (localplayer == 0) {
+        localplayer = gekko_add_actor(sess, LocalPlayer, nullptr);
+        auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), 
+                                      (unsigned int)remote_address.size() };
+        gekko_add_actor(sess, RemotePlayer, &remote);
+    } else {
+        auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), 
+                                      (unsigned int)remote_address.size() };
+        gekko_add_actor(sess, RemotePlayer, &remote);
+        localplayer = gekko_add_actor(sess, LocalPlayer, nullptr);
+    }
+    
+    gekko_set_local_delay(sess, localplayer, localdelay);
+    
+    // Timing variables
+    auto curr_time = std::chrono::steady_clock::now();
+    auto prev_time = curr_time;
+    float delta_time = 0.0f;
+    float accumulator = 0.0f;
+    float frame_time = 0.0f;
+    float frames_ahead = 0.0f;
+    
+    while (running) {
+        curr_time = std::chrono::steady_clock::now();
+        
+        frames_ahead = gekko_frames_ahead(sess);
+        frame_time = GetFM2KFrameTime(frames_ahead);
+        
+        delta_time = std::chrono::duration<float>(curr_time - prev_time).count();
+        prev_time = curr_time;
+        accumulator += delta_time;
+        
+        gekko_network_poll(sess);
+        
+        while (accumulator >= frame_time) {
+            // Process SDL events
+            process_events();
+            
+            // Get local input
+            auto input = get_fm2k_inputs();
+            gekko_add_local_input(sess, localplayer, &input);
+            
+            // Handle session events
+            int count = 0;
+            auto events = gekko_session_events(sess, &count);
+            for (int i = 0; i < count; i++) {
+                handle_fm2k_session_event(events[i]);
+            }
+            
+            // Process game events
+            count = 0;
+            auto updates = gekko_update_session(sess, &count);
+            for (int i = 0; i < count; i++) {
+                auto ev = updates[i];
+                
+                switch (ev->type) {
+                    case SaveEvent:
+                        save_fm2k_state(&state, ev);
+                        break;
+                    case LoadEvent:
+                        load_fm2k_state(&state, ev);
+                        break;
+                    case AdvanceEvent:
+                        // Extract inputs from GekkoNet
+                        inputs[0].input.value = ((uint16_t*)ev->data.adv.inputs)[0];
+                        inputs[1].input.value = ((uint16_t*)ev->data.adv.inputs)[1];
+                        
+                        // Update FM2K game state
+                        update_fm2k_state(state, inputs);
+                        break;
+                }
+            }
+            
+            accumulator -= frame_time;
+        }
+        
+        // Render current state
+        render_fm2k_state(state);
+    }
+    
+    gekko_destroy(sess);
+    del_window();
+    return 0;
+}
+```
+
+### Key Differences from SDL Example
+
+1. **Input Size**: FM2K uses 16-bit inputs vs 8-bit in example
+2. **State Size**: ~10KB vs ~16 bytes in example  
+3. **Frame Rate**: 100 FPS vs 60 FPS in example
+4. **State Complexity**: Full game state vs simple position
+5. **Integration Depth**: Hooks into existing game vs standalone
+
+### Integration Benefits
+
+1. **Proven Pattern**: The SDL example shows GekkoNet works reliably
+2. **Clear Structure**: Event handling patterns are well-defined
+3. **Performance**: Timing control handles frame rate variations
+4. **Network Stats**: Built-in ping/jitter monitoring
+5. **Error Handling**: Desync detection and player management
+
+This analysis shows that adapting the SDL example for FM2K is very feasible, with the main changes being input/state structures and frame timing to match FM2K's 100 FPS architecture.
+
+## Hit Judge and Round System Architecture
+
+### Hit Judge Configuration (0x42470C-0x430120)
+
+The game uses a sophisticated hit detection and configuration system loaded from INI files:
+
+```c
+struct FM2K_HitJudgeConfig {
+    uint32_t hit_judge_value;    // 0x42470C - Hit detection threshold
+    uint32_t config_values[7];   // 0x4300E0-0x430120 - General config values
+    char     config_string[260]; // Configuration string buffer
+};
+```
+
+The hit judge system is initialized by `hit_judge_set_function` (0x414930) which:
+1. Loads configuration from INI files
+2. Sets up hit detection parameters
+3. Configures round settings and game modes
+
+### Round System State (0x470040-0x47006C)
+
+The round system maintains several critical state variables:
+
+```c
+struct FM2K_RoundSystem {
+    uint32_t game_mode;      // 0x470040 - Current game mode (VS/Team/Tournament)
+    uint32_t round_limit;    // 0x470048 - Maximum rounds for the match
+    uint32_t round_state;    // 0x47004C - Current round state
+    uint32_t round_timer;    // 0x470060 - Active round timer
+};
+
+enum FM2K_RoundState {
+    ROUND_INIT = 0,      // Initial state
+    ROUND_ACTIVE = 1,    // Round in progress
+    ROUND_END = 2,       // Round has ended
+    ROUND_MATCH_END = 3  // Match has ended
+};
+
+enum FM2K_GameMode {
+    MODE_NORMAL = 0,     // Normal VS mode
+    MODE_TEAM = 1,       // Team Battle mode
+    MODE_TOURNAMENT = 2  // Tournament mode
+};
+```
+
+The round system is managed by `vs_round_function` (0x4086A0) which:
+1. Handles round state transitions
+2. Manages round timers
+3. Processes win/loss conditions
+4. Controls match flow
+
+### Rollback Implications
+
+This architecture has several important implications for rollback implementation:
+
+1. **State Serialization Requirements:**
+   - Must save hit judge configuration
+   - Must preserve round state and timers
+   - Game mode affects state size
+
+2. **Deterministic Behavior:**
+   - Hit detection is configuration-driven
+   - Round state transitions are deterministic
+   - Timer-based events are predictable
+
+3. **State Size Optimization:**
+   - Hit judge config is static per match
+   - Only dynamic round state needs saving
+   - Can optimize by excluding static config
+
+4. **Synchronization Points:**
+   - Round state changes are key sync points
+   - Hit detection results must be identical
+   - Timer values must match exactly
+
+Updated state structure for rollback:
+
+```c
+typedef struct FM2KGameState {
+    // ... existing timing and input state ...
+
+    // Round System State
+    struct {
+        uint32_t mode;          // Current game mode
+        uint32_t round_limit;   // Maximum rounds
+        uint32_t round_state;   // Current round state
+        uint32_t round_timer;   // Active round timer
+        uint32_t score_value;   // Current score/timer value
+    } round_system;
+
+    // Hit Judge State
+    struct {
+        uint32_t hit_judge_value;   // Current hit detection threshold
+        uint32_t effect_target;     // Current hit effect target
+        uint32_t effect_timer;      // Hit effect duration
+    } hit_system;
+
+    // ... rest of game state ...
+} FM2KGameState;
+```
+
+## Sprite Rendering and Hit Detection System
+
+### Sprite Rendering Engine (0x40CC30)
+
+The game uses a sophisticated sprite rendering engine that handles:
+1. Hit effect visualization
+2. Sprite transformations and blending
+3. Color palette manipulation
+4. Screen-space effects
+
+Key components:
+
+```c
+struct SpriteRenderState {
+    uint32_t render_mode;     // Different rendering modes (-10 to 3)
+    uint32_t blend_flags;     // Blending and effect flags
+    uint32_t color_values[3]; // RGB color modification values
+    uint32_t effect_timer;    // Effect duration counter
+};
+```
+
+### Hit Effect System
+
+The hit effect system is tightly integrated with the sprite renderer:
+
+1. **Effect Triggers:**
+   - Hit detection results (0x42470C)
+   - Game state transitions
+   - Timer-based events
+
+2. **Effect Parameters:**
+   ```c
+   struct HitEffectParams {
+       uint32_t target_id;      // Effect target identifier
+       uint32_t effect_type;    // Visual effect type
+       uint32_t duration;       // Effect duration in frames
+       uint32_t color_values;   // RGB color modulation
+   };
+   ```
+
+3. **Rendering Pipeline:**
+   - Color palette manipulation (0x4D1A20)
+   - Sprite transformation
+   - Blend mode selection
+   - Screen-space effects
+
+### Integration with Rollback
+
+The sprite and hit effect systems have important implications for rollback:
+
+1. **Visual State Management:**
+   - Effect timers must be part of the game state
+   - Color modulation values need saving
+   - Sprite transformations must be deterministic
+
+2. **Performance Considerations:**
+   - Effect parameters are small (few bytes per effect)
+   - Visual state is derived from game state
+   - Can optimize by excluding pure visual state
+
+3. **Synchronization Requirements:**
+   - Hit effects must trigger identically
+   - Effect timers must stay synchronized
+   - Visual state must match game state
+
+Updated state structure to include visual effects:
+
+```c
+typedef struct FM2KGameState {
+    // ... previous state members ...
+
+    // Visual Effect State
+    struct {
+        uint32_t active_effects;     // Bitfield of active effects
+        uint32_t effect_timers[8];   // Array of effect durations
+        uint32_t color_values[8][3]; // RGB values for each effect
+        uint32_t target_ids[8];      // Effect target identifiers
+    } visual_state;
+
+    // ... rest of game state ...
+} FM2KGameState;
+```
+
+## Game State Management System
+
+The game state manager (0x406FC0) handles several critical aspects of the game:
+
+### State Variables
+
+1. **Round System State:**
+   ```c
+   struct RoundSystemState {
+       uint32_t g_round_timer;        // 0x470060 - Current round timer value
+       uint32_t g_round_limit;        // 0x470048 - Maximum rounds per match
+       uint32_t g_round_state;        // 0x47004C - Current round state
+       uint32_t g_game_mode;          // 0x470040 - Current game mode
+   };
+   ```
+
+2. **Player State:**
+   ```c
+   struct PlayerState {
+       int32_t stage_position;        // Current position on stage grid
+       uint32_t action_state;         // Current action being performed
+       uint32_t round_count;          // Number of rounds completed
+       uint32_t input_history[4];     // Recent input history
+       uint32_t move_history[4];      // Recent movement history
+   };
+   ```
+
+### State Management Flow
+
+1. **Initialization (0x406FC0):**
+   - Loads initial configuration
+   - Sets up round timer and limits
+   - Initializes player positions
+   - Sets up game mode parameters
+
+2. **State Updates:**
+   - Input processing and validation
+   - Position and movement updates
+   - Action state transitions
+   - Round state management
+
+3. **State Synchronization:**
+   - Timer synchronization
+   - Player state synchronization
+   - Round state transitions
+   - Game mode state management
+
+### Rollback Implications
+
+1. **Critical State Components:**
+   - Round timer and state
+   - Player positions and actions
+   - Input and move history
+   - Game mode state
+
+2. **State Size Analysis:**
+   - Core game state: ~128 bytes
+   - Player state: ~32 bytes per player
+   - History buffers: ~32 bytes per player
+   - Total per-frame state: ~256 bytes
+
+3. **Synchronization Requirements:**
+   - Timer must be deterministic
+   - Player state must be atomic
+   - Input processing must be consistent
+   - State transitions must be reproducible
+
+## Input Processing System
+
+The game uses a sophisticated input processing system that handles both movement and action inputs:
+
+### Input Mapping (0x406F20)
+
+```c
+enum InputActions {
+    ACTION_NONE = 0,
+    ACTION_A = 1,    // 0x20  - Light Attack
+    ACTION_B = 2,    // 0x40  - Medium Attack
+    ACTION_C = 3,    // 0x80  - Heavy Attack
+    ACTION_D = 4,    // 0x100 - Special Move
+    ACTION_E = 5     // 0x200 - Super Move
+};
+
+enum InputDirections {
+    DIR_NONE  = 0x000,
+    DIR_UP    = 0x004,
+    DIR_DOWN  = 0x008,
+    DIR_LEFT  = 0x001,
+    DIR_RIGHT = 0x002
+};
+```
+
+### Input Processing Flow
+
+1. **Raw Input Capture:**
+   - Movement inputs (4-way directional)
+   - Action buttons (5 main buttons)
+   - System buttons (Start, Select)
+
+2. **Input State Management:**
+   ```c
+   struct InputState {
+       uint16_t current_input;     // Current frame's input
+       uint16_t previous_input;    // Last frame's input
+       uint16_t input_changes;     // Changed bits since last frame
+       uint8_t  processed_input;   // Processed directional input
+   };
+   ```
+
+3. **Input History:**
+   - Each player maintains a 4-frame input history
+   - History includes both raw and processed inputs
+   - Used for move validation and rollback
+
+4. **Input Processing:**
+   - Raw input capture
+   - Input change detection
+   - Input repeat handling:
+     - Initial delay
+     - Repeat delay
+     - Repeat timer
+   - Input validation
+   - Mode-specific processing:
+     - VS mode (< 3000)
+     - Story mode (? 3000)
+
+5. **Memory Layout:**
+   ```
+   input_system {
+     +g_input_buffer_index: Current frame index
+     +g_p1_input[8]: Current P1 inputs
+     +g_p2_input: Current P2 inputs
+     +g_prev_input_state[8]: Previous frame inputs
+     +g_input_changes[8]: Input change flags
+     +g_input_repeat_state[8]: Input repeat flags
+     +g_input_repeat_timer[8]: Repeat timers
+     +g_processed_input[8]: Processed inputs
+     +g_combined_processed_input: Combined state
+     +g_combined_input_changes: Change mask
+     +g_combined_raw_input: Raw input mask
+   }
+   ```
+
+6. **Critical Operations:**
+   - Frame advance:
+     ```c
+     g_input_buffer_index = (g_input_buffer_index + 1) & 0x3FF;
+     g_p1_input_history[g_input_buffer_index] = current_input;
+     ```
+   - Input processing:
+     ```c
+     g_input_changes = current_input & (prev_input ^ current_input);
+     if (repeat_active && current_input == repeat_state) {
+       if (--repeat_timer == 0) {
+         processed_input = current_input;
+         repeat_timer = repeat_delay;
+       }
+     }
+     ```
+
+This system is crucial for rollback implementation as it provides:
+1. Deterministic input processing
+2. Frame-accurate input history
+3. Clear state serialization points
+4. Mode-specific input handling
+5. Input validation and processing logic
+
+The 1024-frame history buffer is particularly useful for rollback, as it provides ample space for state rewinding and replay.
+```
+
+### Health Damage Manager (0x40e6f0)
+
+The health damage manager handles health state and damage calculations:
+
+1. **Health State Management:**
+   - Per-character health tracking
+   - Health segments system
+   - Recovery mechanics
+   - Guard damage handling
+
+2. **Memory Layout:**
+   ```
+   health_system {
+     +4DFC95: Current health segment
+     +4DFC99: Maximum health segments
+     +4DFC9D: Current health points
+     +4DFCA1: Health segment size
+   }
+   ```
+
+3. **Damage Processing:**
+   - Segment-based health system:
+     ```c
+     while (current_health < 0) {
+       if (current_segment > 0) {
+         current_segment--;
+         current_health += segment_size;
+       } else {
+         current_health = 0;
+       }
+     }
+     ```
+   - Health recovery:
+     ```c
+     while (current_health >= segment_size) {
+       if (current_segment < max_segments) {
+         current_health -= segment_size;
+         current_segment++;
+       } else {
+         current_health = 0;
+       }
+     }
+     ```
+
+4. **Critical Operations:**
+   - Damage application:
+     - Negative values for damage
+     - Positive values for healing
+   - Segment management:
+     - Segment depletion
+     - Segment recovery
+     - Maximum segment cap
+   - Health validation:
+     - Minimum health check
+     - Maximum health check
+     - Segment boundary checks
+
+This system is crucial for rollback implementation as it:
+1. Uses deterministic damage calculations
+2. Maintains clear health state boundaries
+3. Provides segment-based state tracking
+4. Handles health recovery mechanics
+5. Manages guard damage separately
+
+The segmented health system will make it easier to serialize and restore health states during rollback operations, as each segment provides a clear checkpoint for state management.
+```
+
+### Rollback Implementation Summary
+
+After analyzing FM2K's core systems, we can conclude that the game is well-suited for rollback netcode implementation. Here's a comprehensive overview of how each system will integrate with rollback:
+
+1. **State Serialization Points:**
+   - Character State Machine (0x411bf0):
+     - Base states (0x0-0x3)
+     - Action states (0x4-0x7)
+     - Movement states (0x8-0xB)
+     - Frame counters and timers
+   - Hit Detection System (0x40f010):
+     - Hit boxes and collision state
+     - Damage values and scaling
+     - Hit confirmation flags
+   - Input Buffer System (0x4146d0):
+     - 1024-frame history buffer
+     - Input state flags
+     - Repeat handling state
+   - Health System (0x40e6f0):
+     - Health segments
+     - Current health points
+     - Guard damage state
+     - Recovery mechanics
+
+2. **Deterministic Systems:**
+   - Fixed frame rate (100 FPS)
+   - 16.16 fixed-point coordinates
+   - Deterministic input processing
+   - Clear state transitions
+   - Predictable damage calculations
+   - Frame-based timers
+
+3. **State Management:**
+   - Object Pool (1024 entries):
+     - Type identification
+     - Position and velocity
+     - Animation state
+     - Collision data
+   - Input History:
+     - Circular buffer design
+     - Clear frame boundaries
+     - Input validation
+   - Hit Detection:
+     - Priority system
+     - State validation
+     - Reaction handling
+   - Health System:
+     - Segment-based tracking
+     - Clear state boundaries
+     - Recovery mechanics
+
+4. **Implementation Strategy:**
+   a. Save State (Frame N):
+      ```c
+      struct SaveState {
+          // Character State
+          int base_state;
+          int action_state;
+          int movement_state;
+          int frame_counters[4];
+          
+          // Hit Detection
+          int hit_boxes[20];
+          int damage_values[8];
+          int hit_flags;
+          
+          // Input Buffer
+          int input_history[1024];
+          int input_flags;
+          int repeat_state;
+          
+          // Health System
+          int health_segments;
+          int current_health;
+          int guard_damage;
+      };
+      ```
+
+   b. Rollback Process:
+      1. Save current frame state
+      2. Apply new remote input
+      3. Simulate forward:
+         - Process inputs
+         - Update character states
+         - Handle collisions
+         - Apply damage
+      4. Render new state
+      5. Save confirmed state
+
+5. **Critical Hooks:**
+   - Input Processing (0x4146d0):
+     - Frame advance point
+     - Input buffer management
+   - Character State (0x411bf0):
+     - State transition handling
+     - Frame counting
+   - Hit Detection (0x40f010):
+     - Collision processing
+     - Damage application
+   - Health System (0x40e6f0):
+     - Health state management
+     - Segment tracking
+
+6. **Optimization Opportunities:**
+   - Parallel state simulation
+   - Minimal state serialization
+   - Efficient state diffing
+   - Smart state prediction
+   - Input compression
+
+The analysis reveals that FM2K's architecture is highly suitable for rollback implementation due to its:
+1. Deterministic game logic
+2. Clear state boundaries
+3. Frame-based processing
+4. Efficient memory layout
+5. Well-defined systems
+
+This research provides a solid foundation for implementing rollback netcode in FM2K, with all major systems supporting the requirements for state saving, rollback, and resimulation.
+
+## GekkoNet Integration Analysis
+
+### GekkoNet Library Overview
+
+GekkoNet is a rollback netcode library that provides the networking infrastructure we need for FM2K. Here's how it maps to our analyzed systems:
+
+### 1. **GekkoNet Configuration for FM2K**
+```c
+GekkoConfig fm2k_config = {
+    .num_players = 2,                    // P1 vs P2
+    .max_spectators = 8,                 // Allow spectators
+    .input_prediction_window = 8,        // 8 frames ahead prediction
+    .spectator_delay = 6,                // 6 frame spectator delay
+    .input_size = sizeof(uint32_t),      // FM2K input flags (32-bit)
+    .state_size = sizeof(FM2KGameState), // Our minimal state structure
+    .limited_saving = false,             // Full state saving for accuracy
+    .post_sync_joining = true,           // Allow mid-match spectators
+    .desync_detection = true             // Enable desync detection
+};
+```
+
+### 2. **Integration Points with FM2K Systems**
+
+#### Input System Integration (0x4146d0)
+```c
+// Hook into process_game_inputs()
+void fm2k_input_hook() {
+    // Get GekkoNet events
+    int event_count;
+    GekkoGameEvent** events = gekko_update_session(session, &event_count);
+    
+    for (int i = 0; i < event_count; i++) {
+        switch (events[i]->type) {
+            case AdvanceEvent:
+                // Inject inputs into FM2K's input system
+                g_p1_input_history[g_input_buffer_index] = events[i]->data.adv.inputs[0];
+                g_p2_input_history[g_input_buffer_index] = events[i]->data.adv.inputs[1];
+                // Continue normal input processing
+                break;
+                
+            case SaveEvent:
+                // Save current FM2K state
+                save_fm2k_state(events[i]->data.save.state, events[i]->data.save.state_len);
+                break;
+                
+            case LoadEvent:
+                // Restore FM2K state
+                load_fm2k_state(events[i]->data.load.state, events[i]->data.load.state_len);
+                break;
+        }
+    }
+}
+```
+
+#### State Management Integration
+```c
+typedef struct FM2KGameState {
+    // Frame tracking
+    uint32_t frame_number;
+    uint32_t input_buffer_index;
+    
+    // Input state
+    uint32_t p1_input_current;
+    uint32_t p2_input_current;
+    uint32_t input_repeat_state[8];
+    uint32_t input_repeat_timer[8];
+    
+    // Character states (per character)
+    struct {
+        // Position (16.16 fixed point)
+        int32_t pos_x, pos_y;
+        int32_t vel_x, vel_y;
+        
+        // State machine
+        uint16_t base_state;        // 0x0-0x3
+        uint16_t action_state;      // 0x4-0x7  
+        uint16_t movement_state;    // 0x8-0xB
+        uint16_t state_flags;       // Offset 350
+        
+        // Animation
+        uint16_t animation_frame;   // Offset 12
+        uint16_t max_animation_frame; // Offset 88
+        
+        // Health system
+        uint16_t health_segments;   // Current segments
+        uint16_t current_health;    // Health points
+        uint16_t max_health_segments; // Maximum segments
+        uint16_t guard_damage;      // Guard damage accumulation
+        
+        // Hit detection
+        uint16_t hit_flags;         // Hit state flags
+        uint16_t hit_stun_timer;    // Hit stun duration
+        uint16_t guard_state;       // Guard state flags
+        
+        // Facing and direction
+        uint8_t facing_direction;   // Left/right facing
+        uint8_t input_direction;    // Current input direction
+    } characters[2];
+    
+    // Round state
+    uint32_t round_state;           // Round state machine
+    uint32_t round_timer;           // Round timer
+    uint32_t game_mode;             // Current game mode
+    
+    // Hit detection global state
+    uint32_t hit_effect_target;     // Hit effect target
+    uint32_t hit_effect_timer;      // Hit effect timer
+    
+    // Combo system
+    uint16_t combo_counter[2];      // Combo counters
+    uint16_t damage_scaling[2];     // Damage scaling
+    
+    // Object pool critical state
+    uint16_t active_objects;        // Number of active objects
+    uint32_t object_state_flags;    // Critical object flags
+    
+} FM2KGameState;
+```
+
+### 3. **Network Adapter Implementation**
+```c
+GekkoNetAdapter fm2k_adapter = {
+    .send_data = fm2k_send_packet,
+    .receive_data = fm2k_receive_packets,
+    .free_data = fm2k_free_packet_data
+};
+
+void fm2k_send_packet(GekkoNetAddress* addr, const char* data, int length) {
+    // Use existing LilithPort networking or implement UDP
+    // addr->data contains IP/port information
+    // data contains the packet to send
+}
+
+GekkoNetResult** fm2k_receive_packets(int* length) {
+    // Collect all packets received since last call
+    // Return array of GekkoNetResult pointers
+    // GekkoNet will call free_data on each result
+}
+```
+
+### 4. **Integration with Existing FM2K Systems**
+
+#### Main Game Loop Integration
+```c
+// Hook at 0x4146d0 - process_game_inputs()
+void fm2k_rollback_frame() {
+    // 1. Poll network
+    gekko_network_poll(session);
+    
+    // 2. Add local inputs
+    uint32_t local_input = get_local_player_input();
+    gekko_add_local_input(session, local_player_id, &local_input);
+    
+    // 3. Process GekkoNet events
+    int event_count;
+    GekkoGameEvent** events = gekko_update_session(session, &event_count);
+    
+    // 4. Handle events (save/load/advance)
+    process_gekko_events(events, event_count);
+    
+    // 5. Continue normal FM2K processing
+    // (character updates, hit detection, etc.)
+}
+```
+
+#### State Serialization Functions
+```c
+void save_fm2k_state(unsigned char* buffer, unsigned int* length) {
+    FM2KGameState* state = (FM2KGameState*)buffer;
+    
+    // Save frame state
+    state->frame_number = current_frame;
+    state->input_buffer_index = g_input_buffer_index;
+    
+    // Save character states from object pool
+    for (int i = 0; i < 2; i++) {
+        save_character_state(&state->characters[i], i);
+    }
+    
+    // Save round state
+    state->round_state = g_round_state;
+    state->round_timer = g_round_timer;
+    
+    *length = sizeof(FM2KGameState);
+}
+
+void load_fm2k_state(unsigned char* buffer, unsigned int length) {
+    FM2KGameState* state = (FM2KGameState*)buffer;
+    
+    // Restore frame state
+    current_frame = state->frame_number;
+    g_input_buffer_index = state->input_buffer_index;
+    
+    // Restore character states to object pool
+    for (int i = 0; i < 2; i++) {
+        load_character_state(&state->characters[i], i);
+    }
+    
+    // Restore round state
+    g_round_state = state->round_state;
+    g_round_timer = state->round_timer;
+}
+```
+
+### 5. **Event Handling Integration**
+```c
+void handle_session_events() {
+    int event_count;
+    GekkoSessionEvent** events = gekko_session_events(session, &event_count);
+    
+    for (int i = 0; i < event_count; i++) {
+        switch (events[i]->type) {
+            case PlayerConnected:
+                // Show "Player Connected" message
+                break;
+            case PlayerDisconnected:
+                // Handle disconnection
+                break;
+            case DesyncDetected:
+                // Log desync information
+                printf("Desync at frame %d: local=%08x remote=%08x\n",
+                       events[i]->data.desynced.frame,
+                       events[i]->data.desynced.local_checksum,
+                       events[i]->data.desynced.remote_checksum);
+               

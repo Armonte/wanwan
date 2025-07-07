@@ -127,6 +127,24 @@ namespace FM2K {
             uint16_t value;
         };
     };
+
+    // Process-memory helper declarations (definitions in FM2K_Memory.cpp)
+    bool ReadMemoryRaw(HANDLE proc, uintptr_t remote_addr, void* out, size_t bytes);
+    bool WriteMemoryRaw(HANDLE proc, uintptr_t remote_addr, const void* in, size_t bytes);
+
+    bool BulkCopyOut(HANDLE proc, void* local_dst, uintptr_t remote_src, size_t bytes);
+    bool BulkCopyIn(HANDLE proc, uintptr_t remote_dst, const void* local_src, size_t bytes);
+
+    // Tiny template helpers for typed access
+    template<typename T>
+    inline bool ReadMemory(HANDLE proc, uintptr_t remote_addr, T& out) {
+        return ReadMemoryRaw(proc, remote_addr, &out, sizeof(T));
+    }
+
+    template<typename T>
+    inline bool WriteMemory(HANDLE proc, uintptr_t remote_addr, const T& in) {
+        return WriteMemoryRaw(proc, remote_addr, &in, sizeof(T));
+    }
 }
 
 // Game discovery and management
@@ -222,19 +240,13 @@ public:
     template<typename T>
     inline bool ReadMemory(DWORD address, T* value) {
         if (!process_handle_ || !value) return false;
-        
-        SIZE_T bytes_read;
-        return ReadProcessMemory(process_handle_, (LPVOID)address, value, sizeof(T), &bytes_read) 
-               && bytes_read == sizeof(T);
+        return FM2K::ReadMemory(process_handle_, static_cast<uintptr_t>(address), *value);
     }
     
     template<typename T>
     inline bool WriteMemory(DWORD address, const T* value) {
         if (!process_handle_ || !value) return false;
-        
-        SIZE_T bytes_written;
-        return WriteProcessMemory(process_handle_, (LPVOID)address, value, sizeof(T), &bytes_written) 
-               && bytes_written == sizeof(T);
+        return FM2K::WriteMemory(process_handle_, static_cast<uintptr_t>(address), *value);
     }
     
     // Hook management

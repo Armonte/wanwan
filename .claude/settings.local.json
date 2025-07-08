@@ -9,7 +9,9 @@
       "mcp__github_com_mrexodia_ida-pro-mcp__get_xrefs_to",
       "Bash(rg:*)",
       "Bash(grep:*)",
-      "Bash(ninja:*)"
+      "Bash(ninja:*)",
+      "Bash(find:*)",
+      "Bash(./make_build.sh)"
     ],
     "deny": []
   }

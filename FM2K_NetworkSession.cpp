@@ -66,10 +66,7 @@ bool NetworkSession::Start(const NetworkConfig& config) {
         return false;
     }
     
-    // Connect game instance to bridge
-    if (game_instance_) {
-        gekko_bridge_->SetGameInstance(game_instance_);
-    }
+    // Game instance connection handled in SetGameInstance() - no need to connect here
     
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "NetworkSession started successfully");
     return true;

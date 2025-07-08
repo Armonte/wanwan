@@ -980,6 +980,20 @@ bool FM2KLauncher::LaunchGame(const FM2K::FM2KGameInfo& game) {
     }
     
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Game process confirmed running after 100ms");
+    
+    // Automatically start LOCAL NetworkSession for testing/development
+    NetworkConfig local_config;
+    local_config.session_mode = SessionMode::LOCAL;
+    local_config.local_player = 0;
+    local_config.input_delay = 2;
+    
+    if (StartNetworkSession(local_config)) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Automatically started LOCAL NetworkSession for testing");
+        SetState(LauncherState::InGame);
+    } else {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Failed to auto-start LOCAL NetworkSession");
+    }
+    
     return true;
 }
 

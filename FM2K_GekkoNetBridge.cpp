@@ -54,7 +54,7 @@ bool GekkoNetBridge::InitializeLocalSession(const FM2KNetworkConfig& config) {
     GekkoConfig conf{};
     conf.num_players = 2;                           // FM2K is 2-player
     conf.input_size = sizeof(uint16_t);             // FM2K uses 16-bit input mask
-    conf.state_size = sizeof(State::CoreGameState); // Our state structure
+    conf.state_size = 0;                            // No state saving for local testing
     conf.max_spectators = 0;                        // No spectators for local testing
     conf.input_prediction_window = 0;               // No prediction needed for local testing
     conf.desync_detection = false;                  // No desync detection for local testing

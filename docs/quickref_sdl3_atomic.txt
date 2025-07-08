@@ -1,0 +1,49 @@
+
+SDL_Mutex * SDL_CreateMutex(void);                                                       // Create a new mutex.
+void SDL_LockMutex(SDL_Mutex *mutex);                                                    // Lock the mutex.
+bool SDL_TryLockMutex(SDL_Mutex *mutex);                                                 // Try to lock a mutex without blocking.
+void SDL_UnlockMutex(SDL_Mutex *mutex);                                                  // Unlock the mutex.
+void SDL_DestroyMutex(SDL_Mutex *mutex);                                                 // Destroy a mutex created with SDL_CreateMutex().
+SDL_RWLock * SDL_CreateRWLock(void);                                                     // Create a new read/write lock.
+void SDL_LockRWLockForReading(SDL_RWLock *rwlock);                                       // Lock the read/write lock for _read only_ operations.
+void SDL_LockRWLockForWriting(SDL_RWLock *rwlock);                                       // Lock the read/write lock for _write_ operations.
+bool SDL_TryLockRWLockForReading(SDL_RWLock *rwlock);                                    // Try to lock a read/write lock _for reading_ without blocking.
+bool SDL_TryLockRWLockForWriting(SDL_RWLock *rwlock);                                    // Try to lock a read/write lock _for writing_ without blocking.
+void SDL_UnlockRWLock(SDL_RWLock *rwlock);                                               // Unlock the read/write lock.
+void SDL_DestroyRWLock(SDL_RWLock *rwlock);                                              // Destroy a read/write lock created with SDL_CreateRWLock().
+SDL_Semaphore * SDL_CreateSemaphore(Uint32 initial_value);                               // Create a semaphore.
+void SDL_DestroySemaphore(SDL_Semaphore *sem);                                           // Destroy a semaphore.
+void SDL_WaitSemaphore(SDL_Semaphore *sem);                                              // Wait until a semaphore has a positive value and then decrements it.
+bool SDL_TryWaitSemaphore(SDL_Semaphore *sem);                                           // See if a semaphore has a positive value and decrement it if it does.
+bool SDL_WaitSemaphoreTimeout(SDL_Semaphore *sem, Sint32 timeoutMS);                     // Wait until a semaphore has a positive value and then decrements it.
+void SDL_SignalSemaphore(SDL_Semaphore *sem);                                            // Atomically increment a semaphore's value and wake waiting threads.
+Uint32 SDL_GetSemaphoreValue(SDL_Semaphore *sem);                                        // Get the current value of a semaphore.
+SDL_Condition * SDL_CreateCondition(void);                                               // Create a condition variable.
+void SDL_DestroyCondition(SDL_Condition *cond);                                          // Destroy a condition variable.
+void SDL_SignalCondition(SDL_Condition *cond);                                           // Restart one of the threads that are waiting on the condition variable.
+void SDL_BroadcastCondition(SDL_Condition *cond);                                        // Restart all threads that are waiting on the condition variable.
+void SDL_WaitCondition(SDL_Condition *cond, SDL_Mutex *mutex);                           // Wait until a condition variable is signaled.
+bool SDL_WaitConditionTimeout(SDL_Condition *cond, SDL_Mutex *mutex, Sint32 timeoutMS);  // Wait until a condition variable is signaled or a certain time has passed.
+bool SDL_ShouldInit(SDL_InitState *state);                                               // Return whether initialization should be done.
+bool SDL_ShouldQuit(SDL_InitState *state);                                               // Return whether cleanup should be done.
+void SDL_SetInitialized(SDL_InitState *state, bool initialized);                         // Finish an initialization state transition.
+
+
+bool SDL_TryLockSpinlock(SDL_SpinLock *lock);                                      // Try to lock a spin lock by setting it to a non-zero value.
+void SDL_LockSpinlock(SDL_SpinLock *lock);                                         // Lock a spin lock by setting it to a non-zero value.
+void SDL_UnlockSpinlock(SDL_SpinLock *lock);                                       // Unlock a spin lock by setting it to 0.
+void SDL_MemoryBarrierReleaseFunction(void);                                       // Insert a memory release barrier (function version).
+void SDL_MemoryBarrierAcquireFunction(void);                                       // Insert a memory acquire barrier (function version).
+bool SDL_CompareAndSwapAtomicInt(SDL_AtomicInt *a, int oldval, int newval);        // Set an atomic variable to a new value if it is currently an old value.
+int SDL_SetAtomicInt(SDL_AtomicInt *a, int v);                                     // Set an atomic variable to a value.
+int SDL_GetAtomicInt(SDL_AtomicInt *a);                                            // Get the value of an atomic variable.
+int SDL_AddAtomicInt(SDL_AtomicInt *a, int v);                                     // Add to an atomic variable.
+#define SDL_AtomicIncRef(a)                                                        // Increment an atomic variable used as a reference count.
+#define SDL_AtomicDecRef(a)                                                        // Decrement an atomic variable used as a reference count.
+bool SDL_CompareAndSwapAtomicU32(SDL_AtomicU32 *a, Uint32 oldval, Uint32 newval);  // Set an atomic variable to a new value if it is currently an old value.
+Uint32 SDL_SetAtomicU32(SDL_AtomicU32 *a, Uint32 v);                               // Set an atomic variable to a value.
+Uint32 SDL_GetAtomicU32(SDL_AtomicU32 *a);                                         // Get the value of an atomic variable.
+bool SDL_CompareAndSwapAtomicPointer(void **a, void *oldval, void *newval);        // Set a pointer to a new value if it is currently an old value.
+void * SDL_SetAtomicPointer(void **a, void *v);                                    // Set a pointer to a value atomically.
+void * SDL_GetAtomicPointer(void **a);                                             // Get the value of a pointer atomically.
+

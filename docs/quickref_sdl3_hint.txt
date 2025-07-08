@@ -1,0 +1,8 @@
+bool SDL_SetHintWithPriority(const char *name, const char *value, SDL_HintPriority priority);  // Set a hint with a specific priority.
+bool SDL_SetHint(const char *name, const char *value);                                         // Set a hint with normal priority.
+bool SDL_ResetHint(const char *name);                                                          // Reset a hint to the default value.
+void SDL_ResetHints(void);                                                                     // Reset all hints to the default values.
+const char * SDL_GetHint(const char *name);                                                    // Get the value of a hint.
+bool SDL_GetHintBoolean(const char *name, bool default_value);                                 // Get the boolean value of a hint variable.
+bool SDL_AddHintCallback(const char *name, SDL_HintCallback callback, void *userdata);         // Add a function to watch a particular hint.
+void SDL_RemoveHintCallback(const char *name, SDL_HintCallback callback, void *userdata);      // Remove a function watching a particular hint.

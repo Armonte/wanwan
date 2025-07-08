@@ -1,34 +1,36 @@
 cmake_minimum_required(VERSION 3.20)
 
-# Define project first
-project(FM2K_RollbackLauncher VERSION 1.0.0 LANGUAGES CXX C)
-
-# Set target architecture
-set(CMAKE_SYSTEM_PROCESSOR i686 CACHE STRING "Target processor" FORCE)
-
 # Set up cross-compilation for Windows target from WSL
-set(CMAKE_SYSTEM_NAME Windows)
-set(CMAKE_CROSSCOMPILING TRUE)
+# set(CMAKE_SYSTEM_NAME Windows)
+# set(CMAKE_SYSTEM_PROCESSOR i686)
+# set(CMAKE_CROSSCOMPILING TRUE)
 
-# Find cross-compilers
-find_program(CMAKE_C_COMPILER NAMES i686-w64-mingw32-gcc)
-find_program(CMAKE_CXX_COMPILER NAMES i686-w64-mingw32-g++)
-find_program(CMAKE_RC_COMPILER NAMES i686-w64-mingw32-windres)
+# Configure compilers before project()
+# set(CMAKE_C_COMPILER /usr/bin/i686-w64-mingw32-gcc)
+# set(CMAKE_CXX_COMPILER /usr/bin/i686-w64-mingw32-g++)
+# set(CMAKE_RC_COMPILER /usr/bin/i686-w64-mingw32-windres)
+# set(CMAKE_ASM_COMPILER ${CMAKE_C_COMPILER})
 
-if(NOT CMAKE_C_COMPILER)
-    message(FATAL_ERROR "Failed to find i686-w64-mingw32-gcc. Please install mingw-w64 cross compiler: sudo apt install gcc-mingw-w64-i686")
-endif()
+# Configure paths
+# set(CMAKE_FIND_ROOT_PATH /usr/i686-w64-mingw32)
+# set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+# set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+# set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 
-if(NOT CMAKE_CXX_COMPILER)
-    message(FATAL_ERROR "Failed to find i686-w64-mingw32-g++. Please install mingw-w64 cross compiler: sudo apt install g++-mingw-w64-i686")
-endif()
+# Define project
+project(FM2K_RollbackLauncher VERSION 1.0.0 LANGUAGES CXX C RC)
 
-if(NOT CMAKE_RC_COMPILER)
-    message(FATAL_ERROR "Failed to find i686-w64-mingw32-windres. Please install mingw-w64 binutils: sudo apt install binutils-mingw-w64-i686")
-endif()
+# Set C++ standard early
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Enable RC language after finding compiler
-enable_language(RC)
+# MinGW-specific flags
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -m32")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -m32")
+
+# Force static libraries for everything
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
 
 # Force skip GLIBC check
 set(CMAKE_REQUIRED_DEFINITIONS "-D__GLIBC__=0")
@@ -76,15 +78,6 @@ set(HAVE_MEMORY_H TRUE)
 set(HAVE_SIGNAL_H TRUE)
 set(HAVE_STDARG_H TRUE)
 set(HAVE_STDBOOL_H TRUE)
-
-# Configure symbol checks
-set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
-set(CMAKE_REQUIRED_LIBRARIES "")
-set(CMAKE_REQUIRED_QUIET TRUE)
-
-# Set C++ standard
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Configure symbol checks
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
@@ -189,15 +182,36 @@ set(MINHOOK_SOURCES
 )
 
 add_library(MinHook STATIC ${MINHOOK_SOURCES})
-set_target_properties(MinHook PROPERTIES LINKER_LANGUAGE C)
+
+# Ensure MinHook is built with MinGW
+set_target_properties(MinHook PROPERTIES 
+    LINKER_LANGUAGE C
+    POSITION_INDEPENDENT_CODE ON
+)
+
+target_compile_options(MinHook PRIVATE 
+    -m32  # Force 32-bit compilation
+)
 
 target_include_directories(MinHook PUBLIC
     vendored/minhook/include
     vendored/minhook/src
 )
 
+# Windows-specific configuration for MinHook
+target_compile_definitions(MinHook PRIVATE
+    _WIN32_WINNT=0x0601  # Target Windows 7 or later
+    WIN32_LEAN_AND_MEAN  # Exclude rarely-used stuff from Windows headers
+)
+
 # Add FM2KHook subdirectory
 add_subdirectory(FM2KHook)
+
+# Set FM2KHook output properties
+set_target_properties(FM2KHook PROPERTIES 
+    PREFIX ""  # Remove "lib" prefix
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+)
 
 # Main executable
 add_executable(FM2K_RollbackLauncher
@@ -254,12 +268,6 @@ target_compile_definitions(FM2K_RollbackLauncher PRIVATE
 # Installation
 install(TARGETS FM2K_RollbackLauncher
     RUNTIME DESTINATION bin
-)
-
-# Install FM2KHook alongside launcher
-install(FILES 
-    $<TARGET_FILE:FM2KHook>
-    DESTINATION bin
 )
 
 # Documentation

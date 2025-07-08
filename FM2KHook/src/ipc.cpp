@@ -87,6 +87,24 @@ bool ReadEvent(Event& event) {
     return true;
 }
 
+bool PollEvent(Event* event) {
+    if (!event || !event_buffer || event_count == 0) {
+        return false;
+    }
+
+    // Get next event
+    *event = event_buffer[0];
+
+    // Shift remaining events
+    --event_count;
+    if (event_count > 0) {
+        memmove(&event_buffer[0], &event_buffer[1],
+            event_count * sizeof(Event));
+    }
+
+    return true;
+}
+
 bool WriteEvent(const Event& event) {
     if (!event_buffer || event_count >= MAX_EVENTS) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,

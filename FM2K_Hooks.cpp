@@ -20,29 +20,128 @@ static RandFn  original_rand_func      = nullptr;
 // We may need the process handle later (e.g., to read RNG state).
 static HANDLE g_proc = nullptr;
 
+// Frame counter implementation (from implementation guide)
+uint32_t GetFrameNumber() {
+    static SDL_AtomicInt frame_counter;
+    static bool initialized = false;
+    if (!initialized) {
+        SDL_SetAtomicInt(&frame_counter, 0);
+        initialized = true;
+    }
+    return SDL_GetAtomicInt(&frame_counter);
+}
+
+// State save condition (from implementation guide)
+bool ShouldSaveState() {
+    // For now, save state every frame for testing
+    // Later, optimize based on:
+    // - Input changes
+    // - Critical game state changes
+    // - Network prediction window
+    return true;
+}
+
+// Visual state change detection (from implementation guide)
+bool VisualStateChanged() {
+    static uint32_t last_effect_flags = 0;
+    uint32_t current_effect_flags;
+
+    // Read effect flags from 0x40CC30 (from research doc)
+    if (ReadProcessMemory(GetCurrentProcess(), 
+                         (LPCVOID)0x40CC30,
+                         &current_effect_flags,
+                         sizeof(current_effect_flags),
+                         nullptr)) {
+        if (current_effect_flags != last_effect_flags) {
+            last_effect_flags = current_effect_flags;
+            return true;
+        }
+    }
+    return false;
+}
+
 // -----------------------------------------------------------------------------
 // Hook stubs
 // -----------------------------------------------------------------------------
 static void __stdcall Hook_ProcessGameInputs()
 {
-    // TODO: Call NetworkSession::Instance()->ProcessEvents() once integration exists.
-    // For now, just log first few hits for sanity.
+    // Increment frame counter atomically
+    static SDL_AtomicInt frame_counter;
+    static bool initialized = false;
+    if (!initialized) {
+        SDL_SetAtomicInt(&frame_counter, 0);
+        initialized = true;
+    }
+    SDL_AddAtomicInt(&frame_counter, 1);
+    uint32_t current_frame = SDL_GetAtomicInt(&frame_counter);
+    
+    // Log first few calls for verification
     static int hit_count = 0;
     if (hit_count < 10) {
-        SDL_Log("[Hook] process_game_inputs called (%d)", hit_count);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+            "[Hook] process_game_inputs called (frame %u, hit %d)", 
+            current_frame, hit_count);
         ++hit_count;
     }
 
+    // Check if we should save state before processing
+    if (ShouldSaveState()) {
+        // TODO: Implement state saving when state manager is ready
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
+            "State save needed at frame %u", current_frame);
+    }
+
     // Call the original function to preserve behavior
-    if (original_process_inputs)
+    if (original_process_inputs) {
         original_process_inputs();
+    }
+
+    // Send IPC event that frame has advanced
+    FM2K::IPC::Event event;
+    event.type = FM2K::IPC::EventType::FRAME_ADVANCED;
+    event.frame_number = current_frame;
+    event.timestamp_ms = SDL_GetTicks();
+    
+    if (!FM2K::IPC::PostEvent(event)) {
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
+            "Failed to post frame advanced event for frame %u", current_frame);
+    }
 }
 
 static void __stdcall Hook_UpdateGameState()
 {
-    // Placeholder?pure pass-through currently
-    if (original_update_game)
+    // Call original function first to update game state
+    if (original_update_game) {
         original_update_game();
+    }
+
+    // Check if we should save state after game state update
+    uint32_t current_frame = GetFrameNumber();
+    if (ShouldSaveState()) {
+        // Send IPC event that state should be saved
+        FM2K::IPC::Event event;
+        event.type = FM2K::IPC::EventType::STATE_SAVED;
+        event.frame_number = current_frame;
+        event.timestamp_ms = SDL_GetTicks();
+        
+        if (!FM2K::IPC::PostEvent(event)) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, 
+                "Failed to post state save event for frame %u", current_frame);
+        }
+    }
+
+    // Check for visual state changes
+    if (VisualStateChanged()) {
+        FM2K::IPC::Event event;
+        event.type = FM2K::IPC::EventType::VISUAL_STATE_CHANGED;
+        event.frame_number = current_frame;
+        event.timestamp_ms = SDL_GetTicks();
+        
+        if (!FM2K::IPC::PostEvent(event)) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, 
+                "Failed to post visual state change event for frame %u", current_frame);
+        }
+    }
 }
 
 static int __stdcall Hook_GameRand()
@@ -65,6 +164,12 @@ bool Init(HANDLE process)
     }
 
     g_proc = process;
+
+    // Initialize MinHook
+    if (MH_Initialize() != MH_OK) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize MinHook");
+        return false;
+    }
 
     // Initialize state manager first
     if (!State::Init(process)) {
@@ -127,15 +232,15 @@ bool Init(HANDLE process)
 
 void Shutdown()
 {
-    // Disable and remove hooks
+    // Disable all hooks
     MH_DisableHook(MH_ALL_HOOKS);
+    
+    // Uninitialize MinHook
     MH_Uninitialize();
 
-    // Shutdown state manager
-    State::Shutdown();
-
-    // Shutdown IPC
+    // Shutdown subsystems
     IPC::Shutdown();
+    State::Shutdown();
 
     g_proc = nullptr;
     SDL_Log("FM2K hooks removed");

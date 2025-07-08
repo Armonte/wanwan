@@ -1,0 +1,648 @@
+
+SDL_SharedObject * SDL_LoadObject(const char *sofile);                             // Dynamically load a shared object.
+SDL_FunctionPointer SDL_LoadFunction(SDL_SharedObject *handle, const char *name);  // Look up the address of the named function in a shared object.
+void SDL_UnloadObject(SDL_SharedObject *handle);                                   // Unload a shared object from memory.
+
+
+SDL_Thread * SDL_CreateThread(SDL_ThreadFunction fn, const char *name, void *data);       // Create a new thread with a default stack size.
+SDL_Thread * SDL_CreateThreadWithProperties(SDL_PropertiesID props);                      // Create a new thread with with the specified properties.
+const char * SDL_GetThreadName(SDL_Thread *thread);                                       // Get the thread name as it was specified in SDL_CreateThread().
+SDL_ThreadID SDL_GetCurrentThreadID(void);                                                // Get the thread identifier for the current thread.
+SDL_ThreadID SDL_GetThreadID(SDL_Thread *thread);                                         // Get the thread identifier for the specified thread.
+bool SDL_SetCurrentThreadPriority(SDL_ThreadPriority priority);                           // Set the priority for the current thread.
+void SDL_WaitThread(SDL_Thread *thread, int *status);                                     // Wait for a thread to finish.
+SDL_ThreadState SDL_GetThreadState(SDL_Thread *thread);                                   // Get the current state of a thread.
+void SDL_DetachThread(SDL_Thread *thread);                                                // Let a thread clean up on exit without intervention.
+void * SDL_GetTLS(SDL_TLSID *id);                                                         // Get the current thread's value associated with a thread local storage ID.
+bool SDL_SetTLS(SDL_TLSID *id, const void *value, SDL_TLSDestructorCallback destructor);  // Set the current thread's value associated with a thread local storage ID.
+void SDL_CleanupTLS(void);                                                                // Cleanup all TLS data for this thread.
+
+const char * SDL_GetBasePath(void);                                                                      // Get the directory where the application was run from.
+char * SDL_GetPrefPath(const char *org, const char *app);                                                // Get the user-and-app-specific path where files can be written.
+const char * SDL_GetUserFolder(SDL_Folder folder);                                                       // Finds the most suitable user folder for a specific purpose.
+bool SDL_CreateDirectory(const char *path);                                                              // Create a directory, and any missing parent directories.
+bool SDL_EnumerateDirectory(const char *path, SDL_EnumerateDirectoryCallback callback, void *userdata);  // Enumerate a directory through a callback function.
+bool SDL_RemovePath(const char *path);                                                                   // Remove a file or an empty directory.
+bool SDL_RenamePath(const char *oldpath, const char *newpath);                                           // Rename a file or directory.
+bool SDL_CopyFile(const char *oldpath, const char *newpath);                                             // Copy a file.
+bool SDL_GetPathInfo(const char *path, SDL_PathInfo *info);                                              // Get information about a filesystem path.
+char ** SDL_GlobDirectory(const char *path, const char *pattern, SDL_GlobFlags flags, int *count);       // Enumerate a directory tree, filtered by pattern, and return a list.
+char * SDL_GetCurrentDirectory(void);                                                                    // Get what the system believes is the "current working directory."
+
+SDL_IOStream * SDL_IOFromFile(const char *file, const char *mode);                         // Use this function to create a new SDL_IOStream structure for reading from and/or writing to a named file.
+SDL_IOStream * SDL_IOFromMem(void *mem, size_t size);                                      // Use this function to prepare a read-write memory buffer for use with SDL_IOStream.
+SDL_IOStream * SDL_IOFromConstMem(const void *mem, size_t size);                           // Use this function to prepare a read-only memory buffer for use with SDL_IOStream.
+SDL_IOStream * SDL_IOFromDynamicMem(void);                                                 // Use this function to create an SDL_IOStream that is backed by dynamically allocated memory.
+SDL_IOStream * SDL_OpenIO(const SDL_IOStreamInterface *iface, void *userdata);             // Create a custom SDL_IOStream.
+bool SDL_CloseIO(SDL_IOStream *context);                                                   // Close and free an allocated SDL_IOStream structure.
+SDL_PropertiesID SDL_GetIOProperties(SDL_IOStream *context);                               // Get the properties associated with an SDL_IOStream.
+SDL_IOStatus SDL_GetIOStatus(SDL_IOStream *context);                                       // Query the stream status of an SDL_IOStream.
+Sint64 SDL_GetIOSize(SDL_IOStream *context);                                               // Use this function to get the size of the data stream in an SDL_IOStream.
+Sint64 SDL_SeekIO(SDL_IOStream *context, Sint64 offset, SDL_IOWhence whence);              // Seek within an SDL_IOStream data stream.
+Sint64 SDL_TellIO(SDL_IOStream *context);                                                  // Determine the current read/write offset in an SDL_IOStream data stream.
+size_t SDL_ReadIO(SDL_IOStream *context, void *ptr, size_t size);                          // Read from a data source.
+size_t SDL_WriteIO(SDL_IOStream *context, const void *ptr, size_t size);                   // Write to an SDL_IOStream data stream.
+size_t SDL_IOprintf(SDL_IOStream *context, const char *fmt, ... ...);                      // Print to an SDL_IOStream data stream.
+size_t SDL_IOvprintf(SDL_IOStream *context, const char *fmt, va_list ap);                  // Print to an SDL_IOStream data stream.
+bool SDL_FlushIO(SDL_IOStream *context);                                                   // Flush any buffered data in the stream.
+void * SDL_LoadFile_IO(SDL_IOStream *src, size_t *datasize, bool closeio);                 // Load all the data from an SDL data stream.
+void * SDL_LoadFile(const char *file, size_t *datasize);                                   // Load all the data from a file path.
+bool SDL_SaveFile_IO(SDL_IOStream *src, const void *data, size_t datasize, bool closeio);  // Save all the data into an SDL data stream.
+bool SDL_SaveFile(const char *file, const void *data, size_t datasize);                    // Save all the data into a file path.
+bool SDL_ReadU8(SDL_IOStream *src, Uint8 *value);                                          // Use this function to read a byte from an SDL_IOStream.
+bool SDL_ReadS8(SDL_IOStream *src, Sint8 *value);                                          // Use this function to read a signed byte from an SDL_IOStream.
+bool SDL_ReadU16LE(SDL_IOStream *src, Uint16 *value);                                      // Use this function to read 16 bits of little-endian data from an SDL_IOStream and return in native format.
+bool SDL_ReadS16LE(SDL_IOStream *src, Sint16 *value);                                      // Use this function to read 16 bits of little-endian data from an SDL_IOStream and return in native format.
+bool SDL_ReadU16BE(SDL_IOStream *src, Uint16 *value);                                      // Use this function to read 16 bits of big-endian data from an SDL_IOStream and return in native format.
+bool SDL_ReadS16BE(SDL_IOStream *src, Sint16 *value);                                      // Use this function to read 16 bits of big-endian data from an SDL_IOStream and return in native format.
+bool SDL_ReadU32LE(SDL_IOStream *src, Uint32 *value);                                      // Use this function to read 32 bits of little-endian data from an SDL_IOStream and return in native format.
+bool SDL_ReadS32LE(SDL_IOStream *src, Sint32 *value);                                      // Use this function to read 32 bits of little-endian data from an SDL_IOStream and return in native format.
+bool SDL_ReadU32BE(SDL_IOStream *src, Uint32 *value);                                      // Use this function to read 32 bits of big-endian data from an SDL_IOStream and return in native format.
+bool SDL_ReadS32BE(SDL_IOStream *src, Sint32 *value);                                      // Use this function to read 32 bits of big-endian data from an SDL_IOStream and return in native format.
+bool SDL_ReadU64LE(SDL_IOStream *src, Uint64 *value);                                      // Use this function to read 64 bits of little-endian data from an SDL_IOStream and return in native format.
+bool SDL_ReadS64LE(SDL_IOStream *src, Sint64 *value);                                      // Use this function to read 64 bits of little-endian data from an SDL_IOStream and return in native format.
+bool SDL_ReadU64BE(SDL_IOStream *src, Uint64 *value);                                      // Use this function to read 64 bits of big-endian data from an SDL_IOStream and return in native format.
+bool SDL_ReadS64BE(SDL_IOStream *src, Sint64 *value);                                      // Use this function to read 64 bits of big-endian data from an SDL_IOStream and return in native format.
+bool SDL_WriteU8(SDL_IOStream *dst, Uint8 value);                                          // Use this function to write a byte to an SDL_IOStream.
+bool SDL_WriteS8(SDL_IOStream *dst, Sint8 value);                                          // Use this function to write a signed byte to an SDL_IOStream.
+bool SDL_WriteU16LE(SDL_IOStream *dst, Uint16 value);                                      // Use this function to write 16 bits in native format to an SDL_IOStream as little-endian data.
+bool SDL_WriteS16LE(SDL_IOStream *dst, Sint16 value);                                      // Use this function to write 16 bits in native format to an SDL_IOStream as little-endian data.
+bool SDL_WriteU16BE(SDL_IOStream *dst, Uint16 value);                                      // Use this function to write 16 bits in native format to an SDL_IOStream as big-endian data.
+bool SDL_WriteS16BE(SDL_IOStream *dst, Sint16 value);                                      // Use this function to write 16 bits in native format to an SDL_IOStream as big-endian data.
+bool SDL_WriteU32LE(SDL_IOStream *dst, Uint32 value);                                      // Use this function to write 32 bits in native format to an SDL_IOStream as little-endian data.
+bool SDL_WriteS32LE(SDL_IOStream *dst, Sint32 value);                                      // Use this function to write 32 bits in native format to an SDL_IOStream as little-endian data.
+bool SDL_WriteU32BE(SDL_IOStream *dst, Uint32 value);                                      // Use this function to write 32 bits in native format to an SDL_IOStream as big-endian data.
+bool SDL_WriteS32BE(SDL_IOStream *dst, Sint32 value);                                      // Use this function to write 32 bits in native format to an SDL_IOStream as big-endian data.
+bool SDL_WriteU64LE(SDL_IOStream *dst, Uint64 value);                                      // Use this function to write 64 bits in native format to an SDL_IOStream as little-endian data.
+bool SDL_WriteS64LE(SDL_IOStream *dst, Sint64 value);                                      // Use this function to write 64 bits in native format to an SDL_IOStream as little-endian data.
+bool SDL_WriteU64BE(SDL_IOStream *dst, Uint64 value);                                      // Use this function to write 64 bits in native format to an SDL_IOStream as big-endian data.
+bool SDL_WriteS64BE(SDL_IOStream *dst, Sint64 value);                                      // Use this function to write 64 bits in native format to an SDL_IOStream as big-endian data.
+
+//  █████╗   ██████╗ ██╗   ██╗ ███╗   ██╗  ██████╗ ██╗  ██████╗
+// ██╔══██╗ ██╔════╝ ╚██╗ ██╔╝ ████╗  ██║ ██╔════╝ ██║ ██╔═══██╗
+// ███████║ ███████╗  ╚████╔╝  ██╔██╗ ██║ ██║      ██║ ██║   ██║
+// ██╔══██║ ╚════██║   ╚██╔╝   ██║╚██╗██║ ██║      ██║ ██║   ██║
+// ██║  ██║ ██████╔╝    ██║    ██║ ╚████║ ╚██████╗ ██║ ╚██████╔╝
+// ╚═╝  ╚═╝ ╚═════╝     ╚═╝    ╚═╝  ╚═══╝  ╚═════╝ ╚═╝  ╚═════╝
+
+SDL_AsyncIO * SDL_AsyncIOFromFile(const char *file, const char *mode);                                                        // Use this function to create a new SDL_AsyncIO object for reading from and/or writing to a named file.
+Sint64 SDL_GetAsyncIOSize(SDL_AsyncIO *asyncio);                                                                              // Use this function to get the size of the data stream in an SDL_AsyncIO.
+bool SDL_ReadAsyncIO(SDL_AsyncIO *asyncio, void *ptr, Uint64 offset, Uint64 size, SDL_AsyncIOQueue *queue, void *userdata);   // Start an async read.
+bool SDL_WriteAsyncIO(SDL_AsyncIO *asyncio, void *ptr, Uint64 offset, Uint64 size, SDL_AsyncIOQueue *queue, void *userdata);  // Start an async write.
+bool SDL_CloseAsyncIO(SDL_AsyncIO *asyncio, bool flush, SDL_AsyncIOQueue *queue, void *userdata);                             // Close and free any allocated resources for an async I/O object.
+SDL_AsyncIOQueue * SDL_CreateAsyncIOQueue(void);                                                                              // Create a task queue for tracking multiple I/O operations.
+void SDL_DestroyAsyncIOQueue(SDL_AsyncIOQueue *queue);                                                                        // Destroy a previously-created async I/O task queue.
+bool SDL_GetAsyncIOResult(SDL_AsyncIOQueue *queue, SDL_AsyncIOOutcome *outcome);                                              // Query an async I/O task queue for completed tasks.
+bool SDL_WaitAsyncIOResult(SDL_AsyncIOQueue *queue, SDL_AsyncIOOutcome *outcome, Sint32 timeoutMS);                           // Block until an async I/O task queue has a completed task.
+void SDL_SignalAsyncIOQueue(SDL_AsyncIOQueue *queue);                                                                         // Wake up any threads that are blocking in SDL_WaitAsyncIOResult().
+bool SDL_LoadFileAsync(const char *file, SDL_AsyncIOQueue *queue, void *userdata);                                            // Load all the data from a file path, asynchronously.
+
+//  ██████╗ ████████╗  ██████╗  ██████╗   █████╗   ██████╗  ███████╗
+// ██╔════╝ ╚══██╔══╝ ██╔═══██╗ ██╔══██╗ ██╔══██╗ ██╔════╝  ██╔════╝
+// ███████╗    ██║    ██║   ██║ ██████╔╝ ███████║ ██║  ███╗ █████╗
+// ╚════██║    ██║    ██║   ██║ ██╔══██╗ ██╔══██║ ██║   ██║ ██╔══╝
+// ██████╔╝    ██║    ╚██████╔╝ ██║  ██║ ██║  ██║ ╚██████╔╝ ███████╗
+// ╚═════╝     ╚═╝     ╚═════╝  ╚═╝  ╚═╝ ╚═╝  ╚═╝  ╚═════╝  ╚══════╝
+
+SDL_Storage * SDL_OpenTitleStorage(const char *override, SDL_PropertiesID props);                                                     // Opens up a read-only container for the application's filesystem.
+SDL_Storage * SDL_OpenUserStorage(const char *org, const char *app, SDL_PropertiesID props);                                          // Opens up a container for a user's unique read/write filesystem.
+SDL_Storage * SDL_OpenFileStorage(const char *path);                                                                                  // Opens up a container for local filesystem storage.
+SDL_Storage * SDL_OpenStorage(const SDL_StorageInterface *iface, void *userdata);                                                     // Opens up a container using a client-provided storage interface.
+bool SDL_CloseStorage(SDL_Storage *storage);                                                                                          // Closes and frees a storage container.
+bool SDL_StorageReady(SDL_Storage *storage);                                                                                          // Checks if the storage container is ready to use.
+bool SDL_GetStorageFileSize(SDL_Storage *storage, const char *path, Uint64 *length);                                                  // Query the size of a file within a storage container.
+bool SDL_ReadStorageFile(SDL_Storage *storage, const char *path, void *destination, Uint64 length);                                   // Synchronously read a file from a storage container into a client-provided buffer.
+bool SDL_WriteStorageFile(SDL_Storage *storage, const char *path, const void *source, Uint64 length);                                 // Synchronously write a file from client memory into a storage container.
+bool SDL_CreateStorageDirectory(SDL_Storage *storage, const char *path);                                                              // Create a directory in a writable storage container.
+bool SDL_EnumerateStorageDirectory(SDL_Storage *storage, const char *path, SDL_EnumerateDirectoryCallback callback, void *userdata);  // Enumerate a directory in a storage container through a callback function.
+bool SDL_RemoveStoragePath(SDL_Storage *storage, const char *path);                                                                   // Remove a file or an empty directory in a writable storage container.
+bool SDL_RenameStoragePath(SDL_Storage *storage, const char *oldpath, const char *newpath);                                           // Rename a file or directory in a writable storage container.
+bool SDL_CopyStorageFile(SDL_Storage *storage, const char *oldpath, const char *newpath);                                             // Copy a file in a writable storage container.
+bool SDL_GetStoragePathInfo(SDL_Storage *storage, const char *path, SDL_PathInfo *info);                                              // Get information about a filesystem path in a storage container.
+Uint64 SDL_GetStorageSpaceRemaining(SDL_Storage *storage);                                                                            // Queries the remaining space in a storage container.
+char ** SDL_GlobStorageDirectory(SDL_Storage *storage, const char *path, const char *pattern, SDL_GlobFlags flags, int *count);       // Enumerate a directory tree, filtered by pattern, and return a list.
+
+// ██████╗  ██╗      ███████╗ ███╗   ██╗ ██████╗  ███╗   ███╗  ██████╗  ██████╗  ███████╗
+// ██╔══██╗ ██║      ██╔════╝ ████╗  ██║ ██╔══██╗ ████╗ ████║ ██╔═══██╗ ██╔══██╗ ██╔════╝
+// ██████╔╝ ██║      █████╗   ██╔██╗ ██║ ██║  ██║ ██╔████╔██║ ██║   ██║ ██║  ██║ █████╗
+// ██╔══██╗ ██║      ██╔══╝   ██║╚██╗██║ ██║  ██║ ██║╚██╔╝██║ ██║   ██║ ██║  ██║ ██╔══╝
+// ██████╔╝ ███████╗ ███████╗ ██║ ╚████║ ██████╔╝ ██║ ╚═╝ ██║ ╚██████╔╝ ██████╔╝ ███████╗
+// ╚═════╝  ╚══════╝ ╚══════╝ ╚═╝  ╚═══╝ ╚═════╝  ╚═╝     ╚═╝  ╚═════╝  ╚═════╝  ╚══════╝
+
+SDL_BlendMode SDL_ComposeCustomBlendMode(SDL_BlendFactor srcColorFactor, SDL_BlendFactor dstColorFactor, SDL_BlendOperation colorOperation, SDL_BlendFactor srcAlphaFactor, SDL_BlendFactor dstAlphaFactor, SDL_BlendOperation alphaOperation);  // Compose a custom blend mode for renderers.
+
+// ██████╗  ███████╗  ██████╗ ████████╗
+// ██╔══██╗ ██╔════╝ ██╔════╝ ╚══██╔══╝
+// ██████╔╝ █████╗   ██║         ██║
+// ██╔══██╗ ██╔══╝   ██║         ██║
+// ██║  ██║ ███████╗ ╚██████╗    ██║
+// ╚═╝  ╚═╝ ╚══════╝  ╚═════╝    ╚═╝
+
+void SDL_RectToFRect(const SDL_Rect *rect, SDL_FRect *frect);                                                         // Convert an SDL_Rect to SDL_FRect
+bool SDL_PointInRect(const SDL_Point *p, const SDL_Rect *r);                                                          // Determine whether a point resides inside a rectangle.
+bool SDL_RectEmpty(const SDL_Rect *r);                                                                                // Determine whether a rectangle has no area.
+bool SDL_RectsEqual(const SDL_Rect *a, const SDL_Rect *b);                                                            // Determine whether two rectangles are equal.
+bool SDL_HasRectIntersection(const SDL_Rect *A, const SDL_Rect *B);                                                   // Determine whether two rectangles intersect.
+bool SDL_GetRectIntersection(const SDL_Rect *A, const SDL_Rect *B, SDL_Rect *result);                                 // Calculate the intersection of two rectangles.
+bool SDL_GetRectUnion(const SDL_Rect *A, const SDL_Rect *B, SDL_Rect *result);                                        // Calculate the union of two rectangles.
+bool SDL_GetRectEnclosingPoints(const SDL_Point *points, int count, const SDL_Rect *clip, SDL_Rect *result);          // Calculate a minimal rectangle enclosing a set of points.
+bool SDL_GetRectAndLineIntersection(const SDL_Rect *rect, int *X1, int *Y1, int *X2, int *Y2);                        // Calculate the intersection of a rectangle and line segment.
+bool SDL_PointInRectFloat(const SDL_FPoint *p, const SDL_FRect *r);                                                   // Determine whether a point resides inside a floating point rectangle.
+bool SDL_RectEmptyFloat(const SDL_FRect *r);                                                                          // Determine whether a floating point rectangle takes no space.
+bool SDL_RectsEqualEpsilon(const SDL_FRect *a, const SDL_FRect *b, float epsilon);                                    // Determine whether two floating point rectangles are equal, within some given epsilon.
+bool SDL_RectsEqualFloat(const SDL_FRect *a, const SDL_FRect *b);                                                     // Determine whether two floating point rectangles are equal, within a default epsilon.
+bool SDL_HasRectIntersectionFloat(const SDL_FRect *A, const SDL_FRect *B);                                            // Determine whether two rectangles intersect with float precision.
+bool SDL_GetRectIntersectionFloat(const SDL_FRect *A, const SDL_FRect *B, SDL_FRect *result);                         // Calculate the intersection of two rectangles with float precision.
+bool SDL_GetRectUnionFloat(const SDL_FRect *A, const SDL_FRect *B, SDL_FRect *result);                                // Calculate the union of two rectangles with float precision.
+bool SDL_GetRectEnclosingPointsFloat(const SDL_FPoint *points, int count, const SDL_FRect *clip, SDL_FRect *result);  // Calculate a minimal rectangle enclosing a set of points with float precision.
+bool SDL_GetRectAndLineIntersectionFloat(const SDL_FRect *rect, float *X1, float *Y1, float *X2, float *Y2);          // Calculate the intersection of a rectangle and line segment with float precision.
+
+//  ██████╗  █████╗  ███╗   ███╗ ███████╗ ██████╗   █████╗
+// ██╔════╝ ██╔══██╗ ████╗ ████║ ██╔════╝ ██╔══██╗ ██╔══██╗
+// ██║      ███████║ ██╔████╔██║ █████╗   ██████╔╝ ███████║
+// ██║      ██╔══██║ ██║╚██╔╝██║ ██╔══╝   ██╔══██╗ ██╔══██║
+// ╚██████╗ ██║  ██║ ██║ ╚═╝ ██║ ███████╗ ██║  ██║ ██║  ██║
+//  ╚═════╝ ╚═╝  ╚═╝ ╚═╝     ╚═╝ ╚══════╝ ╚═╝  ╚═╝ ╚═╝  ╚═╝
+
+int SDL_GetNumCameraDrivers(void);                                                      // Use this function to get the number of built-in camera drivers.
+const char * SDL_GetCameraDriver(int index);                                            // Use this function to get the name of a built in camera driver.
+const char * SDL_GetCurrentCameraDriver(void);                                          // Get the name of the current camera driver.
+SDL_CameraID * SDL_GetCameras(int *count);                                              // Get a list of currently connected camera devices.
+SDL_CameraSpec ** SDL_GetCameraSupportedFormats(SDL_CameraID instance_id, int *count);  // Get the list of native formats/sizes a camera supports.
+const char * SDL_GetCameraName(SDL_CameraID instance_id);                               // Get the human-readable device name for a camera.
+SDL_CameraPosition SDL_GetCameraPosition(SDL_CameraID instance_id);                     // Get the position of the camera in relation to the system.
+SDL_Camera * SDL_OpenCamera(SDL_CameraID instance_id, const SDL_CameraSpec *spec);      // Open a video recording device (a "camera").
+int SDL_GetCameraPermissionState(SDL_Camera *camera);                                   // Query if camera access has been approved by the user.
+SDL_CameraID SDL_GetCameraID(SDL_Camera *camera);                                       // Get the instance ID of an opened camera.
+SDL_PropertiesID SDL_GetCameraProperties(SDL_Camera *camera);                           // Get the properties associated with an opened camera.
+bool SDL_GetCameraFormat(SDL_Camera *camera, SDL_CameraSpec *spec);                     // Get the spec that a camera is using when generating images.
+SDL_Surface * SDL_AcquireCameraFrame(SDL_Camera *camera, Uint64 *timestampNS);          // Acquire a frame.
+void SDL_ReleaseCameraFrame(SDL_Camera *camera, SDL_Surface *frame);                    // Release a frame of video acquired from a camera.
+void SDL_CloseCamera(SDL_Camera *camera);                                               // Use this function to shut down camera processing and close the camera device.
+
+//  ██████╗ ██╗      ██╗ ██████╗  ██████╗   ██████╗   █████╗  ██████╗  ██████╗
+// ██╔════╝ ██║      ██║ ██╔══██╗ ██╔══██╗ ██╔═══██╗ ██╔══██╗ ██╔══██╗ ██╔══██╗
+// ██║      ██║      ██║ ██████╔╝ ██████╔╝ ██║   ██║ ███████║ ██████╔╝ ██║  ██║
+// ██║      ██║      ██║ ██╔═══╝  ██╔══██╗ ██║   ██║ ██╔══██║ ██╔══██╗ ██║  ██║
+// ╚██████╗ ███████╗ ██║ ██║      ██████╔╝ ╚██████╔╝ ██║  ██║ ██║  ██║ ██████╔╝
+//  ╚═════╝ ╚══════╝ ╚═╝ ╚═╝      ╚═════╝   ╚═════╝  ╚═╝  ╚═╝ ╚═╝  ╚═╝ ╚═════╝
+
+bool SDL_SetClipboardText(const char *text);                                                                                                                          // Put UTF-8 text into the clipboard.
+char * SDL_GetClipboardText(void);                                                                                                                                    // Get UTF-8 text from the clipboard.
+bool SDL_HasClipboardText(void);                                                                                                                                      // Query whether the clipboard exists and contains a non-empty text string.
+bool SDL_SetPrimarySelectionText(const char *text);                                                                                                                   // Put UTF-8 text into the primary selection.
+char * SDL_GetPrimarySelectionText(void);                                                                                                                             // Get UTF-8 text from the primary selection.
+bool SDL_HasPrimarySelectionText(void);                                                                                                                               // Query whether the primary selection exists and contains a non-empty text string.
+bool SDL_SetClipboardData(SDL_ClipboardDataCallback callback, SDL_ClipboardCleanupCallback cleanup, void *userdata, const char **mime_types, size_t num_mime_types);  // Offer clipboard data to the OS.
+bool SDL_ClearClipboardData(void);                                                                                                                                    // Clear the clipboard data.
+void * SDL_GetClipboardData(const char *mime_type, size_t *size);                                                                                                     // Get the data from clipboard for a given mime type.
+bool SDL_HasClipboardData(const char *mime_type);                                                                                                                     // Query whether there is data in the clipboard for the provided mime type.
+char ** SDL_GetClipboardMimeTypes(size_t *num_mime_types);                                                                                                            // Retrieve the list of mime types available in the clipboard.
+
+// ██████╗  ██╗  █████╗  ██╗       ██████╗   ██████╗
+// ██╔══██╗ ██║ ██╔══██╗ ██║      ██╔═══██╗ ██╔════╝
+// ██║  ██║ ██║ ███████║ ██║      ██║   ██║ ██║  ███╗
+// ██║  ██║ ██║ ██╔══██║ ██║      ██║   ██║ ██║   ██║
+// ██████╔╝ ██║ ██║  ██║ ███████╗ ╚██████╔╝ ╚██████╔╝
+// ╚═════╝  ╚═╝ ╚═╝  ╚═╝ ╚══════╝  ╚═════╝   ╚═════╝
+
+void SDL_ShowOpenFileDialog(SDL_DialogFileCallback callback, void *userdata, SDL_Window *window, const SDL_DialogFileFilter *filters, int nfilters, const char *default_location, bool allow_many);  // Displays a dialog that lets the user select a file on their filesystem.
+void SDL_ShowSaveFileDialog(SDL_DialogFileCallback callback, void *userdata, SDL_Window *window, const SDL_DialogFileFilter *filters, int nfilters, const char *default_location);                   // Displays a dialog that lets the user choose a new or existing file on their filesystem.
+void SDL_ShowOpenFolderDialog(SDL_DialogFileCallback callback, void *userdata, SDL_Window *window, const char *default_location, bool allow_many);                                                   // Displays a dialog that lets the user select a folder on their filesystem.
+void SDL_ShowFileDialogWithProperties(SDL_FileDialogType type, SDL_DialogFileCallback callback, void *userdata, SDL_PropertiesID props);                                                             // Create and launch a file dialog with the specified properties.
+
+// ████████╗ ██████╗   █████╗  ██╗   ██╗
+// ╚══██╔══╝ ██╔══██╗ ██╔══██╗ ╚██╗ ██╔╝
+//    ██║    ██████╔╝ ███████║  ╚████╔╝
+//    ██║    ██╔══██╗ ██╔══██║   ╚██╔╝
+//    ██║    ██║  ██║ ██║  ██║    ██║
+//    ╚═╝    ╚═╝  ╚═╝ ╚═╝  ╚═╝    ╚═╝
+
+SDL_Tray * SDL_CreateTray(SDL_Surface *icon, const char *tooltip);                                                // Create an icon to be placed in the operating system's tray, or equivalent.
+void SDL_SetTrayIcon(SDL_Tray *tray, SDL_Surface *icon);                                                          // Updates the system tray icon's icon.
+void SDL_SetTrayTooltip(SDL_Tray *tray, const char *tooltip);                                                     // Updates the system tray icon's tooltip.
+SDL_TrayMenu * SDL_CreateTrayMenu(SDL_Tray *tray);                                                                // Create a menu for a system tray.
+SDL_TrayMenu * SDL_CreateTraySubmenu(SDL_TrayEntry *entry);                                                       // Create a submenu for a system tray entry.
+SDL_TrayMenu * SDL_GetTrayMenu(SDL_Tray *tray);                                                                   // Gets a previously created tray menu.
+SDL_TrayMenu * SDL_GetTraySubmenu(SDL_TrayEntry *entry);                                                          // Gets a previously created tray entry submenu.
+const SDL_TrayEntry ** SDL_GetTrayEntries(SDL_TrayMenu *menu, int *count);                                        // Returns a list of entries in the menu, in order.
+void SDL_RemoveTrayEntry(SDL_TrayEntry *entry);                                                                   // Removes a tray entry.
+SDL_TrayEntry * SDL_InsertTrayEntryAt(SDL_TrayMenu *menu, int pos, const char *label, SDL_TrayEntryFlags flags);  // Insert a tray entry at a given position.
+void SDL_SetTrayEntryLabel(SDL_TrayEntry *entry, const char *label);                                              // Sets the label of an entry.
+const char * SDL_GetTrayEntryLabel(SDL_TrayEntry *entry);                                                         // Gets the label of an entry.
+void SDL_SetTrayEntryChecked(SDL_TrayEntry *entry, bool checked);                                                 // Sets whether or not an entry is checked.
+bool SDL_GetTrayEntryChecked(SDL_TrayEntry *entry);                                                               // Gets whether or not an entry is checked.
+void SDL_SetTrayEntryEnabled(SDL_TrayEntry *entry, bool enabled);                                                 // Sets whether or not an entry is enabled.
+bool SDL_GetTrayEntryEnabled(SDL_TrayEntry *entry);                                                               // Gets whether or not an entry is enabled.
+void SDL_SetTrayEntryCallback(SDL_TrayEntry *entry, SDL_TrayCallback callback, void *userdata);                   // Sets a callback to be invoked when the entry is selected.
+void SDL_ClickTrayEntry(SDL_TrayEntry *entry);                                                                    // Simulate a click on a tray entry.
+void SDL_DestroyTray(SDL_Tray *tray);                                                                             // Destroys a tray object.
+SDL_TrayMenu * SDL_GetTrayEntryParent(SDL_TrayEntry *entry);                                                      // Gets the menu containing a certain tray entry.
+SDL_TrayEntry * SDL_GetTrayMenuParentEntry(SDL_TrayMenu *menu);                                                   // Gets the entry for which the menu is a submenu, if the current menu is a submenu.
+SDL_Tray * SDL_GetTrayMenuParentTray(SDL_TrayMenu *menu);                                                         // Gets the tray for which this menu is the first-level menu, if the current menu isn't a submenu.
+void SDL_UpdateTrays(void);                                                                                       // Update the trays.
+
+// ███╗   ███╗ ███████╗  ██████╗  ██████╗  █████╗   ██████╗  ███████╗ ██████╗   ██████╗  ██╗  ██╗
+// ████╗ ████║ ██╔════╝ ██╔════╝ ██╔════╝ ██╔══██╗ ██╔════╝  ██╔════╝ ██╔══██╗ ██╔═══██╗ ╚██╗██╔╝
+// ██╔████╔██║ █████╗   ███████╗ ███████╗ ███████║ ██║  ███╗ █████╗   ██████╔╝ ██║   ██║  ╚███╔╝
+// ██║╚██╔╝██║ ██╔══╝   ╚════██║ ╚════██║ ██╔══██║ ██║   ██║ ██╔══╝   ██╔══██╗ ██║   ██║  ██╔██╗
+// ██║ ╚═╝ ██║ ███████╗ ██████╔╝ ██████╔╝ ██║  ██║ ╚██████╔╝ ███████╗ ██████╔╝ ╚██████╔╝ ██╔╝ ██╗
+// ╚═╝     ╚═╝ ╚══════╝ ╚═════╝  ╚═════╝  ╚═╝  ╚═╝  ╚═════╝  ╚══════╝ ╚═════╝   ╚═════╝  ╚═╝  ╚═╝
+
+bool SDL_ShowMessageBox(const SDL_MessageBoxData *messageboxdata, int *buttonid);                                      // Create a modal message box.
+bool SDL_ShowSimpleMessageBox(SDL_MessageBoxFlags flags, const char *title, const char *message, SDL_Window *window);  // Display a simple modal message box.
+
+//  ██████╗  ██████╗  ██╗   ██╗
+// ██╔════╝  ██╔══██╗ ██║   ██║
+// ██║  ███╗ ██████╔╝ ██║   ██║
+// ██║   ██║ ██╔═══╝  ██║   ██║
+// ╚██████╔╝ ██║      ╚██████╔╝
+//  ╚═════╝  ╚═╝       ╚═════╝
+
+bool SDL_GPUSupportsShaderFormats(SDL_GPUShaderFormat format_flags, const char *name);                                                                                                                                                                                                                    // Checks for GPU runtime support.
+bool SDL_GPUSupportsProperties(SDL_PropertiesID props);                                                                                                                                                                                                                                                   // Checks for GPU runtime support.
+SDL_GPUDevice * SDL_CreateGPUDevice(SDL_GPUShaderFormat format_flags, bool debug_mode, const char *name);                                                                                                                                                                                                 // Creates a GPU context.
+SDL_GPUDevice * SDL_CreateGPUDeviceWithProperties(SDL_PropertiesID props);                                                                                                                                                                                                                                // Creates a GPU context.
+void SDL_DestroyGPUDevice(SDL_GPUDevice *device);                                                                                                                                                                                                                                                         // Destroys a GPU context previously returned by SDL_CreateGPUDevice.
+int SDL_GetNumGPUDrivers(void);                                                                                                                                                                                                                                                                           // Get the number of GPU drivers compiled into SDL.
+const char * SDL_GetGPUDriver(int index);                                                                                                                                                                                                                                                                 // Get the name of a built in GPU driver.
+const char * SDL_GetGPUDeviceDriver(SDL_GPUDevice *device);                                                                                                                                                                                                                                               // Returns the name of the backend used to create this GPU context.
+SDL_GPUShaderFormat SDL_GetGPUShaderFormats(SDL_GPUDevice *device);                                                                                                                                                                                                                                       // Returns the supported shader formats for this GPU context.
+SDL_PropertiesID SDL_GetGPUDeviceProperties(SDL_GPUDevice *device);                                                                                                                                                                                                                                       // Get the properties associated with a GPU device.
+SDL_GPUComputePipeline * SDL_CreateGPUComputePipeline(SDL_GPUDevice *device, const SDL_GPUComputePipelineCreateInfo *createinfo);                                                                                                                                                                         // Creates a pipeline object to be used in a compute workflow.
+SDL_GPUGraphicsPipeline * SDL_CreateGPUGraphicsPipeline(SDL_GPUDevice *device, const SDL_GPUGraphicsPipelineCreateInfo *createinfo);                                                                                                                                                                      // Creates a pipeline object to be used in a graphics workflow.
+SDL_GPUSampler * SDL_CreateGPUSampler(SDL_GPUDevice *device, const SDL_GPUSamplerCreateInfo *createinfo);                                                                                                                                                                                                 // Creates a sampler object to be used when binding textures in a graphics workflow.
+SDL_GPUShader * SDL_CreateGPUShader(SDL_GPUDevice *device, const SDL_GPUShaderCreateInfo *createinfo);                                                                                                                                                                                                    // Creates a shader to be used when creating a graphics pipeline.
+SDL_GPUTexture * SDL_CreateGPUTexture(SDL_GPUDevice *device, const SDL_GPUTextureCreateInfo *createinfo);                                                                                                                                                                                                 // Creates a texture object to be used in graphics or compute workflows.
+SDL_GPUBuffer * SDL_CreateGPUBuffer(SDL_GPUDevice *device, const SDL_GPUBufferCreateInfo *createinfo);                                                                                                                                                                                                    // Creates a buffer object to be used in graphics or compute workflows.
+SDL_GPUTransferBuffer * SDL_CreateGPUTransferBuffer(SDL_GPUDevice *device, const SDL_GPUTransferBufferCreateInfo *createinfo);                                                                                                                                                                            // Creates a transfer buffer to be used when uploading to or downloading from graphics resources.
+void SDL_SetGPUBufferName(SDL_GPUDevice *device, SDL_GPUBuffer *buffer, const char *text);                                                                                                                                                                                                                // Sets an arbitrary string constant to label a buffer.
+void SDL_SetGPUTextureName(SDL_GPUDevice *device, SDL_GPUTexture *texture, const char *text);                                                                                                                                                                                                             // Sets an arbitrary string constant to label a texture.
+void SDL_InsertGPUDebugLabel(SDL_GPUCommandBuffer *command_buffer, const char *text);                                                                                                                                                                                                                     // Inserts an arbitrary string label into the command buffer callstream.
+void SDL_PushGPUDebugGroup(SDL_GPUCommandBuffer *command_buffer, const char *name);                                                                                                                                                                                                                       // Begins a debug group with an arbitary name.
+void SDL_PopGPUDebugGroup(SDL_GPUCommandBuffer *command_buffer);                                                                                                                                                                                                                                          // Ends the most-recently pushed debug group.
+void SDL_ReleaseGPUTexture(SDL_GPUDevice *device, SDL_GPUTexture *texture);                                                                                                                                                                                                                               // Frees the given texture as soon as it is safe to do so.
+void SDL_ReleaseGPUSampler(SDL_GPUDevice *device, SDL_GPUSampler *sampler);                                                                                                                                                                                                                               // Frees the given sampler as soon as it is safe to do so.
+void SDL_ReleaseGPUBuffer(SDL_GPUDevice *device, SDL_GPUBuffer *buffer);                                                                                                                                                                                                                                  // Frees the given buffer as soon as it is safe to do so.
+void SDL_ReleaseGPUTransferBuffer(SDL_GPUDevice *device, SDL_GPUTransferBuffer *transfer_buffer);                                                                                                                                                                                                         // Frees the given transfer buffer as soon as it is safe to do so.
+void SDL_ReleaseGPUComputePipeline(SDL_GPUDevice *device, SDL_GPUComputePipeline *compute_pipeline);                                                                                                                                                                                                      // Frees the given compute pipeline as soon as it is safe to do so.
+void SDL_ReleaseGPUShader(SDL_GPUDevice *device, SDL_GPUShader *shader);                                                                                                                                                                                                                                  // Frees the given shader as soon as it is safe to do so.
+void SDL_ReleaseGPUGraphicsPipeline(SDL_GPUDevice *device, SDL_GPUGraphicsPipeline *graphics_pipeline);                                                                                                                                                                                                   // Frees the given graphics pipeline as soon as it is safe to do so.
+SDL_GPUCommandBuffer * SDL_AcquireGPUCommandBuffer(SDL_GPUDevice *device);                                                                                                                                                                                                                                // Acquire a command buffer.
+void SDL_PushGPUVertexUniformData(SDL_GPUCommandBuffer *command_buffer, Uint32 slot_index, const void *data, Uint32 length);                                                                                                                                                                              // Pushes data to a vertex uniform slot on the command buffer.
+void SDL_PushGPUFragmentUniformData(SDL_GPUCommandBuffer *command_buffer, Uint32 slot_index, const void *data, Uint32 length);                                                                                                                                                                            // Pushes data to a fragment uniform slot on the command buffer.
+void SDL_PushGPUComputeUniformData(SDL_GPUCommandBuffer *command_buffer, Uint32 slot_index, const void *data, Uint32 length);                                                                                                                                                                             // Pushes data to a uniform slot on the command buffer.
+SDL_GPURenderPass * SDL_BeginGPURenderPass(SDL_GPUCommandBuffer *command_buffer, const SDL_GPUColorTargetInfo *color_target_infos, Uint32 num_color_targets, const SDL_GPUDepthStencilTargetInfo *depth_stencil_target_info);                                                                             // Begins a render pass on a command buffer.
+void SDL_BindGPUGraphicsPipeline(SDL_GPURenderPass *render_pass, SDL_GPUGraphicsPipeline *graphics_pipeline);                                                                                                                                                                                             // Binds a graphics pipeline on a render pass to be used in rendering.
+void SDL_SetGPUViewport(SDL_GPURenderPass *render_pass, const SDL_GPUViewport *viewport);                                                                                                                                                                                                                 // Sets the current viewport state on a command buffer.
+void SDL_SetGPUScissor(SDL_GPURenderPass *render_pass, const SDL_Rect *scissor);                                                                                                                                                                                                                          // Sets the current scissor state on a command buffer.
+void SDL_SetGPUBlendConstants(SDL_GPURenderPass *render_pass, SDL_FColor blend_constants);                                                                                                                                                                                                                // Sets the current blend constants on a command buffer.
+void SDL_SetGPUStencilReference(SDL_GPURenderPass *render_pass, Uint8 reference);                                                                                                                                                                                                                         // Sets the current stencil reference value on a command buffer.
+void SDL_BindGPUVertexBuffers(SDL_GPURenderPass *render_pass, Uint32 first_slot, const SDL_GPUBufferBinding *bindings, Uint32 num_bindings);                                                                                                                                                              // Binds vertex buffers on a command buffer for use with subsequent draw calls.
+void SDL_BindGPUIndexBuffer(SDL_GPURenderPass *render_pass, const SDL_GPUBufferBinding *binding, SDL_GPUIndexElementSize index_element_size);                                                                                                                                                             // Binds an index buffer on a command buffer for use with subsequent draw calls.
+void SDL_BindGPUVertexSamplers(SDL_GPURenderPass *render_pass, Uint32 first_slot, const SDL_GPUTextureSamplerBinding *texture_sampler_bindings, Uint32 num_bindings);                                                                                                                                     // Binds texture-sampler pairs for use on the vertex shader.
+void SDL_BindGPUVertexStorageTextures(SDL_GPURenderPass *render_pass, Uint32 first_slot, SDL_GPUTexture *const *storage_textures, Uint32 num_bindings);                                                                                                                                                   // Binds storage textures for use on the vertex shader.
+void SDL_BindGPUVertexStorageBuffers(SDL_GPURenderPass *render_pass, Uint32 first_slot, SDL_GPUBuffer *const *storage_buffers, Uint32 num_bindings);                                                                                                                                                      // Binds storage buffers for use on the vertex shader.
+void SDL_BindGPUFragmentSamplers(SDL_GPURenderPass *render_pass, Uint32 first_slot, const SDL_GPUTextureSamplerBinding *texture_sampler_bindings, Uint32 num_bindings);                                                                                                                                   // Binds texture-sampler pairs for use on the fragment shader.
+void SDL_BindGPUFragmentStorageTextures(SDL_GPURenderPass *render_pass, Uint32 first_slot, SDL_GPUTexture *const *storage_textures, Uint32 num_bindings);                                                                                                                                                 // Binds storage textures for use on the fragment shader.
+void SDL_BindGPUFragmentStorageBuffers(SDL_GPURenderPass *render_pass, Uint32 first_slot, SDL_GPUBuffer *const *storage_buffers, Uint32 num_bindings);                                                                                                                                                    // Binds storage buffers for use on the fragment shader.
+void SDL_DrawGPUIndexedPrimitives(SDL_GPURenderPass *render_pass, Uint32 num_indices, Uint32 num_instances, Uint32 first_index, Sint32 vertex_offset, Uint32 first_instance);                                                                                                                             // Draws data using bound graphics state with an index buffer and instancing enabled.
+void SDL_DrawGPUPrimitives(SDL_GPURenderPass *render_pass, Uint32 num_vertices, Uint32 num_instances, Uint32 first_vertex, Uint32 first_instance);                                                                                                                                                        // Draws data using bound graphics state.
+void SDL_DrawGPUPrimitivesIndirect(SDL_GPURenderPass *render_pass, SDL_GPUBuffer *buffer, Uint32 offset, Uint32 draw_count);                                                                                                                                                                              // Draws data using bound graphics state and with draw parameters set from a buffer.
+void SDL_DrawGPUIndexedPrimitivesIndirect(SDL_GPURenderPass *render_pass, SDL_GPUBuffer *buffer, Uint32 offset, Uint32 draw_count);                                                                                                                                                                       // Draws data using bound graphics state with an index buffer enabled and with draw parameters set from a buffer.
+void SDL_EndGPURenderPass(SDL_GPURenderPass *render_pass);                                                                                                                                                                                                                                                // Ends the given render pass.
+SDL_GPUComputePass * SDL_BeginGPUComputePass(SDL_GPUCommandBuffer *command_buffer, const SDL_GPUStorageTextureReadWriteBinding *storage_texture_bindings, Uint32 num_storage_texture_bindings, const SDL_GPUStorageBufferReadWriteBinding *storage_buffer_bindings, Uint32 num_storage_buffer_bindings);  // Begins a compute pass on a command buffer.
+void SDL_BindGPUComputePipeline(SDL_GPUComputePass *compute_pass, SDL_GPUComputePipeline *compute_pipeline);                                                                                                                                                                                              // Binds a compute pipeline on a command buffer for use in compute dispatch.
+void SDL_BindGPUComputeSamplers(SDL_GPUComputePass *compute_pass, Uint32 first_slot, const SDL_GPUTextureSamplerBinding *texture_sampler_bindings, Uint32 num_bindings);                                                                                                                                  // Binds texture-sampler pairs for use on the compute shader.
+void SDL_BindGPUComputeStorageTextures(SDL_GPUComputePass *compute_pass, Uint32 first_slot, SDL_GPUTexture *const *storage_textures, Uint32 num_bindings);                                                                                                                                                // Binds storage textures as readonly for use on the compute pipeline.
+void SDL_BindGPUComputeStorageBuffers(SDL_GPUComputePass *compute_pass, Uint32 first_slot, SDL_GPUBuffer *const *storage_buffers, Uint32 num_bindings);                                                                                                                                                   // Binds storage buffers as readonly for use on the compute pipeline.
+void SDL_DispatchGPUCompute(SDL_GPUComputePass *compute_pass, Uint32 groupcount_x, Uint32 groupcount_y, Uint32 groupcount_z);                                                                                                                                                                             // Dispatches compute work.
+void SDL_DispatchGPUComputeIndirect(SDL_GPUComputePass *compute_pass, SDL_GPUBuffer *buffer, Uint32 offset);                                                                                                                                                                                              // Dispatches compute work with parameters set from a buffer.
+void SDL_EndGPUComputePass(SDL_GPUComputePass *compute_pass);                                                                                                                                                                                                                                             // Ends the current compute pass.
+void * SDL_MapGPUTransferBuffer(SDL_GPUDevice *device, SDL_GPUTransferBuffer *transfer_buffer, bool cycle);                                                                                                                                                                                               // Maps a transfer buffer into application address space.
+void SDL_UnmapGPUTransferBuffer(SDL_GPUDevice *device, SDL_GPUTransferBuffer *transfer_buffer);                                                                                                                                                                                                           // Unmaps a previously mapped transfer buffer.
+SDL_GPUCopyPass * SDL_BeginGPUCopyPass(SDL_GPUCommandBuffer *command_buffer);                                                                                                                                                                                                                             // Begins a copy pass on a command buffer.
+void SDL_UploadToGPUTexture(SDL_GPUCopyPass *copy_pass, const SDL_GPUTextureTransferInfo *source, const SDL_GPUTextureRegion *destination, bool cycle);                                                                                                                                                   // Uploads data from a transfer buffer to a texture.
+void SDL_UploadToGPUBuffer(SDL_GPUCopyPass *copy_pass, const SDL_GPUTransferBufferLocation *source, const SDL_GPUBufferRegion *destination, bool cycle);                                                                                                                                                  // Uploads data from a transfer buffer to a buffer.
+void SDL_CopyGPUTextureToTexture(SDL_GPUCopyPass *copy_pass, const SDL_GPUTextureLocation *source, const SDL_GPUTextureLocation *destination, Uint32 w, Uint32 h, Uint32 d, bool cycle);                                                                                                                  // Performs a texture-to-texture copy.
+void SDL_CopyGPUBufferToBuffer(SDL_GPUCopyPass *copy_pass, const SDL_GPUBufferLocation *source, const SDL_GPUBufferLocation *destination, Uint32 size, bool cycle);                                                                                                                                       // Performs a buffer-to-buffer copy.
+void SDL_DownloadFromGPUTexture(SDL_GPUCopyPass *copy_pass, const SDL_GPUTextureRegion *source, const SDL_GPUTextureTransferInfo *destination);                                                                                                                                                           // Copies data from a texture to a transfer buffer on the GPU timeline.
+void SDL_DownloadFromGPUBuffer(SDL_GPUCopyPass *copy_pass, const SDL_GPUBufferRegion *source, const SDL_GPUTransferBufferLocation *destination);                                                                                                                                                          // Copies data from a buffer to a transfer buffer on the GPU timeline.
+void SDL_EndGPUCopyPass(SDL_GPUCopyPass *copy_pass);                                                                                                                                                                                                                                                      // Ends the current copy pass.
+void SDL_GenerateMipmapsForGPUTexture(SDL_GPUCommandBuffer *command_buffer, SDL_GPUTexture *texture);                                                                                                                                                                                                     // Generates mipmaps for the given texture.
+void SDL_BlitGPUTexture(SDL_GPUCommandBuffer *command_buffer, const SDL_GPUBlitInfo *info);                                                                                                                                                                                                               // Blits from a source texture region to a destination texture region.
+bool SDL_WindowSupportsGPUSwapchainComposition(SDL_GPUDevice *device, SDL_Window *window, SDL_GPUSwapchainComposition swapchain_composition);                                                                                                                                                             // Determines whether a swapchain composition is supported by the window.
+bool SDL_WindowSupportsGPUPresentMode(SDL_GPUDevice *device, SDL_Window *window, SDL_GPUPresentMode present_mode);                                                                                                                                                                                        // Determines whether a presentation mode is supported by the window.
+bool SDL_ClaimWindowForGPUDevice(SDL_GPUDevice *device, SDL_Window *window);                                                                                                                                                                                                                              // Claims a window, creating a swapchain structure for it.
+void SDL_ReleaseWindowFromGPUDevice(SDL_GPUDevice *device, SDL_Window *window);                                                                                                                                                                                                                           // Unclaims a window, destroying its swapchain structure.
+bool SDL_SetGPUSwapchainParameters(SDL_GPUDevice *device, SDL_Window *window, SDL_GPUSwapchainComposition swapchain_composition, SDL_GPUPresentMode present_mode);                                                                                                                                        // Changes the swapchain parameters for the given claimed window.
+bool SDL_SetGPUAllowedFramesInFlight(SDL_GPUDevice *device, Uint32 allowed_frames_in_flight);                                                                                                                                                                                                             // Configures the maximum allowed number of frames in flight.
+SDL_GPUTextureFormat SDL_GetGPUSwapchainTextureFormat(SDL_GPUDevice *device, SDL_Window *window);                                                                                                                                                                                                         // Obtains the texture format of the swapchain for the given window.
+bool SDL_AcquireGPUSwapchainTexture(SDL_GPUCommandBuffer *command_buffer, SDL_Window *window, SDL_GPUTexture **swapchain_texture, Uint32 *swapchain_texture_width, Uint32 *swapchain_texture_height);                                                                                                     // Acquire a texture to use in presentation.
+bool SDL_WaitForGPUSwapchain(SDL_GPUDevice *device, SDL_Window *window);                                                                                                                                                                                                                                  // Blocks the thread until a swapchain texture is available to be acquired.
+bool SDL_WaitAndAcquireGPUSwapchainTexture(SDL_GPUCommandBuffer *command_buffer, SDL_Window *window, SDL_GPUTexture **swapchain_texture, Uint32 *swapchain_texture_width, Uint32 *swapchain_texture_height);                                                                                              // Blocks the thread until a swapchain texture is available to be acquired, and then acquires it.
+bool SDL_SubmitGPUCommandBuffer(SDL_GPUCommandBuffer *command_buffer);                                                                                                                                                                                                                                    // Submits a command buffer so its commands can be processed on the GPU.
+SDL_GPUFence * SDL_SubmitGPUCommandBufferAndAcquireFence(SDL_GPUCommandBuffer *command_buffer);                                                                                                                                                                                                           // Submits a command buffer so its commands can be processed on the GPU, and acquires a fence associated with the command buffer.
+bool SDL_CancelGPUCommandBuffer(SDL_GPUCommandBuffer *command_buffer);                                                                                                                                                                                                                                    // Cancels a command buffer.
+bool SDL_WaitForGPUIdle(SDL_GPUDevice *device);                                                                                                                                                                                                                                                           // Blocks the thread until the GPU is completely idle.
+bool SDL_WaitForGPUFences(SDL_GPUDevice *device, bool wait_all, SDL_GPUFence *const *fences, Uint32 num_fences);                                                                                                                                                                                          // Blocks the thread until the given fences are signaled.
+bool SDL_QueryGPUFence(SDL_GPUDevice *device, SDL_GPUFence *fence);                                                                                                                                                                                                                                       // Checks the status of a fence.
+void SDL_ReleaseGPUFence(SDL_GPUDevice *device, SDL_GPUFence *fence);                                                                                                                                                                                                                                     // Releases a fence obtained from SDL_SubmitGPUCommandBufferAndAcquireFence.
+Uint32 SDL_GPUTextureFormatTexelBlockSize(SDL_GPUTextureFormat format);                                                                                                                                                                                                                                   // Obtains the texel block size for a texture format.
+bool SDL_GPUTextureSupportsFormat(SDL_GPUDevice *device, SDL_GPUTextureFormat format, SDL_GPUTextureType type, SDL_GPUTextureUsageFlags usage);                                                                                                                                                           // Determines whether a texture format is supported for a given type and usage.
+bool SDL_GPUTextureSupportsSampleCount(SDL_GPUDevice *device, SDL_GPUTextureFormat format, SDL_GPUSampleCount sample_count);                                                                                                                                                                              // Determines if a sample count for a texture format is supported.
+Uint32 SDL_CalculateGPUTextureFormatSize(SDL_GPUTextureFormat format, Uint32 width, Uint32 height, Uint32 depth_or_layer_count);                                                                                                                                                                          // Calculate the size in bytes of a texture format with dimensions.
+void SDL_GDKSuspendGPU(SDL_GPUDevice *device);                                                                                                                                                                                                                                                            // Call this to suspend GPU operation on Xbox when you receive the SDL_EVENT_DID_ENTER_BACKGROUND event.
+void SDL_GDKResumeGPU(SDL_GPUDevice *device);                                                                                                                                                                                                                                                             // Call this to resume GPU operation on Xbox when you receive the SDL_EVENT_WILL_ENTER_FOREGROUND event.
+
+// ██╗   ██╗ ██╗   ██╗ ██╗      ██╗  ██╗  █████╗  ███╗   ██╗
+// ██║   ██║ ██║   ██║ ██║      ██║ ██╔╝ ██╔══██╗ ████╗  ██║
+// ██║   ██║ ██║   ██║ ██║      █████╔╝  ███████║ ██╔██╗ ██║
+// ╚██╗ ██╔╝ ██║   ██║ ██║      ██╔═██╗  ██╔══██║ ██║╚██╗██║
+//  ╚████╔╝  ╚██████╔╝ ███████╗ ██║  ██╗ ██║  ██║ ██║ ╚████║
+//   ╚═══╝    ╚═════╝  ╚══════╝ ╚═╝  ╚═╝ ╚═╝  ╚═╝ ╚═╝  ╚═══╝
+
+bool SDL_Vulkan_LoadLibrary(const char *path);                                                                                                 // Dynamically load the Vulkan loader library.
+SDL_FunctionPointer SDL_Vulkan_GetVkGetInstanceProcAddr(void);                                                                                 // Get the address of the `vkGetInstanceProcAddr` function.
+void SDL_Vulkan_UnloadLibrary(void);                                                                                                           // Unload the Vulkan library previously loaded by SDL_Vulkan_LoadLibrary().
+char const * const * SDL_Vulkan_GetInstanceExtensions(Uint32 *count);                                                                          // Get the Vulkan instance extensions needed for vkCreateInstance.
+bool SDL_Vulkan_CreateSurface(SDL_Window *window, VkInstance instance, const struct VkAllocationCallbacks *allocator, VkSurfaceKHR *surface);  // Create a Vulkan rendering surface for a window.
+void SDL_Vulkan_DestroySurface(VkInstance instance, VkSurfaceKHR surface, const struct VkAllocationCallbacks *allocator);                      // Destroy the Vulkan rendering surface of a window.
+bool SDL_Vulkan_GetPresentationSupport(VkInstance instance, VkPhysicalDevice physicalDevice, Uint32 queueFamilyIndex);                         // Query support for presentation via a given physical device and queue family.
+
+// ███╗   ███╗ ███████╗ ████████╗  █████╗  ██╗
+// ████╗ ████║ ██╔════╝ ╚══██╔══╝ ██╔══██╗ ██║
+// ██╔████╔██║ █████╗      ██║    ███████║ ██║
+// ██║╚██╔╝██║ ██╔══╝      ██║    ██╔══██║ ██║
+// ██║ ╚═╝ ██║ ███████╗    ██║    ██║  ██║ ███████╗
+// ╚═╝     ╚═╝ ╚══════╝    ╚═╝    ╚═╝  ╚═╝ ╚══════╝
+
+SDL_MetalView SDL_Metal_CreateView(SDL_Window *window);  // Create a CAMetalLayer-backed NSView/UIView and attach it to the specified window.
+void SDL_Metal_DestroyView(SDL_MetalView view);          // Destroy an existing SDL_MetalView object.
+void * SDL_Metal_GetLayer(SDL_MetalView view);           // Get a pointer to the backing CAMetalLayer for the given view.
+
+// ██████╗  ██╗       █████╗  ████████╗ ███████╗  ██████╗  ██████╗  ███╗   ███╗
+// ██╔══██╗ ██║      ██╔══██╗ ╚══██╔══╝ ██╔════╝ ██╔═══██╗ ██╔══██╗ ████╗ ████║
+// ██████╔╝ ██║      ███████║    ██║    █████╗   ██║   ██║ ██████╔╝ ██╔████╔██║
+// ██╔═══╝  ██║      ██╔══██║    ██║    ██╔══╝   ██║   ██║ ██╔══██╗ ██║╚██╔╝██║
+// ██║      ███████╗ ██║  ██║    ██║    ██║      ╚██████╔╝ ██║  ██║ ██║ ╚═╝ ██║
+// ╚═╝      ╚══════╝ ╚═╝  ╚═╝    ╚═╝    ╚═╝       ╚═════╝  ╚═╝  ╚═╝ ╚═╝     ╚═╝
+
+#define SDL_PLATFORM_AIX         // A preprocessor macro that is only defined if compiling for AIX.
+#define SDL_PLATFORM_HAIKU       // A preprocessor macro that is only defined if compiling for Haiku OS.
+#define SDL_PLATFORM_BSDI        // A preprocessor macro that is only defined if compiling for BSDi
+#define SDL_PLATFORM_FREEBSD     // A preprocessor macro that is only defined if compiling for FreeBSD.
+#define SDL_PLATFORM_HPUX        // A preprocessor macro that is only defined if compiling for HP-UX.
+#define SDL_PLATFORM_IRIX        // A preprocessor macro that is only defined if compiling for IRIX.
+#define SDL_PLATFORM_LINUX       // A preprocessor macro that is only defined if compiling for Linux.
+#define SDL_PLATFORM_ANDROID     // A preprocessor macro that is only defined if compiling for Android.
+#define SDL_PLATFORM_UNIX        // A preprocessor macro that is only defined if compiling for a Unix-like system.
+#define SDL_PLATFORM_APPLE       // A preprocessor macro that is only defined if compiling for Apple platforms.
+#define SDL_PLATFORM_TVOS        // A preprocessor macro that is only defined if compiling for tvOS.
+#define SDL_PLATFORM_VISIONOS    // A preprocessor macro that is only defined if compiling for VisionOS.
+#define SDL_PLATFORM_IOS         // A preprocessor macro that is only defined if compiling for iOS.
+#define SDL_PLATFORM_MACOS       // A preprocessor macro that is only defined if compiling for macOS.
+#define SDL_PLATFORM_EMSCRIPTEN  // A preprocessor macro that is only defined if compiling for Emscripten.
+#define SDL_PLATFORM_NETBSD      // A preprocessor macro that is only defined if compiling for NetBSD.
+#define SDL_PLATFORM_OPENBSD     // A preprocessor macro that is only defined if compiling for OpenBSD.
+#define SDL_PLATFORM_OS2         // A preprocessor macro that is only defined if compiling for OS/2.
+#define SDL_PLATFORM_OSF         // A preprocessor macro that is only defined if compiling for Tru64 (OSF/1).
+#define SDL_PLATFORM_QNXNTO      // A preprocessor macro that is only defined if compiling for QNX Neutrino.
+#define SDL_PLATFORM_RISCOS      // A preprocessor macro that is only defined if compiling for RISC OS.
+#define SDL_PLATFORM_SOLARIS     // A preprocessor macro that is only defined if compiling for SunOS/Solaris.
+#define SDL_PLATFORM_CYGWIN      // A preprocessor macro that is only defined if compiling for Cygwin.
+#define SDL_PLATFORM_WINDOWS     // A preprocessor macro that is only defined if compiling for Windows.
+#define SDL_PLATFORM_WINGDK      // A preprocessor macro that is only defined if compiling for Microsoft GDK for Windows.
+#define SDL_PLATFORM_XBOXONE     // A preprocessor macro that is only defined if compiling for Xbox One.
+#define SDL_PLATFORM_XBOXSERIES  // A preprocessor macro that is only defined if compiling for Xbox Series.
+#define SDL_PLATFORM_WIN32       // A preprocessor macro that is only defined if compiling for desktop Windows.
+#define SDL_PLATFORM_GDK         // A preprocessor macro that is only defined if compiling for Microsoft GDK on any platform.
+#define SDL_PLATFORM_PSP         // A preprocessor macro that is only defined if compiling for Sony PSP.
+#define SDL_PLATFORM_PS2         // A preprocessor macro that is only defined if compiling for Sony PlayStation 2.
+#define SDL_PLATFORM_VITA        // A preprocessor macro that is only defined if compiling for Sony Vita.
+#define SDL_PLATFORM_3DS         // A preprocessor macro that is only defined if compiling for Nintendo 3DS.
+#define SDL_PLATFORM_NGAGE       // A preprocessor macro that is only defined if compiling for the Nokia N-Gage.
+
+// ██████╗   ██████╗  ██╗    ██╗ ███████╗ ██████╗
+// ██╔══██╗ ██╔═══██╗ ██║    ██║ ██╔════╝ ██╔══██╗
+// ██████╔╝ ██║   ██║ ██║ █╗ ██║ █████╗   ██████╔╝
+// ██╔═══╝  ██║   ██║ ██║███╗██║ ██╔══╝   ██╔══██╗
+// ██║      ╚██████╔╝ ╚███╔███╔╝ ███████╗ ██║  ██║
+// ╚═╝       ╚═════╝   ╚══╝╚══╝  ╚══════╝ ╚═╝  ╚═╝
+
+SDL_PowerState SDL_GetPowerInfo(int *seconds, int *percent);  // Get the current power supply details.
+
+//  ██████╗ ███████╗ ███╗   ██╗  ██████╗  ██████╗  ██████╗
+// ██╔════╝ ██╔════╝ ████╗  ██║ ██╔════╝ ██╔═══██╗ ██╔══██╗
+// ███████╗ █████╗   ██╔██╗ ██║ ███████╗ ██║   ██║ ██████╔╝
+// ╚════██║ ██╔══╝   ██║╚██╗██║ ╚════██║ ██║   ██║ ██╔══██╗
+// ██████╔╝ ███████╗ ██║ ╚████║ ██████╔╝ ╚██████╔╝ ██║  ██║
+// ╚═════╝  ╚══════╝ ╚═╝  ╚═══╝ ╚═════╝   ╚═════╝  ╚═╝  ╚═╝
+
+SDL_SensorID * SDL_GetSensors(int *count);                                // Get a list of currently connected sensors.
+const char * SDL_GetSensorNameForID(SDL_SensorID instance_id);            // Get the implementation dependent name of a sensor.
+SDL_SensorType SDL_GetSensorTypeForID(SDL_SensorID instance_id);          // Get the type of a sensor.
+int SDL_GetSensorNonPortableTypeForID(SDL_SensorID instance_id);          // Get the platform dependent type of a sensor.
+SDL_Sensor * SDL_OpenSensor(SDL_SensorID instance_id);                    // Open a sensor for use.
+SDL_Sensor * SDL_GetSensorFromID(SDL_SensorID instance_id);               // Return the SDL_Sensor associated with an instance ID.
+SDL_PropertiesID SDL_GetSensorProperties(SDL_Sensor *sensor);             // Get the properties associated with a sensor.
+const char * SDL_GetSensorName(SDL_Sensor *sensor);                       // Get the implementation dependent name of a sensor.
+SDL_SensorType SDL_GetSensorType(SDL_Sensor *sensor);                     // Get the type of a sensor.
+int SDL_GetSensorNonPortableType(SDL_Sensor *sensor);                     // Get the platform dependent type of a sensor.
+SDL_SensorID SDL_GetSensorID(SDL_Sensor *sensor);                         // Get the instance ID of a sensor.
+bool SDL_GetSensorData(SDL_Sensor *sensor, float *data, int num_values);  // Get the current state of an opened sensor.
+void SDL_CloseSensor(SDL_Sensor *sensor);                                 // Close a sensor previously opened with SDL_OpenSensor().
+void SDL_UpdateSensors(void);                                             // Update the current state of the open sensors.
+
+// ██████╗  ██████╗   ██████╗   ██████╗ ███████╗  ██████╗  ██████╗
+// ██╔══██╗ ██╔══██╗ ██╔═══██╗ ██╔════╝ ██╔════╝ ██╔════╝ ██╔════╝
+// ██████╔╝ ██████╔╝ ██║   ██║ ██║      █████╗   ███████╗ ███████╗
+// ██╔═══╝  ██╔══██╗ ██║   ██║ ██║      ██╔══╝   ╚════██║ ╚════██║
+// ██║      ██║  ██║ ╚██████╔╝ ╚██████╗ ███████╗ ██████╔╝ ██████╔╝
+// ╚═╝      ╚═╝  ╚═╝  ╚═════╝   ╚═════╝ ╚══════╝ ╚═════╝  ╚═════╝
+
+SDL_Process * SDL_CreateProcess(const char * const *args, bool pipe_stdio);     // Create a new process.
+SDL_Process * SDL_CreateProcessWithProperties(SDL_PropertiesID props);          // Create a new process with the specified properties.
+SDL_PropertiesID SDL_GetProcessProperties(SDL_Process *process);                // Get the properties associated with a process.
+void * SDL_ReadProcess(SDL_Process *process, size_t *datasize, int *exitcode);  // Read all the output from a process.
+SDL_IOStream * SDL_GetProcessInput(SDL_Process *process);                       // Get the SDL_IOStream associated with process standard input.
+SDL_IOStream * SDL_GetProcessOutput(SDL_Process *process);                      // Get the SDL_IOStream associated with process standard output.
+bool SDL_KillProcess(SDL_Process *process, bool force);                         // Stop a process.
+bool SDL_WaitProcess(SDL_Process *process, bool block, int *exitcode);          // Wait for a process to finish.
+void SDL_DestroyProcess(SDL_Process *process);                                  // Destroy a previously created process object.
+
+// ██████╗  ██╗ ████████╗  ██████╗
+// ██╔══██╗ ██║ ╚══██╔══╝ ██╔════╝
+// ██████╔╝ ██║    ██║    ███████╗
+// ██╔══██╗ ██║    ██║    ╚════██║
+// ██████╔╝ ██║    ██║    ██████╔╝
+// ╚═════╝  ╚═╝    ╚═╝    ╚═════╝
+
+int SDL_MostSignificantBitIndex32(Uint32 x);  // Get the index of the most significant (set) bit in a 32-bit number.
+bool SDL_HasExactlyOneBitSet32(Uint32 x);     // Determine if a unsigned 32-bit value has exactly one bit set.
+
+// ███████╗ ███╗   ██╗ ██████╗  ██╗  █████╗  ███╗   ██╗
+// ██╔════╝ ████╗  ██║ ██╔══██╗ ██║ ██╔══██╗ ████╗  ██║
+// █████╗   ██╔██╗ ██║ ██║  ██║ ██║ ███████║ ██╔██╗ ██║
+// ██╔══╝   ██║╚██╗██║ ██║  ██║ ██║ ██╔══██║ ██║╚██╗██║
+// ███████╗ ██║ ╚████║ ██████╔╝ ██║ ██║  ██║ ██║ ╚████║
+// ╚══════╝ ╚═╝  ╚═══╝ ╚═════╝  ╚═╝ ╚═╝  ╚═╝ ╚═╝  ╚═══╝
+
+float SDL_SwapFloat(float x);  // Byte-swap a floating point number.
+Uint16 SDL_Swap16(Uint16 x);   // Byte-swap an unsigned 16-bit number.
+Uint32 SDL_Swap32(Uint32 x);   // Byte-swap an unsigned 32-bit number.
+Uint32 SDL_Swap64(Uint64 x);   // Byte-swap an unsigned 64-bit number.
+
+//  █████╗   ██████╗  ██████╗ ███████╗ ██████╗  ████████╗
+// ██╔══██╗ ██╔════╝ ██╔════╝ ██╔════╝ ██╔══██╗ ╚══██╔══╝
+// ███████║ ███████╗ ███████╗ █████╗   ██████╔╝    ██║
+// ██╔══██║ ╚════██║ ╚════██║ ██╔══╝   ██╔══██╗    ██║
+// ██║  ██║ ██████╔╝ ██████╔╝ ███████╗ ██║  ██║    ██║
+// ╚═╝  ╚═╝ ╚═════╝  ╚═════╝  ╚══════╝ ╚═╝  ╚═╝    ╚═╝
+
+SDL_AssertState SDL_ReportAssertion(SDL_AssertData *data, const char *func, const char *file, int line);  // Never call this directly.
+#define SDL_assert(condition)                                                                             // An assertion test that is normally performed only in debug builds.
+#define SDL_assert_release(condition)                                                                     // An assertion test that is performed even in release builds.
+#define SDL_assert_paranoid(condition)                                                                    // An assertion test that is performed only when built with paranoid settings.
+#define SDL_assert_always(condition)                                                                      // An assertion test that is always performed.
+void SDL_SetAssertionHandler(SDL_AssertionHandler handler, void *userdata);                               // Set an application-defined assertion handler.
+SDL_AssertionHandler SDL_GetDefaultAssertionHandler(void);                                                // Get the default assertion handler.
+SDL_AssertionHandler SDL_GetAssertionHandler(void **puserdata);                                           // Get the current assertion handler.
+const SDL_AssertData * SDL_GetAssertionReport(void);                                                      // Get a list of all assertion failures.
+void SDL_ResetAssertionReport(void);                                                                      // Clear the list of all assertion failures.
+
+//  ██████╗ ██████╗  ██╗   ██╗ ██╗ ███╗   ██╗ ███████╗  ██████╗
+// ██╔════╝ ██╔══██╗ ██║   ██║ ██║ ████╗  ██║ ██╔════╝ ██╔═══██╗
+// ██║      ██████╔╝ ██║   ██║ ██║ ██╔██╗ ██║ █████╗   ██║   ██║
+// ██║      ██╔═══╝  ██║   ██║ ██║ ██║╚██╗██║ ██╔══╝   ██║   ██║
+// ╚██████╗ ██║      ╚██████╔╝ ██║ ██║ ╚████║ ██║      ╚██████╔╝
+//  ╚═════╝ ╚═╝       ╚═════╝  ╚═╝ ╚═╝  ╚═══╝ ╚═╝       ╚═════╝
+
+int SDL_GetNumLogicalCPUCores(void);  // Get the number of logical CPU cores available.
+int SDL_GetCPUCacheLineSize(void);    // Determine the L1 cache line size of the CPU.
+bool SDL_HasAltiVec(void);            // Determine whether the CPU has AltiVec features.
+bool SDL_HasMMX(void);                // Determine whether the CPU has MMX features.
+bool SDL_HasSSE(void);                // Determine whether the CPU has SSE features.
+bool SDL_HasSSE2(void);               // Determine whether the CPU has SSE2 features.
+bool SDL_HasSSE3(void);               // Determine whether the CPU has SSE3 features.
+bool SDL_HasSSE41(void);              // Determine whether the CPU has SSE4.1 features.
+bool SDL_HasSSE42(void);              // Determine whether the CPU has SSE4.2 features.
+bool SDL_HasAVX(void);                // Determine whether the CPU has AVX features.
+bool SDL_HasAVX2(void);               // Determine whether the CPU has AVX2 features.
+bool SDL_HasAVX512F(void);            // Determine whether the CPU has AVX-512F (foundation) features.
+bool SDL_HasARMSIMD(void);            // Determine whether the CPU has ARM SIMD (ARMv6) features.
+bool SDL_HasNEON(void);               // Determine whether the CPU has NEON (ARM SIMD) features.
+bool SDL_HasLSX(void);                // Determine whether the CPU has LSX (LOONGARCH SIMD) features.
+bool SDL_HasLASX(void);               // Determine whether the CPU has LASX (LOONGARCH SIMD) features.
+int SDL_GetSystemRAM(void);           // Get the amount of RAM configured in the system.
+size_t SDL_GetSIMDAlignment(void);    // Report the alignment this system needs for SIMD allocations.
+
+// ██╗ ███╗   ██╗ ████████╗ ██████╗  ██╗ ███╗   ██╗  ██████╗ ██╗  ██████╗  ██████╗
+// ██║ ████╗  ██║ ╚══██╔══╝ ██╔══██╗ ██║ ████╗  ██║ ██╔════╝ ██║ ██╔════╝ ██╔════╝
+// ██║ ██╔██╗ ██║    ██║    ██████╔╝ ██║ ██╔██╗ ██║ ███████╗ ██║ ██║      ███████╗
+// ██║ ██║╚██╗██║    ██║    ██╔══██╗ ██║ ██║╚██╗██║ ╚════██║ ██║ ██║      ╚════██║
+// ██║ ██║ ╚████║    ██║    ██║  ██║ ██║ ██║ ╚████║ ██████╔╝ ██║ ╚██████╗ ██████╔╝
+// ╚═╝ ╚═╝  ╚═══╝    ╚═╝    ╚═╝  ╚═╝ ╚═╝ ╚═╝  ╚═══╝ ╚═════╝  ╚═╝  ╚═════╝ ╚═════╝
+
+#define SDL_LSX_INTRINSICS      // Defined if (and only if) the compiler supports Loongarch LSX intrinsics.
+#define SDL_LASX_INTRINSICS     // Defined if (and only if) the compiler supports Loongarch LSX intrinsics.
+#define SDL_NEON_INTRINSICS     // Defined if (and only if) the compiler supports ARM NEON intrinsics.
+#define SDL_ALTIVEC_INTRINSICS  // Defined if (and only if) the compiler supports PowerPC Altivec intrinsics.
+#define SDL_MMX_INTRINSICS      // Defined if (and only if) the compiler supports Intel MMX intrinsics.
+#define SDL_SSE_INTRINSICS      // Defined if (and only if) the compiler supports Intel SSE intrinsics.
+#define SDL_SSE2_INTRINSICS     // Defined if (and only if) the compiler supports Intel SSE2 intrinsics.
+#define SDL_SSE3_INTRINSICS     // Defined if (and only if) the compiler supports Intel SSE3 intrinsics.
+#define SDL_SSE4_1_INTRINSICS   // Defined if (and only if) the compiler supports Intel SSE4.1 intrinsics.
+#define SDL_SSE4_2_INTRINSICS   // Defined if (and only if) the compiler supports Intel SSE4.2 intrinsics.
+#define SDL_AVX_INTRINSICS      // Defined if (and only if) the compiler supports Intel AVX intrinsics.
+#define SDL_AVX2_INTRINSICS     // Defined if (and only if) the compiler supports Intel AVX2 intrinsics.
+#define SDL_AVX512F_INTRINSICS  // Defined if (and only if) the compiler supports Intel AVX-512F intrinsics.
+
+// ██╗       ██████╗   ██████╗  █████╗  ██╗      ███████╗
+// ██║      ██╔═══██╗ ██╔════╝ ██╔══██╗ ██║      ██╔════╝
+// ██║      ██║   ██║ ██║      ███████║ ██║      █████╗
+// ██║      ██║   ██║ ██║      ██╔══██║ ██║      ██╔══╝
+// ███████╗ ╚██████╔╝ ╚██████╗ ██║  ██║ ███████╗ ███████╗
+// ╚══════╝  ╚═════╝   ╚═════╝ ╚═╝  ╚═╝ ╚══════╝ ╚══════╝
+
+SDL_Locale ** SDL_GetPreferredLocales(int *count);  // Report the user's preferred locale.
+
+//  ██████╗ ██╗   ██╗  ██████╗ ████████╗ ███████╗ ███╗   ███╗
+// ██╔════╝ ╚██╗ ██╔╝ ██╔════╝ ╚══██╔══╝ ██╔════╝ ████╗ ████║
+// ███████╗  ╚████╔╝  ███████╗    ██║    █████╗   ██╔████╔██║
+// ╚════██║   ╚██╔╝   ╚════██║    ██║    ██╔══╝   ██║╚██╔╝██║
+// ██████╔╝    ██║    ██████╔╝    ██║    ███████╗ ██║ ╚═╝ ██║
+// ╚═════╝     ╚═╝    ╚═════╝     ╚═╝    ╚══════╝ ╚═╝     ╚═╝
+
+void SDL_SetWindowsMessageHook(SDL_WindowsMessageHook callback, void *userdata);                                             // Set a callback for every Windows message, run before TranslateMessage().
+int SDL_GetDirect3D9AdapterIndex(SDL_DisplayID displayID);                                                                   // Get the D3D9 adapter index that matches the specified display.
+bool SDL_GetDXGIOutputInfo(SDL_DisplayID displayID, int *adapterIndex, int *outputIndex);                                    // Get the DXGI Adapter and Output indices for the specified display.
+void SDL_SetX11EventHook(SDL_X11EventHook callback, void *userdata);                                                         // Set a callback for every X11 event.
+bool SDL_SetLinuxThreadPriority(Sint64 threadID, int priority);                                                              // Sets the UNIX nice value for a thread.
+bool SDL_SetLinuxThreadPriorityAndPolicy(Sint64 threadID, int sdlPriority, int schedPolicy);                                 // Sets the priority (not nice level) and scheduling policy for a thread.
+bool SDL_SetiOSAnimationCallback(SDL_Window *window, int interval, SDL_iOSAnimationCallback callback, void *callbackParam);  // Use this function to set the animation callback on Apple iOS.
+void SDL_SetiOSEventPump(bool enabled);                                                                                      // Use this function to enable or disable the SDL event pump on Apple iOS.
+void * SDL_GetAndroidJNIEnv(void);                                                                                           // Get the Android Java Native Interface Environment of the current thread.
+void * SDL_GetAndroidActivity(void);                                                                                         // Retrieve the Java instance of the Android activity class.
+int SDL_GetAndroidSDKVersion(void);                                                                                          // Query Android API level of the current device.
+bool SDL_IsChromebook(void);                                                                                                 // Query if the application is running on a Chromebook.
+bool SDL_IsDeXMode(void);                                                                                                    // Query if the application is running on a Samsung DeX docking station.
+void SDL_SendAndroidBackButton(void);                                                                                        // Trigger the Android system back button behavior.
+const char * SDL_GetAndroidInternalStoragePath(void);                                                                        // Get the path used for internal storage for this Android application.
+Uint32 SDL_GetAndroidExternalStorageState(void);                                                                             // Get the current state of external storage for this Android application.
+const char * SDL_GetAndroidExternalStoragePath(void);                                                                        // Get the path used for external storage for this Android application.
+const char * SDL_GetAndroidCachePath(void);                                                                                  // Get the path used for caching data for this Android application.
+bool SDL_RequestAndroidPermission(const char *permission, SDL_RequestAndroidPermissionCallback cb, void *userdata);          // Request permissions at runtime, asynchronously.
+bool SDL_ShowAndroidToast(const char *message, int duration, int gravity, int xoffset, int yoffset);                         // Shows an Android toast notification.
+bool SDL_SendAndroidMessage(Uint32 command, int param);                                                                      // Send a user command to SDLActivity.
+bool SDL_IsTablet(void);                                                                                                     // Query if the current device is a tablet.
+bool SDL_IsTV(void);                                                                                                         // Query if the current device is a TV.
+SDL_Sandbox SDL_GetSandbox(void);                                                                                            // Get the application sandbox environment, if any.
+void SDL_OnApplicationWillTerminate(void);                                                                                   // Let iOS apps with external event handling report onApplicationWillTerminate.
+void SDL_OnApplicationDidReceiveMemoryWarning(void);                                                                         // Let iOS apps with external event handling report onApplicationDidReceiveMemoryWarning.
+void SDL_OnApplicationWillEnterBackground(void);                                                                             // Let iOS apps with external event handling report onApplicationWillResignActive.
+void SDL_OnApplicationDidEnterBackground(void);                                                                              // Let iOS apps with external event handling report onApplicationDidEnterBackground.
+void SDL_OnApplicationWillEnterForeground(void);                                                                             // Let iOS apps with external event handling report onApplicationWillEnterForeground.
+void SDL_OnApplicationDidEnterForeground(void);                                                                              // Let iOS apps with external event handling report onApplicationDidBecomeActive.
+void SDL_OnApplicationDidChangeStatusBarOrientation(void);                                                                   // Let iOS apps with external event handling report onApplicationDidChangeStatusBarOrientation.
+bool SDL_GetGDKTaskQueue(XTaskQueueHandle *outTaskQueue);                                                                    // Gets a reference to the global async task queue handle for GDK, initializing if needed.
+bool SDL_GetGDKDefaultUser(XUserHandle *outUserHandle);                                                                      // Gets a reference to the default user handle for GDK.
+
+// ███╗   ███╗ ██╗  ██████╗  ██████╗
+// ████╗ ████║ ██║ ██╔════╝ ██╔════╝
+// ██╔████╔██║ ██║ ███████╗ ██║
+// ██║╚██╔╝██║ ██║ ╚════██║ ██║
+// ██║ ╚═╝ ██║ ██║ ██████╔╝ ╚██████╗
+// ╚═╝     ╚═╝ ╚═╝ ╚═════╝   ╚═════╝
+
+bool SDL_OpenURL(const char *url);  // Open a URL/URI in the browser or other appropriate external application.
+
+//  ██████╗  ██╗   ██╗ ██╗ ██████╗
+// ██╔════╝  ██║   ██║ ██║ ██╔══██╗
+// ██║  ███╗ ██║   ██║ ██║ ██║  ██║
+// ██║   ██║ ██║   ██║ ██║ ██║  ██║
+// ╚██████╔╝ ╚██████╔╝ ██║ ██████╔╝
+//  ╚═════╝   ╚═════╝  ╚═╝ ╚═════╝
+
+void SDL_GUIDToString(SDL_GUID guid, char *pszGUID, int cbGUID);  // Get an ASCII string representation for a given SDL_GUID.
+SDL_GUID SDL_StringToGUID(const char *pchGUID);                   // Convert a GUID string into a SDL_GUID structure.
+
+// ███╗   ███╗  █████╗  ██╗ ███╗   ██╗
+// ████╗ ████║ ██╔══██╗ ██║ ████╗  ██║
+// ██╔████╔██║ ███████║ ██║ ██╔██╗ ██║
+// ██║╚██╔╝██║ ██╔══██║ ██║ ██║╚██╗██║
+// ██║ ╚═╝ ██║ ██║  ██║ ██║ ██║ ╚████║
+// ╚═╝     ╚═╝ ╚═╝  ╚═╝ ╚═╝ ╚═╝  ╚═══╝
+
+SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv);                                                                                                  // App-implemented initial entry point for SDL_MAIN_USE_CALLBACKS apps.
+SDL_AppResult SDL_AppIterate(void *appstate);                                                                                                                       // App-implemented iteration entry point for SDL_MAIN_USE_CALLBACKS apps.
+SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event);                                                                                                       // App-implemented event entry point for SDL_MAIN_USE_CALLBACKS apps.
+void SDL_AppQuit(void *appstate, SDL_AppResult result);                                                                                                             // App-implemented deinit entry point for SDL_MAIN_USE_CALLBACKS apps.
+int SDL_main(int argc, char **argv);                                                                                                                                // An app-supplied function for program entry.
+void SDL_SetMainReady(void);                                                                                                                                        // Circumvent failure of SDL_Init() when not using SDL_main() as an entry point.
+int SDL_RunApp(int argc, char **argv, SDL_main_func mainFunction, void *reserved);                                                                                  // Initializes and launches an SDL application, by doing platform-specific initialization before calling your mainFunction and cleanups after it returns, if that is needed for a specific platform, otherwise it just calls mainFunction.
+int SDL_EnterAppMainCallbacks(int argc, char **argv, SDL_AppInit_func appinit, SDL_AppIterate_func appiter, SDL_AppEvent_func appevent, SDL_AppQuit_func appquit);  // An entry point for SDL's use in SDL_MAIN_USE_CALLBACKS.
+bool SDL_RegisterApp(const char *name, Uint32 style, void *hInst);                                                                                                  // Register a win32 window class for SDL's use.
+void SDL_UnregisterApp(void);                                                                                                                                       // Deregister the win32 window class from an SDL_RegisterApp call.
+void SDL_GDKSuspendComplete(void);                                                                                                                                  // Callback from the application to let the suspend continue.
+

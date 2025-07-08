@@ -97,6 +97,7 @@ void Shutdown();
 // Event functions
 bool PostEvent(const Event& event);
 bool ReadEvent(Event& event);
+bool PollEvent(Event* event);
 bool WriteEvent(const Event& event);
 
 } // namespace IPC

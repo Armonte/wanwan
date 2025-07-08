@@ -1,0 +1,18 @@
+void SDL_SetLogPriorities(SDL_LogPriority priority);                                        // Set the priority of all log categories.
+void SDL_SetLogPriority(int category, SDL_LogPriority priority);                            // Set the priority of a particular log category.
+SDL_LogPriority SDL_GetLogPriority(int category);                                           // Get the priority of a particular log category.
+void SDL_ResetLogPriorities(void);                                                          // Reset all priorities to default.
+bool SDL_SetLogPriorityPrefix(SDL_LogPriority priority, const char *prefix);                // Set the text prepended to log messages of a given priority.
+void SDL_Log(const char *fmt, ... ...);                                                     // Log a message with SDL_LOG_CATEGORY_APPLICATION and SDL_LOG_PRIORITY_INFO.
+void SDL_LogTrace(int category, const char *fmt, ... ...);                                  // Log a message with SDL_LOG_PRIORITY_TRACE.
+void SDL_LogVerbose(int category, const char *fmt, ... ...);                                // Log a message with SDL_LOG_PRIORITY_VERBOSE.
+void SDL_LogDebug(int category, const char *fmt, ... ...);                                  // Log a message with SDL_LOG_PRIORITY_DEBUG.
+void SDL_LogInfo(int category, const char *fmt, ... ...);                                   // Log a message with SDL_LOG_PRIORITY_INFO.
+void SDL_LogWarn(int category, const char *fmt, ... ...);                                   // Log a message with SDL_LOG_PRIORITY_WARN.
+void SDL_LogError(int category, const char *fmt, ... ...);                                  // Log a message with SDL_LOG_PRIORITY_ERROR.
+void SDL_LogCritical(int category, const char *fmt, ... ...);                               // Log a message with SDL_LOG_PRIORITY_CRITICAL.
+void SDL_LogMessage(int category, SDL_LogPriority priority, const char *fmt, ... ...);      // Log a message with the specified category and priority.
+void SDL_LogMessageV(int category, SDL_LogPriority priority, const char *fmt, va_list ap);  // Log a message with the specified category and priority.
+SDL_LogOutputFunction SDL_GetDefaultLogOutputFunction(void);                                // Get the default log output function.
+void SDL_GetLogOutputFunction(SDL_LogOutputFunction *callback, void **userdata);            // Get the current log output function.
+void SDL_SetLogOutputFunction(SDL_LogOutputFunction callback, void *userdata);              // Replace the default log output function with one of your own.

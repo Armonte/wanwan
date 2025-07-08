@@ -332,15 +332,19 @@ public:
 
 protected:
     // Process management
-    bool SetupProcessForHooking();
+    bool SetupProcessForHooking(const std::string& dll_path);
     bool LoadGameExecutable(const std::filesystem::path& exe_path);
     void ProcessIPCEvents();
+    void HandleDLLEvent(const SDL_Event& event);
+    bool ExecuteRemoteFunction(HANDLE process, uintptr_t function_address);
 
 private:
     HANDLE process_handle_;
     DWORD process_id_;
     PROCESS_INFORMATION process_info_;
     std::unique_ptr<FM2K::GameState> game_state_;
+    std::string game_exe_path_;  // Store the game executable path
+    std::string game_dll_path_;  // Store the game's KGT/DLL path
 };
 
 // Network session management

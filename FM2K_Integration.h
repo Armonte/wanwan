@@ -264,6 +264,7 @@ public:
     // ----- Asynchronous game discovery -----
     SDL_Thread* discovery_thread_ = nullptr; // Worker thread handle
     bool discovery_in_progress_ = false;     // Flag so we don't launch multiple scans
+    SDL_Tray* tray_icon_ = nullptr;
 
     // Starts a background SDL thread that will run DiscoverGames() and notify the main
     // thread when done. Implemented in FM2K_RollbackClient.cpp.
@@ -271,6 +272,8 @@ public:
     
     // Scan progress accessors for UI
     void SetScanning(bool scanning);
+
+    void ShowWindow();
 
 private:
     bool InitializeSDL();
@@ -444,5 +447,9 @@ private:
     void ShowNetworkDiagnostics();
     bool ValidateNetworkConfig();
     
+    enum class UITheme { Dark, Light, System };
+    void SetTheme(UITheme theme);
+    UITheme current_theme_;
+
     bool scanning_games_ = false;  // True while background discovery is running
 }; 

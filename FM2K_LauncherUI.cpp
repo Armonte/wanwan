@@ -1,7 +1,9 @@
 #include "FM2K_Integration.h"
 #include <iostream>
 #include <algorithm>
-#include "vendored/imgui/imgui.h" 
+#include "vendored/imgui/imgui.h"
+#include "imgui_internal.h"
+
 // LauncherUI Implementation
 LauncherUI::LauncherUI() 
     : games_{}
@@ -12,6 +14,7 @@ LauncherUI::LauncherUI()
     , window_(nullptr)
     , scanning_games_(false)
     , games_root_path_("")
+    , current_theme_(UITheme::System)
 {
     // Initialize callbacks to nullptr
     on_game_selected = nullptr;
@@ -42,8 +45,8 @@ bool LauncherUI::Initialize(SDL_Window* window, SDL_Renderer* renderer) {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;         // Enable Docking
     
-    // Setup Dear ImGui style
-    ImGui::StyleColorsDark();
+    // Setup Dear ImGui style based on theme
+    SetTheme(current_theme_);
     
     // Setup scaling
     float main_scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
@@ -121,11 +124,39 @@ void LauncherUI::Render() {
     // Render UI elements
     RenderMenuBar();
     
+    // Use a dockspace to create a flexible layout
+    ImGuiID dockspace_id = ImGui::DockSpaceOverViewport();
+
+    // For simplicity, we'll use a single layout, but this could be expanded
+    // to allow user-customizable layouts.
+    static bool first_time = true;
+    if (first_time) {
+        first_time = false;
+        ImGui::DockBuilderRemoveNode(dockspace_id);
+        ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
+        ImGui::DockBuilderSetNodeSize(dockspace_id, ImGui::GetMainViewport()->Size);
+
+        ImGuiID dock_main_id = dockspace_id;
+        ImGuiID dock_left_id = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Left, 0.4f, nullptr, &dock_main_id);
+        ImGuiID dock_right_id = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Right, 0.6f, nullptr, &dock_main_id);
+        
+        ImGui::DockBuilderDockWindow("Game Selection", dock_left_id);
+        ImGui::DockBuilderDockWindow("Network Configuration", dock_right_id);
+        ImGui::DockBuilderDockWindow("Connection Status", dock_right_id);
+        ImGui::DockBuilderDockWindow("Rollback Diagnostics", dock_right_id);
+        ImGui::DockBuilderFinish(dockspace_id);
+    }
+    
+    // Always render the game selection panel.
+    RenderGameSelection();
+    
     switch (launcher_state_) {
         case LauncherState::GameSelection:
-            RenderGameSelection();
+            // In selection mode, the network config panel shows a placeholder.
+            RenderNetworkConfig();
             break;
         case LauncherState::Configuration:
+            // In config mode, the network panel is active.
             RenderNetworkConfig();
             break;
         case LauncherState::Connecting:
@@ -135,7 +166,7 @@ void LauncherUI::Render() {
             break;
         case LauncherState::Disconnected:
             RenderConnectionStatus();
-            RenderNetworkConfig();
+            RenderNetworkConfig(); // Show config again on disconnect
             break;
     }
 
@@ -144,6 +175,13 @@ void LauncherUI::Render() {
     ImGuiIO& io = ImGui::GetIO();
     SDL_SetRenderScale(renderer_, io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y);
     ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer_);
+
+    // Update and Render additional Platform Windows
+    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+    {
+        ImGui::UpdatePlatformWindows();
+        ImGui::RenderPlatformWindowsDefault();
+    }
 }
 
 void LauncherUI::RenderMenuBar() {
@@ -156,6 +194,19 @@ void LauncherUI::RenderMenuBar() {
             ImGui::Separator();
             if (ImGui::MenuItem("Exit")) {
                 if (on_exit) on_exit();
+            }
+            ImGui::EndMenu();
+        }
+        
+        if (ImGui::BeginMenu("View")) {
+            if (ImGui::MenuItem("Dark Theme", nullptr, current_theme_ == UITheme::Dark)) {
+                SetTheme(UITheme::Dark);
+            }
+            if (ImGui::MenuItem("Light Theme", nullptr, current_theme_ == UITheme::Light)) {
+                SetTheme(UITheme::Light);
+            }
+            if (ImGui::MenuItem("Use System Theme", nullptr, current_theme_ == UITheme::System)) {
+                SetTheme(UITheme::System);
             }
             ImGui::EndMenu();
         }
@@ -265,73 +316,79 @@ void LauncherUI::RenderGameSelection() {
 }
 
 void LauncherUI::RenderNetworkConfig() {
-    ImGui::SetNextWindowPos(ImVec2(100, 100), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(500, 400), ImGuiCond_FirstUseEver);
+    // We now dock this window, so remove fixed positioning
+    //ImGui::SetNextWindowPos(ImVec2(100, 100), ImGuiCond_FirstUseEver);
+    //ImGui::SetNextWindowSize(ImVec2(500, 400), ImGuiCond_FirstUseEver);
     
     if (ImGui::Begin("Network Configuration", nullptr, ImGuiWindowFlags_NoCollapse)) {
-        ImGui::Text("Configure network settings for online play:");
-        ImGui::Separator();
-        
-        // Local player selection
-        ImGui::Text("Local Player:");
-        ImGui::RadioButton("Player 1", &network_config_.local_player, 0);
-        ImGui::SameLine();
-        ImGui::RadioButton("Player 2", &network_config_.local_player, 1);
-        
-        ImGui::Separator();
-        
-        // Network settings
-        ImGui::Text("Network Settings:");
-        
-        // Local port
-        ImGui::InputInt("Local Port", &network_config_.local_port);
-        if (network_config_.local_port < 1024) network_config_.local_port = 1024;
-        if (network_config_.local_port > 65535) network_config_.local_port = 65535;
-        
-        // Remote address
-        static char remote_addr_buffer[256];
-        SDL_strlcpy(remote_addr_buffer, network_config_.remote_address.c_str(), sizeof(remote_addr_buffer));
-        
-        if (ImGui::InputText("Remote Address", remote_addr_buffer, sizeof(remote_addr_buffer))) {
-            network_config_.remote_address = remote_addr_buffer;
-        }
-        
-        // Input delay
-        ImGui::SliderInt("Input Delay (frames)", &network_config_.input_delay, 0, 10);
-        ImGui::SameLine();
-        ImGui::TextDisabled("(?)");
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Higher values reduce rollbacks but increase input lag");
-        }
-        
-        ImGui::Separator();
-        
-        // Spectator settings
-        ImGui::Text("Spectator Settings:");
-        ImGui::Checkbox("Enable Spectators", &network_config_.enable_spectators);
-        
-        if (network_config_.enable_spectators) {
-            ImGui::SliderInt("Max Spectators", &network_config_.max_spectators, 1, 16);
-        }
-        
-        ImGui::Separator();
-        
-        // Validation and start button
-        bool config_valid = ValidateNetworkConfig();
-        
-        if (!config_valid) {
-            ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "Invalid configuration");
-        }
-        
-        if (ImGui::Button("Start Network Session", ImVec2(-1, 0))) {
-            if (config_valid && on_network_start) {
-                on_network_start(network_config_);
+        // Only show if a game has been selected
+        if (launcher_state_ == LauncherState::GameSelection) {
+            ImGui::TextWrapped("Select a game from the list to configure network settings.");
+        } else {
+            ImGui::Text("Configure network settings for online play:");
+            ImGui::Separator();
+            
+            // Local player selection
+            ImGui::Text("Local Player:");
+            ImGui::RadioButton("Player 1", &network_config_.local_player, 0);
+            ImGui::SameLine();
+            ImGui::RadioButton("Player 2", &network_config_.local_player, 1);
+            
+            ImGui::Separator();
+            
+            // Network settings
+            ImGui::Text("Network Settings:");
+            
+            // Local port
+            ImGui::InputInt("Local Port", &network_config_.local_port);
+            if (network_config_.local_port < 1024) network_config_.local_port = 1024;
+            if (network_config_.local_port > 65535) network_config_.local_port = 65535;
+            
+            // Remote address
+            static char remote_addr_buffer[256];
+            SDL_strlcpy(remote_addr_buffer, network_config_.remote_address.c_str(), sizeof(remote_addr_buffer));
+            
+            if (ImGui::InputText("Remote Address", remote_addr_buffer, sizeof(remote_addr_buffer))) {
+                network_config_.remote_address = remote_addr_buffer;
             }
-        }
-        
-        if (launcher_state_ != LauncherState::GameSelection) {
-            if (ImGui::Button("Back to Game Selection", ImVec2(-1, 0))) {
-                // This would be handled by the launcher state management
+            
+            // Input delay
+            ImGui::SliderInt("Input Delay (frames)", &network_config_.input_delay, 0, 10);
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Higher values reduce rollbacks but increase input lag");
+            }
+            
+            ImGui::Separator();
+            
+            // Spectator settings
+            ImGui::Text("Spectator Settings:");
+            ImGui::Checkbox("Enable Spectators", &network_config_.enable_spectators);
+            
+            if (network_config_.enable_spectators) {
+                ImGui::SliderInt("Max Spectators", &network_config_.max_spectators, 1, 16);
+            }
+            
+            ImGui::Separator();
+            
+            // Validation and start button
+            bool config_valid = ValidateNetworkConfig();
+            
+            if (!config_valid) {
+                ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "Invalid configuration");
+            }
+            
+            if (ImGui::Button("Start Network Session", ImVec2(-1, 0))) {
+                if (config_valid && on_network_start) {
+                    on_network_start(network_config_);
+                }
+            }
+            
+            if (launcher_state_ != LauncherState::GameSelection) {
+                if (ImGui::Button("Back to Game Selection", ImVec2(-1, 0))) {
+                    // This would be handled by the launcher state management
+                }
             }
         }
     }
@@ -339,8 +396,9 @@ void LauncherUI::RenderNetworkConfig() {
 }
 
 void LauncherUI::RenderConnectionStatus() {
-    ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(400, 200), ImGuiCond_FirstUseEver);
+    // We now dock this window, so remove fixed positioning
+    //ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_FirstUseEver);
+    //ImGui::SetNextWindowSize(ImVec2(400, 200), ImGuiCond_FirstUseEver);
     
     if (ImGui::Begin("Connection Status", nullptr, ImGuiWindowFlags_NoCollapse)) {
         if (network_stats_.connected) {
@@ -354,7 +412,7 @@ void LauncherUI::RenderConnectionStatus() {
             ImGui::Text("Rollbacks/sec: %u", network_stats_.rollbacks_per_second);
             
         } else {
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "? Connecting...");
+            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Åc Connecting...");
             
             // Simple connecting animation
             static float progress = 0.0f;
@@ -391,6 +449,7 @@ void LauncherUI::ShowGameValidationStatus(const FM2K::FM2KGameInfo& game) {
 }
 
 void LauncherUI::ShowNetworkDiagnostics() {
+    // We now dock this window, so remove fixed positioning
     ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 350, 50), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(300, 250), ImGuiCond_FirstUseEver);
     
@@ -491,4 +550,25 @@ void LauncherUI::SetScanning(bool scanning) {
 
 void LauncherUI::SetGamesRootPath(const std::string& path) {
     games_root_path_ = path;
+}
+
+// NOTE: This is the correctly scoped implementation for the SetTheme method
+void LauncherUI::SetTheme(UITheme theme) {
+    current_theme_ = theme;
+    
+    UITheme theme_to_apply = theme;
+    if (theme_to_apply == UITheme::System) {
+        // Detect system theme
+        if (SDL_GetSystemTheme() == SDL_SYSTEM_THEME_DARK) {
+            theme_to_apply = UITheme::Dark;
+        } else {
+            theme_to_apply = UITheme::Light;
+        }
+    }
+    
+    if (theme_to_apply == UITheme::Dark) {
+        ImGui::StyleColorsDark();
+    } else {
+        ImGui::StyleColorsLight();
+    }
 } 

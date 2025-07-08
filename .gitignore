@@ -4,3 +4,6 @@ vendored/GekkoNet/
 vendored/minhook/
 vendored/SDL/
 /build
+/.venv
+/build_linux
+/sdlwiki

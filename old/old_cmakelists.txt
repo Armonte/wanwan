@@ -1,0 +1,570 @@
+cmake_minimum_required(VERSION 3.20)
+
+project(mlfix LANGUAGES C CXX ASM)
+
+include(FetchContent)
+
+#SDL 3
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+
+# SDL3 FetchContent - Download from GitHub (proper setup)
+option(DOWNLOAD_SDL3_FROM_GITHUB "Download SDL3 from GitHub instead of using vendored" OFF)
+
+if(DOWNLOAD_SDL3_FROM_GITHUB)
+    message(STATUS "Downloading SDL3 from GitHub...")
+    
+    # Configure SDL3 build options
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
+    set(SDL_SHARED OFF CACHE BOOL "Build SDL3 as shared library" FORCE)
+    set(SDL_STATIC ON CACHE BOOL "Build SDL3 as static library" FORCE)
+    
+    # Use FetchContent for SDL3
+    FetchContent_Declare(
+        SDL3
+        GIT_REPOSITORY "https://github.com/libsdl-org/SDL.git"
+        GIT_TAG "main"
+        EXCLUDE_FROM_ALL
+    )
+    
+    # Configure SDL3_image build options
+    set(SDL3IMAGE_INSTALL OFF CACHE BOOL "Install SDL3_image" FORCE)
+    set(SDL3IMAGE_BUILD_SHARED_LIBS OFF CACHE BOOL "Build SDL3_image shared" FORCE)
+    set(SDL3IMAGE_AVIF OFF CACHE BOOL "Disable AVIF support" FORCE)
+    
+    # Use FetchContent for SDL_image
+    FetchContent_Declare(
+        SDL3_image
+        GIT_REPOSITORY "https://github.com/libsdl-org/SDL_image.git"
+        GIT_TAG "main"
+        EXCLUDE_FROM_ALL
+    )
+    
+    # Make SDL3 available
+    FetchContent_MakeAvailable(SDL3)
+    
+    # Make SDL_image available after SDL3
+    FetchContent_MakeAvailable(SDL3_image)
+    
+    message(STATUS "SDL3 successfully configured from GitHub")
+    
+else()
+    # Fallback to vendored sources (original approach)
+    message(STATUS "Using vendored SDL3 sources...")
+    
+    # Use FetchContent for SDL3
+    FetchContent_Declare(
+        SDL3
+        SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendored/SDL
+    )
+    
+    # Configure SDL3_image to build static libraries to match SDL3
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
+    
+    # Use FetchContent for SDL_image
+    FetchContent_Declare(
+        SDL3_image
+        SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendored/SDL_image
+    )
+    
+    # Make SDL3 available
+    FetchContent_MakeAvailable(SDL3)
+    
+    # Make SDL_image available after SDL3
+    FetchContent_MakeAvailable(SDL3_image)
+endif()
+
+# Add these lines to ensure proper DLL extension on Windows
+set(CMAKE_SHARED_LIBRARY_SUFFIX ".dll")
+set(CMAKE_SHARED_LIBRARY_PREFIX "")  # This removes "lib" prefix
+
+# Find required Windows libraries
+set(GDI32_LIBRARY "gdi32")
+set(DWMAPI_LIBRARY "dwmapi")
+set(USER32_LIBRARY "user32")
+set(IMM32_LIBRARY "imm32")
+
+set(CMAKE_SHARED_LIBRARY_PREFIX "")
+include_directories(SYSTEM third_party/cereal/include)
+include_directories(SYSTEM third_party/gtest/include)
+include_directories(SYSTEM third_party/include)
+# REMOVED: include_directories(SYSTEM third_party/include/imgui)  # Duplicate - causes multiple definition errors
+include_directories(SYSTEM third_party/include/minhook)
+include_directories(SYSTEM third_party/GekkoLib/include)
+include_directories(SYSTEM third_party)
+
+# SDL3 compile options (re-enabled)
+if(USE_GCC OR USE_INTELCC OR (USE_CLANG AND NOT MSVC_CLANG))
+    sdl_compile_options(NO_EXPORT PRIVATE "$<BUILD_INTERFACE:-idirafter${SDL3_SOURCE_DIR}/src/video/khronos>")
+else()
+    sdl_include_directories(NO_EXPORT SYSTEM PRIVATE "$<BUILD_INTERFACE:${SDL3_SOURCE_DIR}/src/video/khronos>")
+endif()
+
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}) 
+link_directories(${CMAKE_CURRENT_SOURCE_DIR}/third_party/lib)
+
+# Add practice mode v2 subdirectory (clean implementation)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/mlfixtest/practice_mode_v2)
+
+# Add practice mode v2 include directories
+include_directories(${PRACTICE_MODE_V2_INCLUDE_DIR})
+
+# Build GekkoNet from source instead of using pre-built library
+# Configure GekkoNet build options
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build GekkoNet as static library" FORCE)
+set(BUILD_DOCS OFF CACHE BOOL "Disable GekkoNet documentation" FORCE)
+set(NO_ASIO_BUILD OFF CACHE BOOL "Include ASIO in GekkoNet build" FORCE)
+
+# Add GekkoNet as subdirectory to build from source
+add_subdirectory(third_party/GekkoLib EXCLUDE_FROM_ALL)
+
+set(MINHOOK_LIB ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lib/libMinHook.a)
+
+if(NOT EXISTS ${MINHOOK_LIB})
+    message(FATAL_ERROR "MinHook library not found at ${MINHOOK_LIB}")
+endif()
+
+# Caster library stuff, includes all sorts of ugly compatibility shit
+add_definitions(-DMBAA_EXE="MBAA.exe")
+add_definitions(-DRELAY_LIST="relay_list.txt")
+add_definitions(-DMB_NAMED_PIPE="\\\\.\\pipe\\cccaster_pipe")
+add_definitions(-DMB_LAUNCHER="mb_launcher.exe")
+add_definitions(-DMB_HOOK_DLL="mb_hook.dll")
+add_definitions(-DMB_BINARY="mb_binary.exe")
+file(GLOB caster_lib_SRC CONFIGURE_DEPENDS "caster_lib/*.hpp" "caster_lib/*.cpp")
+# Only include SDL3 ImGui backend files, not GLFW/Win32/etc
+set(IMGUI_SRC 
+    "third_party/include/imgui/imgui.cpp"
+    "third_party/include/imgui/imgui_draw.cpp"
+    "third_party/include/imgui/imgui_tables.cpp"
+    "third_party/include/imgui/imgui_widgets.cpp"
+    "third_party/include/imgui/imgui_demo.cpp"
+    "third_party/include/imgui/imgui_impl_sdl3.cpp"           # SDL3 platform backend
+    "third_party/include/imgui/imgui_impl_sdlrenderer3.cpp"   # SDL3 renderer backend
+)
+file(GLOB ml2TOOL_lib_SRC CONFIGURE_DEPENDS "third_party/include/minhook/*.h" "third_party/include/imgui/*.h")
+set(LAUNCHER_SOURCES launcher.cpp)
+
+if(WIN32)
+    # Try to find windres, make it optional if not found
+    find_program(RC_COMPILER NAMES i686-w64-mingw32-windres windres)
+    if(RC_COMPILER)
+        set(RC_FILE "${CMAKE_CURRENT_SOURCE_DIR}/launcher.rc")
+        set(RES_FILE "${CMAKE_CURRENT_BINARY_DIR}/launcher.res")
+        add_custom_command(
+            OUTPUT ${RES_FILE}
+            COMMAND ${RC_COMPILER} ${RC_FILE} -O coff -o ${RES_FILE}
+            DEPENDS ${RC_FILE}
+        )
+        set(LAUNCHER_SOURCES ${LAUNCHER_SOURCES} ${RES_FILE})
+        message(STATUS "Found resource compiler: ${RC_COMPILER}")
+    else()
+        message(WARNING "Resource compiler not found - building without resources")
+    endif()
+endif()
+
+add_executable(launcher ${LAUNCHER_SOURCES})
+target_link_libraries(launcher PRIVATE comdlg32)
+set_target_properties(launcher 
+    PROPERTIES 
+    WIN32_EXECUTABLE TRUE
+    LINK_FLAGS "-static-libgcc -static-libstdc++ -static -lpthread")
+
+# ============================================================================
+# EXISTING MODULAR SDL3 DIRECTDRAW SYSTEM (WORKING)
+# ============================================================================
+
+# SDL3 DirectDraw compatibility - modular implementation
+set(SDL3_MODULAR_SOURCES
+    hooks/impl/sdl3_context.hpp
+    hooks/impl/sdl3_context.cpp
+    hooks/impl/surface_management.hpp
+    hooks/impl/surface_management.cpp
+    # hooks/impl/palette_system.hpp - REMOVED: conflicts with unified palette system
+    # hooks/impl/palette_system.cpp - REMOVED: conflicts with unified palette system
+    hooks/impl/palette_debug.hpp
+    hooks/impl/palette_debug.cpp
+    hooks/impl/palette_debugger.hpp
+    hooks/impl/palette_debugger.cpp
+    hooks/impl/sdl3_directdraw_compat_new.cpp
+)
+
+# Core hook system files
+set(CORE_HOOK_SOURCES
+    hooks/hooks.hpp 
+    hooks/impl/hooks.cpp 
+    hooks/directdraw_compat.h 
+)
+
+# ============================================================================
+# ROLLBACK/SAVESTATE SYSTEM
+# ============================================================================
+
+set(ROLLBACK_SOURCES
+    savestate.cpp
+    savestate.h
+    savestate_manager.cpp
+    savestate_manager.hpp
+    network_manager.hpp
+    utilities.hpp
+    netplay.hpp
+    game_addresses.h
+    address_definitions.h
+    addFrmSpriteToRenderBuffer.cpp
+)
+
+# ============================================================================
+# MAIN HOOK LIBRARY (UPDATED TO USE MODULAR SDL3 SYSTEM)
+# ============================================================================
+
+add_library(hook SHARED 
+    # ========================================================================
+    # MODULAR SDL3 DIRECTDRAW SYSTEM (New working implementation)
+    # ========================================================================
+    ${SDL3_MODULAR_SOURCES}
+    ${CORE_HOOK_SOURCES}
+    
+    # Practice Mode V2 (Clean Implementation)
+    ${PRACTICE_MODE_V2_SOURCES}
+    
+    # ========================================================================
+    # ASSEMBLY FILES
+    # ========================================================================
+    fullscreen_crash_fix.s 
+    maingameloop_hook_wrapper.s
+    display_font_sprite_hook_wrapper.s
+    display_font_sprite_original.s
+    gamespeed_monitor_wrapper.s
+    skip_double_instance_check.s
+    
+    # ========================================================================
+    # MODULAR HOOK SYSTEM (Completed Migration)
+    # ========================================================================
+    
+    # Core modular hook system
+    hooks/core/hook_manager.cpp
+    hooks/hook_system_manager.cpp
+    
+    # Game logic hooks (modular)
+    hooks/game_logic/sprite_hooks.cpp
+    hooks/game_logic/audio_hooks.cpp
+    hooks/game_logic/resource_manager.cpp
+    hooks/game_logic/timing_hooks.cpp
+
+    # Practice Mode V2 (Clean Implementation)
+    # Includes working hooks, VSE analysis, and clean behaviors
+    ${PRACTICE_MODE_V2_SOURCES}
+    
+    # Game Logic Hooks
+    hooks/game_logic/state_serialization.cpp
+    hooks/game_logic/rollback_state.hpp
+    hooks/game_logic/argentum_game_states.cpp
+    hooks/game_logic/argentum_game_states.hpp
+    hooks/game_logic/character_select_state.c
+    hooks/game_logic/character_select_state.h
+    hooks/game_logic/argentum_character_select.c
+    hooks/game_logic/argentum_character_select.h
+    hooks/game_logic/argentum_splash.c
+    hooks/game_logic/argentum_splash.h
+    hooks/game_logic/argentum_title.c
+    hooks/game_logic/argentum_title.h
+    hooks/game_logic/character_select_ui.c
+    hooks/game_logic/character_select_ui.h
+    hooks/game_logic/online_setup_impl.cpp
+    
+    # Graphics hooks (modular)
+    hooks/graphics/palette_manager.cpp
+    hooks/graphics/palette_hooks.cpp
+    hooks/graphics/rendering_manager.cpp
+    hooks/graphics/menu_palette_bridge.cpp
+    hooks/graphics/gdi_hooks.cpp
+    hooks/graphics/gdi_hooks.hpp
+    hooks/graphics/graphics_context.c
+    hooks/graphics/graphics_context.h
+    hooks/graphics/ml2_font.c
+    hooks/graphics/ml2_font.h
+    hooks/graphics/sprite.c
+    hooks/graphics/sprite.h
+    
+    # Main hook implementation (legacy, being replaced by modular system)
+    hook.cpp 
+    
+    # Input system (modular)
+    simple_input_hooks.cpp
+    simple_input_hooks.h
+    input_serializer.cpp 
+    hooks/input/input_hooks.cpp
+    hooks/input/input_conversion.cpp
+    hooks/input/gamepad_manager.cpp
+    hooks/input/keyboard_manager.cpp
+    hooks/input/input_config.cpp
+    hooks/input/rollback_input_bridge.cpp
+    hooks/input/rollback_input_bridge.hpp
+    
+    # New modular input system core
+    input/core/input_manager.cpp
+    input/core/input_types.hpp
+    input/devices/gamepad/sdl3_gamepad_manager.cpp
+    input/devices/keyboard/sdl3_keyboard_manager.cpp
+    input_system_facade.cpp
+    input_system_facade.hpp
+    
+    # Network and recording (modular)
+    hooks/network/netplay_hooks.cpp
+    hooks/network/recording_system.cpp
+    hooks/network/gekko_integration.cpp
+    hooks/network/gekko_game_integration.cpp
+    hooks/network/rollback_session.cpp
+    hooks/network/rollback_session.hpp
+    netplay.cpp 
+    recorder.cpp 
+    replayer.cpp 
+    
+    # Core utilities
+    cry_and_die.cpp 
+    ${caster_lib_SRC} 
+    ${ml2TOOL_lib_SRC}
+    third_party/md5.c 
+    third_party/miniz.c 
+    
+    # Framework components
+    argentum.hpp 
+    ctx/ctx.hpp 
+    ctx/impl/ctx.cpp 
+    engine/engine.hpp 
+    engine/impl/engine.cpp 
+    utils/utils.hpp 
+    utils/impl/utils.cpp 
+    
+    # Menu system
+    menu/impl/menu_refactored.cpp 
+    menu/menu.hpp
+    menu/impl/character_info.h
+    menu/impl/character_info.cpp
+    menu/impl/vse.cpp
+    menu/impl/vse.h
+    menu/impl/box.cpp
+    menu/impl/box.h
+    menu/impl/box_system.cpp
+    menu/impl/box_system.h
+    menu/impl/performance.cpp
+    menu/impl/performance.h
+    menu/impl/palette_system.cpp
+    menu/impl/palette_system.h
+    menu/impl/sprite_system.cpp
+    menu/impl/sprite_system.h
+    menu/impl/ui_utils.cpp
+    menu/impl/ui_utils.h
+    menu/impl/controller_config.cpp
+    menu/impl/controller_config.h
+    menu/impl/online_system.cpp
+    menu/impl/online_system.h
+    
+    # UI system
+    ${IMGUI_SRC}
+    
+    # Debug and diagnostics
+    debug_utils.h
+    debug_utils.cpp
+    display_font_sprite_hook_impl.cpp
+    display_font_sprite_hook_impl.h
+    
+    # Game loop and timing
+    maingameloop_hook.cpp
+    gamespeed_monitor.cpp
+    memory_mapper.cpp
+    memory_mapper.h
+    battleloop.cpp
+    
+    # InitGame replacement system (traditional approach - hooks into original game flow)
+    initgame_replacement.cpp
+    hooks/initgame_hook.cpp
+    hooks/initgame_hook.hpp
+    
+    # Decomp modular replacement system
+    decomp/r_common.hpp
+    decomp/r_menu.hpp
+    decomp/r_initgame.cpp
+    decomp/r_initmenus.cpp
+    decomp/r_modeselect.cpp
+    
+    # Game state management
+    game_addresses.h
+    address_definitions.h
+    game_memory.h
+    game_memory.cpp
+    game_variables.h
+    game_variables.cpp
+    
+    # Rollback system
+    ${ROLLBACK_SOURCES}
+    
+    # MinHook integration
+    third_party/include/minhook/minhook.h
+)
+
+# ============================================================================
+# BUILD VALIDATION AND STATUS
+# ============================================================================
+
+# Check that modular SDL3 files exist
+foreach(source_file ${SDL3_MODULAR_SOURCES})
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${source_file}")
+        message(WARNING "SDL3 modular source file not found: ${source_file}")
+    else()
+        message(STATUS "? Found SDL3 modular component: ${source_file}")
+    endif()
+endforeach()
+
+# Print configuration summary
+message(STATUS "=== MLFIX BUILD CONFIGURATION ===")
+message(STATUS "? INPUT SYSTEM MIGRATION: COMPLETE! ?")
+message(STATUS "Giant SDL3 Input System (1,716 lines): ELIMINATED")
+message(STATUS "Modular Input System: ACTIVE")
+message(STATUS "SDL3 Modular DirectDraw System: ENABLED")
+message(STATUS "SDL3 modular components: ${CMAKE_CURRENT_LIST_LENGTH}")
+message(STATUS "Legacy monolithic hook.cpp: ENABLED (transitional)")
+message(STATUS "Menu system: ENABLED")
+message(STATUS "Rollback system: ENABLED")
+message(STATUS "? GEKKONET: Building from source with proper Windows dependencies (ws2_32, wsock32, mswsock, winpthread)")
+if(GENERATE_DEBUG_INFO)
+    message(STATUS "? DEBUG INFO: ENABLED (DWARF format - compatible with gdb, objdump)")
+    message(STATUS "   NOTE: MinGW generates DWARF debug info, not PDB files")
+    message(STATUS "   For PDB files, use MSVC compiler instead of MinGW")
+else()
+    message(STATUS "? DEBUG INFO: DISABLED")
+endif()
+message(STATUS "==================================")
+
+# ============================================================================
+# OPTIONAL: FUTURE MODULAR HOOK SYSTEM PREPARATION
+# ============================================================================
+
+# Add conditional compilation flag for future modular system
+option(ENABLE_FUTURE_MODULAR_HOOKS "Enable future modular hook system (when implemented)" OFF)
+
+if(ENABLE_FUTURE_MODULAR_HOOKS)
+    message(STATUS "WARNING: Future modular hook system not yet implemented")
+    target_compile_definitions(hook PRIVATE ENABLE_FUTURE_MODULAR=1)
+else()
+    message(STATUS "Using current working system with SDL3 modular components")
+    target_compile_definitions(hook PRIVATE USE_CURRENT_SYSTEM=1)
+endif()
+
+set_target_properties(hook
+    PROPERTIES
+    LINK_FLAGS "-static-libgcc -static-libstdc++ -static -lpthread -lws2_32 -lmswsock -Wl,--allow-multiple-definition")
+
+# Add threading support for GekkoNet
+target_compile_definitions(hook PRIVATE 
+    _WIN32_WINNT=0x0601  # Windows 7+
+    WINVER=0x0601
+    BOOST_THREAD_USE_LIB
+)
+
+# ============================================================================
+# DEBUG INFORMATION GENERATION
+# ============================================================================
+
+# Options for debug information
+option(GENERATE_DEBUG_INFO "Generate debug information for hook.dll" ON)
+option(SEPARATE_DEBUG_INFO "Extract debug info to separate .debug file" ON)
+
+if(GENERATE_DEBUG_INFO)
+    message(STATUS "? DEBUG INFO: Enabling debug information generation for hook.dll")
+    
+    # Add debug flags for compilation
+    target_compile_options(hook PRIVATE 
+        -g3                    # Maximum debug info
+        -gdwarf-4              # Use DWARF-4 format (compatible with more tools)
+        -fno-omit-frame-pointer # Keep frame pointers for better stack traces
+        -O0                    # Disable optimization for better debugging
+    )
+    
+    # Add debug flags for linking - keep debug info in the DLL
+    target_link_options(hook PRIVATE
+        -g3                    # Keep debug info during linking
+    )
+    
+    if(SEPARATE_DEBUG_INFO)
+        # Find objcopy tool (different names on different systems)
+        find_program(OBJCOPY_TOOL 
+            NAMES objcopy x86_64-w64-mingw32-objcopy i686-w64-mingw32-objcopy mingw32-objcopy
+            DOC "Path to objcopy tool for debug info extraction"
+        )
+        
+        if(OBJCOPY_TOOL)
+            message(STATUS "   - Found objcopy tool: ${OBJCOPY_TOOL}")
+            # Generate separate debug file (smaller hook.dll, separate .debug file)
+            add_custom_command(TARGET hook POST_BUILD
+                COMMAND ${OBJCOPY_TOOL} --only-keep-debug $<TARGET_FILE:hook> $<TARGET_FILE:hook>.debug
+                COMMAND ${OBJCOPY_TOOL} --strip-debug $<TARGET_FILE:hook>
+                COMMAND ${OBJCOPY_TOOL} --add-gnu-debuglink=$<TARGET_FILE:hook>.debug $<TARGET_FILE:hook>
+                COMMENT "Extracting debug information to hook.dll.debug"
+                VERBATIM
+            )
+        else()
+            message(WARNING "objcopy tool not found - debug info will remain embedded in hook.dll")
+            message(WARNING "Install binutils or ensure objcopy is in PATH for separate debug files")
+            set(SEPARATE_DEBUG_INFO OFF CACHE BOOL "objcopy not found" FORCE)
+        endif()
+        message(STATUS "   - Debug info will be extracted to hook.dll.debug")
+        message(STATUS "   - hook.dll will be stripped (smaller size)")
+    else()
+        message(STATUS "   - Debug info will be embedded in hook.dll")
+        message(STATUS "   - Use -DSEPARATE_DEBUG_INFO=ON to extract to separate file")
+    endif()
+    
+    message(STATUS "   - Compatible with: gdb, objdump, addr2line")
+    message(STATUS "   - Usage: gdb hook.dll (or attach to process with gdb -p PID)")
+    message(STATUS "   - Usage: objdump -W hook.dll (to view debug info)")
+    
+else()
+    message(STATUS "? DEBUG INFO: Disabled")
+    message(STATUS "   - Use -DGENERATE_DEBUG_INFO=ON to enable")
+    message(STATUS "   - Use -DSEPARATE_DEBUG_INFO=ON for separate .debug file")
+endif()
+
+target_link_libraries(hook PRIVATE 
+    # GekkoNet must be linked first, then its dependencies
+    GekkoNet
+    
+    # Windows networking libraries required by GekkoNet
+    ws2_32 
+    wsock32
+    mswsock
+    
+    # Threading libraries for MinGW (order matters)
+    winpthread
+    pthread
+    
+    # Standard C++ library
+    stdc++
+    
+    # Core Windows libraries
+    ole32 
+    winmm 
+    dinput8 
+    d3d9
+    xinput
+    ${GDI32_LIBRARY}
+    ${DWMAPI_LIBRARY}
+    ${USER32_LIBRARY}
+    ${IMM32_LIBRARY}
+    kernel32
+    advapi32
+    
+    # Our static libraries
+    ${MINHOOK_LIB}
+    
+    # SDL3 libraries (now properly configured)
+    SDL3_image::SDL3_image
+    SDL3::SDL3
+)
+
+# Ensure MinHook headers are found
+target_include_directories(hook PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/path/to/minhook/include)
+
+# Enable stdcall fixup
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--enable-stdcall-fixup")
+set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--enable-stdcall-fixup")

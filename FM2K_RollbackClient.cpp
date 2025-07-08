@@ -910,6 +910,21 @@ bool FM2KLauncher::LaunchGame(const FM2K::FM2KGameInfo& game) {
     
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Game launched successfully: %s", game.exe_path.c_str());
     
+    // DEBUG: Auto-start a local network session for testing
+    NetworkConfig debug_config;
+    debug_config.local_player = 0;
+    debug_config.local_port = 7000;
+    debug_config.remote_address = "127.0.0.1";
+    debug_config.input_delay = 2;
+    debug_config.max_spectators = 0;
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Auto-starting network session for testing...");
+    if (StartNetworkSession(debug_config)) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Network session started successfully");
+    } else {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Failed to start network session");
+    }
+    
     // Wait a moment and check if process is still running
     SDL_Delay(100);
     if (!game_instance_->IsRunning()) {

@@ -20,44 +20,6 @@
 #include <fstream>
 #include <algorithm>
 
-// -----------------------------------------------------------------------------
-// System Tray Callbacks
-// -----------------------------------------------------------------------------
-static void TrayShowCallback(void* userdata, SDL_TrayEntry* entry) {
-    (void)entry;
-    FM2KLauncher* launcher = static_cast<FM2KLauncher*>(userdata);
-    if (launcher) {
-        launcher->ShowWindow();
-    }
-}
-
-static void TrayQuitCallback(void* userdata, SDL_TrayEntry* entry) {
-    (void)entry;
-    (void)userdata;
-    SDL_Event event;
-    event.type = SDL_EVENT_QUIT;
-    SDL_PushEvent(&event);
-}
-
-// Handle tray icon mouse events
-static void HandleTrayMouseEvent(SDL_Event* event, FM2KLauncher* launcher) {
-    if (!launcher || !launcher->tray_icon_) {
-        return;
-    }
-
-    if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
-        if (event->button.button == SDL_BUTTON_LEFT) {
-            // Left click - directly show launcher
-            launcher->ShowWindow();
-        } else if (event->button.button == SDL_BUTTON_RIGHT) {
-            // Right click - show context menu
-            SDL_TrayMenu* menu = SDL_GetTrayMenu(launcher->tray_icon_);
-            if (menu) {
-                SDL_UpdateTrays();
-            }
-        }
-    }
-}
 
 // -----------------------------------------------------------------------------
 // Async game discovery support
@@ -488,14 +450,12 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
         return SDL_APP_FAILURE;
     }
     
-    // Handle tray icon mouse events
-    HandleTrayMouseEvent(event, launcher);
-    
     // Let launcher handle the event
     launcher->HandleEvent(event);
     
     // Check for quit
     if (event->type == SDL_EVENT_QUIT) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SDL_EVENT_QUIT: Quitting application");
         return SDL_APP_SUCCESS;
     }
     
@@ -634,16 +594,12 @@ void FM2KLauncher::HandleEvent(SDL_Event* event) {
     // Let ImGui handle events first
     ImGui_ImplSDL3_ProcessEvent(event);
 
-    // Handle window events first
+    // Handle window events - just log them, don't interfere
     if (event->type == SDL_EVENT_WINDOW_MINIMIZED) {
-        // When minimized, hide the window and ensure tray icon is visible
-        SDL_HideWindow(window_);
-        if (tray_icon_) {
-            SDL_UpdateTrays(); // Ensure tray is visible
-        }
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SDL_EVENT_WINDOW_MINIMIZED: Window minimized normally");
     } else if (event->type == SDL_EVENT_WINDOW_RESTORED || 
                event->type == SDL_EVENT_WINDOW_SHOWN) {
-        SDL_RaiseWindow(window_);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SDL_EVENT_WINDOW_RESTORED/SHOWN: Window restored");
     } else if (event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
         if (event->window.windowID == SDL_GetWindowID(window_)) {
             ImGuiIO& io = ImGui::GetIO();
@@ -807,43 +763,7 @@ bool FM2KLauncher::InitializeSDL() {
         SDL_SetWindowIcon(window_, icon);
     }
 
-    // Create system tray icon - do this before destroying the icon surface
-    if (icon) {
-        tray_icon_ = SDL_CreateTray(icon, "FM2K Rollback Launcher");
-        if (tray_icon_) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Created tray icon successfully");
-            SDL_TrayMenu* menu = SDL_CreateTrayMenu(tray_icon_);
-            if (menu) {
-                // Create menu entries - these will only show on right click
-                SDL_TrayEntry* show_entry = SDL_InsertTrayEntryAt(menu, 0, "Show Launcher", SDL_TRAYENTRY_BUTTON);
-                SDL_TrayEntry* separator = SDL_InsertTrayEntryAt(menu, 1, "---", SDL_TRAYENTRY_BUTTON);
-                SDL_TrayEntry* quit_entry = SDL_InsertTrayEntryAt(menu, 2, "Quit", SDL_TRAYENTRY_BUTTON);
-
-                // Set callbacks and enable entries
-                if (show_entry) {
-                    SDL_SetTrayEntryCallback(show_entry, TrayShowCallback, this);
-                    SDL_SetTrayEntryEnabled(show_entry, true);
-                }
-                if (separator) {
-                    SDL_SetTrayEntryEnabled(separator, false);
-                }
-                if (quit_entry) {
-                    SDL_SetTrayEntryCallback(quit_entry, TrayQuitCallback, this);
-                    SDL_SetTrayEntryEnabled(quit_entry, true);
-                }
-
-                // Initial update to ensure tray is visible
-                SDL_UpdateTrays();
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Tray menu created and initialized");
-            } else {
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create tray menu: %s", SDL_GetError());
-            }
-        } else {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Could not create tray icon: %s", SDL_GetError());
-        }
-    } else {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "No icon available for tray");
-    }
+    // No tray icon - just a normal window application
 
     // Now we can destroy the surface
     if (icon) {
@@ -868,11 +788,7 @@ void FM2KLauncher::Shutdown() {
         game_instance_.reset();
     }
     
-    // Destroy tray icon
-    if (tray_icon_) {
-        SDL_DestroyTray(tray_icon_);
-        tray_icon_ = nullptr;
-    }
+    // No tray icon to destroy
     
     // Ensure UI cleanup happens before ImGui shutdown
     if (ui_) {
@@ -1129,18 +1045,6 @@ void FM2KLauncher::SetState(LauncherState state) {
     }
 }
 
-void FM2KLauncher::ShowWindow() {
-    if (window_) {
-        SDL_ShowWindow(window_);
-        SDL_RaiseWindow(window_);
-        SDL_RestoreWindow(window_); // Ensure window is not minimized
-        
-        // Force a redraw
-        if (renderer_) {
-            SDL_RenderPresent(renderer_);
-        }
-    }
-}
 
 void FM2KLauncher::SetGamesRootPath(const std::string& path) {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Set games root path: %s", path.c_str());

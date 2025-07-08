@@ -20,15 +20,17 @@ static RandFn  original_rand_func      = nullptr;
 // We may need the process handle later (e.g., to read RNG state).
 static HANDLE g_proc = nullptr;
 
+// Global frame counter shared between all hooks
+static SDL_AtomicInt g_frame_counter;
+static bool g_frame_counter_initialized = false;
+
 // Frame counter implementation (from implementation guide)
 uint32_t GetFrameNumber() {
-    static SDL_AtomicInt frame_counter;
-    static bool initialized = false;
-    if (!initialized) {
-        SDL_SetAtomicInt(&frame_counter, 0);
-        initialized = true;
+    if (!g_frame_counter_initialized) {
+        SDL_SetAtomicInt(&g_frame_counter, 0);
+        g_frame_counter_initialized = true;
     }
-    return SDL_GetAtomicInt(&frame_counter);
+    return SDL_GetAtomicInt(&g_frame_counter);
 }
 
 // State save condition (from implementation guide)
@@ -65,15 +67,13 @@ bool VisualStateChanged() {
 // -----------------------------------------------------------------------------
 static void __stdcall Hook_ProcessGameInputs()
 {
-    // Increment frame counter atomically
-    static SDL_AtomicInt frame_counter;
-    static bool initialized = false;
-    if (!initialized) {
-        SDL_SetAtomicInt(&frame_counter, 0);
-        initialized = true;
+    // Increment global frame counter atomically
+    if (!g_frame_counter_initialized) {
+        SDL_SetAtomicInt(&g_frame_counter, 0);
+        g_frame_counter_initialized = true;
     }
-    SDL_AddAtomicInt(&frame_counter, 1);
-    uint32_t current_frame = SDL_GetAtomicInt(&frame_counter);
+    SDL_AddAtomicInt(&g_frame_counter, 1);
+    uint32_t current_frame = SDL_GetAtomicInt(&g_frame_counter);
     
     // Log first few calls for verification
     static int hit_count = 0;
@@ -118,11 +118,16 @@ static void __stdcall Hook_UpdateGameState()
     // Check if we should save state after game state update
     uint32_t current_frame = GetFrameNumber();
     if (ShouldSaveState()) {
+        // Calculate a simple checksum based on game state
+        uint32_t checksum = current_frame ^ 0xDEADBEEF; // Simple checksum for now
+        
         // Send IPC event that state should be saved
         FM2K::IPC::Event event;
         event.type = FM2K::IPC::EventType::STATE_SAVED;
         event.frame_number = current_frame;
         event.timestamp_ms = SDL_GetTicks();
+        event.data.state.checksum = checksum;
+        event.data.state.frame_number = current_frame; // Redundant but matches structure
         
         if (!FM2K::IPC::PostEvent(event)) {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, 

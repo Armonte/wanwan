@@ -327,6 +327,9 @@ public:
     // Input injection
     void InjectInputs(uint32_t p1_input, uint32_t p2_input);
     
+    // IPC event processing
+    void ProcessIPCEvents();
+    
     // Event handlers
     void OnFrameAdvanced(const FM2K::IPC::Event& event);
     void OnStateSaved(const FM2K::IPC::Event& event);
@@ -339,7 +342,7 @@ protected:
     // Process management
     bool SetupProcessForHooking(const std::string& dll_path);
     bool LoadGameExecutable(const std::filesystem::path& exe_path);
-    void ProcessIPCEvents();
+    void HandleIPCEvent(const FM2K::IPC::Event& event);
     void HandleDLLEvent(const SDL_Event& event);
     bool ExecuteRemoteFunction(HANDLE process, uintptr_t function_address);
 

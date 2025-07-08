@@ -633,10 +633,17 @@ void FM2KLauncher::HandleEvent(SDL_Event* event) {
 }
 
 void FM2KLauncher::Update(float delta_time SDL_UNUSED) {
-    // Check game process status
+    // Remove update spam
+    
+    // Check game process status and process IPC events
     if (game_instance_ && game_instance_->IsRunning()) {
         static uint32_t last_check_time = 0;
         uint32_t current_time = SDL_GetTicks();
+        
+        // Remove IPC process spam
+        
+        // Process IPC events every frame to prevent buffer overflow
+        game_instance_->ProcessIPCEvents();
         
         // Check process status every 100ms
         if (current_time - last_check_time > 100) {

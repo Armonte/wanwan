@@ -43,6 +43,7 @@ FM2KGameInstance::FM2KGameInstance()
 
 FM2KGameInstance::~FM2KGameInstance() {
     Terminate();
+    FM2K::IPC::Shutdown();
 }
 
 bool FM2KGameInstance::Initialize() {
@@ -57,6 +58,9 @@ bool FM2KGameInstance::Initialize() {
 
     // Set up logging
     SDL_SetLogPriority(SDL_LOG_CATEGORY_APPLICATION, SDL_LOG_PRIORITY_INFO);
+    
+    // Note: IPC initialization moved to after game launch to avoid race condition
+    
     return true;
 }
 
@@ -147,6 +151,20 @@ bool FM2KGameInstance::Launch(const FM2K::FM2KGameInfo& game) {
     ResumeThread(process_info_.hThread);
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Game process launched successfully");
+    
+    // Wait a moment for the hook DLL to initialize and create IPC shared memory
+    SDL_Delay(500); // 500ms should be enough
+    
+    // Now initialize IPC connection to read events from the injected DLL
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launcher: Connecting to hook DLL IPC...");
+    if (!FM2K::IPC::Init()) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+            "LAUNCHER: Failed to connect to IPC system - hook may not be initialized");
+        // Don't fail the launch, just log the error
+    } else {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launcher: Successfully connected to IPC");
+    }
+    
     return true;
 }
 
@@ -299,6 +317,30 @@ bool FM2KGameInstance::LoadGameExecutable(const std::filesystem::path& exe_path)
 }
 
 void FM2KGameInstance::ProcessIPCEvents() {
+    // First process IPC events from the hook DLL
+    FM2K::IPC::Event ipc_event;
+    int events_processed = 0;
+    while (FM2K::IPC::PollEvent(&ipc_event)) {
+        HandleIPCEvent(ipc_event);
+        events_processed++;
+        
+        // Prevent infinite loop in case of issues
+        if (events_processed > 1000) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, 
+                "Too many IPC events in single frame - breaking");
+            break;
+        }
+    }
+    
+    // Reduced logging - only log significant processing
+    static int total_processed = 0;
+    total_processed += events_processed;
+    if (total_processed % 1000 == 0 && events_processed > 0) {
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
+            "Processed %d total IPC events", total_processed);
+    }
+    
+    // Then process SDL events
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         // Process custom events from the injected DLL
@@ -363,6 +405,35 @@ void FM2KGameInstance::HandleDLLEvent(const SDL_Event& event) {
     }
 }
 
+void FM2KGameInstance::HandleIPCEvent(const FM2K::IPC::Event& event) {
+    switch (event.type) {
+        case FM2K::IPC::EventType::FRAME_ADVANCED:
+            OnFrameAdvanced(event);
+            break;
+            
+        case FM2K::IPC::EventType::STATE_SAVED:
+            OnStateSaved(event);
+            break;
+            
+        case FM2K::IPC::EventType::STATE_LOADED:
+            OnStateLoaded(event);
+            break;
+            
+        case FM2K::IPC::EventType::VISUAL_STATE_CHANGED:
+            OnVisualStateChanged(event);
+            break;
+            
+        case FM2K::IPC::EventType::HOOK_ERROR:
+            OnHookError(event);
+            break;
+            
+        default:
+            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
+                "Unknown IPC event type: %d", static_cast<int>(event.type));
+            break;
+    }
+}
+
 // Helper function to execute a function in the game process
 bool FM2KGameInstance::ExecuteRemoteFunction(HANDLE process, uintptr_t function_address) {
     HANDLE thread = CreateRemoteThread(process, 
@@ -388,19 +459,19 @@ bool FM2KGameInstance::ExecuteRemoteFunction(HANDLE process, uintptr_t function_
 
 void FM2KGameInstance::OnFrameAdvanced(const FM2K::IPC::Event& event) {
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-        "Frame advanced: %u", event.data.state.frame_number);
+        "Frame advanced: %u", event.frame_number);
 }
 
 void FM2KGameInstance::OnStateSaved(const FM2K::IPC::Event& event) {
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
         "State saved: frame %u, checksum %08x",
-        event.data.state.frame_number, event.data.state.checksum);
+        event.frame_number, event.data.state.checksum);
 }
 
 void FM2KGameInstance::OnStateLoaded(const FM2K::IPC::Event& event) {
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
         "State loaded: frame %u, checksum %08x",
-        event.data.state.frame_number, event.data.state.checksum);
+        event.frame_number, event.data.state.checksum);
 }
 
 void FM2KGameInstance::OnHitTablesInit(const FM2K::IPC::Event& event) {

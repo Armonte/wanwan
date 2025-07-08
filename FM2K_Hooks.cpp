@@ -118,8 +118,8 @@ static void __stdcall Hook_UpdateGameState()
     // Check if we should save state after game state update
     uint32_t current_frame = GetFrameNumber();
     if (ShouldSaveState()) {
-        // Calculate a simple checksum based on game state
-        uint32_t checksum = current_frame ^ 0xDEADBEEF; // Simple checksum for now
+        // Calculate real state checksum using state manager
+        uint32_t checksum = State::CalculateStateChecksum();
         
         // Send IPC event that state should be saved
         FM2K::IPC::Event event;

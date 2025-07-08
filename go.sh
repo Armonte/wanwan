@@ -8,6 +8,6 @@ ninja || {
     exit 1
 }
 
-cp FM2K_RollbackLauncher.exe FM2KHook.dll /mnt/c/games/verify
+cp FM2K_RollbackLauncher.exe FM2KHook.dll /mnt/c/games/
 
 echo "Build completed successfully!"

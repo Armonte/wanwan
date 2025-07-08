@@ -945,6 +945,14 @@ bool FM2KLauncher::StartNetworkSession(const NetworkConfig& config) {
     session_config.input_delay = static_cast<uint8_t>(config.input_delay);
     session_config.max_spectators = static_cast<uint8_t>(config.max_spectators);
     
+    // Connect network session to game instance for state management
+    if (game_instance_) {
+        network_session_->SetGameInstance(game_instance_.get());
+        game_instance_->SetNetworkSession(network_session_.get());
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+            "NetworkSession and GameInstance connected bidirectionally");
+    }
+    
     if (!network_session_->Start(session_config)) {
         std::cerr << "Failed to start network session\n";
         network_session_.reset();

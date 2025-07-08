@@ -39,7 +39,8 @@ std::wstring UTF8ToWide(const std::string& str) {
 FM2KGameInstance::FM2KGameInstance()
     : process_handle_(nullptr)
     , process_id_(0)
-    , game_state_(std::make_unique<FM2K::GameState>()) {
+    , game_state_(std::make_unique<FM2K::GameState>())
+    , network_session_(nullptr) {
     memset(&process_info_, 0, sizeof(process_info_));
 }
 
@@ -425,6 +426,10 @@ void FM2KGameInstance::HandleIPCEvent(const FM2K::IPC::Event& event) {
             OnVisualStateChanged(event);
             break;
             
+        case FM2K::IPC::EventType::INPUT_CAPTURED:
+            OnInputCaptured(event);
+            break;
+            
         case FM2K::IPC::EventType::HOOK_ERROR:
             OnHookError(event);
             break;
@@ -474,6 +479,25 @@ void FM2KGameInstance::OnStateLoaded(const FM2K::IPC::Event& event) {
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
         "State loaded: frame %u, checksum %08x",
         event.frame_number, event.data.state.checksum);
+}
+
+void FM2KGameInstance::OnInputCaptured(const FM2K::IPC::Event& event) {
+    // Forward captured inputs to NetworkSession for GekkoNet processing
+    if (network_session_) {
+        // For now, just forward P1 input (local player)
+        // Convert from 16-bit FM2K format to 32-bit for NetworkSession
+        uint32_t p1_input_32 = static_cast<uint32_t>(event.data.input.p1_input);
+        
+        network_session_->AddLocalInput(p1_input_32);
+        
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
+            "Input forwarded to NetworkSession: P1=0x%04x, P2=0x%04x, frame=%u",
+            event.data.input.p1_input, event.data.input.p2_input, event.frame_number);
+    } else {
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
+            "Input captured but no NetworkSession connected: P1=0x%04x, P2=0x%04x",
+            event.data.input.p1_input, event.data.input.p2_input);
+    }
 }
 
 void FM2KGameInstance::OnHitTablesInit(const FM2K::IPC::Event& event) {

@@ -334,9 +334,7 @@ public:
     NetworkStats GetStats() const;
     
     // Game instance binding
-    void SetGameInstance(FM2KGameInstance* instance) {
-        game_instance_ = instance;
-    }
+    void SetGameInstance(FM2KGameInstance* instance);
     
 private:
     // GekkoNet bridge (replaces direct GekkoNet usage)

@@ -235,6 +235,17 @@ bool NetworkSession::IsActive() const {
     return gekko_bridge_ && gekko_bridge_->IsConnected();
 }
 
+void NetworkSession::SetGameInstance(FM2KGameInstance* instance) {
+    game_instance_ = instance;
+    
+    // Forward to GekkoNet bridge for state management
+    if (gekko_bridge_) {
+        gekko_bridge_->SetGameInstance(instance);
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
+            "Game instance connected to NetworkSession and GekkoNet bridge");
+    }
+}
+
 NetworkSession::NetworkStats NetworkSession::GetStats() const {
     NetworkStats stats;
     

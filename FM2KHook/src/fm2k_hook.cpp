@@ -46,7 +46,43 @@ static int __cdecl Hook_ProcessGameInputs() {
             "[Hook] original_process_inputs is NULL!");
     }
 
-    // Notify launcher that frame has advanced using SDL3 events
+    // Capture player inputs and send via IPC
+    uint16_t p1_input = 0;
+    uint16_t p2_input = 0;
+    
+    // Read current player inputs from FM2K memory
+    HANDLE current_process = GetCurrentProcess();
+    SIZE_T bytes_read;
+    
+    if (ReadProcessMemory(current_process, reinterpret_cast<LPCVOID>(0x470100), 
+                         &p1_input, sizeof(uint16_t), &bytes_read) && bytes_read == sizeof(uint16_t)) {
+        // P1 input read successfully
+    } else {
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Failed to read P1 input");
+    }
+    
+    if (ReadProcessMemory(current_process, reinterpret_cast<LPCVOID>(0x470300), 
+                         &p2_input, sizeof(uint16_t), &bytes_read) && bytes_read == sizeof(uint16_t)) {
+        // P2 input read successfully  
+    } else {
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Failed to read P2 input");
+    }
+    
+    // Send input event via IPC
+    IPC::Event input_event;
+    input_event.type = IPC::EventType::INPUT_CAPTURED;
+    input_event.frame_number = current_frame;
+    input_event.timestamp_ms = SDL_GetTicks();
+    input_event.data.input.p1_input = p1_input;
+    input_event.data.input.p2_input = p2_input;
+    input_event.data.input.frame_number = current_frame;
+    
+    if (!IPC::PostEvent(input_event)) {
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
+            "Failed to post input event for frame %u", current_frame);
+    }
+    
+    // Notify launcher that frame has advanced using SDL3 events  
     SDL_Event sdl_event;
     SDL_zero(sdl_event);
     sdl_event.type = SDL_EVENT_USER;

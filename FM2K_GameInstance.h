@@ -8,6 +8,8 @@
 #include "FM2KHook/src/ipc.h"
 
 // Forward declarations
+class NetworkSession;
+
 namespace FM2K {
     struct FM2KGameInfo;
     struct GameState;
@@ -69,7 +71,13 @@ public:
     void OnStateLoaded(const FM2K::IPC::Event& event);
     void OnHitTablesInit(const FM2K::IPC::Event& event);
     void OnVisualStateChanged(const FM2K::IPC::Event& event);
+    void OnInputCaptured(const FM2K::IPC::Event& event);
     void OnHookError(const FM2K::IPC::Event& event);
+    
+    // Network session for input forwarding
+    void SetNetworkSession(NetworkSession* session) {
+        network_session_ = session;
+    }
 
 protected:
     // Process management
@@ -86,4 +94,5 @@ private:
     std::unique_ptr<FM2K::GameState> game_state_;
     std::string game_exe_path_;  // Store the game executable path
     std::string game_dll_path_;  // Store the game's KGT/DLL path
+    NetworkSession* network_session_;  // For input forwarding to GekkoNet
 };

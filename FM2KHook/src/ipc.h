@@ -14,6 +14,7 @@ enum class EventType : uint8_t {
     STATE_LOADED = 3,
     HIT_TABLES_INIT = 4,
     VISUAL_STATE_CHANGED = 5,
+    INPUT_CAPTURED = 6,   // New: Player input captured
     HOOK_ERROR = 255      // Changed from ERROR to HOOK_ERROR to avoid Windows macro conflict
 };
 
@@ -36,11 +37,19 @@ struct ErrorData {
     char message[256];
 };
 
+// Input data structure for player inputs
+struct InputData {
+    uint16_t p1_input;    // Player 1 input (11-bit FM2K format)
+    uint16_t p2_input;    // Player 2 input (11-bit FM2K format)
+    uint32_t frame_number; // Frame when input was captured
+};
+
 // Union of all possible event data types
 union EventData {
     StateData state;
     VisualState visual;
     ErrorData error;
+    InputData input;
 };
 
 // Event structure

@@ -1,8 +1,10 @@
+#include "FM2K_GameInstance.h"
 #include "FM2K_Integration.h"
 #include "FM2K_DLLInjector.h"
 #include "FM2KHook/src/ipc.h"
 #include "FM2KHook/src/state_manager.h"
 #include <SDL3/SDL.h>
+#include <algorithm>
 #include <filesystem>
 #include <locale>
 #include <codecvt>
@@ -458,14 +460,14 @@ bool FM2KGameInstance::ExecuteRemoteFunction(HANDLE process, uintptr_t function_
 }
 
 void FM2KGameInstance::OnFrameAdvanced(const FM2K::IPC::Event& event) {
-    //SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-    //    "Frame advanced: %u", event.frame_number);
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
+        "Frame advanced: %u", event.frame_number);
 }
 
 void FM2KGameInstance::OnStateSaved(const FM2K::IPC::Event& event) {
-    //SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-    //    "State saved: frame %u, checksum %08x",
-    //    event.frame_number, event.data.state.checksum);
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
+        "State saved: frame %u, checksum %08x",
+        event.frame_number, event.data.state.checksum);
 }
 
 void FM2KGameInstance::OnStateLoaded(const FM2K::IPC::Event& event) {

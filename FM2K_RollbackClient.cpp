@@ -6,6 +6,7 @@
 #include "imgui_impl_sdlrenderer3.h"
 #include "vendored/GekkoNet/GekkoLib/include/gekkonet.h"
 #include "MinHook.h"
+#include "FM2K_GameInstance.h"
 #include "FM2K_Integration.h"
 
 #include <chrono>

@@ -58,20 +58,10 @@ void Shutdown() {
 }
 
 bool PostEvent(const Event& event) {
-    if (!event_buffer) {
+    if (!event_buffer || event_count >= MAX_EVENTS) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-            "IPC buffer not initialized");
+            "IPC buffer full or not initialized");
         return false;
-    }
-
-    // If buffer is full, drop oldest event (circular buffer behavior)
-    if (event_count >= MAX_EVENTS) {
-        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-            "IPC buffer full, dropping oldest event");
-        // Shift all events left by one
-        memmove(&event_buffer[0], &event_buffer[1],
-            (MAX_EVENTS - 1) * sizeof(Event));
-        event_count = MAX_EVENTS - 1;
     }
 
     // Add event to buffer

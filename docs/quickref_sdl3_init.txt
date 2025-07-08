@@ -1,0 +1,10 @@
+bool SDL_Init(SDL_InitFlags flags);                                                               // Initialize the SDL library.
+bool SDL_InitSubSystem(SDL_InitFlags flags);                                                      // Compatibility function to initialize the SDL library.
+void SDL_QuitSubSystem(SDL_InitFlags flags);                                                      // Shut down specific SDL subsystems.
+SDL_InitFlags SDL_WasInit(SDL_InitFlags flags);                                                   // Get a mask of the specified subsystems which are currently initialized.
+void SDL_Quit(void);                                                                              // Clean up all initialized subsystems.
+bool SDL_IsMainThread(void);                                                                      // Return whether this is the main thread.
+bool SDL_RunOnMainThread(SDL_MainThreadCallback callback, void *userdata, bool wait_complete);    // Call a function on the main thread during event processing.
+bool SDL_SetAppMetadata(const char *appname, const char *appversion, const char *appidentifier);  // Specify basic metadata about your app.
+bool SDL_SetAppMetadataProperty(const char *name, const char *value);                             // Specify metadata about your app through a set of properties.
+const char * SDL_GetAppMetadataProperty(const char *name);      

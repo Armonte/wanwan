@@ -266,13 +266,12 @@ uint32_t GetFrameNumber() {
 }
 
 bool ShouldSaveState() {
-    // Only save state every 10 frames for now to avoid buffer overflow
+    // For now, save state every frame for testing
     // Later, optimize based on:
     // - Input changes
     // - Critical game state changes
     // - Network prediction window
-    uint32_t frame = GetFrameNumber();
-    return (frame % 10) == 0;
+    return true;
 }
 
 bool VisualStateChanged() {

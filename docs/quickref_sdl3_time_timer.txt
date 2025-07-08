@@ -1,0 +1,21 @@
+
+bool SDL_GetDateTimeLocalePreferences(SDL_DateFormat *dateFormat, SDL_TimeFormat *timeFormat);  // Gets the current preferred date and time format for the system locale.
+bool SDL_GetCurrentTime(SDL_Time *ticks);                                                       // Gets the current value of the system realtime clock in nanoseconds since Jan 1, 1970 in Universal Coordinated Time (UTC).
+bool SDL_TimeToDateTime(SDL_Time ticks, SDL_DateTime *dt, bool localTime);                      // Converts an SDL_Time in nanoseconds since the epoch to a calendar time in the SDL_DateTime format.
+bool SDL_DateTimeToTime(const SDL_DateTime *dt, SDL_Time *ticks);                               // Converts a calendar time to an SDL_Time in nanoseconds since the epoch.
+void SDL_TimeToWindows(SDL_Time ticks, Uint32 *dwLowDateTime, Uint32 *dwHighDateTime);          // Converts an SDL time into a Windows FILETIME (100-nanosecond intervals since January 1, 1601).
+SDL_Time SDL_TimeFromWindows(Uint32 dwLowDateTime, Uint32 dwHighDateTime);                      // Converts a Windows FILETIME (100-nanosecond intervals since January 1, 1601) to an SDL time.
+int SDL_GetDaysInMonth(int year, int month);                                                    // Get the number of days in a month for a given year.
+int SDL_GetDayOfYear(int year, int month, int day);                                             // Get the day of year for a calendar date.
+int SDL_GetDayOfWeek(int year, int month, int day);                                             // Get the day of week for a calendar date.
+
+Uint64 SDL_GetTicks(void);                                                                  // Get the number of milliseconds that have elapsed since the SDL library initialization.
+Uint64 SDL_GetTicksNS(void);                                                                // Get the number of nanoseconds since SDL library initialization.
+Uint64 SDL_GetPerformanceCounter(void);                                                     // Get the current value of the high resolution counter.
+Uint64 SDL_GetPerformanceFrequency(void);                                                   // Get the count per second of the high resolution counter.
+void SDL_Delay(Uint32 ms);                                                                  // Wait a specified number of milliseconds before returning.
+void SDL_DelayNS(Uint64 ns);                                                                // Wait a specified number of nanoseconds before returning.
+void SDL_DelayPrecise(Uint64 ns);                                                           // Wait a specified number of nanoseconds before returning.
+SDL_TimerID SDL_AddTimer(Uint32 interval, SDL_TimerCallback callback, void *userdata);      // Call a callback function at a future time.
+SDL_TimerID SDL_AddTimerNS(Uint64 interval, SDL_NSTimerCallback callback, void *userdata);  // Call a callback function at a future time.
+bool SDL_RemoveTimer(SDL_TimerID id);  

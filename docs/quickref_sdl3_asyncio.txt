@@ -1,0 +1,11 @@
+SDL_AsyncIO * SDL_AsyncIOFromFile(const char *file, const char *mode);                                                        // Use this function to create a new SDL_AsyncIO object for reading from and/or writing to a named file.
+Sint64 SDL_GetAsyncIOSize(SDL_AsyncIO *asyncio);                                                                              // Use this function to get the size of the data stream in an SDL_AsyncIO.
+bool SDL_ReadAsyncIO(SDL_AsyncIO *asyncio, void *ptr, Uint64 offset, Uint64 size, SDL_AsyncIOQueue *queue, void *userdata);   // Start an async read.
+bool SDL_WriteAsyncIO(SDL_AsyncIO *asyncio, void *ptr, Uint64 offset, Uint64 size, SDL_AsyncIOQueue *queue, void *userdata);  // Start an async write.
+bool SDL_CloseAsyncIO(SDL_AsyncIO *asyncio, bool flush, SDL_AsyncIOQueue *queue, void *userdata);                             // Close and free any allocated resources for an async I/O object.
+SDL_AsyncIOQueue * SDL_CreateAsyncIOQueue(void);                                                                              // Create a task queue for tracking multiple I/O operations.
+void SDL_DestroyAsyncIOQueue(SDL_AsyncIOQueue *queue);                                                                        // Destroy a previously-created async I/O task queue.
+bool SDL_GetAsyncIOResult(SDL_AsyncIOQueue *queue, SDL_AsyncIOOutcome *outcome);                                              // Query an async I/O task queue for completed tasks.
+bool SDL_WaitAsyncIOResult(SDL_AsyncIOQueue *queue, SDL_AsyncIOOutcome *outcome, Sint32 timeoutMS);                           // Block until an async I/O task queue has a completed task.
+void SDL_SignalAsyncIOQueue(SDL_AsyncIOQueue *queue);                                                                         // Wake up any threads that are blocking in SDL_WaitAsyncIOResult().
+bool SDL_LoadFileAsync(const char *file, SDL_AsyncIOQueue *queue, void *userdata);                                            // Load all the data from a file path, asynchronously.

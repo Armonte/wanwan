@@ -1,0 +1,5 @@
+bool SDL_SetError(const char *fmt, ... ...);      // Set the SDL error message for the current thread.
+bool SDL_SetErrorV(const char *fmt, va_list ap);  // Set the SDL error message for the current thread.
+bool SDL_OutOfMemory(void);                       // Set an error indicating that memory allocation failed.
+const char * SDL_GetError(void);                  // Retrieve a message about the last error that occurred on the current thread.
+bool SDL_ClearError(void);                        // Clear any previous error message for this thread.

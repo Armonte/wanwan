@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./go.sh)",
+      "mcp__github_com_mrexodia_ida-pro-mcp__get_function_by_address",
+      "mcp__github_com_mrexodia_ida-pro-mcp__get_global_variable_value_at_address",
+      "mcp__github_com_mrexodia_ida-pro-mcp__data_read_dword",
+      "mcp__github_com_mrexodia_ida-pro-mcp__disassemble_function",
+      "mcp__github_com_mrexodia_ida-pro-mcp__get_xrefs_to",
+      "Bash(rg:*)"
+    ],
+    "deny": []
+  }
+}

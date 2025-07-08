@@ -142,7 +142,7 @@ for (int i = 0; i < count; i++) {
               „   ? 1024 Objects ~ 382 bytes        „ 
               „   ? Exact memory addresses          „ 
               „   ? Deterministic state save/load   „ 
-              „¤„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„£
+              „¤„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„Ÿ„£
 ```
 
 **Technology Stack:**
@@ -370,17 +370,17 @@ void render_rollback_diagnostics() {
     // Network statistics
     GekkoNetworkStats stats;
     gekko_network_stats(session, 0, &stats);
-    ImGui::Text("Ping: %dms (%.1f avg)", stats.last_ping, stats.avg_ping);
-    ImGui::Text("Jitter: %.1fms", stats.jitter);
+    ImGui::Text("Ping: %ums (%.1f avg)", stats.last_ping, stats.avg_ping);
+    ImGui::Text("Jitter: %ums", stats.jitter);
     
     // Rollback information
     float frames_ahead = gekko_frames_ahead(session);
     ImGui::Text("Frames ahead: %.1f", frames_ahead);
-    ImGui::Text("Rollbacks/sec: %d", rollback_counter);
+    ImGui::Text("Rollbacks/sec: %u", rollback_counter);
     
     // FM2K-specific information
     ImGui::Text("FM2K State size: %zu KB", sizeof(FM2K_GameState) / 1024);
-    ImGui::Text("Object count: %d/1023", active_object_count);
+    ImGui::Text("Object count: %u/1023", active_object_count);
     
     // Visual rollback indicator
     if (ImGui::CollapsingHeader("Frame Timeline")) {

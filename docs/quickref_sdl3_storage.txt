@@ -1,0 +1,17 @@
+SDL_Storage * SDL_OpenTitleStorage(const char *override, SDL_PropertiesID props);                                                     // Opens up a read-only container for the application's filesystem.
+SDL_Storage * SDL_OpenUserStorage(const char *org, const char *app, SDL_PropertiesID props);                                          // Opens up a container for a user's unique read/write filesystem.
+SDL_Storage * SDL_OpenFileStorage(const char *path);                                                                                  // Opens up a container for local filesystem storage.
+SDL_Storage * SDL_OpenStorage(const SDL_StorageInterface *iface, void *userdata);                                                     // Opens up a container using a client-provided storage interface.
+bool SDL_CloseStorage(SDL_Storage *storage);                                                                                          // Closes and frees a storage container.
+bool SDL_StorageReady(SDL_Storage *storage);                                                                                          // Checks if the storage container is ready to use.
+bool SDL_GetStorageFileSize(SDL_Storage *storage, const char *path, Uint64 *length);                                                  // Query the size of a file within a storage container.
+bool SDL_ReadStorageFile(SDL_Storage *storage, const char *path, void *destination, Uint64 length);                                   // Synchronously read a file from a storage container into a client-provided buffer.
+bool SDL_WriteStorageFile(SDL_Storage *storage, const char *path, const void *source, Uint64 length);                                 // Synchronously write a file from client memory into a storage container.
+bool SDL_CreateStorageDirectory(SDL_Storage *storage, const char *path);                                                              // Create a directory in a writable storage container.
+bool SDL_EnumerateStorageDirectory(SDL_Storage *storage, const char *path, SDL_EnumerateDirectoryCallback callback, void *userdata);  // Enumerate a directory in a storage container through a callback function.
+bool SDL_RemoveStoragePath(SDL_Storage *storage, const char *path);                                                                   // Remove a file or an empty directory in a writable storage container.
+bool SDL_RenameStoragePath(SDL_Storage *storage, const char *oldpath, const char *newpath);                                           // Rename a file or directory in a writable storage container.
+bool SDL_CopyStorageFile(SDL_Storage *storage, const char *oldpath, const char *newpath);                                             // Copy a file in a writable storage container.
+bool SDL_GetStoragePathInfo(SDL_Storage *storage, const char *path, SDL_PathInfo *info);                                              // Get information about a filesystem path in a storage container.
+Uint64 SDL_GetStorageSpaceRemaining(SDL_Storage *storage);                                                                            // Queries the remaining space in a storage container.
+char ** SDL_GlobStorageDirectory(SDL_Storage *storage, const char *path, const char *pattern, SDL_GlobFlags flags, int *count);       // Enumerate a directory tree, filtered by pattern, and return a list.

@@ -1254,18 +1254,18 @@ We have successfully analyzed and renamed **14 major functions** that represent 
 ### Core Systems Hierarchy
 ```
 FM2K Engine Architecture:
-„¥„Ÿ„Ÿ Window Management (main_window_proc)
-„¥„Ÿ„Ÿ Title Screen (title_screen_manager)  
-„¥„Ÿ„Ÿ Game Loop
-„    „¥„Ÿ„Ÿ Input Processing (character_input_processor)
-„    „¥„Ÿ„Ÿ AI Processing (ai_input_processor)
-„    „¥„Ÿ„Ÿ Physics & Collision (physics_collision_system)
-„    „¥„Ÿ„Ÿ Hit Detection (hit_detection_system)
-„    „¥„Ÿ„Ÿ Camera Management (camera_manager)
-„    „¤„Ÿ„Ÿ Rendering (graphics_blitter)
-„¥„Ÿ„Ÿ Asset Loading (bitmap_loader, character_data_loader)
-„¥„Ÿ„Ÿ Configuration (config_file_writer)
-„¤„Ÿ„Ÿ UI Systems (score_display_system, settings_dialog_proc)
+?????? Window Management (main_window_proc)
+?????? Title Screen (title_screen_manager)  
+?????? Game Loop
+?    ?????? Input Processing (character_input_processor)
+?    ?????? AI Processing (ai_input_processor)
+?    ?????? Physics & Collision (physics_collision_system)
+?    ?????? Hit Detection (hit_detection_system)
+?    ?????? Camera Management (camera_manager)
+?    ?¤???? Rendering (graphics_blitter)
+?????? Asset Loading (bitmap_loader, character_data_loader)
+?????? Configuration (config_file_writer)
+?¤???? UI Systems (score_display_system, settings_dialog_proc)
 ```
 
 ### Function Call Relationships
@@ -1345,6 +1345,105 @@ Thorns has created an **exceptional framestep debugging tool** that **proves** o
 4. **Analysis Documentation**: Complete technical breakdown and insights
 
 This tool represents **definitive proof** that rollback netcode implementation in FM2K is not only feasible but **highly practical**.
+
+# FM2K Hit Judge and Round System Research
+
+## Hit Judge System (0x42470C-0x430120)
+
+The game uses a sophisticated hit detection and configuration system loaded from INI files:
+
+### Hit Judge Configuration
+
+```c
+struct FM2K_HitJudgeConfig {
+    uint32_t hit_judge_value;    // 0x42470C - Hit detection threshold
+    uint32_t config_values[7];   // 0x4300E0-0x430120 - Configuration array
+    char     config_string[260]; // Configuration string buffer
+};
+```
+
+The hit judge system is initialized by `hit_judge_set_function` (0x414930) which:
+1. Loads configuration from INI files
+2. Sets up hit detection parameters
+3. Configures round settings and game modes
+
+## Round System (0x470040-0x47006C)
+
+### Round State Machine
+
+The game's round system is controlled by a sophisticated state machine at `vs_round_function` (0x4086A0).
+
+### Round States
+
+```c
+enum FM2K_RoundState {
+    ROUND_INIT = 0,    // Initial state
+    ROUND_ACTIVE = 1,  // Round in progress
+    ROUND_END = 2,     // Round has ended
+    ROUND_MATCH_END = 3 // Match has ended
+};
+```
+
+### Game Modes
+
+```c
+enum FM2K_GameMode {
+    MODE_NORMAL = 0,     // Normal VS mode
+    MODE_TEAM = 1,       // Team Battle mode
+    MODE_TOURNAMENT = 2  // Tournament mode
+};
+```
+
+### Round System Variables
+
+```c
+struct FM2K_RoundSystem {
+    uint32_t game_mode;    // 0x470040 - Current game mode
+    uint32_t round_limit;  // 0x470048 - Maximum rounds
+    uint32_t round_state;  // 0x47004C - Current round state
+    uint32_t round_timer;  // 0x470060 - Round timer value
+};
+```
+
+## Integration with Game State
+
+For rollback implementation, these systems need to be included in the game state snapshot:
+
+```c
+struct FM2K_GameState {
+    // ... existing state fields ...
+    
+    // Hit Judge System
+    FM2K_HitJudgeConfig hit_judge;
+    
+    // Round System
+    FM2K_RoundSystem round_system;
+    
+    // Additional state variables
+    uint32_t hit_effect_target;
+    uint32_t hit_effect_timer;
+    uint16_t combo_counter[2];
+    uint16_t damage_scaling[2];
+};
+```
+
+## Key Functions
+
+1. `hit_judge_set_function` (0x414930)
+   - Initializes hit detection system
+   - Loads configuration from INI files
+   - Sets up round parameters
+
+2. `vs_round_function` (0x4086A0)
+   - Manages round state transitions
+   - Handles game mode logic
+   - Controls round timer
+
+3. Config Writer (0x414CA0)
+   - Writes hit judge configuration
+   - Updates INI file settings
+   - Manages game mode parameters 
+
 
 ---
 

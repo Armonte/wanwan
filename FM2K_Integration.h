@@ -188,6 +188,22 @@ namespace FM2K {
     }
 }
 
+// Session mode selection
+enum class SessionMode {
+    LOCAL,
+    ONLINE
+};
+
+// Network configuration
+struct NetworkConfig {
+    SessionMode mode = SessionMode::LOCAL;
+    std::string remote_address;
+    uint16_t local_port = 7000;
+    uint16_t remote_port = 7001;
+    uint8_t input_delay = 2;
+    uint8_t max_spectators = 0;
+};
+
 // Launcher states
 enum class LauncherState {
     GameSelection,      // Selecting which FM2K game to launch
@@ -195,35 +211,6 @@ enum class LauncherState {
     Connecting,         // Establishing network connection
     InGame,            // Game running with rollback active
     Disconnected       // Connection lost, can reconnect
-};
-
-// Network configuration
-struct NetworkConfig {
-    std::string local_address;
-    int local_port;
-    std::string remote_address;
-    int local_player;  // 0 or 1
-    int input_delay;
-    int max_spectators;
-    bool enable_spectators;
-
-    NetworkConfig() 
-        : local_address("127.0.0.1")
-        , local_port(7000)
-        , remote_address("127.0.0.1:7001")
-        , local_player(0)
-        , input_delay(2)
-        , max_spectators(8)
-        , enable_spectators(true)
-    {
-        // Use SDL string functions for initialization
-        char local_addr[32];
-        char remote_addr[32];
-        SDL_strlcpy(local_addr, "127.0.0.1", sizeof(local_addr));
-        SDL_strlcpy(remote_addr, "127.0.0.1:7001", sizeof(remote_addr));
-        local_address = local_addr;
-        remote_address = remote_addr;
-    }
 };
 
 // Main launcher class
@@ -297,16 +284,7 @@ public:
     NetworkSession();
     ~NetworkSession();
     
-    // Network configuration
-    struct NetworkConfig {
-        std::string remote_address;
-        uint16_t local_port;
-        uint16_t remote_port;
-        uint8_t input_delay;
-        uint8_t max_spectators;
-    };
-    
-    // Network statistics
+    // Statistics structure
     struct NetworkStats {
         uint32_t ping;
         uint32_t jitter;

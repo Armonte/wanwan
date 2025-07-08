@@ -8,39 +8,41 @@ namespace State {
 
 // Memory addresses for game state (from FM2K_Integration.h)
 namespace Memory {
-    // Core game state addresses
-    constexpr uintptr_t INPUT_BUFFER_INDEX_ADDR = 0x470000;
-    constexpr uintptr_t RANDOM_SEED_ADDR = 0x41FB1C;
+    // Input (from fm2k_input_system.md)
+    constexpr uintptr_t P1_INPUT_ADDR           = 0x4259C0;
+    constexpr uintptr_t P2_INPUT_ADDR           = 0x4259C4;
+    constexpr uintptr_t P1_INPUT_HISTORY_ADDR   = 0x4280E0;
+    constexpr uintptr_t P2_INPUT_HISTORY_ADDR   = 0x4290E0;
+    constexpr uintptr_t INPUT_BUFFER_INDEX_ADDR = 0x447EE0;
+
+    // Timers & Counters
+    constexpr uintptr_t FRAME_NUMBER_ADDR       = 0x4259B8;
+    constexpr uintptr_t ROUND_TIMER_ADDR        = 0x470060;
+    constexpr uintptr_t GAME_TIMER_ADDR         = 0x470064;
+
+    // Player State
+    constexpr uintptr_t P1_STAGE_X_ADDR         = 0x470104;
+    constexpr uintptr_t P1_STAGE_Y_ADDR         = 0x470108;
+    constexpr uintptr_t P1_HP_ADDR              = 0x47010C;
+    constexpr uintptr_t P1_MAX_HP_ADDR          = 0x470110;
     
-    // Player 1 state
-    constexpr uintptr_t P1_INPUT_ADDR = 0x470100;
-    constexpr uintptr_t P1_STAGE_X_ADDR = 0x470104;
-    constexpr uintptr_t P1_STAGE_Y_ADDR = 0x470108;
-    constexpr uintptr_t P1_HP_ADDR = 0x47010C;
-    constexpr uintptr_t P1_MAX_HP_ADDR = 0x470110;
-    constexpr uintptr_t P1_INPUT_HISTORY_ADDR = 0x470200;
-    
-    // Player 2 state
-    constexpr uintptr_t P2_INPUT_ADDR = 0x470300;
-    constexpr uintptr_t P2_HP_ADDR = 0x47030C;
-    constexpr uintptr_t P2_MAX_HP_ADDR = 0x470310;
-    constexpr uintptr_t P2_INPUT_HISTORY_ADDR = 0x470400;
-    
-    // Global state
-    constexpr uintptr_t ROUND_TIMER_ADDR = 0x470060;
-    constexpr uintptr_t GAME_TIMER_ADDR = 0x470064;
+    constexpr uintptr_t P2_HP_ADDR              = 0x47030C;
+    constexpr uintptr_t P2_MAX_HP_ADDR          = 0x470310;
+
+    // System
+    constexpr uintptr_t RANDOM_SEED_ADDR        = 0x41FB1C;
     
     // Visual effects
-    constexpr uintptr_t EFFECT_ACTIVE_FLAGS = 0x40CC30;
-    constexpr uintptr_t EFFECT_TIMERS_BASE = 0x40CC34;
-    constexpr uintptr_t EFFECT_COLORS_BASE = 0x40CC54;
-    constexpr uintptr_t EFFECT_TARGETS_BASE = 0x40CCD4;
+    constexpr uintptr_t EFFECT_ACTIVE_FLAGS     = 0x40CC30;
+    constexpr uintptr_t EFFECT_TIMERS_BASE      = 0x40CC34;
+    constexpr uintptr_t EFFECT_COLORS_BASE      = 0x40CC54;
+    constexpr uintptr_t EFFECT_TARGETS_BASE     = 0x40CCD4;
     
     // Memory region sizes
-    constexpr size_t INPUT_HISTORY_SIZE = 1024 * sizeof(uint32_t); // 1024 frames
-    constexpr size_t EFFECT_TIMERS_SIZE = 8 * sizeof(uint32_t);
-    constexpr size_t EFFECT_COLORS_SIZE = 8 * 3 * sizeof(uint32_t); // 8 RGB sets
-    constexpr size_t EFFECT_TARGETS_SIZE = 8 * sizeof(uint32_t);
+    constexpr size_t INPUT_HISTORY_SIZE         = 1024 * sizeof(uint32_t);
+    constexpr size_t EFFECT_TIMERS_SIZE         = 8 * sizeof(uint32_t);
+    constexpr size_t EFFECT_COLORS_SIZE         = 8 * 3 * sizeof(uint32_t);
+    constexpr size_t EFFECT_TARGETS_SIZE        = 8 * sizeof(uint32_t);
 } // namespace Memory
 
 // Comprehensive game state structure

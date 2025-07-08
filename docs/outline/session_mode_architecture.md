@@ -138,6 +138,7 @@ ONLINE: NetworkSession exchanges inputs with remote GekkoNetBridge instances.
 2. **Spectator Synchronisation**: Required changes in GekkoNet to broadcast state.
 3. **Security Considerations**: Any packet validation or anti-cheat requirements.
 4. **Version Compatibility**: Handling mismatched game versions across clients.
+5. **Input Address Verification**: The initial memory addresses for P1/P2 inputs were incorrect. The correct addresses (`0x4259C0`, `0x4259C4`) from `fm2k_input_system.md` have been implemented, highlighting the need to verify all critical memory offsets.
 
 ## 11. References (Code Locations)
 * `FM2K_GameInstance.cpp` ? IPC event routing (`HandleIPCEvent`).

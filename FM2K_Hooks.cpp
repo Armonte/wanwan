@@ -20,17 +20,15 @@ static RandFn  original_rand_func      = nullptr;
 // We may need the process handle later (e.g., to read RNG state).
 static HANDLE g_proc = nullptr;
 
-// Global frame counter shared between all hooks
-static SDL_AtomicInt g_frame_counter;
-static bool g_frame_counter_initialized = false;
-
-// Frame counter implementation (from implementation guide)
+// Frame counter implementation - reads directly from game memory
 uint32_t GetFrameNumber() {
-    if (!g_frame_counter_initialized) {
-        SDL_SetAtomicInt(&g_frame_counter, 0);
-        g_frame_counter_initialized = true;
+    uint32_t frame_number = 0;
+    SIZE_T bytes_read = 0;
+    if (ReadProcessMemory(g_proc, (LPCVOID)State::Memory::FRAME_NUMBER_ADDR, &frame_number, sizeof(frame_number), &bytes_read) && bytes_read == sizeof(frame_number)) {
+        return frame_number;
     }
-    return SDL_GetAtomicInt(&g_frame_counter);
+    // Return 0 or log an error if read fails
+    return 0;
 }
 
 // State save condition (from implementation guide)
@@ -67,47 +65,21 @@ bool VisualStateChanged() {
 // -----------------------------------------------------------------------------
 static void __stdcall Hook_ProcessGameInputs()
 {
-    // Increment global frame counter atomically
-    if (!g_frame_counter_initialized) {
-        SDL_SetAtomicInt(&g_frame_counter, 0);
-        g_frame_counter_initialized = true;
-    }
-    SDL_AddAtomicInt(&g_frame_counter, 1);
-    uint32_t current_frame = SDL_GetAtomicInt(&g_frame_counter);
-    
-    // Log first few calls for verification
-    static int hit_count = 0;
-    if (hit_count < 10) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-            "[Hook] process_game_inputs called (frame %u, hit %d)", 
-            current_frame, hit_count);
-        ++hit_count;
-    }
-
-    // Check if we should save state before processing
-    if (ShouldSaveState()) {
-        // TODO: Implement state saving when state manager is ready
-        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
-            "State save needed at frame %u", current_frame);
-    }
-
-    // Call the original function to preserve behavior
-    if (original_process_inputs) {
-        original_process_inputs();
-    }
-
-    // Capture inputs after original function runs
+    // Capture inputs BEFORE original function runs, as it clears them
     uint32_t p1_input_raw = 0;
     uint32_t p2_input_raw = 0;
     SIZE_T bytes_read = 0;
 
-    // Read inputs from game memory as 32-bit integers and log details
-    if (!ReadProcessMemory(g_proc, (LPCVOID)State::Memory::P1_INPUT_ADDR, &p1_input_raw, sizeof(p1_input_raw), &bytes_read) || bytes_read != sizeof(p1_input_raw)) {
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "[Hook] Failed to read P1 input for frame %u", current_frame);
+    ReadProcessMemory(g_proc, (LPCVOID)State::Memory::P1_INPUT_ADDR, &p1_input_raw, sizeof(p1_input_raw), &bytes_read);
+    ReadProcessMemory(g_proc, (LPCVOID)State::Memory::P2_INPUT_ADDR, &p2_input_raw, sizeof(p2_input_raw), &bytes_read);
+
+    // Call the original function to preserve behavior and advance frame
+    if (original_process_inputs) {
+        original_process_inputs();
     }
-    if (!ReadProcessMemory(g_proc, (LPCVOID)State::Memory::P2_INPUT_ADDR, &p2_input_raw, sizeof(p2_input_raw), &bytes_read) || bytes_read != sizeof(p2_input_raw)) {
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "[Hook] Failed to read P2 input for frame %u", current_frame);
-    }
+
+    // Now, get the frame number *after* it has been incremented
+    uint32_t current_frame = GetFrameNumber();
 
     // Send INPUT_CAPTURED event
     FM2K::IPC::Event input_event;
@@ -120,6 +92,13 @@ static void __stdcall Hook_ProcessGameInputs()
     if (!FM2K::IPC::PostEvent(input_event)) {
         SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
             "Failed to post input captured event for frame %u", current_frame);
+    }
+
+    // Check if we should save state before processing
+    if (ShouldSaveState()) {
+        // TODO: Implement state saving when state manager is ready
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
+            "State save needed at frame %u", current_frame);
     }
 
     // Send IPC event that frame has advanced

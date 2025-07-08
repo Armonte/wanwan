@@ -53,7 +53,7 @@ bool GekkoNetBridge::InitializeLocalSession(const FM2KNetworkConfig& config) {
     // Configure session for LOCAL MODE (following LocalSession.cpp pattern)
     GekkoConfig conf{};
     conf.num_players = 2;                           // FM2K is 2-player
-    conf.input_size = sizeof(uint16_t);             // FM2K uses 16-bit input mask
+    conf.input_size = sizeof(uint8_t);              // Use 8-bit inputs like LocalSession.cpp
     conf.state_size = 0;                            // No state saving for local testing
     conf.max_spectators = 0;                        // No spectators for local testing
     conf.input_prediction_window = 0;               // No prediction needed for local testing
@@ -100,8 +100,8 @@ bool GekkoNetBridge::InitializeOnlineSession(const FM2KNetworkConfig& config) {
     // Configure session for ONLINE MODE (following OnlineSession.cpp pattern)
     GekkoConfig conf{};
     conf.num_players = 2;                           // FM2K is 2-player
-    conf.input_size = sizeof(uint16_t);             // FM2K uses 16-bit input mask
-    conf.state_size = sizeof(State::CoreGameState); // Our state structure
+    conf.input_size = sizeof(uint8_t);              // Use 8-bit inputs like OnlineSession.cpp
+    conf.state_size = sizeof(State::CoreGameState); // Our state structure for rollback
     conf.max_spectators = 0;                        // No spectators for now
     conf.input_prediction_window = config.max_prediction_window; // Enable prediction for online
     conf.desync_detection = config.desync_detection; // Enable desync detection for online
@@ -167,41 +167,79 @@ void GekkoNetBridge::SetGameInstance(FM2KGameInstance* game_instance) {
 void GekkoNetBridge::Update(float delta_time) {
     if (!session_) return;
     
+    // For LOCAL mode, inputs drive updates directly in AddBothInputs()
+    // For ONLINE mode, we use timing-based updates
+    if (config_.session_mode == ::SessionMode::LOCAL) {
+        // Only process session events (disconnections, etc.)
+        ProcessGekkoEvents();
+        return;
+    }
+    
+    // ONLINE mode: timing-based processing
     accumulator_ += delta_time;
     
-    // Get adaptive frame timing based on network conditions
     float frames_ahead = gekko_frames_ahead(session_);
     target_frame_time_ = GetFrameTime(frames_ahead);
     
-    // Poll network for incoming data (only needed for ONLINE mode)
-    if (config_.session_mode == ::SessionMode::ONLINE) {
-        gekko_network_poll(session_);
-    }
+    // Poll network for incoming data
+    gekko_network_poll(session_);
     
-    // Process frames
+    // Process frames when enough time has accumulated
     while (accumulator_ >= target_frame_time_) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+            "ONLINE: Processing frame: accumulator=%.3f, target_frame_time=%.3f", 
+            accumulator_, target_frame_time_);
+        
         ProcessGekkoEvents();
         ProcessGameUpdates();
         accumulator_ -= target_frame_time_;
     }
 }
 
+// Convert FM2K 16-bit input to GekkoNet 8-bit format
+uint8_t GekkoNetBridge::ConvertInputToGekkoFormat(const FM2KInput& input) {
+    uint8_t gekko_input = 0;
+    
+    // Map FM2K input bits to 8-bit GekkoNet format
+    // Directions (4 bits) + buttons (4 bits)
+    if (input.input.bits.left)    gekko_input |= 0x01;  // bit 0
+    if (input.input.bits.right)   gekko_input |= 0x02;  // bit 1
+    if (input.input.bits.up)      gekko_input |= 0x04;  // bit 2
+    if (input.input.bits.down)    gekko_input |= 0x08;  // bit 3
+    if (input.input.bits.button1) gekko_input |= 0x10;  // bit 4
+    if (input.input.bits.button2) gekko_input |= 0x20;  // bit 5
+    if (input.input.bits.button3) gekko_input |= 0x40;  // bit 6
+    if (input.input.bits.button4) gekko_input |= 0x80;  // bit 7
+    
+    return gekko_input;
+}
+
 void GekkoNetBridge::AddLocalInput(const FM2KInput& input) {
     if (!session_ || local_player_handle_ < 0) return;
     
+    // Convert FM2K input to GekkoNet 8-bit format
+    uint8_t gekko_input = ConvertInputToGekkoFormat(input);
+    
     // Add input to GekkoNet session
-    gekko_add_local_input(session_, local_player_handle_, const_cast<void*>(static_cast<const void*>(&input.input.value)));
+    gekko_add_local_input(session_, local_player_handle_, &gekko_input);
 }
 
 void GekkoNetBridge::AddBothInputs(const FM2KInput& p1_input, const FM2KInput& p2_input) {
     if (!session_ || local_player_handle_ < 0 || p2_player_handle_ < 0) return;
     
+    // Convert both inputs to GekkoNet 8-bit format
+    uint8_t p1_gekko = ConvertInputToGekkoFormat(p1_input);
+    uint8_t p2_gekko = ConvertInputToGekkoFormat(p2_input);
+    
     // Add both P1 and P2 inputs to GekkoNet session (LocalSession pattern)
-    gekko_add_local_input(session_, local_player_handle_, const_cast<void*>(static_cast<const void*>(&p1_input.input.value)));
-    gekko_add_local_input(session_, p2_player_handle_, const_cast<void*>(static_cast<const void*>(&p2_input.input.value)));
+    gekko_add_local_input(session_, local_player_handle_, &p1_gekko);
+    gekko_add_local_input(session_, p2_player_handle_, &p2_gekko);
     
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
         "Added inputs: P1=%04x, P2=%04x", p1_input.input.value, p2_input.input.value);
+    
+    // CRITICAL: Process GekkoNet updates immediately after adding inputs (LocalSession pattern)
+    ProcessGameUpdates();
 }
 
 SessionMode GekkoNetBridge::GetSessionMode() const {
@@ -243,14 +281,24 @@ void GekkoNetBridge::ProcessGekkoEvents() {
 }
 
 void GekkoNetBridge::ProcessGameUpdates() {
-    if (!session_) return;
+    if (!session_) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ProcessGameUpdates: session_ is null");
+        return;
+    }
     
     // Get game update events from GekkoNet
     int update_count = 0;
     auto updates = gekko_update_session(session_, &update_count);
     
+    // Debug: Always log the update count
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+        "ProcessGameUpdates: gekko_update_session returned %d events", update_count);
+    
     for (int i = 0; i < update_count; i++) {
         auto event = updates[i];
+        
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+            "Processing GekkoNet event %d: type=%d", i, event->type);
         
         switch (event->type) {
             case SaveEvent:
@@ -274,30 +322,16 @@ void GekkoNetBridge::ProcessGameUpdates() {
 }
 
 void GekkoNetBridge::OnSaveState(GekkoGameEvent* event) {
-    if (!game_instance_ || !current_state_) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Cannot save state - no game instance");
-        return;
+    // LOCAL mode with state_size=0 should not trigger save events
+    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "SaveState called in LOCAL mode - this should not happen");
+    
+    // For LOCAL mode, just return without saving state
+    if (event && event->data.save.state_len) {
+        *event->data.save.state_len = 0;
     }
-    
-    // Save current game state using our state manager
-    if (!State::SaveCoreState(&current_state_->core)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to save core game state");
-        return;
+    if (event && event->data.save.checksum) {
+        *event->data.save.checksum = 0;
     }
-    
-    // Calculate checksum
-    current_state_->checksum = State::CalculateCoreStateChecksum(&current_state_->core);
-    current_state_->frame_number = event->data.save.frame;
-    current_state_->timestamp_ms = SDL_GetTicks();
-    
-    // Provide data to GekkoNet
-    *event->data.save.state_len = sizeof(State::CoreGameState);
-    *event->data.save.checksum = current_state_->checksum;
-    std::memcpy(event->data.save.state, &current_state_->core, sizeof(State::CoreGameState));
-    
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-        "Saved state for frame %d, checksum %08x", 
-        event->data.save.frame, current_state_->checksum);
 }
 
 void GekkoNetBridge::OnLoadState(GekkoGameEvent* event) {
@@ -327,22 +361,17 @@ void GekkoNetBridge::OnAdvanceFrame(GekkoGameEvent* event) {
         return;
     }
     
-    // Extract inputs for both players
-    uint16_t p1_input = event->data.adv.inputs[0];
-    uint16_t p2_input = event->data.adv.inputs[1];
+    // Extract inputs for both players (converted back from 8-bit to 16-bit for logging)
+    uint8_t p1_gekko = event->data.adv.inputs[0];
+    uint8_t p2_gekko = event->data.adv.inputs[1];
     
-    // Inject inputs into game
-    game_instance_->InjectInputs(p1_input, p2_input);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "GekkoNet AdvanceEvent: Frame %d with inputs P1:0x%02x P2:0x%02x", 
+        event->data.adv.frame, p1_gekko, p2_gekko);
     
-    // Advance the game by one frame
-    if (!game_instance_->AdvanceFrame()) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to advance game frame");
-        return;
-    }
-    
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-        "Advanced frame %d with inputs P1:%04x P2:%04x", 
-        event->data.adv.frame, p1_input, p2_input);
+    // For FM2K integration, the game drives itself through the hook
+    // GekkoNet provides confirmed inputs via AdvanceEvent
+    // The hook should use these inputs when the game asks for them
 }
 
 float GekkoNetBridge::GetFrameTime(float frames_ahead) const {

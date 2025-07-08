@@ -33,15 +33,15 @@ namespace FM2K {
     constexpr uintptr_t INPUT_BUFFER_INDEX_ADDR = 0x470000;
     constexpr uintptr_t RANDOM_SEED_ADDR = 0x41FB1C;
     
-    // Player state addresses (corrected from research)
-    constexpr uintptr_t P1_INPUT_ADDR = 0x4259C0;          // Current input state
+    // Player state addresses (working addresses for this game version)
+    constexpr uintptr_t P1_INPUT_ADDR = 0x470100;          // Current input state (working)
     constexpr uintptr_t P1_STAGE_X_ADDR = 0x470104;
     constexpr uintptr_t P1_STAGE_Y_ADDR = 0x470108;
     constexpr uintptr_t P1_HP_ADDR = 0x47010C;
     constexpr uintptr_t P1_MAX_HP_ADDR = 0x470110;
     constexpr uintptr_t P1_INPUT_HISTORY_ADDR = 0x470200;  // Input history buffer
     
-    constexpr uintptr_t P2_INPUT_ADDR = 0x4259C4;          // Current input state
+    constexpr uintptr_t P2_INPUT_ADDR = 0x470300;          // Current input state (working)
     constexpr uintptr_t P2_HP_ADDR = 0x47030C;
     constexpr uintptr_t P2_MAX_HP_ADDR = 0x470310;
     constexpr uintptr_t P2_INPUT_HISTORY_ADDR = 0x470400;

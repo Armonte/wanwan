@@ -269,19 +269,10 @@ bool FM2KGameInstance::AdvanceFrame() {
         return false;
     }
 
-    // Note: Frame counting is handled by the injected DLL hooks
-    
-    // Call process_game_inputs at 0x4146D0
-    if (!ExecuteRemoteFunction(process_handle_, 0x4146D0)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to execute process_game_inputs");
-        return false;
-    }
-
-    // Call update_game_state at 0x404CD0
-    if (!ExecuteRemoteFunction(process_handle_, 0x404CD0)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to execute update_game_state");
-        return false;
-    }
+    // For GekkoNet integration, frame advancement is handled by the hook
+    // The game runs naturally and the hook coordinates with GekkoNet
+    // No need to call remote functions - the hook does this automatically
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "AdvanceFrame called - letting hook handle frame advancement");
 
     // Process any pending IPC events
     ProcessIPCEvents();

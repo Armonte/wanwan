@@ -115,6 +115,7 @@ private:
     bool InitializeGekkoSession();
     void ConfigureNetworking();
     void AddPlayers();
+    uint8_t ConvertInputToGekkoFormat(const FM2KInput& input);
 };
 
 } // namespace FM2K

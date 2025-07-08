@@ -111,3 +111,10 @@ Extensive reverse engineering documentation is available in `docs/`:
 - Windows-only due to process injection requirements
 - Uses Windows-specific APIs (CreateProcess, DLL injection)
 - Could potentially be ported using different integration methods
+
+## Claude Guidance
+
+### Tool Usage Guidelines
+- Never compile or run build scripts, that is not for you.
+- Always try to reference our documentation and cross reference if possible for certainty.
+- We have IDA MCP tools connected so you can scan the binary at offsets and read disasm and be more informed

@@ -11,7 +11,10 @@
       "Bash(grep:*)",
       "Bash(ninja:*)",
       "Bash(find:*)",
-      "Bash(./make_build.sh)"
+      "Bash(./make_build.sh)",
+      "mcp__github_com_mrexodia_ida-pro-mcp__check_connection",
+      "mcp__github_com_mrexodia_ida-pro-mcp__get_current_address",
+      "mcp__github_com_mrexodia_ida-pro-mcp__data_read_word"
     ],
     "deny": []
   }

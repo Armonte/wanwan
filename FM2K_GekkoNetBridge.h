@@ -1,5 +1,8 @@
 #pragma once
 
+// Forward declaration - we'll include the full definition in .cpp
+enum class SessionMode;
+
 #define GEKKONET_STATIC
 #include "vendored/GekkoNet/GekkoLib/include/gekkonet.h"
 #include "FM2KHook/src/state_manager.h"
@@ -33,11 +36,12 @@ struct FM2KInput {
     } input;
 };
 
-// Configuration for FM2K rollback session
+// Configuration for FM2K rollback session  
 struct FM2KNetworkConfig {
-    int local_player;           // 0 or 1
-    int local_port;             // Network port for this player
-    std::string remote_address; // IP address of remote player
+    ::SessionMode session_mode;   // LOCAL or ONLINE mode
+    int local_player;           // 0 or 1 (only used in ONLINE mode)
+    int local_port;             // Network port for this player (only used in ONLINE mode)
+    std::string remote_address; // IP address of remote player (only used in ONLINE mode)
     int input_delay;            // Local input delay frames
     int max_prediction_window;  // Maximum prediction window
     bool desync_detection;      // Enable checksum validation
@@ -61,6 +65,8 @@ public:
     
     // Session management
     bool Initialize(const FM2KNetworkConfig& config);
+    bool InitializeLocalSession(const FM2KNetworkConfig& config);
+    bool InitializeOnlineSession(const FM2KNetworkConfig& config);
     void Shutdown();
     bool IsConnected() const;
     
@@ -68,6 +74,9 @@ public:
     void Update(float delta_time);
     void AddLocalInput(const FM2KInput& input);
     void AddBothInputs(const FM2KInput& p1_input, const FM2KInput& p2_input);
+    
+    // Session information
+    ::SessionMode GetSessionMode() const;
     
     // Network stats
     FM2KNetworkStats GetNetworkStats() const;

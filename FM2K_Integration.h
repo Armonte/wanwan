@@ -197,8 +197,15 @@ enum class LauncherState {
     Disconnected       // Connection lost, can reconnect
 };
 
+// Session mode for GekkoNet
+enum class SessionMode {
+    LOCAL,   // Both players local (offline testing)
+    ONLINE   // One local + one remote player (network play)
+};
+
 // Network configuration
 struct NetworkConfig {
+    SessionMode session_mode;
     std::string local_address;
     int local_port;
     std::string remote_address;
@@ -208,7 +215,8 @@ struct NetworkConfig {
     bool enable_spectators;
 
     NetworkConfig() 
-        : local_address("127.0.0.1")
+        : session_mode(SessionMode::LOCAL)  // Default to LOCAL for testing
+        , local_address("127.0.0.1")
         , local_port(7000)
         , remote_address("127.0.0.1:7001")
         , local_player(0)
@@ -299,11 +307,13 @@ public:
     
     // Network configuration
     struct NetworkConfig {
+        SessionMode session_mode;
         std::string remote_address;
         uint16_t local_port;
         uint16_t remote_port;
         uint8_t input_delay;
         uint8_t max_spectators;
+        int local_player;  // 0 or 1 (for ONLINE mode)
     };
     
     // Network statistics
@@ -332,6 +342,7 @@ public:
     // Input management
     void AddLocalInput(uint32_t input);
     void AddBothInputs(uint32_t p1_input, uint32_t p2_input);
+    SessionMode GetSessionMode() const;
     NetworkStats GetStats() const;
     
     // Game instance binding

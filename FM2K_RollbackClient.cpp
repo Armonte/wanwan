@@ -939,11 +939,13 @@ bool FM2KLauncher::StartNetworkSession(const NetworkConfig& config) {
     
     // Convert global NetworkConfig to NetworkSession::NetworkConfig
     NetworkSession::NetworkConfig session_config;
+    session_config.session_mode = config.session_mode;
     session_config.remote_address = config.remote_address;
     session_config.local_port = static_cast<uint16_t>(config.local_port);
     session_config.remote_port = 7001;  // Default remote port if not specified
     session_config.input_delay = static_cast<uint8_t>(config.input_delay);
     session_config.max_spectators = static_cast<uint8_t>(config.max_spectators);
+    session_config.local_player = config.local_player;
     
     // Connect network session to game instance for state management
     if (game_instance_) {

@@ -487,16 +487,27 @@ void FM2KGameInstance::OnStateLoaded(const FM2K::IPC::Event& event) {
 void FM2KGameInstance::OnInputCaptured(const FM2K::IPC::Event& event) {
     // Forward captured inputs to NetworkSession for GekkoNet processing
     if (network_session_) {
-        // Forward both P1 and P2 inputs (LocalSession pattern)
-        // Convert from 16-bit FM2K format to 32-bit for NetworkSession
-        uint32_t p1_input_32 = static_cast<uint32_t>(event.data.input.p1_input);
-        uint32_t p2_input_32 = static_cast<uint32_t>(event.data.input.p2_input);
-        
-        network_session_->AddBothInputs(p1_input_32, p2_input_32);
-        
-        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-            "Both inputs forwarded to NetworkSession: P1=0x%04x, P2=0x%04x, frame=%u",
-            event.data.input.p1_input, event.data.input.p2_input, event.frame_number);
+        // Choose input method based on session mode
+        if (network_session_->GetSessionMode() == SessionMode::LOCAL) {
+            // LOCAL mode: Forward both P1 and P2 inputs (LocalSession pattern)
+            uint32_t p1_input_32 = static_cast<uint32_t>(event.data.input.p1_input);
+            uint32_t p2_input_32 = static_cast<uint32_t>(event.data.input.p2_input);
+            
+            network_session_->AddBothInputs(p1_input_32, p2_input_32);
+            
+            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
+                "LOCAL mode: Both inputs forwarded to NetworkSession: P1=0x%04x, P2=0x%04x, frame=%u",
+                event.data.input.p1_input, event.data.input.p2_input, event.frame_number);
+        } else {
+            // ONLINE mode: Forward only local player input (OnlineSession pattern)
+            uint32_t p1_input_32 = static_cast<uint32_t>(event.data.input.p1_input);
+            
+            network_session_->AddLocalInput(p1_input_32);
+            
+            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
+                "ONLINE mode: Local input forwarded to NetworkSession: P1=0x%04x, frame=%u",
+                event.data.input.p1_input, event.frame_number);
+        }
     } else {
         SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
             "Input captured but no NetworkSession connected: P1=0x%04x, P2=0x%04x",

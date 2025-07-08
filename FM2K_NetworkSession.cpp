@@ -52,7 +52,8 @@ bool NetworkSession::Start(const NetworkConfig& config) {
     
     // Convert NetworkConfig to FM2KNetworkConfig
     FM2K::FM2KNetworkConfig bridge_config{};
-    bridge_config.local_player = 0; // TODO: This should be configurable
+    bridge_config.session_mode = config.session_mode;
+    bridge_config.local_player = config.local_player;
     bridge_config.local_port = config.local_port;
     bridge_config.remote_address = config.remote_address;
     bridge_config.input_delay = config.input_delay;
@@ -125,6 +126,10 @@ void NetworkSession::AddBothInputs(uint32_t p1_input, uint32_t p2_input) {
     fm2k_p1_input.input.value = static_cast<uint16_t>(p1_input & 0xFFFF);
     fm2k_p2_input.input.value = static_cast<uint16_t>(p2_input & 0xFFFF);
     gekko_bridge_->AddBothInputs(fm2k_p1_input, fm2k_p2_input);
+}
+
+SessionMode NetworkSession::GetSessionMode() const {
+    return gekko_bridge_ ? gekko_bridge_->GetSessionMode() : SessionMode::LOCAL;
 }
 
 bool NetworkSession::SaveGameState(int frame) {

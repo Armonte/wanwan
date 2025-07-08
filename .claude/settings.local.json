@@ -8,7 +8,8 @@
       "mcp__github_com_mrexodia_ida-pro-mcp__disassemble_function",
       "mcp__github_com_mrexodia_ida-pro-mcp__get_xrefs_to",
       "Bash(rg:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(ninja:*)"
     ],
     "deny": []
   }

@@ -633,6 +633,21 @@ void FM2KLauncher::HandleEvent(SDL_Event* event) {
 }
 
 void FM2KLauncher::Update(float delta_time SDL_UNUSED) {
+    // Check game process status
+    if (game_instance_ && game_instance_->IsRunning()) {
+        static uint32_t last_check_time = 0;
+        uint32_t current_time = SDL_GetTicks();
+        
+        // Check process status every 100ms
+        if (current_time - last_check_time > 100) {
+            if (!game_instance_->IsRunning()) {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Game process has terminated unexpectedly");
+                game_instance_.reset();
+            }
+            last_check_time = current_time;
+        }
+    }
+    
     if (network_session_) {
         network_session_->Update();
     }
@@ -886,6 +901,16 @@ bool FM2KLauncher::LaunchGame(const FM2K::FM2KGameInfo& game) {
     }
     
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Game launched successfully: %s", game.exe_path.c_str());
+    
+    // Wait a moment and check if process is still running
+    SDL_Delay(100);
+    if (!game_instance_->IsRunning()) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Game process terminated immediately after launch!");
+        game_instance_.reset();
+        return false;
+    }
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Game process confirmed running after 100ms");
     return true;
 }
 

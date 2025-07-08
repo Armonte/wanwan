@@ -295,7 +295,12 @@ public:
     bool Initialize();
     bool Launch(const FM2K::FM2KGameInfo& game);
     void Terminate();
-    bool IsRunning() const { return process_handle_ != nullptr; }
+    bool IsRunning() const { 
+        if (!process_handle_) return false;
+        DWORD exit_code;
+        if (!GetExitCodeProcess(process_handle_, &exit_code)) return false;
+        return exit_code == STILL_ACTIVE;
+    }
     
     // Memory access
     template<typename T>

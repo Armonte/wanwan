@@ -7,14 +7,14 @@ namespace FM2K {
 namespace Hooks {
 
 // Function pointer types for original functions
-typedef void (__stdcall *ProcessGameInputsFn)();
-typedef void (__stdcall *UpdateGameStateFn)();
-typedef int (__stdcall *RNGFn)();
+typedef int (__cdecl *ProcessGameInputsFn)();
+typedef int (__cdecl *UpdateGameStateFn)();
+typedef int (__cdecl *RNGFn)();
 
 // Hook functions
-void __stdcall Hook_ProcessGameInputs();
-void __stdcall Hook_UpdateGameState();
-int __stdcall Hook_RNG();
+int __cdecl Hook_ProcessGameInputs();
+int __cdecl Hook_UpdateGameState();
+int __cdecl Hook_GameRand();
 
 // Initialization/cleanup
 bool Init(HANDLE process);

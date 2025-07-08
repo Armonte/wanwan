@@ -17,7 +17,7 @@ static SDL_AtomicInt g_frame_counter;
 static bool g_frame_counter_initialized = false;
 
 // Hook implementations
-static void __stdcall Hook_ProcessGameInputs() {
+static int __cdecl Hook_ProcessGameInputs() {
     // Initialize frame counter if needed
     if (!g_frame_counter_initialized) {
         SDL_SetAtomicInt(&g_frame_counter, 0);
@@ -62,9 +62,12 @@ static void __stdcall Hook_ProcessGameInputs() {
     
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
         "[Hook] process_game_inputs EXIT - frame %u", current_frame);
+    
+    // Return the same value as original function
+    return 0; // Original returns result * 4, but we'll return 0 for safety
 }
 
-static void __stdcall Hook_UpdateGameState() {
+static int __cdecl Hook_UpdateGameState() {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[Hook] update_game_state ENTRY");
     
     // Call original first
@@ -119,13 +122,23 @@ static void __stdcall Hook_UpdateGameState() {
     }
     
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[Hook] update_game_state EXIT");
+    
+    // Return appropriate value (original returns an int)
+    return 0;
 }
 
-static int __stdcall Hook_GameRand() {
+static int __cdecl Hook_GameRand() {
+    SDL_LogVerbose(SDL_LOG_CATEGORY_APPLICATION, "[Hook] game_rand ENTRY");
+    
     // Call original RNG
     int result = 0;
     if (original_rng) {
         result = original_rng();
+        SDL_LogVerbose(SDL_LOG_CATEGORY_APPLICATION, 
+            "[Hook] Original game_rand returned: %d", result);
+    } else {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, 
+            "[Hook] original_rng is NULL!");
     }
 
     // Log RNG calls for debugging
@@ -133,6 +146,7 @@ static int __stdcall Hook_GameRand() {
         "RNG called at frame %u, result: %d",
         GetFrameNumber(), result);
 
+    SDL_LogVerbose(SDL_LOG_CATEGORY_APPLICATION, "[Hook] game_rand EXIT");
     return result;
 }
 

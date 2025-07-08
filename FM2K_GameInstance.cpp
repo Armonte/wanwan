@@ -94,14 +94,20 @@ bool FM2KGameInstance::Launch(const FM2K::FM2KGameInfo& game) {
     std::string exe_path = game.exe_path;
     std::replace(exe_path.begin(), exe_path.end(), '/', '\\');
 
+    // Extract directory from exe path for working directory
+    std::filesystem::path exe_file_path(exe_path);
+    std::string working_dir = exe_file_path.parent_path().string();
+    
     STARTUPINFOW si = {};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi = {};
 
     std::wstring wide_exe_path(exe_path.begin(), exe_path.end());
     std::wstring wide_cmd_line = L"\"" + wide_exe_path + L"\"";
+    std::wstring wide_working_dir(working_dir.begin(), working_dir.end());
 
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Creating process: %s", exe_path.c_str());
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Working directory: %s", working_dir.c_str());
 
     if (!CreateProcessW(
         wide_exe_path.c_str(),    // Application name
@@ -111,7 +117,7 @@ bool FM2KGameInstance::Launch(const FM2K::FM2KGameInfo& game) {
         FALSE,                     // Set handle inheritance to FALSE
         CREATE_SUSPENDED,          // Create in suspended state
         nullptr,                   // Use parent's environment block
-        nullptr,                   // Use parent's starting directory
+        wide_working_dir.c_str(), // Use game's directory as starting directory
         &si,                       // Pointer to STARTUPINFO structure
         &pi                        // Pointer to PROCESS_INFORMATION structure
     )) {

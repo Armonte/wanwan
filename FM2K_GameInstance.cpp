@@ -427,7 +427,10 @@ void FM2KGameInstance::HandleIPCEvent(const FM2K::IPC::Event& event) {
             break;
             
         case FM2K::IPC::EventType::INPUT_CAPTURED:
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
+            "input captured");
             OnInputCaptured(event);
+
             break;
             
         case FM2K::IPC::EventType::HOOK_ERROR:
@@ -484,14 +487,15 @@ void FM2KGameInstance::OnStateLoaded(const FM2K::IPC::Event& event) {
 void FM2KGameInstance::OnInputCaptured(const FM2K::IPC::Event& event) {
     // Forward captured inputs to NetworkSession for GekkoNet processing
     if (network_session_) {
-        // For now, just forward P1 input (local player)
+        // Forward both P1 and P2 inputs (LocalSession pattern)
         // Convert from 16-bit FM2K format to 32-bit for NetworkSession
         uint32_t p1_input_32 = static_cast<uint32_t>(event.data.input.p1_input);
+        uint32_t p2_input_32 = static_cast<uint32_t>(event.data.input.p2_input);
         
-        network_session_->AddLocalInput(p1_input_32);
+        network_session_->AddBothInputs(p1_input_32, p2_input_32);
         
         SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-            "Input forwarded to NetworkSession: P1=0x%04x, P2=0x%04x, frame=%u",
+            "Both inputs forwarded to NetworkSession: P1=0x%04x, P2=0x%04x, frame=%u",
             event.data.input.p1_input, event.data.input.p2_input, event.frame_number);
     } else {
         SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,

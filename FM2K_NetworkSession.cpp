@@ -117,6 +117,16 @@ void NetworkSession::AddLocalInput(uint32_t input) {
     gekko_bridge_->AddLocalInput(fm2k_input);
 }
 
+void NetworkSession::AddBothInputs(uint32_t p1_input, uint32_t p2_input) {
+    if (!gekko_bridge_) return;
+    
+    // Convert both inputs to FM2K format and add to bridge (LocalSession pattern)
+    FM2K::FM2KInput fm2k_p1_input{}, fm2k_p2_input{};
+    fm2k_p1_input.input.value = static_cast<uint16_t>(p1_input & 0xFFFF);
+    fm2k_p2_input.input.value = static_cast<uint16_t>(p2_input & 0xFFFF);
+    gekko_bridge_->AddBothInputs(fm2k_p1_input, fm2k_p2_input);
+}
+
 bool NetworkSession::SaveGameState(int frame) {
     if (!game_instance_) return false;
 

@@ -213,6 +213,15 @@ set_target_properties(FM2KHook PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
 )
 
+# Add pthread static linking for FM2KHook
+target_link_options(FM2KHook PRIVATE
+    -static
+    -static-libgcc
+    -static-libstdc++
+    -pthread
+    -Wl,-Bstatic,--whole-archive -lwinpthread -Wl,--no-whole-archive
+)
+
 # Main executable
 add_executable(FM2K_RollbackLauncher
     # Main launcher files
@@ -243,6 +252,8 @@ target_link_options(FM2K_RollbackLauncher PRIVATE
     -static 
     -static-libgcc 
     -static-libstdc++
+    -pthread
+    -Wl,-Bstatic,--whole-archive -lwinpthread -Wl,--no-whole-archive
 )
 
 # Add FM2KHook as dependency

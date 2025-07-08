@@ -96,6 +96,32 @@ static void __stdcall Hook_ProcessGameInputs()
         original_process_inputs();
     }
 
+    // Capture inputs after original function runs
+    uint32_t p1_input_raw = 0;
+    uint32_t p2_input_raw = 0;
+    SIZE_T bytes_read = 0;
+
+    // Read inputs from game memory as 32-bit integers and log details
+    if (!ReadProcessMemory(g_proc, (LPCVOID)State::Memory::P1_INPUT_ADDR, &p1_input_raw, sizeof(p1_input_raw), &bytes_read) || bytes_read != sizeof(p1_input_raw)) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "[Hook] Failed to read P1 input for frame %u", current_frame);
+    }
+    if (!ReadProcessMemory(g_proc, (LPCVOID)State::Memory::P2_INPUT_ADDR, &p2_input_raw, sizeof(p2_input_raw), &bytes_read) || bytes_read != sizeof(p2_input_raw)) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "[Hook] Failed to read P2 input for frame %u", current_frame);
+    }
+
+    // Send INPUT_CAPTURED event
+    FM2K::IPC::Event input_event;
+    input_event.type = FM2K::IPC::EventType::INPUT_CAPTURED;
+    input_event.frame_number = current_frame;
+    input_event.timestamp_ms = SDL_GetTicks();
+    input_event.data.input.p1_input = static_cast<uint16_t>(p1_input_raw);
+    input_event.data.input.p2_input = static_cast<uint16_t>(p2_input_raw);
+    input_event.data.input.frame_number = current_frame;
+    if (!FM2K::IPC::PostEvent(input_event)) {
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
+            "Failed to post input captured event for frame %u", current_frame);
+    }
+
     // Send IPC event that frame has advanced
     FM2K::IPC::Event event;
     event.type = FM2K::IPC::EventType::FRAME_ADVANCED;
@@ -117,7 +143,7 @@ static void __stdcall Hook_UpdateGameState()
 
     // Check if we should save state after game state update
     uint32_t current_frame = GetFrameNumber();
-    if (ShouldSaveState()) {
+    if (current_frame > 0 && ShouldSaveState()) {
         // Calculate real state checksum using state manager
         uint32_t checksum = State::CalculateStateChecksum();
         

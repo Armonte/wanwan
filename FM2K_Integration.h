@@ -331,6 +331,7 @@ public:
     
     // Input management
     void AddLocalInput(uint32_t input);
+    void AddBothInputs(uint32_t p1_input, uint32_t p2_input);
     NetworkStats GetStats() const;
     
     // Game instance binding

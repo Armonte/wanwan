@@ -67,6 +67,7 @@ public:
     // Game loop integration
     void Update(float delta_time);
     void AddLocalInput(const FM2KInput& input);
+    void AddBothInputs(const FM2KInput& p1_input, const FM2KInput& p2_input);
     
     // Network stats
     FM2KNetworkStats GetNetworkStats() const;
@@ -82,7 +83,8 @@ public:
 private:
     // GekkoNet session
     GekkoSession* session_;
-    int local_player_handle_;
+    int local_player_handle_;   // P1 handle
+    int p2_player_handle_;      // P2 handle (for local session)
     FM2KGameInstance* game_instance_;
     
     // Configuration

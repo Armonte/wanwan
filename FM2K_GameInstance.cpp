@@ -427,6 +427,14 @@ void FM2KGameInstance::HandleIPCEvent(const FM2K::IPC::Event& event) {
             OnHookError(event);
             break;
             
+        case FM2K::IPC::EventType::LOG_MESSAGE:
+            // Route the log from the DLL to the launcher's own SDL log.
+            SDL_LogMessage(event.data.log.category, 
+                           (SDL_LogPriority)event.data.log.priority, 
+                           "[HOOK DLL] %s", 
+                           event.data.log.message);
+            break;
+
         default:
             SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
                 "Unknown IPC event type: %d", static_cast<int>(event.type));

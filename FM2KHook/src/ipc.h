@@ -15,7 +15,8 @@ enum class EventType : uint8_t {
     HIT_TABLES_INIT = 4,
     VISUAL_STATE_CHANGED = 5,
     INPUT_CAPTURED = 6,   // New: Player input captured
-    HOOK_ERROR = 255      // Changed from ERROR to HOOK_ERROR to avoid Windows macro conflict
+    HOOK_ERROR = 255,      // Changed from ERROR to HOOK_ERROR to avoid Windows macro conflict
+    LOG_MESSAGE = 7
 };
 
 // Visual state data structure
@@ -50,6 +51,11 @@ union EventData {
     VisualState visual;
     ErrorData error;
     InputData input;
+    struct {
+        int category;
+        int priority;
+        char message[512];
+    } log;
 };
 
 // Event structure
@@ -108,6 +114,9 @@ bool PostEvent(const Event& event);
 bool ReadEvent(Event& event);
 bool PollEvent(Event* event);
 bool WriteEvent(const Event& event);
+
+// Checks if the IPC system is initialized
+bool IsInitialized();
 
 } // namespace IPC
 } // namespace FM2K 

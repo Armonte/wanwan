@@ -527,20 +527,20 @@ bool FM2KLauncher::Initialize() {
     //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Initializing FM2K Launcher...");
 
     if (!InitializeSDL()) {
-        SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize SDL3: %s", SDL_GetError());
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize SDL3: %s", SDL_GetError());
         return false;
     }
     
     // Initialize MinHook
     if (MH_Initialize() != MH_OK) {
-        SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize MinHook");
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize MinHook");
         return false;
     }
     
     // Create subsystems
     ui_ = std::make_unique<LauncherUI>();
     if (!ui_->Initialize(window_, renderer_)) {
-        SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize UI");
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize UI");
         return false;
     }
     

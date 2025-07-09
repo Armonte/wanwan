@@ -13,8 +13,8 @@ set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g")
 # Create DLL target
 add_library(FM2KHook SHARED
     src/dllmain.cpp
-    ../FM2K_Hooks.cpp
-    ../FM2K_Hooks.h
+    src/fm2k_hook.cpp
+    src/fm2k_hook.h
     src/ipc.cpp
     src/ipc.h
     src/state_manager.cpp

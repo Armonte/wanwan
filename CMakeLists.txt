@@ -232,7 +232,6 @@ add_executable(FM2K_RollbackLauncher
     FM2K_LauncherUI.cpp
     FM2K_GekkoNetBridge.cpp
     FM2K_Integration.h
-    FM2K_Hooks.h
     FM2K_DLLInjector.h
     FM2K_DLLInjector.cpp
     

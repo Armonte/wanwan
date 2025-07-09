@@ -11,11 +11,6 @@ typedef int (__cdecl *ProcessGameInputsFn)();
 typedef int (__cdecl *UpdateGameStateFn)();
 typedef int (__cdecl *RNGFn)();
 
-// Hook functions
-int __cdecl Hook_ProcessGameInputs();
-int __cdecl Hook_UpdateGameState();
-int __cdecl Hook_GameRand();
-
 // Initialization/cleanup
 bool Init(HANDLE process);
 void Shutdown();

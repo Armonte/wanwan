@@ -15,10 +15,10 @@ namespace Memory {
     constexpr uintptr_t P2_INPUT_HISTORY_ADDR   = 0x4290E0;
     constexpr uintptr_t INPUT_BUFFER_INDEX_ADDR = 0x447EE0;
 
-    // Timers & Counters
-    constexpr uintptr_t FRAME_NUMBER_ADDR       = 0x4259B8;
-    constexpr uintptr_t ROUND_TIMER_ADDR        = 0x470060;
-    constexpr uintptr_t GAME_TIMER_ADDR         = 0x470064;
+    // Timers & Counters (verified in IDA)
+    constexpr uintptr_t FRAME_NUMBER_ADDR       = 0x447EE0; // g_input_history_frame_index (actual frame counter)
+    constexpr uintptr_t ROUND_TIMER_ADDR        = 0x470060; // g_round_timer  
+    constexpr uintptr_t GAME_TIMER_ADDR         = 0x470044; // g_game_timer
 
     // Player State
     constexpr uintptr_t P1_STAGE_X_ADDR         = 0x470104;

@@ -50,14 +50,13 @@ bool GekkoNetBridge::InitializeLocalSession(const FM2KNetworkConfig& config) {
     }
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet session created successfully");
     
-    // Configure session for LOCAL MODE (following LocalSession.cpp pattern)
+    // Configure session for LOCAL MODE (exactly matching LocalSession.cpp pattern)
     GekkoConfig conf{};
     conf.num_players = 2;                           // FM2K is 2-player
     conf.input_size = sizeof(uint8_t);              // Use 8-bit inputs like LocalSession.cpp
-    conf.state_size = 0;                            // No state saving for local testing
     conf.max_spectators = 0;                        // No spectators for local testing
     conf.input_prediction_window = 0;               // No prediction needed for local testing
-    conf.desync_detection = false;                  // No desync detection for local testing
+    // DON'T set state_size or desync_detection - let them default to 0/false like LocalSession.cpp
     
     gekko_start(session_, &conf);
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet session started successfully");
@@ -322,16 +321,16 @@ void GekkoNetBridge::ProcessGameUpdates() {
 }
 
 void GekkoNetBridge::OnSaveState(GekkoGameEvent* event) {
-    // LOCAL mode with state_size=0 should not trigger save events
-    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "SaveState called in LOCAL mode - this should not happen");
-    
-    // For LOCAL mode, just return without saving state
+    // For LOCAL mode, just provide empty state data (no actual saving needed)
     if (event && event->data.save.state_len) {
         *event->data.save.state_len = 0;
     }
     if (event && event->data.save.checksum) {
         *event->data.save.checksum = 0;
     }
+    
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
+        "SaveState event handled (LOCAL mode - no actual state saving)");
 }
 
 void GekkoNetBridge::OnLoadState(GekkoGameEvent* event) {

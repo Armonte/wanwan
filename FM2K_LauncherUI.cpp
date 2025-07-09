@@ -14,13 +14,16 @@ LauncherUI::LauncherUI()
     , window_(nullptr)
     , scanning_games_(false)
     , games_root_path_("")
+    , selected_game_index_(-1)
     , current_theme_(UITheme::System)
 {
     // Initialize callbacks to nullptr
     on_game_selected = nullptr;
-    on_network_start = nullptr;
-    on_network_stop = nullptr;
+    on_offline_session_start = nullptr;
+    on_online_session_start = nullptr;
+    on_session_stop = nullptr;
     on_exit = nullptr;
+    on_games_folder_set = nullptr;
 }
 
 LauncherUI::~LauncherUI() {
@@ -116,319 +119,168 @@ void LauncherUI::NewFrame() {
 }
 
 void LauncherUI::Render() {
-    if (!renderer_) {
-        std::cerr << "Renderer is null in LauncherUI::Render!" << std::endl;
-        return;
-    }
+    // Set theme before rendering
+    SetTheme(current_theme_);
+    
+    // Dockspace setup
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::SetNextWindowViewport(viewport->ID);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
 
-    // Render UI elements
+    ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking;
+    window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
+    window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
+
+    ImGui::Begin("MainDockspace", nullptr, window_flags);
+    ImGui::PopStyleVar(3);
+
+    ImGuiID dockspace_id = ImGui::GetID("MyDockSpace");
+    ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
+
+    // Render components into docked windows
     RenderMenuBar();
-    
-    // Use a dockspace to create a flexible layout
-    ImGuiID dockspace_id = ImGui::DockSpaceOverViewport();
 
-    // For simplicity, we'll use a single layout, but this could be expanded
-    // to allow user-customizable layouts.
-    static bool first_time = true;
-    if (first_time) {
-        first_time = false;
-        ImGui::DockBuilderRemoveNode(dockspace_id);
-        ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
-        ImGui::DockBuilderSetNodeSize(dockspace_id, ImGui::GetMainViewport()->Size);
-
-        ImGuiID dock_main_id = dockspace_id;
-        ImGuiID dock_left_id = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Left, 0.4f, nullptr, &dock_main_id);
-        ImGuiID dock_right_id = ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Right, 0.6f, nullptr, &dock_main_id);
-        
-        ImGui::DockBuilderDockWindow("Game Selection", dock_left_id);
-        ImGui::DockBuilderDockWindow("Network Configuration", dock_right_id);
-        ImGui::DockBuilderDockWindow("Connection Status", dock_right_id);
-        ImGui::DockBuilderDockWindow("Rollback Diagnostics", dock_right_id);
-        ImGui::DockBuilderFinish(dockspace_id);
+    // Left Panel: Game Selection and Controls
+    if (ImGui::Begin("Games")) {
+        RenderGameSelection();
+        ImGui::Separator();
+        RenderNetworkConfig();
+        ImGui::Separator();
+        RenderSessionControls();
     }
-    
-    // Always render the game selection panel.
-    RenderGameSelection();
-    
-    switch (launcher_state_) {
-        case LauncherState::GameSelection:
-            // In selection mode, the network config panel shows a placeholder.
-            RenderNetworkConfig();
-            break;
-        case LauncherState::Configuration:
-            // In config mode, the network panel is active.
-            RenderNetworkConfig();
-            break;
-        case LauncherState::Connecting:
-        case LauncherState::InGame:
-            RenderConnectionStatus();
-            RenderInGameUI();
-            break;
-        case LauncherState::Disconnected:
-            RenderConnectionStatus();
-            RenderNetworkConfig(); // Show config again on disconnect
-            break;
-    }
+    ImGui::End();
 
-    // Render ImGui
-    ImGui::Render();
-    ImGuiIO& io = ImGui::GetIO();
-    SDL_SetRenderScale(renderer_, io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y);
-    ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer_);
-
-    // Update and Render additional Platform Windows
-    if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
-    {
-        ImGui::UpdatePlatformWindows();
-        ImGui::RenderPlatformWindowsDefault();
+    // Right Panel: Debug and Diagnostics
+    if (ImGui::Begin("Debug Tools")) {
+        RenderDebugTools();
     }
+    ImGui::End();
+    
+    ImGui::End(); // End MainDockspace
 }
 
 void LauncherUI::RenderMenuBar() {
-    if (ImGui::BeginMainMenuBar()) {
+    if (ImGui::BeginMenuBar()) {
         if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Refresh Games")) {
-                // Trigger game discovery refresh
-                // This would be handled by the launcher
+            if (ImGui::MenuItem("Select Games Folder...")) {
+                // ... folder selection logic ...
             }
-            ImGui::Separator();
-            if (ImGui::MenuItem("Exit")) {
+            if (ImGui::MenuItem("Exit", "Alt+F4")) {
                 if (on_exit) on_exit();
             }
             ImGui::EndMenu();
         }
-        
+        if (ImGui::BeginMenu("Session")) {
+            if (launcher_state_ == LauncherState::InGame || launcher_state_ == LauncherState::Connecting) {
+                if (ImGui::MenuItem("Disconnect")) {
+                    if (on_session_stop) on_session_stop();
+                }
+            } else {
+                ImGui::MenuItem("Disconnect", nullptr, false, false); // Disabled
+            }
+            ImGui::EndMenu();
+        }
         if (ImGui::BeginMenu("View")) {
-            if (ImGui::MenuItem("Dark Theme", nullptr, current_theme_ == UITheme::Dark)) {
-                SetTheme(UITheme::Dark);
-            }
-            if (ImGui::MenuItem("Light Theme", nullptr, current_theme_ == UITheme::Light)) {
-                SetTheme(UITheme::Light);
-            }
-            if (ImGui::MenuItem("Use System Theme", nullptr, current_theme_ == UITheme::System)) {
-                SetTheme(UITheme::System);
+            if (ImGui::BeginMenu("Theme")) {
+                if (ImGui::MenuItem("Dark")) SetTheme(UITheme::Dark);
+                if (ImGui::MenuItem("Light")) SetTheme(UITheme::Light);
+                if (ImGui::MenuItem("System")) SetTheme(UITheme::System);
+                ImGui::EndMenu();
             }
             ImGui::EndMenu();
         }
-        
-        if (ImGui::BeginMenu("Network")) {
-            if (ImGui::MenuItem("Disconnect", nullptr, false, network_stats_.connected)) {
-                if (on_network_stop) on_network_stop();
-            }
-            ImGui::EndMenu();
-        }
-        
-        if (ImGui::BeginMenu("Help")) {
-            if (ImGui::MenuItem("About")) {
-                // Show about dialog
-            }
-            ImGui::EndMenu();
-        }
-        
-        // Show connection status in menu bar
-        ImGui::SameLine(ImGui::GetWindowWidth() - 200);
-        if (network_stats_.connected) {
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Connected");
-            ImGui::SameLine();
-            ImGui::Text("Ping: %ums", network_stats_.ping);
-        } else {
-            ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "Disconnected");
-        }
-        
-        ImGui::EndMainMenuBar();
+        ImGui::EndMenuBar();
     }
 }
 
 void LauncherUI::RenderGameSelection() {
-    ImGui::Begin("Game Selection");
-    
-    // Show games root directory
+    ImGui::Text("Games Folder");
     static char path_buf[512] = {0};
-    static bool initialised_path = false;
-    if (!initialised_path) {
+    if (games_root_path_.c_str() != path_buf) {
         SDL_strlcpy(path_buf, games_root_path_.c_str(), sizeof(path_buf));
-        initialised_path = true;
     }
-
-    ImGui::InputText("Games Folder", path_buf, sizeof(path_buf));
+    ImGui::InputText("##GamesFolder", path_buf, sizeof(path_buf));
     ImGui::SameLine();
-    if (ImGui::Button("Set##GamesFolder")) {
+    if (ImGui::Button("Set")) {
         if (on_games_folder_set) {
             on_games_folder_set(path_buf);
-            SDL_strlcpy(path_buf, games_root_path_.c_str(), sizeof(path_buf));
         }
     }
-    
-    // Game list ? size to remaining content height so window can be freely resized
-    ImVec2 list_size = ImGui::GetContentRegionAvail();
-    if (ImGui::BeginListBox("##GameList", list_size)) {
-        if (games_.empty()) {
-            if (scanning_games_) {
-                ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Scanning for FM2K games...");
-                static float prog = 0.0f;
-                prog += ImGui::GetIO().DeltaTime * 0.5f; // Loop every 2s
-                if (prog > 1.0f) prog = 0.0f;
-                ImGui::ProgressBar(prog, ImVec2(-1, 0));
-            } else {
-                ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "No FM2K games found!");
-                ImGui::TextWrapped("Add your FM2K games (each with matching .exe and .kgt) inside sub-folders under the 'games' directory.");
+    ImGui::Separator();
+
+    ImGui::Text("Available FM2K Games");
+    ImGui::Separator();
+
+    ImGui::BeginChild("GameList", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 2)); // Reserve space for controls
+    if (scanning_games_) {
+        ImGui::Text("Scanning for games...");
+    } else if (games_.empty()) {
+        ImGui::Text("No games found in the specified directory.");
+        ImGui::Text("Please select a valid games folder.");
+    } else {
+        for (size_t i = 0; i < games_.size(); ++i) {
+            const auto& game = games_[i];
+            bool is_selected = (static_cast<int>(i) == selected_game_index_);
+
+            if (ImGui::Selectable(game.GetExeName().c_str(), is_selected)) {
+                selected_game_index_ = static_cast<int>(i);
+                if (on_game_selected) {
+                    on_game_selected(game);
+                }
             }
-        } else {
-            for (size_t idx = 0; idx < games_.size(); ++idx) {
-                const auto& game = games_[idx];
-                // Push a unique identifier to avoid ImGui ID conflicts even when display names repeat
-                ImGui::PushID(static_cast<int>(idx));
-                
-                // Derive display name by stripping directory and extension
-                const char* exe_path = game.exe_path.c_str();
-                char display_name[256] = {0};
-                SDL_strlcpy(display_name, exe_path, sizeof(display_name));
-                
-                // Remove directory
-                char* last_slash = SDL_strrchr(display_name, '/');
-                if (!last_slash) last_slash = SDL_strrchr(display_name, '\\');
-                if (last_slash) {
-                    size_t offset = last_slash - display_name + 1;
-                    SDL_memmove(display_name, last_slash + 1, SDL_strlen(last_slash + 1) + 1);
-                }
-                
-                // Remove extension
-                char* last_dot = SDL_strrchr(display_name, '.');
-                if (last_dot) *last_dot = '\0';
-
-                if (ImGui::Selectable(display_name)) {
-                    if (on_game_selected) {
-                        on_game_selected(game);
-                    }
-                }
-                
-                if (ImGui::IsItemHovered()) {
-                    ShowGameValidationStatus(game);
-                }
-
-                ImGui::PopID(); // Pop per-item ID
+            if (is_selected) {
+                ImGui::SetItemDefaultFocus();
             }
         }
-        ImGui::EndListBox();
     }
-    
-    ImGui::End();
+    ImGui::EndChild();
 }
 
 void LauncherUI::RenderNetworkConfig() {
-    // We now dock this window, so remove fixed positioning
-    //ImGui::SetNextWindowPos(ImVec2(100, 100), ImGuiCond_FirstUseEver);
-    //ImGui::SetNextWindowSize(ImVec2(500, 400), ImGuiCond_FirstUseEver);
+    ImGui::Text("Network Configuration");
+    ImGui::Separator();
     
-    if (ImGui::Begin("Network Configuration", nullptr, ImGuiWindowFlags_NoCollapse)) {
-        // Only show if a game has been selected
-        if (launcher_state_ == LauncherState::GameSelection) {
-            ImGui::TextWrapped("Select a game from the list to configure network settings.");
-        } else {
-            ImGui::Text("Configure network settings for online play:");
-            ImGui::Separator();
-            
-            // Local player selection
-            ImGui::Text("Local Player:");
-            ImGui::RadioButton("Player 1", &network_config_.local_player, 0);
-            ImGui::SameLine();
-            ImGui::RadioButton("Player 2", &network_config_.local_player, 1);
-            
-            ImGui::Separator();
-            
-            // Network settings
-            ImGui::Text("Network Settings:");
-            
-            // Local port
-            ImGui::InputInt("Local Port", &network_config_.local_port);
-            if (network_config_.local_port < 1024) network_config_.local_port = 1024;
-            if (network_config_.local_port > 65535) network_config_.local_port = 65535;
-            
-            // Remote address
-            static char remote_addr_buffer[256];
-            SDL_strlcpy(remote_addr_buffer, network_config_.remote_address.c_str(), sizeof(remote_addr_buffer));
-            
-            if (ImGui::InputText("Remote Address", remote_addr_buffer, sizeof(remote_addr_buffer))) {
-                network_config_.remote_address = remote_addr_buffer;
-            }
-            
-            // Input delay
-            ImGui::SliderInt("Input Delay (frames)", &network_config_.input_delay, 0, 10);
-            ImGui::SameLine();
-            ImGui::TextDisabled("(?)");
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Higher values reduce rollbacks but increase input lag");
-            }
-            
-            ImGui::Separator();
-            
-            // Spectator settings
-            ImGui::Text("Spectator Settings:");
-            ImGui::Checkbox("Enable Spectators", &network_config_.enable_spectators);
-            
-            if (network_config_.enable_spectators) {
-                ImGui::SliderInt("Max Spectators", &network_config_.max_spectators, 1, 16);
-            }
-            
-            ImGui::Separator();
-            
-            // Validation and start button
-            bool config_valid = ValidateNetworkConfig();
-            
-            if (!config_valid) {
-                ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "Invalid configuration");
-            }
-            
-            if (ImGui::Button("Start Network Session", ImVec2(-1, 0))) {
-                if (config_valid && on_network_start) {
-                    on_network_start(network_config_);
-                }
-            }
-            
-            if (launcher_state_ != LauncherState::GameSelection) {
-                if (ImGui::Button("Back to Game Selection", ImVec2(-1, 0))) {
-                    // This would be handled by the launcher state management
-                }
-            }
-        }
+    // Make network config always visible, removing state checks
+    ImGui::InputText("Local Address", &network_config_.local_address[0], network_config_.local_address.capacity());
+    ImGui::InputInt("Local Port", &network_config_.local_port);
+    ImGui::InputText("Remote Address", &network_config_.remote_address[0], network_config_.remote_address.capacity());
+    ImGui::InputInt("Local Player (0 or 1)", &network_config_.local_player);
+    ImGui::SliderInt("Input Delay", &network_config_.input_delay, 0, 10);
+    ImGui::Checkbox("Enable Spectators", &network_config_.enable_spectators);
+    if (network_config_.enable_spectators) {
+        ImGui::InputInt("Max Spectators", &network_config_.max_spectators);
     }
-    ImGui::End();
 }
 
 void LauncherUI::RenderConnectionStatus() {
-    // We now dock this window, so remove fixed positioning
-    //ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_FirstUseEver);
-    //ImGui::SetNextWindowSize(ImVec2(400, 200), ImGuiCond_FirstUseEver);
-    
-    if (ImGui::Begin("Connection Status", nullptr, ImGuiWindowFlags_NoCollapse)) {
-        if (network_stats_.connected) {
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "? Connected");
-            
-            ImGui::Separator();
-            ImGui::Text("Network Statistics:");
-            ImGui::Text("Ping: %u ms", network_stats_.ping);
-            ImGui::Text("Jitter: %u ms", network_stats_.jitter);
-            ImGui::Text("Frames Ahead: %u", network_stats_.frames_ahead);
-            ImGui::Text("Rollbacks/sec: %u", network_stats_.rollbacks_per_second);
-            
-        } else {
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "c Connecting...");
-            
-            // Simple connecting animation
-            static float progress = 0.0f;
-            progress += ImGui::GetIO().DeltaTime;
-            if (progress > 1.0f) progress = 0.0f;
-            
-            ImGui::ProgressBar(progress, ImVec2(-1, 0), "Establishing connection...");
-        }
-        
-        ImGui::Separator();
-        
-        if (ImGui::Button("Disconnect")) {
-            if (on_network_stop) on_network_stop();
-        }
+    if (launcher_state_ == LauncherState::Connecting) {
+        ImGui::OpenPopup("Connecting...");
     }
-    ImGui::End();
+
+    if (ImGui::BeginPopupModal("Connecting...", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Establishing connection, please wait...");
+        if (launcher_state_ != LauncherState::Connecting) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    
+    if (launcher_state_ == LauncherState::Disconnected) {
+        ImGui::OpenPopup("Disconnected");
+    }
+
+    if (ImGui::BeginPopupModal("Disconnected", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("The network connection was lost.");
+        if (ImGui::Button("OK")) {
+            if (on_session_stop) on_session_stop();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
 }
 
 void LauncherUI::RenderInGameUI() {
@@ -437,74 +289,74 @@ void LauncherUI::RenderInGameUI() {
         return;
     }
     
-    ShowNetworkDiagnostics();
+    // Network diagnostics are now shown in the debug tools panel
+    // This function is no longer needed but kept for backwards compatibility
 }
 
 void LauncherUI::ShowGameValidationStatus(const FM2K::FM2KGameInfo& game) {
+    ImGui::PushID(&game);
     if (game.is_host) {
-        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Valid");
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "  - Valid");
     } else {
-        ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "Invalid");
+        ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "  - Invalid");
     }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("EXE: %s\nKGT: %s", game.exe_path.c_str(), game.dll_path.c_str());
+    }
+    ImGui::PopID();
 }
 
 void LauncherUI::ShowNetworkDiagnostics() {
-    // We now dock this window, so remove fixed positioning
-    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 350, 50), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(300, 250), ImGuiCond_FirstUseEver);
+    // Remove window creation - this is now rendered inline within the debug tools panel
+    ImGui::Text("Network Performance:");
     
-    if (ImGui::Begin("Rollback Diagnostics", nullptr, ImGuiWindowFlags_NoCollapse)) {
-        ImGui::Text("Network Performance:");
+    // Network quality indicator
+    float quality = std::max(0.0f, std::min(1.0f, (100.0f - network_stats_.ping) / 100.0f));
+    ImVec4 quality_color = ImVec4(1.0f - quality, quality, 0.0f, 1.0f);
+    
+    ImGui::Text("Connection Quality:");
+    ImGui::SameLine();
+    ImGui::TextColored(quality_color, "%.0f%%", quality * 100.0f);
+    
+    ImGui::Separator();
+    
+    // Detailed stats
+    ImGui::Text("Ping: %u ms", network_stats_.ping);
+    ImGui::Text("Jitter: %u ms", network_stats_.jitter);
+    ImGui::Text("Frames Ahead: %u", network_stats_.frames_ahead);
+    
+    // Rollback information
+    ImGui::Separator();
+    ImGui::Text("Rollback Stats:");
+    ImGui::Text("Rollbacks/sec: %u", network_stats_.rollbacks_per_second);
+    
+    // Frame timing visualization
+    if (ImGui::CollapsingHeader("Frame Timeline")) {
+        ImGui::Text("Last 60 frames:");
         
-        // Network quality indicator
-        float quality = std::max(0.0f, std::min(1.0f, (100.0f - network_stats_.ping) / 100.0f));
-        ImVec4 quality_color = ImVec4(1.0f - quality, quality, 0.0f, 1.0f);
-        
-        ImGui::Text("Connection Quality:");
-        ImGui::SameLine();
-        ImGui::TextColored(quality_color, "%.0f%%", quality * 100.0f);
-        
-        ImGui::Separator();
-        
-        // Detailed stats
-        ImGui::Text("Ping: %u ms", network_stats_.ping);
-        ImGui::Text("Jitter: %u ms", network_stats_.jitter);
-        ImGui::Text("Frames Ahead: %u", network_stats_.frames_ahead);
-        
-        // Rollback information
-        ImGui::Separator();
-        ImGui::Text("Rollback Stats:");
-        ImGui::Text("Rollbacks/sec: %u", network_stats_.rollbacks_per_second);
-        
-        // Frame timing visualization
-        if (ImGui::CollapsingHeader("Frame Timeline")) {
-            ImGui::Text("Last 60 frames:");
-            
-            // Simple frame timeline visualization
-            for (int i = 0; i < 60; i++) {
-                if (i > 0) ImGui::SameLine();
+        // Simple frame timeline visualization
+        for (int i = 0; i < 60; i++) {
+            if (i > 0) ImGui::SameLine();
 
-                // Mock rollback data ? replace with real tracking in production
-                bool was_rollback = (i % 17) == 0;
+            // Mock rollback data ? replace with real tracking in production
+            bool was_rollback = (i % 17) == 0;
 
-                // Give each miniature button a unique ID to avoid conflicts
-                ImGui::PushID(i);
+            // Give each miniature button a unique ID to avoid conflicts
+            ImGui::PushID(i);
 
-                ImGui::PushStyleColor(ImGuiCol_Button,
-                                     was_rollback ? ImVec4(1.0f, 0.4f, 0.4f, 1.0f)
-                                                  : ImVec4(0.4f, 1.0f, 0.4f, 1.0f));
-                ImGui::Button("##frame", ImVec2(4, 20));
-                ImGui::PopStyleColor();
+            ImGui::PushStyleColor(ImGuiCol_Button,
+                                 was_rollback ? ImVec4(1.0f, 0.4f, 0.4f, 1.0f)
+                                              : ImVec4(0.4f, 1.0f, 0.4f, 1.0f));
+            ImGui::Button("##frame", ImVec2(4, 20));
+            ImGui::PopStyleColor();
 
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Frame %d: %s", i, was_rollback ? "Rollback" : "Normal");
-                }
-
-                ImGui::PopID();
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Frame %d: %s", i, was_rollback ? "Rollback" : "Normal");
             }
+
+            ImGui::PopID();
         }
     }
-    ImGui::End();
 }
 
 bool LauncherUI::ValidateNetworkConfig() {
@@ -571,4 +423,57 @@ void LauncherUI::SetTheme(UITheme theme) {
     } else {
         ImGui::StyleColorsLight();
     }
+} 
+
+void LauncherUI::RenderSessionControls() {
+    ImGui::Text("Session Controls");
+    ImGui::Separator();
+
+    // "Start Offline" button is always enabled if a game is selected
+    if (ImGui::Button("Start Offline Session", ImVec2(-1, 0))) {
+        if (selected_game_index_ != -1 && on_offline_session_start) {
+            on_offline_session_start();
+        }
+    }
+    if (selected_game_index_ == -1) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(select a game)");
+    }
+
+    // "Start Online" button
+    if (ImGui::Button("Start Online Session", ImVec2(-1, 0))) {
+        if (selected_game_index_ != -1 && on_online_session_start) {
+            // TODO: Add validation for network config
+            on_online_session_start(network_config_);
+        }
+    }
+    if (selected_game_index_ == -1) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(select a game)");
+    }
+    
+    // "Stop Session" button
+    if (launcher_state_ == LauncherState::InGame || launcher_state_ == LauncherState::Connecting) {
+        if (ImGui::Button("Stop Session", ImVec2(-1, 0))) {
+            if (on_session_stop) {
+                on_session_stop();
+            }
+        }
+    }
+}
+
+void LauncherUI::RenderDebugTools() {
+    ImGui::Text("Debugging & Diagnostics");
+    ImGui::Separator();
+
+    if (launcher_state_ == LauncherState::InGame) {
+        ShowNetworkDiagnostics();
+    } else {
+        ImGui::Text("No active session.");
+    }
+    
+    // Future additions:
+    // - Memory viewer
+    // - State save/load buttons
+    // - Rollback controls
 } 

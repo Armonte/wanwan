@@ -191,7 +191,6 @@ namespace FM2K {
 // Launcher states
 enum class LauncherState {
     GameSelection,      // Selecting which FM2K game to launch
-    Configuration,      // Setting up network/input options
     Connecting,         // Establishing network connection
     InGame,            // Game running with rollback active
     Disconnected       // Connection lost, can reconnect
@@ -248,8 +247,10 @@ public:
     
     bool LaunchGame(const FM2K::FM2KGameInfo& game);
     void TerminateGame();
-    bool StartNetworkSession(const NetworkConfig& config);
-    void StopNetworkSession();
+
+    void StartOfflineSession();
+    void StartOnlineSession(const NetworkConfig& config);
+    void StopSession();
     
     std::vector<FM2K::FM2KGameInfo> DiscoverGames();
     const std::vector<FM2K::FM2KGameInfo>& GetDiscoveredGames() const { return discovered_games_; }
@@ -261,6 +262,7 @@ public:
     // Games directory management
     const std::string& GetGamesRootPath() const { return games_root_path_; }
     void SetGamesRootPath(const std::string& path);
+    void SetSelectedGame(const FM2K::FM2KGameInfo& game);
     
     // ----- Asynchronous game discovery -----
     SDL_Thread* discovery_thread_ = nullptr; // Worker thread handle
@@ -285,6 +287,7 @@ private:
     std::unique_ptr<FM2KGameInstance> game_instance_;
     std::unique_ptr<NetworkSession> network_session_;
     std::vector<FM2K::FM2KGameInfo> discovered_games_;
+    FM2K::FM2KGameInfo selected_game_;
     NetworkConfig network_config_;
     LauncherState current_state_;
     bool running_;
@@ -307,17 +310,6 @@ class NetworkSession {
 public:
     NetworkSession();
     ~NetworkSession();
-    
-    // Network configuration
-    struct NetworkConfig {
-        SessionMode session_mode;
-        std::string remote_address;
-        uint16_t local_port;
-        uint16_t remote_port;
-        uint8_t input_delay;
-        uint8_t max_spectators;
-        int local_player;  // 0 or 1 (for ONLINE mode)
-    };
     
     // Network statistics
     struct NetworkStats {
@@ -411,8 +403,9 @@ public:
     
     // UI state callbacks
     std::function<void(const FM2K::FM2KGameInfo&)> on_game_selected;
-    std::function<void(const NetworkConfig&)> on_network_start;
-    std::function<void()> on_network_stop;
+    std::function<void()> on_offline_session_start;
+    std::function<void(const NetworkConfig&)> on_online_session_start;
+    std::function<void()> on_session_stop;
     std::function<void()> on_exit;
     std::function<void(const std::string&)> on_games_folder_set;
     
@@ -441,6 +434,8 @@ private:
     void RenderConnectionStatus();
     void RenderInGameUI();
     void RenderMenuBar();
+    void RenderSessionControls();
+    void RenderDebugTools();
     
     // Helper methods
     void ShowGameValidationStatus(const FM2K::FM2KGameInfo& game);
@@ -451,5 +446,6 @@ private:
     void SetTheme(UITheme theme);
     UITheme current_theme_;
 
+    int selected_game_index_ = -1; // -1 means no selection
     bool scanning_games_ = false;  // True while background discovery is running
 }; 

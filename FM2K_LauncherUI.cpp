@@ -48,36 +48,33 @@ bool LauncherUI::Initialize(SDL_Window* window, SDL_Renderer* renderer) {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;         // Enable Docking
     
-    // Setup Dear ImGui style based on theme
-    SetTheme(current_theme_);
+    // NUCLEAR: Remove ALL custom font/scaling code - use pure default ImGui setup
+    // No custom fonts, no scaling, no theme - just bare minimum
     
-    // Setup scaling
-    float main_scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
-    ImGuiStyle& style = ImGui::GetStyle();
-    style.ScaleAllSizes(main_scale);        // Bake a fixed style scale
-    style.FontScaleDpi = main_scale;        // Set initial font scale
+    // Setup Dear ImGui style - ONLY default theme
+    ImGui::StyleColorsDark();  // Just use dark theme directly, no custom logic
     
-    // Load font
-    const float font_size = 16.0f * main_scale;
-    const char* font_paths[] = {
-        "vendored/imgui/misc/fonts/DroidSans.ttf",
-        "C:/Windows/Fonts/segoeui.ttf"  // Fallback to Segoe UI on Windows
-    };
-    
-    bool font_loaded = false;
-    for (const char* font_path : font_paths) {
-        if (SDL_GetPathInfo(font_path, nullptr)) {
-            ImFont* font = io.Fonts->AddFontFromFileTTF(font_path, font_size);
-            if (font != nullptr) {
-                font_loaded = true;
-                break;
-            }
-        }
-    }
-    
-    if (!font_loaded) {
-        io.Fonts->AddFontDefault();
-    }
+    // TODO: Re-enable custom font loading once font stack issue is resolved
+    // const float font_size = 16.0f * main_scale;
+    // const char* font_paths[] = {
+    //     "vendored/imgui/misc/fonts/DroidSans.ttf",
+    //     "C:/Windows/Fonts/segoeui.ttf"  // Fallback to Segoe UI on Windows
+    // };
+    // 
+    // bool font_loaded = false;
+    // for (const char* font_path : font_paths) {
+    //     if (SDL_GetPathInfo(font_path, nullptr)) {
+    //         ImFont* font = io.Fonts->AddFontFromFileTTF(font_path, font_size);
+    //         if (font != nullptr) {
+    //             font_loaded = true;
+    //             break;
+    //         }
+    //     }
+    // }
+    // 
+    // if (!font_loaded) {
+    //     io.Fonts->AddFontDefault();
+    // }
     
     // Setup Platform/Renderer backends
     if (!ImGui_ImplSDL3_InitForSDLRenderer(window, renderer)) {
@@ -119,33 +116,23 @@ void LauncherUI::NewFrame() {
 }
 
 void LauncherUI::Render() {
-    // Set theme before rendering
-    SetTheme(current_theme_);
+    // Only set theme if it has changed (not every frame)
+    // SetTheme is now only called when theme changes in Initialize() or menu selection
     
-    // Dockspace setup
-    const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(viewport->WorkSize);
-    ImGui::SetNextWindowViewport(viewport->ID);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-
-    ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking;
-    window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
-    window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
-
-    ImGui::Begin("MainDockspace", nullptr, window_flags);
-    ImGui::PopStyleVar(3);
-
-    ImGuiID dockspace_id = ImGui::GetID("MyDockSpace");
-    ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
-
-    // Render components into docked windows
+    // Render menu bar at application level FIRST
     RenderMenuBar();
-
-    // Left Panel: Game Selection and Controls
-    if (ImGui::Begin("Games")) {
+    
+    // NUCLEAR OPTION: Simple side-by-side layout without dockspace
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImVec2 work_pos = viewport->WorkPos;
+    ImVec2 work_size = viewport->WorkSize;
+    
+    // Left Panel: Game Selection and Configuration (60% width)
+    ImGui::SetNextWindowPos(work_pos);
+    ImGui::SetNextWindowSize(ImVec2(work_size.x * 0.6f, work_size.y));
+    ImGuiWindowFlags panel_flags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
+    
+    if (ImGui::Begin("Games & Configuration", nullptr, panel_flags)) {
         RenderGameSelection();
         ImGui::Separator();
         RenderNetworkConfig();
@@ -154,17 +141,18 @@ void LauncherUI::Render() {
     }
     ImGui::End();
 
-    // Right Panel: Debug and Diagnostics
-    if (ImGui::Begin("Debug Tools")) {
+    // Right Panel: Debug and Diagnostics (40% width)
+    ImGui::SetNextWindowPos(ImVec2(work_pos.x + work_size.x * 0.6f, work_pos.y));
+    ImGui::SetNextWindowSize(ImVec2(work_size.x * 0.4f, work_size.y));
+    
+    if (ImGui::Begin("Debug & Diagnostics", nullptr, panel_flags)) {
         RenderDebugTools();
     }
     ImGui::End();
-    
-    ImGui::End(); // End MainDockspace
 }
 
 void LauncherUI::RenderMenuBar() {
-    if (ImGui::BeginMenuBar()) {
+    if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("Select Games Folder...")) {
                 // ... folder selection logic ...
@@ -185,15 +173,16 @@ void LauncherUI::RenderMenuBar() {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("View")) {
-            if (ImGui::BeginMenu("Theme")) {
-                if (ImGui::MenuItem("Dark")) SetTheme(UITheme::Dark);
-                if (ImGui::MenuItem("Light")) SetTheme(UITheme::Light);
-                if (ImGui::MenuItem("System")) SetTheme(UITheme::System);
-                ImGui::EndMenu();
-            }
+            // Theme menu temporarily disabled to eliminate font stack issues
+            // if (ImGui::BeginMenu("Theme")) {
+            //     if (ImGui::MenuItem("Dark")) SetTheme(UITheme::Dark);
+            //     if (ImGui::MenuItem("Light")) SetTheme(UITheme::Light);
+            //     if (ImGui::MenuItem("System")) SetTheme(UITheme::System);
+            //     ImGui::EndMenu();
+            // }
             ImGui::EndMenu();
         }
-        ImGui::EndMenuBar();
+        ImGui::EndMainMenuBar();
     }
 }
 
@@ -203,6 +192,9 @@ void LauncherUI::RenderGameSelection() {
     if (games_root_path_.c_str() != path_buf) {
         SDL_strlcpy(path_buf, games_root_path_.c_str(), sizeof(path_buf));
     }
+    
+    // Create a focus scope for the input group
+    ImGui::PushID("GamesFolder");
     ImGui::InputText("##GamesFolder", path_buf, sizeof(path_buf));
     ImGui::SameLine();
     if (ImGui::Button("Set")) {
@@ -210,34 +202,50 @@ void LauncherUI::RenderGameSelection() {
             on_games_folder_set(path_buf);
         }
     }
+    ImGui::PopID();
+    
     ImGui::Separator();
-
     ImGui::Text("Available FM2K Games");
     ImGui::Separator();
 
-    ImGui::BeginChild("GameList", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 2)); // Reserve space for controls
     if (scanning_games_) {
         ImGui::Text("Scanning for games...");
     } else if (games_.empty()) {
         ImGui::Text("No games found in the specified directory.");
         ImGui::Text("Please select a valid games folder.");
     } else {
+        // Simple list without child window to avoid focus scope conflicts
         for (size_t i = 0; i < games_.size(); ++i) {
             const auto& game = games_[i];
+            if (!game.is_host) {
+                continue; // Skip invalid entries
+            }
+            
             bool is_selected = (static_cast<int>(i) == selected_game_index_);
-
+            
+            // Use PushID with integer to avoid string pointer issues
+            ImGui::PushID(static_cast<int>(i));
+            
             if (ImGui::Selectable(game.GetExeName().c_str(), is_selected)) {
                 selected_game_index_ = static_cast<int>(i);
                 if (on_game_selected) {
                     on_game_selected(game);
                 }
             }
+            
             if (is_selected) {
                 ImGui::SetItemDefaultFocus();
             }
+            
+            // Temporarily remove tooltips to isolate font stack issue
+            // TODO: Re-implement tooltips once font stack issue is resolved
+            // if (ImGui::IsItemHovered()) {
+            //     ImGui::SetTooltip("EXE: %s\nKGT: %s", game.exe_path.c_str(), game.dll_path.c_str());
+            // }
+            
+            ImGui::PopID();
         }
     }
-    ImGui::EndChild();
 }
 
 void LauncherUI::RenderNetworkConfig() {
@@ -293,18 +301,8 @@ void LauncherUI::RenderInGameUI() {
     // This function is no longer needed but kept for backwards compatibility
 }
 
-void LauncherUI::ShowGameValidationStatus(const FM2K::FM2KGameInfo& game) {
-    ImGui::PushID(&game);
-    if (game.is_host) {
-        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "  - Valid");
-    } else {
-        ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "  - Invalid");
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("EXE: %s\nKGT: %s", game.exe_path.c_str(), game.dll_path.c_str());
-    }
-    ImGui::PopID();
-}
+// Note: ShowGameValidationStatus removed ? UI simplified
+/* void LauncherUI::ShowGameValidationStatus(const FM2K::FM2KGameInfo& game) {} */
 
 void LauncherUI::ShowNetworkDiagnostics() {
     // Remove window creation - this is now rendered inline within the debug tools panel
@@ -350,9 +348,10 @@ void LauncherUI::ShowNetworkDiagnostics() {
             ImGui::Button("##frame", ImVec2(4, 20));
             ImGui::PopStyleColor();
 
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Frame %d: %s", i, was_rollback ? "Rollback" : "Normal");
-            }
+            // Tooltip temporarily disabled to eliminate font stack issues
+            // if (ImGui::IsItemHovered()) {
+            //     ImGui::SetTooltip("Frame %d: %s", i, was_rollback ? "Rollback" : "Normal");
+            // }
 
             ImGui::PopID();
         }
@@ -406,6 +405,11 @@ void LauncherUI::SetGamesRootPath(const std::string& path) {
 
 // NOTE: This is the correctly scoped implementation for the SetTheme method
 void LauncherUI::SetTheme(UITheme theme) {
+    // Only apply theme if it actually changed to avoid font stack issues
+    if (current_theme_ == theme) {
+        return; // No change needed
+    }
+    
     current_theme_ = theme;
     
     UITheme theme_to_apply = theme;
@@ -418,6 +422,7 @@ void LauncherUI::SetTheme(UITheme theme) {
         }
     }
     
+    // Only call ImGui style functions when theme actually changes
     if (theme_to_apply == UITheme::Dark) {
         ImGui::StyleColorsDark();
     } else {
@@ -426,54 +431,75 @@ void LauncherUI::SetTheme(UITheme theme) {
 } 
 
 void LauncherUI::RenderSessionControls() {
-    ImGui::Text("Session Controls");
+    ImGui::Text("Session Management");
     ImGui::Separator();
 
-    // "Start Offline" button is always enabled if a game is selected
+    bool game_selected = selected_game_index_ != -1;
+
+    // Disable start buttons if no game is selected
+    if (!game_selected) {
+        ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
+    }
+
     if (ImGui::Button("Start Offline Session", ImVec2(-1, 0))) {
-        if (selected_game_index_ != -1 && on_offline_session_start) {
+        if (on_offline_session_start) {
             on_offline_session_start();
         }
     }
-    if (selected_game_index_ == -1) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("(select a game)");
-    }
 
-    // "Start Online" button
     if (ImGui::Button("Start Online Session", ImVec2(-1, 0))) {
-        if (selected_game_index_ != -1 && on_online_session_start) {
-            // TODO: Add validation for network config
+        if (on_online_session_start) {
             on_online_session_start(network_config_);
         }
     }
-    if (selected_game_index_ == -1) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("(select a game)");
+
+    if (!game_selected) {
+        ImGui::PopItemFlag();
+        ImGui::PopStyleVar();
     }
+
+    ImGui::Separator();
+
+    bool session_active = (launcher_state_ == LauncherState::InGame || launcher_state_ == LauncherState::Connecting);
     
-    // "Stop Session" button
-    if (launcher_state_ == LauncherState::InGame || launcher_state_ == LauncherState::Connecting) {
-        if (ImGui::Button("Stop Session", ImVec2(-1, 0))) {
-            if (on_session_stop) {
-                on_session_stop();
-            }
+    if (!session_active) {
+        ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
+    }
+
+    if (ImGui::Button("Stop Session", ImVec2(-1, 0))) {
+        if (on_session_stop) {
+            on_session_stop();
         }
+    }
+
+    if (!session_active) {
+        ImGui::PopItemFlag();
+        ImGui::PopStyleVar();
     }
 }
 
 void LauncherUI::RenderDebugTools() {
-    ImGui::Text("Debugging & Diagnostics");
+    ImGui::Text("Rollback & State");
     ImGui::Separator();
 
-    if (launcher_state_ == LauncherState::InGame) {
-        ShowNetworkDiagnostics();
-    } else {
-        ImGui::Text("No active session.");
+    if (ImGui::Button("Manual Save State")) {
+        // TODO: Hook up to GekkoNet/Session Manager
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Manual Load State")) {
+        // TODO: Hook up to GekkoNet/Session Manager
+    }
+
+    static int rollback_frames = 0;
+    ImGui::InputInt("Force Rollback Frames", &rollback_frames);
+    ImGui::SameLine();
+    if (ImGui::Button("Force")) {
+        // TODO: Hook up to GekkoNet/Session Manager
     }
     
-    // Future additions:
-    // - Memory viewer
-    // - State save/load buttons
-    // - Rollback controls
+    ImGui::Separator();
+    
+    ShowNetworkDiagnostics();
 } 

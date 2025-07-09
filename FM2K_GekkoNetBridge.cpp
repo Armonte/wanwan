@@ -185,7 +185,7 @@ void GekkoNetBridge::Update(float delta_time) {
     
     // Process frames when enough time has accumulated
     while (accumulator_ >= target_frame_time_) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
             "ONLINE: Processing frame: accumulator=%.3f, target_frame_time=%.3f", 
             accumulator_, target_frame_time_);
         
@@ -290,13 +290,13 @@ void GekkoNetBridge::ProcessGameUpdates() {
     auto updates = gekko_update_session(session_, &update_count);
     
     // Debug: Always log the update count
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
         "ProcessGameUpdates: gekko_update_session returned %d events", update_count);
     
     for (int i = 0; i < update_count; i++) {
         auto event = updates[i];
         
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
             "Processing GekkoNet event %d: type=%d", i, event->type);
         
         switch (event->type) {
@@ -364,7 +364,7 @@ void GekkoNetBridge::OnAdvanceFrame(GekkoGameEvent* event) {
     uint8_t p1_gekko = event->data.adv.inputs[0];
     uint8_t p2_gekko = event->data.adv.inputs[1];
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
         "GekkoNet AdvanceEvent: Frame %d with inputs P1:0x%02x P2:0x%02x", 
         event->data.adv.frame, p1_gekko, p2_gekko);
     

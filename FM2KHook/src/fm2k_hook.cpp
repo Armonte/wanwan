@@ -30,7 +30,7 @@ static int __cdecl Hook_ProcessGameInputs() {
     uint32_t current_frame = SDL_GetAtomicInt(&g_frame_counter);
     
     // Log ALL calls for now to track execution
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
         "[Hook] process_game_inputs ENTRY - frame %u", current_frame);
 
     // Call original function to ensure game state is updated
@@ -96,7 +96,7 @@ static int __cdecl Hook_ProcessGameInputs() {
             current_frame, SDL_GetError());
     }
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
         "[Hook] process_game_inputs EXIT - frame %u", current_frame);
     
     // Return the same value as original function
@@ -104,7 +104,7 @@ static int __cdecl Hook_ProcessGameInputs() {
 }
 
 static int __cdecl Hook_UpdateGameState() {
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[Hook] update_game_state ENTRY");
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "[Hook] update_game_state ENTRY");
     
     // Call original first
     SDL_LogVerbose(SDL_LOG_CATEGORY_APPLICATION, 
@@ -157,7 +157,7 @@ static int __cdecl Hook_UpdateGameState() {
         }
     }
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[Hook] update_game_state EXIT");
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "[Hook] update_game_state EXIT");
     
     // Return appropriate value (original returns an int)
     return 0;

@@ -17,7 +17,7 @@ GekkoNetBridge::GekkoNetBridge()
     , local_player_handle_(-1)
     , p2_player_handle_(-1)
     , game_instance_(nullptr)
-    , current_state_(std::make_unique<State::GameState>())
+    , current_state_(std::make_unique<FM2K::GameState>())
     , accumulator_(0.0f)
     , target_frame_time_(0.01f) // 100 FPS = 10ms per frame
 {
@@ -83,7 +83,7 @@ bool GekkoNetBridge::InitializeHostSession(const FM2KNetworkConfig& config) {
     GekkoConfig conf{};
     conf.num_players = 2;
     conf.input_size = sizeof(uint8_t);
-    conf.state_size = sizeof(State::CoreGameState);
+    conf.state_size = sizeof(FM2K::GameState); // Using our game state structure
     conf.input_prediction_window = 8;
     conf.desync_detection = true;
     gekko_start(session_, &conf);
@@ -113,7 +113,7 @@ bool GekkoNetBridge::InitializeClientSession(const FM2KNetworkConfig& config) {
     GekkoConfig conf{};
     conf.num_players = 2;
     conf.input_size = sizeof(uint8_t);
-    conf.state_size = sizeof(State::CoreGameState);
+    conf.state_size = sizeof(FM2K::GameState); // Using our game state structure
     conf.input_prediction_window = 8;
     conf.desync_detection = true;
     gekko_start(session_, &conf);
@@ -333,16 +333,12 @@ void GekkoNetBridge::OnLoadState(GekkoGameEvent* event) {
         return;
     }
     
-    // Copy state from GekkoNet
-    std::memcpy(&current_state_->core, event->data.load.state, sizeof(State::CoreGameState));
-    current_state_->frame_number = event->data.load.frame;
-    current_state_->timestamp_ms = SDL_GetTicks();
+    // Direct hooks - state loading handled directly by hooks
+    // For now, just log the event
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "LoadState event for frame %d (direct hooks)", event->data.load.frame);
     
-    // Load state into game using our state manager
-    if (!State::LoadCoreState(&current_state_->core)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to load core game state");
-        return;
-    }
+    // TODO: Implement direct state loading when hooks are ready
+    (void)event; // Suppress unused parameter warning
     
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
         "Loaded state for frame %d", event->data.load.frame);

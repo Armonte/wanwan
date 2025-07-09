@@ -232,18 +232,8 @@ add_executable(FM2K_RollbackLauncher
     FM2K_LauncherUI.cpp
     FM2K_GekkoNetBridge.cpp
     FM2K_Integration.h
-    FM2K_DLLInjector.h
-    FM2K_DLLInjector.cpp
-    
-    
-
-    # IPC shared with hook DLL
-    FM2KHook/src/ipc.cpp
-    FM2KHook/src/ipc.h
-    
-    # State management shared with hook DLL
-    FM2KHook/src/state_manager.cpp
-    FM2KHook/src/state_manager.h
+    FM2K_DirectHooks.h
+    FM2K_DirectHooks.cpp
     
     # ImGui sources
     ${IMGUI_SOURCES}

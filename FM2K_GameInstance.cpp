@@ -1,8 +1,6 @@
 #include "FM2K_GameInstance.h"
 #include "FM2K_Integration.h"
-#include "FM2K_DLLInjector.h"
-#include "FM2KHook/src/ipc.h"
-#include "FM2KHook/src/state_manager.h"
+#include "FM2K_DirectHooks.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <filesystem>
@@ -48,7 +46,6 @@ FM2KGameInstance::FM2KGameInstance()
 
 FM2KGameInstance::~FM2KGameInstance() {
     Terminate();
-    FM2K::IPC::Shutdown();
 }
 
 bool FM2KGameInstance::Initialize() {
@@ -78,21 +75,7 @@ bool FM2KGameInstance::Launch(const FM2K::FM2KGameInfo& game) {
         return false;
     }
 
-    // Look for FM2KHook.dll beside the launcher executable
-    wchar_t buffer[MAX_PATH] = { 0 };
-    GetModuleFileNameW(NULL, buffer, MAX_PATH);
-    std::filesystem::path launcher_path(buffer);
-    std::filesystem::path hook_dll_path_fs = launcher_path.parent_path() / "FM2KHook.dll";
-    std::string hook_dll_path = hook_dll_path_fs.string();
-
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Looking for FM2KHook.dll at: %s", hook_dll_path.c_str());
-
-    if (!SDL_GetPathInfo(hook_dll_path.c_str(), nullptr)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-            "FM2KHook.dll not found beside launcher: %s (%s)",
-            hook_dll_path.c_str(), SDL_GetError());
-        return false;
-    }
+    // No DLL required for direct hooking
 
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Creating game process in suspended state...");
 
@@ -121,7 +104,7 @@ bool FM2KGameInstance::Launch(const FM2K::FM2KGameInfo& game) {
         nullptr,                   // Process handle not inheritable
         nullptr,                   // Thread handle not inheritable
         FALSE,                     // Set handle inheritance to FALSE
-        CREATE_SUSPENDED,          // Create in suspended state
+        0,                         // Normal process creation (not suspended)
         nullptr,                   // Use parent's environment block
         wide_working_dir.c_str(), // Use game's directory as starting directory
         &si,                       // Pointer to STARTUPINFO structure
@@ -139,8 +122,8 @@ bool FM2KGameInstance::Launch(const FM2K::FM2KGameInfo& game) {
 
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Process created with ID: %lu", process_id_);
 
-    // Setup process for hooking (inject DLL, etc)
-    if (!SetupProcessForHooking(hook_dll_path)) {
+    // Setup process for hooking (direct hooks)
+    if (!SetupProcessForHooking("")) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to setup process for hooking");
         TerminateProcess(process_handle_, 1);
         CloseHandle(process_info_.hProcess);
@@ -148,24 +131,12 @@ bool FM2KGameInstance::Launch(const FM2K::FM2KGameInfo& game) {
         return false;
     }
 
-    // Resume the process
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Resuming process thread...");
-    ResumeThread(process_info_.hThread);
+    // Process is running normally (not suspended)
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Game process launched successfully");
     
-    // Wait a moment for the hook DLL to initialize and create IPC shared memory
-    SDL_Delay(500); // 500ms should be enough
-    
-    // Now initialize IPC connection to read events from the injected DLL
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launcher: Connecting to hook DLL IPC...");
-    if (!FM2K::IPC::Init()) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-            "LAUNCHER: Failed to connect to IPC system - hook may not be initialized");
-        // Don't fail the launch, just log the error
-    } else {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launcher: Successfully connected to IPC");
-    }
+    // Direct hooks are now installed - no IPC needed
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Direct hooks active - no IPC required");
     
     return true;
 }
@@ -189,52 +160,19 @@ void FM2KGameInstance::Terminate() {
 }
 
 bool FM2KGameInstance::InstallHooks() {
-    // Note: Hooks are actually installed by the injected DLL (FM2KHook.dll)
-    // This function is called after DLL injection to verify hooks are working
-    
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Waiting for hook installation confirmation...");
-    
-    // Wait for initialization event from DLL for up to 5 seconds
-    const Uint32 timeout_ms = 5000;
-    const Uint32 start_time = SDL_GetTicks();
-    
-    while (SDL_GetTicks() - start_time < timeout_ms) {
-        SDL_Event event;
-        while (SDL_PollEvent(&event)) {
-            // Check for custom events from the DLL
-            if (event.type >= SDL_EVENT_USER) {
-                Uint32 event_code = event.user.code;
-                
-                if (event_code == 0) { // HOOKS_INITIALIZED
-                    bool success = reinterpret_cast<uintptr_t>(event.user.data1) != 0;
-                    if (success) {
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                            "Hooks installation confirmed by DLL");
-                        return true;
-                    } else {
-                        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, 
-                            "Hook installation failed according to DLL");
-                        return false;
-                    }
-                } else {
-                    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
-                        "Received other event from DLL: code %u", event_code);
-                }
-            }
-        }
-        
-        // Small delay to avoid busy waiting
-        SDL_Delay(10);
+    // Direct hooks are already installed in SetupProcessForHooking
+    if (FM2K::DirectHooks::IsHookSystemActive()) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Direct hooks are active");
+        return true;
+    } else {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Direct hooks are not active");
+        return false;
     }
-    
-    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, 
-        "Timeout waiting for hook installation confirmation, assuming success");
-    return true;
 }
 
 bool FM2KGameInstance::UninstallHooks() {
-    // Note: Hooks are uninstalled by the DLL when it's unloaded
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Hooks uninstallation delegated to DLL unload");
+    FM2K::DirectHooks::UninstallHooks();
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Direct hooks uninstalled");
     return true;
 }
 
@@ -273,8 +211,7 @@ bool FM2KGameInstance::AdvanceFrame() {
     // No need to call remote functions - the hook does this automatically
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "AdvanceFrame called - letting hook handle frame advancement");
 
-    // Process any pending IPC events
-    ProcessIPCEvents();
+    // Direct hooks - no IPC events to process
 
     return true;
 }
@@ -287,19 +224,15 @@ void FM2KGameInstance::InjectInputs(uint32_t p1_input, uint32_t p2_input) {
 }
 
 bool FM2KGameInstance::SetupProcessForHooking(const std::string& dll_path) {
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Setting up process for hooking...");
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Setting up process for direct hooking...");
 
-    // Convert dll_path to wstring for Windows API
-    std::wstring wide_dll_path = UTF8ToWide(dll_path);
-    
-    // Inject the DLL into the target process
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Injecting FM2KHook.dll...");
-    if (!FM2K::DLLInjector::InjectAndInit(process_handle_, wide_dll_path)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to inject FM2KHook.dll");
+    // Install direct hooks into the running process
+    if (!FM2K::DirectHooks::InstallHooks(process_handle_)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to install direct hooks");
         return false;
     }
-
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Successfully injected FM2KHook.dll");
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Direct hook setup complete");
     return true;
 }
 
@@ -310,30 +243,10 @@ bool FM2KGameInstance::LoadGameExecutable(const std::filesystem::path& exe_path)
 }
 
 void FM2KGameInstance::ProcessIPCEvents() {
-    // First process IPC events from the hook DLL
-    FM2K::IPC::Event ipc_event;
-    int events_processed = 0;
-    while (FM2K::IPC::PollEvent(&ipc_event)) {
-        HandleIPCEvent(ipc_event);
-        events_processed++;
-        
-        // Prevent infinite loop in case of issues
-        if (events_processed > 1000) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, 
-                "Too many IPC events in single frame - breaking");
-            break;
-        }
-    }
+    // Direct hooks - no IPC events to process
+    // Frame counting and state management happens directly in hooks
     
-    // Reduced logging - only log significant processing
-    static int total_processed = 0;
-    total_processed += events_processed;
-    if (total_processed % 1000 == 0 && events_processed > 0) {
-        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
-            "Processed %d total IPC events", total_processed);
-    }
-    
-    // Then process SDL events
+    // Process SDL events (for UI)
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         // Process custom events from the injected DLL
@@ -399,47 +312,9 @@ void FM2KGameInstance::HandleDLLEvent(const SDL_Event& event) {
 }
 
 void FM2KGameInstance::HandleIPCEvent(const FM2K::IPC::Event& event) {
-    switch (event.type) {
-        case FM2K::IPC::EventType::FRAME_ADVANCED:
-            OnFrameAdvanced(event);
-            break;
-            
-        case FM2K::IPC::EventType::STATE_SAVED:
-            OnStateSaved(event);
-            break;
-            
-        case FM2K::IPC::EventType::STATE_LOADED:
-            OnStateLoaded(event);
-            break;
-            
-        case FM2K::IPC::EventType::VISUAL_STATE_CHANGED:
-            OnVisualStateChanged(event);
-            break;
-            
-        case FM2K::IPC::EventType::INPUT_CAPTURED:
-        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-            "input captured");
-            OnInputCaptured(event);
-
-            break;
-            
-        case FM2K::IPC::EventType::HOOK_ERROR:
-            OnHookError(event);
-            break;
-            
-        case FM2K::IPC::EventType::LOG_MESSAGE:
-            // Route the log from the DLL to the launcher's own SDL log.
-            SDL_LogMessage(event.data.log.category, 
-                           (SDL_LogPriority)event.data.log.priority, 
-                           "[HOOK DLL] %s", 
-                           event.data.log.message);
-            break;
-
-        default:
-            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-                "Unknown IPC event type: %d", static_cast<int>(event.type));
-            break;
-    }
+    // Direct hooks - no IPC events to handle
+    // This function is kept for compatibility but does nothing
+    (void)event; // Suppress unused parameter warning
 }
 
 // Helper function to execute a function in the game process
@@ -466,51 +341,24 @@ bool FM2KGameInstance::ExecuteRemoteFunction(HANDLE process, uintptr_t function_
 }
 
 void FM2KGameInstance::OnFrameAdvanced(const FM2K::IPC::Event& event) {
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-        "Frame advanced: %u", event.frame_number);
+    (void)event; // Suppress unused parameter warning
+    // Direct hooks - frame advancement handled directly in hooks
 }
 
 void FM2KGameInstance::OnStateSaved(const FM2K::IPC::Event& event) {
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-        "State saved: frame %u, checksum %08x",
-        event.frame_number, event.data.state.checksum);
+    (void)event; // Suppress unused parameter warning
+    // Direct hooks - state management handled directly in hooks
 }
 
 void FM2KGameInstance::OnStateLoaded(const FM2K::IPC::Event& event) {
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-        "State loaded: frame %u, checksum %08x",
-        event.frame_number, event.data.state.checksum);
+    (void)event; // Suppress unused parameter warning
+    // Direct hooks - state management handled directly in hooks
 }
 
 void FM2KGameInstance::OnInputCaptured(const FM2K::IPC::Event& event) {
-    auto& input_event = event.data.input;
-    if (session_) {
-        // Choose input method based on session mode
-        if (session_->GetSessionMode() == SessionMode::LOCAL) {
-            // LOCAL mode: Forward both P1 and P2 inputs (LocalSession pattern)
-            uint32_t p1_input_32 = static_cast<uint32_t>(input_event.p1_input);
-            uint32_t p2_input_32 = static_cast<uint32_t>(input_event.p2_input);
-            
-            session_->AddBothInputs(p1_input_32, p2_input_32);
-            
-            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-                "LOCAL mode: Both inputs forwarded to Session: P1=0x%04x, P2=0x%04x, frame=%u",
-                input_event.p1_input, input_event.p2_input, event.frame_number);
-        } else {
-            // ONLINE mode: Forward only local player input (OnlineSession pattern)
-            uint32_t p1_input_32 = static_cast<uint32_t>(input_event.p1_input);
-            
-            session_->AddLocalInput(p1_input_32);
-            
-            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-                "ONLINE mode: Local input forwarded to Session: P1=0x%04x, frame=%u",
-                input_event.p1_input, event.frame_number);
-        }
-    } else {
-        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-            "Input captured but no Session connected: P1=0x%04x, P2=0x%04x",
-            input_event.p1_input, input_event.p2_input);
-    }
+    (void)event; // Suppress unused parameter warning
+    // Direct hooks - input capture handled directly in hooks
+    // TODO: Implement direct input forwarding to session
 }
 
 void FM2KGameInstance::OnHitTablesInit(const FM2K::IPC::Event& event) {
@@ -520,12 +368,11 @@ void FM2KGameInstance::OnHitTablesInit(const FM2K::IPC::Event& event) {
 }
 
 void FM2KGameInstance::OnVisualStateChanged(const FM2K::IPC::Event& event) {
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-        "Visual state changed: flags %08x",
-        event.data.visual.effect_flags);
+    (void)event; // Suppress unused parameter warning
+    // Direct hooks - visual state changes handled directly in hooks
 }
 
 void FM2KGameInstance::OnHookError(const FM2K::IPC::Event& event) {
-    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-        "Hook error: %s", event.data.error.message);
+    (void)event; // Suppress unused parameter warning
+    // Direct hooks - errors handled directly in hooks
 } 

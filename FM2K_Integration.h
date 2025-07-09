@@ -18,10 +18,10 @@
 #include <cstdint>
 #include "FM2KHook/src/ipc.h"
 #include <unordered_map>
+#include "ISession.h"
 
 // Forward declarations
 class FM2KGameInstance;
-class NetworkSession;
 class LauncherUI;
 
 // FM2K Memory addresses and structures (from research)
@@ -196,12 +196,6 @@ enum class LauncherState {
     Disconnected       // Connection lost, can reconnect
 };
 
-// Session mode for GekkoNet
-enum class SessionMode {
-    LOCAL,   // Both players local (offline testing)
-    ONLINE   // One local + one remote player (network play)
-};
-
 // Network configuration
 struct NetworkConfig {
     SessionMode session_mode;
@@ -212,6 +206,7 @@ struct NetworkConfig {
     int input_delay;
     int max_spectators;
     bool enable_spectators;
+    bool is_host; // True if hosting, false if joining
 
     NetworkConfig() 
         : session_mode(SessionMode::LOCAL)  // Default to LOCAL for testing
@@ -222,6 +217,7 @@ struct NetworkConfig {
         , input_delay(2)
         , max_spectators(8)
         , enable_spectators(true)
+        , is_host(false)
     {
         // Use SDL string functions for initialization
         char local_addr[32];
@@ -249,7 +245,7 @@ public:
     void TerminateGame();
 
     void StartOfflineSession();
-    void StartOnlineSession(const NetworkConfig& config);
+    void StartOnlineSession(const NetworkConfig& config, bool is_host);
     void StopSession();
     
     std::vector<FM2K::FM2KGameInfo> DiscoverGames();
@@ -285,7 +281,7 @@ private:
     SDL_Renderer* renderer_;
     std::unique_ptr<LauncherUI> ui_;
     std::unique_ptr<FM2KGameInstance> game_instance_;
-    std::unique_ptr<NetworkSession> network_session_;
+    std::unique_ptr<ISession> session_;
     std::vector<FM2K::FM2KGameInfo> discovered_games_;
     FM2K::FM2KGameInfo selected_game_;
     NetworkConfig network_config_;
@@ -305,90 +301,6 @@ private:
 
 // Game instance management - see FM2K_GameInstance.h for full definition
 
-// Network session management
-class NetworkSession {
-public:
-    NetworkSession();
-    ~NetworkSession();
-    
-    // Network statistics
-    struct NetworkStats {
-        uint32_t ping;
-        uint32_t jitter;
-        uint32_t frames_ahead;
-        uint32_t rollbacks_per_second;
-        bool connected;
-        
-        NetworkStats()
-            : ping(0)
-            , jitter(0)
-            , frames_ahead(0)
-            , rollbacks_per_second(0)
-            , connected(false)
-        {}
-    };
-    
-    // Session management
-    bool Start(const NetworkConfig& config);
-    void Stop();
-    void Update();
-    bool IsActive() const;
-    
-    // Input management
-    void AddLocalInput(uint32_t input);
-    void AddBothInputs(uint32_t p1_input, uint32_t p2_input);
-    SessionMode GetSessionMode() const;
-    NetworkStats GetStats() const;
-    
-    // Game instance binding
-    void SetGameInstance(FM2KGameInstance* instance);
-    
-private:
-    // GekkoNet bridge (replaces direct GekkoNet usage)
-    std::unique_ptr<FM2K::GekkoNetBridge> gekko_bridge_;
-    FM2KGameInstance* game_instance_;
-    
-    // Synchronization
-    SDL_Mutex* state_mutex_;
-    SDL_RWLock* input_buffer_lock_;
-    SDL_Thread* rollback_thread_;
-    SDL_Thread* network_thread_;
-    
-    // State tracking
-    SDL_AtomicInt frame_counter_;
-    SDL_AtomicInt rollback_flag_;
-    SDL_AtomicInt running_;
-    SDL_AtomicInt last_confirmed_frame_;
-    SDL_AtomicInt prediction_window_;
-    NetworkStats cached_stats_;
-    
-    // State buffer for rollbacks
-    static constexpr size_t STATE_BUFFER_SIZE = 128;
-    std::vector<uint8_t> state_buffer_;
-    std::unordered_map<int, std::vector<uint8_t>> saved_states_;  // Frame number -> State data
-    
-    // Thread functions
-    static int RollbackThreadFunction(void* data);
-    static int NetworkThreadFunction(void* data);
-    
-    // Internal methods
-    void HandleSessionEvents();
-    void HandleGameEvents(FM2KGameInstance* game);
-    void HandleGameEvent(GekkoGameEvent* ev);
-    void HandleSessionEvent(GekkoSessionEvent* ev);
-    void ProcessEvents(FM2KGameInstance* game);
-    
-    // Rollback management
-    bool SaveGameState(int frame_number);
-    bool LoadGameState(int frame_number);
-    void ProcessRollback(int target_frame);
-    
-    // Frame management
-    void AdvanceFrame();
-    void UpdatePredictionWindow();
-    bool ShouldRollback(uint32_t remote_input, int frame_number);
-};
-
 // Modern ImGui launcher interface
 class LauncherUI {
 public:
@@ -404,7 +316,8 @@ public:
     // UI state callbacks
     std::function<void(const FM2K::FM2KGameInfo&)> on_game_selected;
     std::function<void()> on_offline_session_start;
-    std::function<void(const NetworkConfig&)> on_online_session_start;
+    std::function<void(const NetworkConfig&)> on_host_session_start;
+    std::function<void(const NetworkConfig&)> on_join_session_start;
     std::function<void()> on_session_stop;
     std::function<void()> on_exit;
     std::function<void(const std::string&)> on_games_folder_set;
@@ -412,7 +325,7 @@ public:
     // Data binding
     void SetGames(const std::vector<FM2K::FM2KGameInfo>& games);
     void SetNetworkConfig(const NetworkConfig& config);
-    void SetNetworkStats(const NetworkSession::NetworkStats& stats);
+    void SetNetworkStats(const ISession::NetworkStats& stats);
     void SetLauncherState(LauncherState state);
     // Update scanning progress (0-1). Only meaningful while scanning flag is true.
     void SetScanning(bool scanning);
@@ -422,7 +335,7 @@ private:
     // UI state
     std::vector<FM2K::FM2KGameInfo> games_;
     NetworkConfig network_config_;
-    NetworkSession::NetworkStats network_stats_;
+    ISession::NetworkStats network_stats_;
     LauncherState launcher_state_;
     SDL_Renderer* renderer_;
     SDL_Window* window_;

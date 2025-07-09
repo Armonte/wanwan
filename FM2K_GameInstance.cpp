@@ -40,8 +40,10 @@ FM2KGameInstance::FM2KGameInstance()
     : process_handle_(nullptr)
     , process_id_(0)
     , game_state_(std::make_unique<FM2K::GameState>())
-    , network_session_(nullptr) {
-    memset(&process_info_, 0, sizeof(process_info_));
+    , session_(nullptr)
+{
+    process_info_ = {};
+    SDL_zero(*game_state_);
 }
 
 FM2KGameInstance::~FM2KGameInstance() {
@@ -476,33 +478,33 @@ void FM2KGameInstance::OnStateLoaded(const FM2K::IPC::Event& event) {
 }
 
 void FM2KGameInstance::OnInputCaptured(const FM2K::IPC::Event& event) {
-    // Forward captured inputs to NetworkSession for GekkoNet processing
-    if (network_session_) {
+    auto& input_event = event.data.input;
+    if (session_) {
         // Choose input method based on session mode
-        if (network_session_->GetSessionMode() == SessionMode::LOCAL) {
+        if (session_->GetSessionMode() == SessionMode::LOCAL) {
             // LOCAL mode: Forward both P1 and P2 inputs (LocalSession pattern)
-            uint32_t p1_input_32 = static_cast<uint32_t>(event.data.input.p1_input);
-            uint32_t p2_input_32 = static_cast<uint32_t>(event.data.input.p2_input);
+            uint32_t p1_input_32 = static_cast<uint32_t>(input_event.p1_input);
+            uint32_t p2_input_32 = static_cast<uint32_t>(input_event.p2_input);
             
-            network_session_->AddBothInputs(p1_input_32, p2_input_32);
+            session_->AddBothInputs(p1_input_32, p2_input_32);
             
             SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-                "LOCAL mode: Both inputs forwarded to NetworkSession: P1=0x%04x, P2=0x%04x, frame=%u",
-                event.data.input.p1_input, event.data.input.p2_input, event.frame_number);
+                "LOCAL mode: Both inputs forwarded to Session: P1=0x%04x, P2=0x%04x, frame=%u",
+                input_event.p1_input, input_event.p2_input, event.frame_number);
         } else {
             // ONLINE mode: Forward only local player input (OnlineSession pattern)
-            uint32_t p1_input_32 = static_cast<uint32_t>(event.data.input.p1_input);
+            uint32_t p1_input_32 = static_cast<uint32_t>(input_event.p1_input);
             
-            network_session_->AddLocalInput(p1_input_32);
+            session_->AddLocalInput(p1_input_32);
             
             SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-                "ONLINE mode: Local input forwarded to NetworkSession: P1=0x%04x, frame=%u",
-                event.data.input.p1_input, event.frame_number);
+                "ONLINE mode: Local input forwarded to Session: P1=0x%04x, frame=%u",
+                input_event.p1_input, event.frame_number);
         }
     } else {
         SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-            "Input captured but no NetworkSession connected: P1=0x%04x, P2=0x%04x",
-            event.data.input.p1_input, event.data.input.p2_input);
+            "Input captured but no Session connected: P1=0x%04x, P2=0x%04x",
+            input_event.p1_input, input_event.p2_input);
     }
 }
 

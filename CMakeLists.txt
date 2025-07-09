@@ -227,7 +227,8 @@ add_executable(FM2K_RollbackLauncher
     # Main launcher files
     FM2K_RollbackClient.cpp
     FM2K_GameInstance.cpp
-    FM2K_NetworkSession.cpp
+    OnlineSession.cpp
+    LocalSession.cpp
     FM2K_LauncherUI.cpp
     FM2K_GekkoNetBridge.cpp
     FM2K_Integration.h

@@ -17,10 +17,11 @@ LauncherUI::LauncherUI()
     , selected_game_index_(-1)
     , current_theme_(UITheme::System)
 {
-    // Initialize callbacks to nullptr
+    // Initialize callbacks to null
     on_game_selected = nullptr;
     on_offline_session_start = nullptr;
-    on_online_session_start = nullptr;
+    on_host_session_start = nullptr;
+    on_join_session_start = nullptr;
     on_session_stop = nullptr;
     on_exit = nullptr;
     on_games_folder_set = nullptr;
@@ -287,13 +288,15 @@ void LauncherUI::ShowNetworkDiagnostics() {
     
     // Detailed stats
     ImGui::Text("Ping: %u ms", network_stats_.ping);
+    ImGui::SameLine(150);
     ImGui::Text("Jitter: %u ms", network_stats_.jitter);
     ImGui::Text("Frames Ahead: %u", network_stats_.frames_ahead);
+    ImGui::SameLine(150);
+    ImGui::Text("Rollbacks/s: %u", network_stats_.rollbacks_per_second);
     
     // Rollback information
     ImGui::Separator();
     ImGui::Text("Rollback Stats:");
-    ImGui::Text("Rollbacks/sec: %u", network_stats_.rollbacks_per_second);
     
     // Frame timing visualization
     if (ImGui::CollapsingHeader("Frame Timeline")) {
@@ -354,7 +357,7 @@ void LauncherUI::SetNetworkConfig(const NetworkConfig& config) {
     network_config_ = config;
 }
 
-void LauncherUI::SetNetworkStats(const NetworkSession::NetworkStats& stats) {
+void LauncherUI::SetNetworkStats(const ISession::NetworkStats& stats) {
     network_stats_ = stats;
 }
 
@@ -415,9 +418,19 @@ void LauncherUI::RenderSessionControls() {
         }
     }
 
-    if (ImGui::Button("Start Online Session", ImVec2(-1, 0))) {
-        if (on_online_session_start) {
-            on_online_session_start(network_config_);
+    // Split the online session button into Host and Join
+    float button_width = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) / 2;
+
+    if (ImGui::Button("Host Game", ImVec2(-1, 0))) {
+        if (on_host_session_start) {
+            on_host_session_start(network_config_);
+        }
+    }
+    ImGui::SetItemTooltip("Host an online session for another player to join");
+
+    if (ImGui::Button("Join Game", ImVec2(-1, 0))) {
+        if (on_join_session_start) {
+            on_join_session_start(network_config_);
         }
     }
 

@@ -8,6 +8,8 @@
 #include "MinHook.h"
 #include "FM2K_GameInstance.h"
 #include "FM2K_Integration.h"
+#include "LocalSession.h"
+#include "OnlineSession.h"
 
 #include <chrono>
 #include <string>
@@ -402,7 +404,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
         // Start network session
         NetworkConfig online_config = config;
         online_config.session_mode = SessionMode::ONLINE;
-        g_launcher->StartOnlineSession(online_config);
+        g_launcher->StartOnlineSession(online_config, config.is_host);
         
         g_launcher->SetState(LauncherState::InGame);
         std::cout << "? Direct mode: Game launched and network started\n";
@@ -520,24 +522,23 @@ bool FM2KLauncher::Initialize() {
         return false;
     }
     
-    // Setup UI callbacks
+    // Connect UI callbacks to launcher logic
     ui_->on_game_selected = [this](const FM2K::FM2KGameInfo& game) {
         SetSelectedGame(game);
+        LaunchGame(game);
     };
-
     ui_->on_offline_session_start = [this]() {
         StartOfflineSession();
     };
-    
-    ui_->on_online_session_start = [this](const NetworkConfig& config) {
-        StartOnlineSession(config);
+    ui_->on_host_session_start = [this](const NetworkConfig& config) {
+        StartOnlineSession(config, true); // true for host
     };
-    
+    ui_->on_join_session_start = [this](const NetworkConfig& config) {
+        StartOnlineSession(config, false); // false for join
+    };
     ui_->on_session_stop = [this]() {
         StopSession();
-        SetState(LauncherState::GameSelection);
     };
-    
     ui_->on_exit = [this]() {
         running_ = false;
     };
@@ -641,8 +642,13 @@ void FM2KLauncher::Update(float delta_time SDL_UNUSED) {
         return;
     }
 
-    if (network_session_ && network_session_->IsActive()) {
-        network_session_->Update();
+    if (session_ && session_->IsActive()) {
+        session_->Update();
+    }
+    
+    // Process IPC events from the game instance
+    if (game_instance_ && game_instance_->IsRunning()) {
+        game_instance_->ProcessIPCEvents();
     }
     
     // Check for game termination
@@ -764,9 +770,9 @@ bool FM2KLauncher::InitializeSDL() {
 
 void FM2KLauncher::Shutdown() {
     // Stop network and game first
-    if (network_session_) {
-        network_session_->Stop();
-        network_session_.reset();
+    if (session_) {
+        session_->Stop();
+        session_.reset();
     }
     
     if (game_instance_) {
@@ -992,26 +998,27 @@ void FM2KLauncher::StartOfflineSession() {
     NetworkConfig local_config;
     local_config.session_mode = SessionMode::LOCAL;
 
-    if (network_session_) {
-        network_session_->Stop();
+    if (session_) {
+        session_->Stop();
     }
-    network_session_ = std::make_unique<NetworkSession>();
+    session_ = std::make_unique<LocalSession>();
 
-    if (!network_session_->Start(local_config)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to start local network session.");
-        network_session_.reset();
+    if (!session_->Start(local_config)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to start local session.");
+        session_.reset();
         return;
     }
 
     if (game_instance_) {
-        network_session_->SetGameInstance(game_instance_.get());
+        session_->SetGameInstance(game_instance_.get());
+        game_instance_->SetNetworkSession(session_.get());
     }
 
     SetState(LauncherState::InGame);
     std::cout << "? LOCAL session started (offline mode)\n";
 }
 
-void FM2KLauncher::StartOnlineSession(const NetworkConfig& config) {
+void FM2KLauncher::StartOnlineSession(const NetworkConfig& config, bool is_host) {
     if (selected_game_.exe_path.empty()) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Cannot start online session: no game selected.");
         return;
@@ -1023,33 +1030,35 @@ void FM2KLauncher::StartOnlineSession(const NetworkConfig& config) {
     }
     
     network_config_ = config;
-
-    if (network_session_) {
-        network_session_->Stop();
+    // For hosting, we might want to clear the remote address
+    if (is_host) {
+        // Potentially configure to listen on 0.0.0.0
     }
-    network_session_ = std::make_unique<NetworkSession>();
 
-    if (!network_session_->Start(config)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to start network session");
-        network_session_.reset();
+    if (session_) {
+        session_->Stop();
+    }
+    session_ = std::make_unique<OnlineSession>();
+
+    if (!session_->Start(network_config_)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to start online session");
+        session_.reset();
         return;
     }
 
     if (game_instance_) {
-        network_session_->SetGameInstance(game_instance_.get());
+        session_->SetGameInstance(game_instance_.get());
+        game_instance_->SetNetworkSession(session_.get());
     }
 
     SetState(LauncherState::Connecting);
-    std::cout << "? ONLINE network session started\n";
-    std::cout << "  Local player: " << config.local_player << std::endl;
-    std::cout << "  Local port: " << config.local_port << std::endl;
-    std::cout << "  Remote address: " << config.remote_address << std::endl;
+    std::cout << "? ONLINE session started (" << (is_host ? "Hosting" : "Joining") << ")\n";
 }
 
 void FM2KLauncher::StopSession() {
-    if (network_session_) {
-        network_session_->Stop();
-        network_session_.reset();
+    if (session_) {
+        session_->Stop();
+        session_.reset();
         std::cout << "? Session stopped\n";
     }
     if (game_instance_) {

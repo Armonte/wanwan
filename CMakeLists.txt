@@ -232,8 +232,7 @@ add_executable(FM2K_RollbackLauncher
     FM2K_LauncherUI.cpp
     FM2K_GekkoNetBridge.cpp
     FM2K_Integration.h
-    FM2K_DirectHooks.h
-    FM2K_DirectHooks.cpp
+    # DLL injection approach - hooks are in FM2KHook DLL
     
     # ImGui sources
     ${IMGUI_SOURCES}

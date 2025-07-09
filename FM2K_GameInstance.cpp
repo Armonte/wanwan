@@ -1,6 +1,6 @@
 #include "FM2K_GameInstance.h"
 #include "FM2K_Integration.h"
-#include "FM2K_DirectHooks.h"
+// DLL injection approach - no direct hooks needed
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <filesystem>
@@ -39,6 +39,9 @@ FM2KGameInstance::FM2KGameInstance()
     , process_id_(0)
     , game_state_(std::make_unique<FM2K::GameState>())
     , session_(nullptr)
+    , shared_memory_handle_(nullptr)
+    , shared_memory_data_(nullptr)
+    , last_processed_frame_(0)
 {
     process_info_ = {};
     SDL_zero(*game_state_);
@@ -104,7 +107,7 @@ bool FM2KGameInstance::Launch(const FM2K::FM2KGameInfo& game) {
         nullptr,                   // Process handle not inheritable
         nullptr,                   // Thread handle not inheritable
         FALSE,                     // Set handle inheritance to FALSE
-        0,                         // Normal process creation (not suspended)
+        CREATE_SUSPENDED,          // Create suspended for DLL injection
         nullptr,                   // Use parent's environment block
         wide_working_dir.c_str(), // Use game's directory as starting directory
         &si,                       // Pointer to STARTUPINFO structure
@@ -122,27 +125,38 @@ bool FM2KGameInstance::Launch(const FM2K::FM2KGameInfo& game) {
 
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Process created with ID: %lu", process_id_);
 
-    // Setup process for hooking (direct hooks)
-    if (!SetupProcessForHooking("")) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to setup process for hooking");
+    // Inject simple hook DLL
+    std::wstring dll_path = GetDLLPath();
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Using DLL path: %s", 
+                std::string(dll_path.begin(), dll_path.end()).c_str());
+    
+    if (!SetupProcessForHooking(std::string(dll_path.begin(), dll_path.end()))) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to inject hook DLL");
         TerminateProcess(process_handle_, 1);
         CloseHandle(process_info_.hProcess);
         CloseHandle(process_info_.hThread);
         return false;
     }
 
-    // Process is running normally (not suspended)
+    // Resume the game process
+    ResumeThread(process_info_.hThread);
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Game process launched successfully");
     
-    // Direct hooks are now installed - no IPC needed
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Direct hooks active - no IPC required");
+    // Simple DLL injection complete - no IPC needed
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Hook DLL injected successfully");
+    
+    // Initialize shared memory for input communication
+    InitializeSharedMemory();
     
     return true;
 }
 
 void FM2KGameInstance::Terminate() {
     UninstallHooks();
+    
+    // Cleanup shared memory
+    CleanupSharedMemory();
 
     if (process_handle_) {
         TerminateProcess(process_handle_, 0);
@@ -160,19 +174,15 @@ void FM2KGameInstance::Terminate() {
 }
 
 bool FM2KGameInstance::InstallHooks() {
-    // Direct hooks are already installed in SetupProcessForHooking
-    if (FM2K::DirectHooks::IsHookSystemActive()) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Direct hooks are active");
-        return true;
-    } else {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Direct hooks are not active");
-        return false;
-    }
+    // Hooks are installed via DLL injection in SetupProcessForHooking
+    // No additional action needed from launcher side
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Hooks managed by injected DLL");
+    return true;
 }
 
 bool FM2KGameInstance::UninstallHooks() {
-    FM2K::DirectHooks::UninstallHooks();
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Direct hooks uninstalled");
+    // Hooks will be uninstalled when DLL is unloaded (process termination)
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Hooks will be uninstalled with process termination");
     return true;
 }
 
@@ -224,15 +234,84 @@ void FM2KGameInstance::InjectInputs(uint32_t p1_input, uint32_t p2_input) {
 }
 
 bool FM2KGameInstance::SetupProcessForHooking(const std::string& dll_path) {
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Setting up process for direct hooking...");
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Setting up process for DLL injection...");
 
-    // Install direct hooks into the running process
-    if (!FM2K::DirectHooks::InstallHooks(process_handle_)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to install direct hooks");
+    if (dll_path.empty()) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DLL path is empty");
         return false;
     }
-    
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Direct hook setup complete");
+
+    // Allocate memory in the target process for the DLL path
+    SIZE_T path_size = dll_path.length() + 1;
+    LPVOID remote_memory = VirtualAllocEx(process_handle_, nullptr, path_size, 
+                                         MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!remote_memory) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "VirtualAllocEx failed: %lu", GetLastError());
+        return false;
+    }
+
+    // Write the DLL path to the allocated memory
+    SIZE_T bytes_written;
+    if (!WriteProcessMemory(process_handle_, remote_memory, dll_path.c_str(), 
+                           path_size, &bytes_written)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "WriteProcessMemory failed: %lu", GetLastError());
+        VirtualFreeEx(process_handle_, remote_memory, 0, MEM_RELEASE);
+        return false;
+    }
+
+    // Get LoadLibraryA address
+    HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
+    if (!kernel32) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to get kernel32 handle");
+        VirtualFreeEx(process_handle_, remote_memory, 0, MEM_RELEASE);
+        return false;
+    }
+
+    LPTHREAD_START_ROUTINE load_library = (LPTHREAD_START_ROUTINE)GetProcAddress(kernel32, "LoadLibraryA");
+    if (!load_library) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to get LoadLibraryA address");
+        VirtualFreeEx(process_handle_, remote_memory, 0, MEM_RELEASE);
+        return false;
+    }
+
+    // Create remote thread to load the DLL
+    DWORD thread_id;
+    HANDLE remote_thread = CreateRemoteThread(process_handle_, nullptr, 0, 
+                                             load_library, remote_memory, 0, &thread_id);
+    if (!remote_thread) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "CreateRemoteThread failed: %lu", GetLastError());
+        VirtualFreeEx(process_handle_, remote_memory, 0, MEM_RELEASE);
+        return false;
+    }
+
+    // Wait for the DLL to load
+    DWORD wait_result = WaitForSingleObject(remote_thread, 5000); // 5 second timeout
+    if (wait_result != WAIT_OBJECT_0) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DLL injection timeout or failed: %lu", wait_result);
+        TerminateThread(remote_thread, 1);
+        CloseHandle(remote_thread);
+        VirtualFreeEx(process_handle_, remote_memory, 0, MEM_RELEASE);
+        return false;
+    }
+
+    // Get the return value (module handle)
+    DWORD exit_code;
+    if (!GetExitCodeThread(remote_thread, &exit_code)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GetExitCodeThread failed: %lu", GetLastError());
+        CloseHandle(remote_thread);
+        VirtualFreeEx(process_handle_, remote_memory, 0, MEM_RELEASE);
+        return false;
+    }
+
+    CloseHandle(remote_thread);
+    VirtualFreeEx(process_handle_, remote_memory, 0, MEM_RELEASE);
+
+    if (exit_code == 0) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DLL failed to load (LoadLibrary returned NULL)");
+        return false;
+    }
+
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DLL injection successful: %s", dll_path.c_str());
     return true;
 }
 
@@ -243,8 +322,8 @@ bool FM2KGameInstance::LoadGameExecutable(const std::filesystem::path& exe_path)
 }
 
 void FM2KGameInstance::ProcessIPCEvents() {
-    // Direct hooks - no IPC events to process
-    // Frame counting and state management happens directly in hooks
+    // Poll for new inputs from the injected DLL via shared memory
+    PollInputs();
     
     // Process SDL events (for UI)
     SDL_Event event;
@@ -375,4 +454,82 @@ void FM2KGameInstance::OnVisualStateChanged(const FM2K::IPC::Event& event) {
 void FM2KGameInstance::OnHookError(const FM2K::IPC::Event& event) {
     (void)event; // Suppress unused parameter warning
     // Direct hooks - errors handled directly in hooks
+}
+
+// Shared memory structure matching the DLL
+struct SharedInputData {
+    uint32_t frame_number;
+    uint16_t p1_input;
+    uint16_t p2_input;
+    bool valid;
+};
+
+void FM2KGameInstance::InitializeSharedMemory() {
+    // Open the shared memory created by the DLL
+    shared_memory_handle_ = OpenFileMappingA(
+        FILE_MAP_ALL_ACCESS,
+        FALSE,
+        "FM2K_InputSharedMemory"
+    );
+    
+    if (shared_memory_handle_ != nullptr) {
+        shared_memory_data_ = MapViewOfFile(
+            shared_memory_handle_,
+            FILE_MAP_ALL_ACCESS,
+            0,
+            0,
+            sizeof(SharedInputData)
+        );
+        
+        if (shared_memory_data_) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Shared memory opened successfully");
+            last_processed_frame_ = 0;
+        } else {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to map shared memory view");
+        }
+    } else {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Failed to open shared memory (DLL might not be ready yet)");
+    }
+}
+
+void FM2KGameInstance::CleanupSharedMemory() {
+    if (shared_memory_data_) {
+        UnmapViewOfFile(shared_memory_data_);
+        shared_memory_data_ = nullptr;
+    }
+    if (shared_memory_handle_) {
+        CloseHandle(shared_memory_handle_);
+        shared_memory_handle_ = nullptr;
+    }
+}
+
+void FM2KGameInstance::PollInputs() {
+    if (!shared_memory_data_ || !session_) {
+        return;
+    }
+    
+    SharedInputData* input_data = static_cast<SharedInputData*>(shared_memory_data_);
+    
+    // Check if there's new input data
+    if (input_data->valid && input_data->frame_number > last_processed_frame_) {
+        // Forward inputs to GekkoNet session
+        // For local session, we add both P1 and P2 inputs
+        uint32_t p1_input = static_cast<uint32_t>(input_data->p1_input);
+        uint32_t p2_input = static_cast<uint32_t>(input_data->p2_input);
+        
+        if (session_) {
+            // Add inputs to the session - values should be packed properly
+            session_->AddLocalInput(p1_input);
+            session_->AddLocalInput(p2_input);
+        }
+        
+        last_processed_frame_ = input_data->frame_number;
+        
+        // Log occasionally for debugging
+        if (last_processed_frame_ % 60 == 0) {
+            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
+                        "Polled inputs - Frame %u: P1=0x%04X, P2=0x%04X", 
+                        input_data->frame_number, input_data->p1_input, input_data->p2_input);
+        }
+    }
 } 

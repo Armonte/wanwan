@@ -78,6 +78,11 @@ public:
     void SetNetworkSession(ISession* session) {
         session_ = session;
     }
+    
+    // Shared memory input polling
+    void PollInputs();
+    void InitializeSharedMemory();
+    void CleanupSharedMemory();
 
 protected:
     // Process management
@@ -95,4 +100,9 @@ private:
     std::string game_exe_path_;  // Store the game executable path
     std::string game_dll_path_;  // Store the game's KGT/DLL path
     ISession* session_;  // For input forwarding to GekkoNet
+    
+    // Shared memory for input communication with injected DLL
+    HANDLE shared_memory_handle_;
+    void* shared_memory_data_;
+    uint32_t last_processed_frame_;
 };

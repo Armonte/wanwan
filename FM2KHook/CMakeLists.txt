@@ -10,15 +10,9 @@ set(CMAKE_GENERATOR_PLATFORM Win32)
 set(CMAKE_BUILD_TYPE Debug)
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g")
 
-# Create DLL target
+# Create simple DLL target
 add_library(FM2KHook SHARED
-    src/dllmain.cpp
-    src/fm2k_hook.cpp
-    src/fm2k_hook.h
-    src/ipc.cpp
-    src/ipc.h
-    src/state_manager.cpp
-    src/state_manager.h
+    src/dllmain_simple.cpp
 )
 
 # Export symbols for DLL
@@ -28,10 +22,9 @@ target_compile_definitions(FM2KHook PRIVATE
     WIN32_LEAN_AND_MEAN
 )
 
-# Link against MinHook and SDL3
+# Link against MinHook only (no SDL needed for simple version)
 target_link_libraries(FM2KHook PRIVATE 
     MinHook
-    SDL3::SDL3-static
 )
 
 # Include directories

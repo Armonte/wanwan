@@ -27,17 +27,6 @@ GekkoNetBridge::~GekkoNetBridge() {
     Shutdown();
 }
 
-bool GekkoNetBridge::Initialize(const FM2KNetworkConfig& config) {
-    config_ = config;
-    
-    // Route to appropriate initialization method based on session mode
-    if (config_.session_mode == ::SessionMode::LOCAL) {
-        return InitializeLocalSession(config);
-    } else {
-        return InitializeOnlineSession(config);
-    }
-}
-
 bool GekkoNetBridge::InitializeLocalSession(const FM2KNetworkConfig& config) {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
         "Initializing GekkoNet LOCAL session: input_delay=%d", config.input_delay);
@@ -83,64 +72,66 @@ bool GekkoNetBridge::InitializeLocalSession(const FM2KNetworkConfig& config) {
     return true;
 }
 
-bool GekkoNetBridge::InitializeOnlineSession(const FM2KNetworkConfig& config) {
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-        "Initializing GekkoNet ONLINE session: player %d, port %d, remote %s",
-        config.local_player, config.local_port, config.remote_address.c_str());
-    
-    // Create GekkoNet session
+bool GekkoNetBridge::InitializeHostSession(const FM2KNetworkConfig& config) {
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "Initializing GekkoNet HOST session on port %d",
+        config.local_port);
+
     gekko_create(&session_);
-    if (!session_) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create GekkoNet session");
-        return false;
-    }
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet session created successfully");
-    
-    // Configure session for ONLINE MODE (following OnlineSession.cpp pattern)
     GekkoConfig conf{};
-    conf.num_players = 2;                           // FM2K is 2-player
-    conf.input_size = sizeof(uint8_t);              // Use 8-bit inputs like OnlineSession.cpp
-    conf.state_size = sizeof(State::CoreGameState); // Our state structure for rollback
-    conf.max_spectators = 0;                        // No spectators for now
-    conf.input_prediction_window = config.max_prediction_window; // Enable prediction for online
-    conf.desync_detection = config.desync_detection; // Enable desync detection for online
-    
+    conf.num_players = 2;
+    conf.input_size = sizeof(uint8_t);
+    conf.state_size = sizeof(State::CoreGameState);
+    conf.input_prediction_window = 8;
+    conf.desync_detection = true;
     gekko_start(session_, &conf);
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet session started successfully");
-    
-    // Set up network adapter for online mode
+
     auto adapter = gekko_default_adapter(config.local_port);
     gekko_net_adapter_set(session_, adapter);
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Network adapter set for port %d", config.local_port);
+
+    local_player_handle_ = gekko_add_actor(session_, LocalPlayer, nullptr);
+    p2_player_handle_ = gekko_add_actor(session_, RemotePlayer, nullptr); // Awaits connection
+
+    gekko_set_local_delay(session_, local_player_handle_, config.input_delay);
+
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "HOST session initialized: local handle %d, remote handle %d, awaiting connection...",
+        local_player_handle_, p2_player_handle_);
+
+    return true;
+}
+
+bool GekkoNetBridge::InitializeClientSession(const FM2KNetworkConfig& config) {
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "Initializing GekkoNet CLIENT session, connecting to %s",
+        config.remote_address.c_str());
+
+    gekko_create(&session_);
+    GekkoConfig conf{};
+    conf.num_players = 2;
+    conf.input_size = sizeof(uint8_t);
+    conf.state_size = sizeof(State::CoreGameState);
+    conf.input_prediction_window = 8;
+    conf.desync_detection = true;
+    gekko_start(session_, &conf);
+
+    auto adapter = gekko_default_adapter(config.local_port);
+    gekko_net_adapter_set(session_, adapter);
     
-    // Add players in correct order (following OnlineSession.cpp pattern)
-    if (config.local_player == 0) {
-        // Add local player first, then remote
-        local_player_handle_ = gekko_add_actor(session_, LocalPlayer, nullptr);
+    local_player_handle_ = gekko_add_actor(session_, LocalPlayer, nullptr);
+    
+    GekkoNetAddress remote_addr{
+        const_cast<void*>(static_cast<const void*>(config.remote_address.c_str())),
+        static_cast<unsigned int>(config.remote_address.length())
+    };
+    p2_player_handle_ = gekko_add_actor(session_, RemotePlayer, &remote_addr);
+
+    gekko_set_local_delay(session_, local_player_handle_, config.input_delay);
+
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "CLIENT session initialized: local handle %d, remote handle %d, connecting...",
+        local_player_handle_, p2_player_handle_);
         
-        GekkoNetAddress remote_addr{ 
-            const_cast<void*>(static_cast<const void*>(config.remote_address.c_str())), 
-            static_cast<unsigned int>(config.remote_address.length()) 
-        };
-        p2_player_handle_ = gekko_add_actor(session_, RemotePlayer, &remote_addr);
-    } else {
-        // Add remote player first, then local
-        GekkoNetAddress remote_addr{ 
-            const_cast<void*>(static_cast<const void*>(config.remote_address.c_str())), 
-            static_cast<unsigned int>(config.remote_address.length()) 
-        };
-        p2_player_handle_ = gekko_add_actor(session_, RemotePlayer, &remote_addr);
-        
-        local_player_handle_ = gekko_add_actor(session_, LocalPlayer, nullptr);
-    }
-    
-    // Set input delay for local player
-    gekko_set_local_delay(session_, local_player_handle_, config_.input_delay);
-    
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-        "ONLINE session initialized: local player %d (handle %d), remote handle %d, input delay %d frames",
-        config.local_player, local_player_handle_, p2_player_handle_, config_.input_delay);
-    
     return true;
 }
 

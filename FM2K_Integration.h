@@ -199,32 +199,21 @@ enum class LauncherState {
 // Network configuration
 struct NetworkConfig {
     SessionMode session_mode;
-    std::string local_address;
     int local_port;
     std::string remote_address;
-    int local_player;  // 0 or 1
     int input_delay;
-    int max_spectators;
-    bool enable_spectators;
     bool is_host; // True if hosting, false if joining
 
     NetworkConfig() 
         : session_mode(SessionMode::LOCAL)  // Default to LOCAL for testing
-        , local_address("127.0.0.1")
         , local_port(7000)
         , remote_address("127.0.0.1:7001")
-        , local_player(0)
         , input_delay(2)
-        , max_spectators(8)
-        , enable_spectators(true)
         , is_host(false)
     {
         // Use SDL string functions for initialization
-        char local_addr[32];
         char remote_addr[32];
-        SDL_strlcpy(local_addr, "127.0.0.1", sizeof(local_addr));
         SDL_strlcpy(remote_addr, "127.0.0.1:7001", sizeof(remote_addr));
-        local_address = local_addr;
         remote_address = remote_addr;
     }
 };
@@ -316,8 +305,7 @@ public:
     // UI state callbacks
     std::function<void(const FM2K::FM2KGameInfo&)> on_game_selected;
     std::function<void()> on_offline_session_start;
-    std::function<void(const NetworkConfig&)> on_host_session_start;
-    std::function<void(const NetworkConfig&)> on_join_session_start;
+    std::function<void(const NetworkConfig&)> on_online_session_start;
     std::function<void()> on_session_stop;
     std::function<void()> on_exit;
     std::function<void(const std::string&)> on_games_folder_set;
@@ -340,6 +328,8 @@ private:
     SDL_Renderer* renderer_;
     SDL_Window* window_;
     std::string games_root_path_;  // Current games root directory
+    int selected_game_index_ = -1; // -1 means no selection
+    bool scanning_games_ = false;  // True while background discovery is running
     
     // UI components
     void RenderGameSelection();
@@ -359,6 +349,6 @@ private:
     void SetTheme(UITheme theme);
     UITheme current_theme_;
 
-    int selected_game_index_ = -1; // -1 means no selection
-    bool scanning_games_ = false;  // True while background discovery is running
+    // int selected_game_index_ = -1; // -1 means no selection
+    // bool scanning_games_ = false;  // True while background discovery is running
 }; 

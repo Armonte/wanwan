@@ -20,8 +20,7 @@ LauncherUI::LauncherUI()
     // Initialize callbacks to null
     on_game_selected = nullptr;
     on_offline_session_start = nullptr;
-    on_host_session_start = nullptr;
-    on_join_session_start = nullptr;
+    on_online_session_start = nullptr;
     on_session_stop = nullptr;
     on_exit = nullptr;
     on_games_folder_set = nullptr;
@@ -217,18 +216,46 @@ void LauncherUI::RenderGameSelection() {
 }
 
 void LauncherUI::RenderNetworkConfig() {
-    ImGui::Text("Network Configuration");
-    ImGui::Separator();
-    
-    // Make network config always visible, removing state checks
-    ImGui::InputText("Local Address", &network_config_.local_address[0], network_config_.local_address.capacity());
-    ImGui::InputInt("Local Port", &network_config_.local_port);
-    ImGui::InputText("Remote Address", &network_config_.remote_address[0], network_config_.remote_address.capacity());
-    ImGui::InputInt("Local Player (0 or 1)", &network_config_.local_player);
-    ImGui::SliderInt("Input Delay", &network_config_.input_delay, 0, 10);
-    ImGui::Checkbox("Enable Spectators", &network_config_.enable_spectators);
-    if (network_config_.enable_spectators) {
-        ImGui::InputInt("Max Spectators", &network_config_.max_spectators);
+    if (ImGui::CollapsingHeader("Network Configuration", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Indent();
+        
+        // Session Type (Host/Join)
+        static int session_type = 0; // 0: Host, 1: Join
+        ImGui::RadioButton("Host", &session_type, 0); ImGui::SameLine();
+        ImGui::RadioButton("Join", &session_type, 1);
+        
+        network_config_.is_host = (session_type == 0);
+
+        // Port Configuration
+        ImGui::SetNextItemWidth(100);
+        ImGui::InputInt("Port", &network_config_.local_port, 0, 0, ImGuiInputTextFlags_CharsDecimal);
+
+        if (network_config_.is_host) {
+            // Host-specific UI
+            char local_ip[64] = "127.0.0.1"; // In a real app, get this dynamically
+            ImGui::InputText("Your IP", local_ip, sizeof(local_ip), ImGuiInputTextFlags_ReadOnly);
+            ImGui::SameLine();
+            if (ImGui::Button("Copy")) {
+                char address_with_port[128];
+                snprintf(address_with_port, sizeof(address_with_port), "%s:%d", local_ip, network_config_.local_port);
+                SDL_SetClipboardText(address_with_port);
+            }
+        } else {
+            // Client-specific UI
+            char remote_addr_buf[128];
+            strncpy(remote_addr_buf, network_config_.remote_address.c_str(), sizeof(remote_addr_buf) - 1);
+            remote_addr_buf[sizeof(remote_addr_buf) - 1] = '\0';
+            
+            if (ImGui::InputText("Host Address", remote_addr_buf, sizeof(remote_addr_buf))) {
+                network_config_.remote_address = remote_addr_buf;
+            }
+        }
+
+        // Input Delay
+        ImGui::SetNextItemWidth(100);
+        ImGui::SliderInt("Input Delay (frames)", &network_config_.input_delay, 0, 10);
+        
+        ImGui::Unindent();
     }
 }
 
@@ -401,62 +428,41 @@ void LauncherUI::SetTheme(UITheme theme) {
 } 
 
 void LauncherUI::RenderSessionControls() {
-    ImGui::Text("Session Management");
-    ImGui::Separator();
+    if (ImGui::CollapsingHeader("Session Controls", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Indent();
 
-    bool game_selected = selected_game_index_ != -1;
-
-    // Disable start buttons if no game is selected
-    if (!game_selected) {
-        ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
-        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
-    }
-
-    if (ImGui::Button("Start Offline Session", ImVec2(-1, 0))) {
-        if (on_offline_session_start) {
-            on_offline_session_start();
+        // Disable buttons if no game is selected
+        bool game_selected = selected_game_index_ >= 0 && selected_game_index_ < games_.size();
+        if (!game_selected) {
+            ImGui::BeginDisabled();
         }
-    }
 
-    // Split the online session button into Host and Join
-    float button_width = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) / 2;
-
-    if (ImGui::Button("Host Game", ImVec2(-1, 0))) {
-        if (on_host_session_start) {
-            on_host_session_start(network_config_);
+        if (ImGui::Button("Start Offline Session", ImVec2(-1, 0))) {
+            if (on_offline_session_start) {
+                on_offline_session_start();
+            }
         }
-    }
-    ImGui::SetItemTooltip("Host an online session for another player to join");
+        ImGui::SetItemTooltip("Launch the selected game for local offline play");
 
-    if (ImGui::Button("Join Game", ImVec2(-1, 0))) {
-        if (on_join_session_start) {
-            on_join_session_start(network_config_);
+        if (ImGui::Button("Start Online Session", ImVec2(-1, 0))) {
+            if (on_online_session_start) {
+                on_online_session_start(network_config_);
+            }
         }
-    }
+        ImGui::SetItemTooltip("Launch an online session using the configuration below");
 
-    if (!game_selected) {
-        ImGui::PopItemFlag();
-        ImGui::PopStyleVar();
-    }
-
-    ImGui::Separator();
-
-    bool session_active = (launcher_state_ == LauncherState::InGame || launcher_state_ == LauncherState::Connecting);
-    
-    if (!session_active) {
-        ImGui::PushItemFlag(ImGuiItemFlags_Disabled, true);
-        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
-    }
-
-    if (ImGui::Button("Stop Session", ImVec2(-1, 0))) {
-        if (on_session_stop) {
-            on_session_stop();
+        if (ImGui::Button("Stop Session", ImVec2(-1, 0))) {
+            if (on_session_stop) {
+                on_session_stop();
+            }
         }
-    }
+        ImGui::SetItemTooltip("Terminate the currently running game session");
 
-    if (!session_active) {
-        ImGui::PopItemFlag();
-        ImGui::PopStyleVar();
+        if (!game_selected) {
+            ImGui::EndDisabled();
+        }
+        
+        ImGui::Unindent();
     }
 }
 

@@ -53,16 +53,21 @@ bool OnlineSession::Start(const NetworkConfig& config) {
     
     // Convert NetworkConfig to FM2KNetworkConfig
     FM2K::FM2KNetworkConfig bridge_config{};
-    bridge_config.session_mode = SessionMode::ONLINE; // Always ONLINE
-    bridge_config.local_player = config.local_player;
+    bridge_config.session_mode = SessionMode::ONLINE;
     bridge_config.local_port = config.local_port;
     bridge_config.remote_address = config.remote_address;
     bridge_config.input_delay = config.input_delay;
-    bridge_config.max_prediction_window = 8; // 8 frames = 80ms at 100 FPS
     bridge_config.desync_detection = true;
     
-    // Initialize the bridge for an online session
-    if (!gekko_bridge_->InitializeOnlineSession(bridge_config)) {
+    // Initialize the bridge for either a host or client session
+    bool success = false;
+    if (config.is_host) {
+        success = gekko_bridge_->InitializeHostSession(bridge_config);
+    } else {
+        success = gekko_bridge_->InitializeClientSession(bridge_config);
+    }
+
+    if (!success) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize GekkoNet bridge for online session");
         return false;
     }

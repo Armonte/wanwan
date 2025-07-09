@@ -366,18 +366,40 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     NetworkConfig config;
     bool direct_mode = false;
     
-    if (argc >= 5) {
-        std::cout << "Command line mode detected:\n";
-        config.local_player = std::stoi(argv[1]);
-        config.local_port = std::stoi(argv[2]);
-        config.remote_address = argv[3];
-        config.input_delay = std::stoi(argv[4]);
-        direct_mode = true;
-        
-        std::cout << "  Local player: " << config.local_player << std::endl;
-        std::cout << "  Local port: " << config.local_port << std::endl;
-        std::cout << "  Remote address: " << config.remote_address << std::endl;
-        std::cout << "  Input delay: " << config.input_delay << std::endl;
+    // Parse command line arguments
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--host" || arg == "-h") {
+            config.is_host = true;
+            direct_mode = true;
+        } else if (arg == "--connect" || arg == "-c") {
+            if (i + 1 < argc) {
+                config.remote_address = argv[++i];
+                config.is_host = false;
+                direct_mode = true;
+            } else {
+                std::cerr << "Error: --connect requires an address\n";
+                return SDL_APP_FAILURE;
+            }
+        } else if (arg == "--port" || arg == "-p") {
+            if (i + 1 < argc) {
+                config.local_port = std::stoi(argv[++i]);
+            } else {
+                std::cerr << "Error: --port requires a port number\n";
+                return SDL_APP_FAILURE;
+            }
+        } else if (arg == "--delay" || arg == "-d") {
+            if (i + 1 < argc) {
+                config.input_delay = std::stoi(argv[++i]);
+            } else {
+                std::cerr << "Error: --delay requires a frame count\n";
+                return SDL_APP_FAILURE;
+            }
+        } else if (arg == "--games") {
+            if (i + 1 < argc) {
+                Utils::SaveGamesRootPath(argv[++i]);
+            }
+        }
     }
     
     // Create launcher instance
@@ -525,16 +547,12 @@ bool FM2KLauncher::Initialize() {
     // Connect UI callbacks to launcher logic
     ui_->on_game_selected = [this](const FM2K::FM2KGameInfo& game) {
         SetSelectedGame(game);
-        LaunchGame(game);
     };
     ui_->on_offline_session_start = [this]() {
         StartOfflineSession();
     };
-    ui_->on_host_session_start = [this](const NetworkConfig& config) {
-        StartOnlineSession(config, true); // true for host
-    };
-    ui_->on_join_session_start = [this](const NetworkConfig& config) {
-        StartOnlineSession(config, false); // false for join
+    ui_->on_online_session_start = [this](const NetworkConfig& config) {
+        StartOnlineSession(config, config.is_host);
     };
     ui_->on_session_stop = [this]() {
         StopSession();

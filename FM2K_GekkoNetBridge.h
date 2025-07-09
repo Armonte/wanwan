@@ -64,9 +64,9 @@ public:
     ~GekkoNetBridge();
     
     // Session management
-    bool Initialize(const FM2KNetworkConfig& config);
     bool InitializeLocalSession(const FM2KNetworkConfig& config);
-    bool InitializeOnlineSession(const FM2KNetworkConfig& config);
+    bool InitializeHostSession(const FM2KNetworkConfig& config);
+    bool InitializeClientSession(const FM2KNetworkConfig& config);
     void Shutdown();
     bool IsConnected() const;
     

@@ -55,6 +55,8 @@ bool LauncherUI::Initialize(SDL_Window* window, SDL_Renderer* renderer) {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
     
     // Setup Dear ImGui style
     ImGui::StyleColorsDark();
@@ -109,15 +111,27 @@ void LauncherUI::Render() {
     // Render menu bar at application level first
     RenderMenuBar();
     
-    // Split-pane layout: Left panel (60% width) and Right panel (40% width)
+    // Create a dockspace to allow for flexible panel arrangement
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImVec2 work_pos = viewport->WorkPos;
-    ImVec2 work_size = viewport->WorkSize;
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::SetNextWindowViewport(viewport->ID);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+
+    ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
+    window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
+    window_flags |= ImGuiWindowFlags_NoBackground;
     
-    // Left Panel: Games & Configuration (35% width)
-    ImGui::SetNextWindowPos(work_pos);
-    ImGui::SetNextWindowSize(ImVec2(work_size.x * 0.35f, work_size.y));
-    ImGuiWindowFlags panel_flags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::Begin("DockSpace", nullptr, window_flags);
+    ImGui::PopStyleVar();
+    ImGui::PopStyleVar(2);
+
+    ImGuiID dockspace_id = ImGui::GetID("MainDockSpace");
+    ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
+
+    ImGuiWindowFlags panel_flags = ImGuiWindowFlags_NoCollapse;
     
     if (ImGui::Begin("Games & Configuration", nullptr, panel_flags)) {
         RenderGameSelection();
@@ -127,16 +141,14 @@ void LauncherUI::Render() {
         RenderSessionControls();
     }
     ImGui::End();
-
-    // Right Panel: Debug & Diagnostics (65% width)
-    ImGui::SetNextWindowPos(ImVec2(work_pos.x + work_size.x * 0.35f, work_pos.y));
-    ImGui::SetNextWindowSize(ImVec2(work_size.x * 0.65f, work_size.y));
     
     if (ImGui::Begin("Debug & Diagnostics", nullptr, panel_flags)) {
         RenderDebugTools();
     }
     ImGui::End();
     
+    ImGui::End(); // End DockSpace
+
     // Render connection status popups
     RenderConnectionStatus();
 }
@@ -338,10 +350,8 @@ void LauncherUI::ShowNetworkDiagnostics() {
     
     // Detailed stats from GekkoNetworkStats
     ImGui::Text("Avg Ping: %.2f ms", network_stats_.avg_ping);
-    ImGui::SameLine(150);
     ImGui::Text("Last Ping: %u ms", network_stats_.last_ping);
     ImGui::Text("Jitter: %.2f ms", network_stats_.jitter);
-    ImGui::SameLine(150);
     ImGui::Text("Frames Ahead: %.2f", frames_ahead_);
     
     // Rollback information
@@ -620,23 +630,18 @@ void LauncherUI::RenderDebugTools() {
         if (ImGui::Button("Clear")) {
             ClearLog();
         }
-        ImGui::SameLine();
-        bool copy = ImGui::Button("Copy to Clipboard");
         
         ImGui::Separator();
         
         ImGui::BeginChild("LogScrollingRegion", ImVec2(0, 200), false, ImGuiWindowFlags_HorizontalScrollbar);
         
-        if (copy) {
-            SDL_SetClipboardText(log_buffer_.c_str());
-        }
+        // Use InputTextMultiline to make the log selectable.
+        ImGui::InputTextMultiline("##console", (char*)log_buffer_.c_str(), log_buffer_.size(), ImVec2(-FLT_MIN, -FLT_MIN), ImGuiInputTextFlags_ReadOnly);
         
-        ImGui::TextUnformatted(log_buffer_.begin(), log_buffer_.end());
-        
-        if (scroll_to_bottom_) {
+        if (scroll_to_bottom_ && ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
             ImGui::SetScrollHereY(1.0f);
-            scroll_to_bottom_ = false;
         }
+        scroll_to_bottom_ = false;
         
         ImGui::EndChild();
 

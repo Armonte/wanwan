@@ -18,7 +18,9 @@
       "mcp__github_com_mrexodia_ida-pro-mcp__list_globals_filter",
       "mcp__github_com_mrexodia_ida-pro-mcp__get_global_variable_value_by_name",
       "mcp__github_com_mrexodia_ida-pro-mcp__decompile_function",
-      "mcp__github_com_mrexodia_ida-pro-mcp__get_metadata"
+      "mcp__github_com_mrexodia_ida-pro-mcp__get_metadata",
+      "mcp__github_com_mrexodia_ida-pro-mcp__list_functions",
+      "Bash(python3:*)"
     ],
     "deny": []
   }

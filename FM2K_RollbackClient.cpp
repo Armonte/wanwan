@@ -1011,10 +1011,10 @@ void FM2KLauncher::StartOfflineSession() {
     NetworkConfig local_config;
     local_config.session_mode = SessionMode::LOCAL;
 
-    // DLL handles GekkoNet directly - no launcher session needed
-    
-    // NOTE: GekkoNet session is now initialized directly in the injected DLL
-    // No need for launcher-side session management
+    // Configure DLL for offline mode
+    if (game_instance_) {
+        game_instance_->SetNetworkConfig(false, false);
+    }
 
     SetState(LauncherState::InGame);
     std::cout << "? LOCAL session started (offline mode)\n";
@@ -1037,7 +1037,10 @@ void FM2KLauncher::StartOnlineSession(const NetworkConfig& config, bool is_host)
         // Potentially configure to listen on 0.0.0.0
     }
 
-    // DLL handles GekkoNet directly - no launcher-side session needed
+    // Configure DLL for online mode
+    if (game_instance_) {
+        game_instance_->SetNetworkConfig(true, is_host, config.remote_address, config.local_port, config.input_delay);
+    }
 
     SetState(LauncherState::Connecting);
     std::cout << "? ONLINE session started (" << (is_host ? "Hosting" : "Joining") << ")\n";

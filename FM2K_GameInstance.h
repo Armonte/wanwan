@@ -55,7 +55,8 @@ public:
     // DLL communication (simplified)
     void ProcessDLLEvents();
     
-
+    // Network configuration
+    void SetNetworkConfig(bool is_online, bool is_host, const std::string& remote_addr = "", uint16_t port = 12345, uint8_t input_delay = 2);
     
     // Shared memory input polling
     void PollInputs();

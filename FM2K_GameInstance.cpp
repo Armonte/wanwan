@@ -8,6 +8,22 @@
 #include <codecvt>
 #include <windows.h>
 
+// Shared memory structure matching the DLL
+struct SharedInputData {
+    uint32_t frame_number;
+    uint16_t p1_input;
+    uint16_t p2_input;
+    bool valid;
+    
+    // Network configuration
+    bool is_online_mode;
+    bool is_host;
+    char remote_address[64];
+    uint16_t port;
+    uint8_t input_delay;
+    bool config_updated;
+};
+
 namespace {
 
 // Constants
@@ -141,8 +157,8 @@ bool FM2KGameInstance::Launch(const std::string& exe_path) {
     // Simple DLL injection complete - no IPC needed
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Hook DLL injected successfully");
     
-    // DLL handles GekkoNet directly - no shared memory needed
-    // InitializeSharedMemory();
+    // Initialize shared memory for configuration passing
+    InitializeSharedMemory();
     
     return true;
 }
@@ -327,6 +343,34 @@ void FM2KGameInstance::ProcessDLLEvents() {
     }
 }
 
+void FM2KGameInstance::SetNetworkConfig(bool is_online, bool is_host, const std::string& remote_addr, uint16_t port, uint8_t input_delay) {
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Setting network config - Online: %s, Host: %s, Addr: %s, Port: %d, Delay: %d",
+                is_online ? "YES" : "NO", is_host ? "YES" : "NO", remote_addr.c_str(), port, input_delay);
+    
+    // If shared memory is not initialized, initialize it first
+    if (!shared_memory_data_) {
+        InitializeSharedMemory();
+    }
+    
+    // Write configuration to shared memory
+    if (shared_memory_data_) {
+        SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
+        shared_data->is_online_mode = is_online;
+        shared_data->is_host = is_host;
+        shared_data->port = port;
+        shared_data->input_delay = input_delay;
+        shared_data->config_updated = true;
+        
+        // Copy remote address safely
+        strncpy_s(shared_data->remote_address, sizeof(shared_data->remote_address), 
+                  remote_addr.c_str(), _TRUNCATE);
+        
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Network configuration written to shared memory");
+    } else {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Cannot set network config - shared memory not available");
+    }
+}
+
 void FM2KGameInstance::HandleDLLEvent(const SDL_Event& event) {
     // Decode event data based on event type
     Uint32 event_subtype = event.user.code;
@@ -407,14 +451,6 @@ bool FM2KGameInstance::ExecuteRemoteFunction(HANDLE process, uintptr_t function_
 }
 
 
-
-// Shared memory structure matching the DLL
-struct SharedInputData {
-    uint32_t frame_number;
-    uint16_t p1_input;
-    uint16_t p2_input;
-    bool valid;
-};
 
 void FM2KGameInstance::InitializeSharedMemory() {
     // Open the shared memory created by the DLL

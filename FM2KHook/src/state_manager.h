@@ -1,7 +1,6 @@
 #pragma once
 
 #include <windows.h>
-#include "ipc.h"
 
 namespace FM2K {
 namespace State {
@@ -104,9 +103,9 @@ uint32_t CalculateCoreStateChecksum(const CoreGameState* state);
 // Helper functions
 uint32_t Fletcher32(const uint8_t* data, size_t len);
 
-// Visual state operations
-bool ReadVisualState(IPC::VisualState* state);
-bool WriteVisualState(const IPC::VisualState* state);
+// Visual state operations (disabled - no IPC)
+// bool ReadVisualState(IPC::VisualState* state);
+// bool WriteVisualState(const IPC::VisualState* state);
 
 namespace Memory {
     // Memory region helpers

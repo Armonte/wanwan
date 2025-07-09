@@ -638,10 +638,10 @@ void LauncherUI::RenderDebugTools() {
         // Use InputTextMultiline to make the log selectable.
         ImGui::InputTextMultiline("##console", (char*)log_buffer_.c_str(), log_buffer_.size(), ImVec2(-FLT_MIN, -FLT_MIN), ImGuiInputTextFlags_ReadOnly);
         
-        if (scroll_to_bottom_ && ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
+        if (scroll_to_bottom_) {
             ImGui::SetScrollHereY(1.0f);
+            scroll_to_bottom_ = false;
         }
-        scroll_to_bottom_ = false;
         
         ImGui::EndChild();
 

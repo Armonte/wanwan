@@ -22,13 +22,19 @@ static HANDLE g_proc = nullptr;
 
 // Frame counter implementation - reads directly from game memory
 uint32_t GetFrameNumber() {
-    uint32_t frame_number = 0;
-    SIZE_T bytes_read = 0;
-    if (ReadProcessMemory(g_proc, (LPCVOID)State::Memory::FRAME_NUMBER_ADDR, &frame_number, sizeof(frame_number), &bytes_read) && bytes_read == sizeof(frame_number)) {
-        return frame_number;
+    // Since we're running inside the game process, read memory directly
+    uint32_t* frame_ptr = reinterpret_cast<uint32_t*>(State::Memory::FRAME_NUMBER_ADDR);
+    uint32_t frame_value = *frame_ptr;
+    
+    // Debug logging every 100 reads to avoid spam
+    static int debug_counter = 0;
+    if (++debug_counter % 100 == 0) {
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
+            "GetFrameNumber: Reading from 0x%08X, value=%u (debug #%d)", 
+            State::Memory::FRAME_NUMBER_ADDR, frame_value, debug_counter);
     }
-    // Return 0 or log an error if read fails
-    return 0;
+    
+    return frame_value;
 }
 
 // State save condition (from implementation guide)
@@ -44,18 +50,14 @@ bool ShouldSaveState() {
 // Visual state change detection (from implementation guide)
 bool VisualStateChanged() {
     static uint32_t last_effect_flags = 0;
-    uint32_t current_effect_flags;
-
-    // Read effect flags from 0x40CC30 (from research doc)
-    if (ReadProcessMemory(GetCurrentProcess(), 
-                         (LPCVOID)0x40CC30,
-                         &current_effect_flags,
-                         sizeof(current_effect_flags),
-                         nullptr)) {
-        if (current_effect_flags != last_effect_flags) {
-            last_effect_flags = current_effect_flags;
-            return true;
-        }
+    
+    // Since we're running inside the game process, read memory directly
+    uint32_t* effect_ptr = reinterpret_cast<uint32_t*>(State::Memory::EFFECT_ACTIVE_FLAGS);
+    uint32_t current_effect_flags = *effect_ptr;
+    
+    if (current_effect_flags != last_effect_flags) {
+        last_effect_flags = current_effect_flags;
+        return true;
     }
     return false;
 }
@@ -65,13 +67,24 @@ bool VisualStateChanged() {
 // -----------------------------------------------------------------------------
 static void __stdcall Hook_ProcessGameInputs()
 {
+    // Debug: Log that hook is being called
+    static int hook_call_count = 0;
+    hook_call_count++;
+    
     // Capture inputs BEFORE original function runs, as it clears them
-    uint32_t p1_input_raw = 0;
-    uint32_t p2_input_raw = 0;
-    SIZE_T bytes_read = 0;
-
-    ReadProcessMemory(g_proc, (LPCVOID)State::Memory::P1_INPUT_ADDR, &p1_input_raw, sizeof(p1_input_raw), &bytes_read);
-    ReadProcessMemory(g_proc, (LPCVOID)State::Memory::P2_INPUT_ADDR, &p2_input_raw, sizeof(p2_input_raw), &bytes_read);
+    // Since we're running inside the game process, read memory directly
+    uint32_t* p1_input_ptr = reinterpret_cast<uint32_t*>(State::Memory::P1_INPUT_ADDR);
+    uint32_t* p2_input_ptr = reinterpret_cast<uint32_t*>(State::Memory::P2_INPUT_ADDR);
+    uint32_t p1_input_raw = *p1_input_ptr;
+    uint32_t p2_input_raw = *p2_input_ptr;
+    
+    // Debug: Log frame value before calling original function
+    uint32_t frame_before = GetFrameNumber();
+    if (hook_call_count <= 10 || hook_call_count % 50 == 0) {
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
+            "Hook_ProcessGameInputs #%d: Frame before original=%u, P1=0x%04x, P2=0x%04x", 
+            hook_call_count, frame_before, p1_input_raw, p2_input_raw);
+    }
 
     // Call the original function to preserve behavior and advance frame
     if (original_process_inputs) {
@@ -80,6 +93,13 @@ static void __stdcall Hook_ProcessGameInputs()
 
     // Now, get the frame number *after* it has been incremented
     uint32_t current_frame = GetFrameNumber();
+    
+    // Debug: Log frame value after calling original function
+    if (hook_call_count <= 10 || hook_call_count % 50 == 0) {
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
+            "Hook_ProcessGameInputs #%d: Frame after original=%u (changed from %u)", 
+            hook_call_count, current_frame, frame_before);
+    }
 
     // Send INPUT_CAPTURED event
     FM2K::IPC::Event input_event;

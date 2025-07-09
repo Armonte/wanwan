@@ -79,14 +79,11 @@ bool FM2KGameInstance::Launch(const FM2K::FM2KGameInfo& game) {
     }
 
     // Look for FM2KHook.dll beside the launcher executable
-    const char* base_path = SDL_GetBasePath();
-    if (!base_path) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to get base path: %s", SDL_GetError());
-        return false;
-    }
-
-    std::string hook_dll_path = std::string(base_path) + "FM2KHook.dll";
-    SDL_free(const_cast<char*>(base_path));
+    wchar_t buffer[MAX_PATH] = { 0 };
+    GetModuleFileNameW(NULL, buffer, MAX_PATH);
+    std::filesystem::path launcher_path(buffer);
+    std::filesystem::path hook_dll_path_fs = launcher_path.parent_path() / "FM2KHook.dll";
+    std::string hook_dll_path = hook_dll_path_fs.string();
 
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Looking for FM2KHook.dll at: %s", hook_dll_path.c_str());
 

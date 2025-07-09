@@ -350,8 +350,11 @@ void LauncherUI::ShowNetworkDiagnostics() {
     
     // Detailed stats from GekkoNetworkStats
     ImGui::Text("Avg Ping: %.2f ms", network_stats_.avg_ping);
+    ImGui::Spacing();
     ImGui::Text("Last Ping: %u ms", network_stats_.last_ping);
+    ImGui::Spacing();
     ImGui::Text("Jitter: %.2f ms", network_stats_.jitter);
+    ImGui::Spacing();
     ImGui::Text("Frames Ahead: %.2f", frames_ahead_);
     
     // Rollback information
@@ -613,6 +616,7 @@ void LauncherUI::RenderDebugTools() {
     }
 
     static int rollback_frames = 0;
+    ImGui::SetNextItemWidth(100);
     ImGui::InputInt("Force Rollback Frames", &rollback_frames);
     ImGui::SameLine();
     if (ImGui::Button("Force")) {

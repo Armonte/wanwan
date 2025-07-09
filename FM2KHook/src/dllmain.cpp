@@ -396,8 +396,8 @@ int __cdecl Hook_ProcessGameInputs() {
         game_frame = *frame_ptr;
     }
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: process_game_inputs called! Hook frame %u, Game frame %u", 
-             g_frame_counter, game_frame);
+    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: process_game_inputs called! Hook frame %u, Game frame %u", 
+             //g_frame_counter, game_frame);
     
     // Capture current inputs from game memory (with enhanced validation)
     uint32_t p1_input = 0;
@@ -431,7 +431,7 @@ int __cdecl Hook_ProcessGameInputs() {
     CheckConfigurationUpdates();
     
     // Log more frequently to debug input capture
-    if (g_frame_counter % 10 == 0) {
+    if (g_frame_counter % 1 == 0) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Frame %u - Game frame: %u - P1: 0x%08X (addr valid: %s), P2: 0x%08X (addr valid: %s)", 
                  g_frame_counter, game_frame, p1_input, 
                  (!IsBadReadPtr(p1_input_ptr, sizeof(uint32_t))) ? "YES" : "NO",
@@ -521,7 +521,7 @@ int __cdecl Hook_ProcessGameInputs() {
             }
             
             // Log successful input processing occasionally
-            if (g_frame_counter % 60 == 0) {
+            if (g_frame_counter % 100 == 0) {
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Frame %u - P1: 0x%08X->0x%02X (%s), P2: 0x%08X->0x%02X (%s), Updates: %d", 
                          g_frame_counter, p1_input, p1_gekko, p1_input_valid ? "valid" : "invalid", 
                          p2_input, p2_gekko, p2_input_valid ? "valid" : "invalid", update_count);

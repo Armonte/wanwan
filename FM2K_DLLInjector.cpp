@@ -129,4 +129,4 @@ bool DLLInjector::WaitForDLLInit(DWORD timeout_ms) {
     return false;
 }
 
-} // namespace FM2K 
+} // namespace FM2K     

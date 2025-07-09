@@ -38,55 +38,23 @@ bool LauncherUI::Initialize(SDL_Window* window, SDL_Renderer* renderer) {
     renderer_ = renderer;
     window_ = window;
     
-    // Setup Dear ImGui context
+    // NUCLEAR: Exact copy of official SDL3 renderer example initialization
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO(); (void)io;
     
-    // Enable features
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;         // Enable Docking
+    // Setup Dear ImGui style
+    ImGui::StyleColorsDark();
     
-    // NUCLEAR: Remove ALL custom font/scaling code - use pure default ImGui setup
-    // No custom fonts, no scaling, no theme - just bare minimum
-    
-    // Setup Dear ImGui style - ONLY default theme
-    ImGui::StyleColorsDark();  // Just use dark theme directly, no custom logic
-    
-    // TODO: Re-enable custom font loading once font stack issue is resolved
-    // const float font_size = 16.0f * main_scale;
-    // const char* font_paths[] = {
-    //     "vendored/imgui/misc/fonts/DroidSans.ttf",
-    //     "C:/Windows/Fonts/segoeui.ttf"  // Fallback to Segoe UI on Windows
-    // };
-    // 
-    // bool font_loaded = false;
-    // for (const char* font_path : font_paths) {
-    //     if (SDL_GetPathInfo(font_path, nullptr)) {
-    //         ImFont* font = io.Fonts->AddFontFromFileTTF(font_path, font_size);
-    //         if (font != nullptr) {
-    //             font_loaded = true;
-    //             break;
-    //         }
-    //     }
-    // }
-    // 
-    // if (!font_loaded) {
-    //     io.Fonts->AddFontDefault();
-    // }
+    // Setup scaling - THIS IS CRITICAL FOR FONT STACK
+    float main_scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.ScaleAllSizes(main_scale);
+    style.FontScaleDpi = main_scale;
     
     // Setup Platform/Renderer backends
-    if (!ImGui_ImplSDL3_InitForSDLRenderer(window, renderer)) {
-        std::cerr << "Failed to initialize ImGui SDL3 backend" << std::endl;
-        return false;
-    }
-    if (!ImGui_ImplSDLRenderer3_Init(renderer)) {
-        std::cerr << "Failed to initialize ImGui SDL3 Renderer backend" << std::endl;
-        ImGui_ImplSDL3_Shutdown();
-        ImGui::DestroyContext();
-        return false;
-    }
+    ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
+    ImGui_ImplSDLRenderer3_Init(renderer);
     
     return true;
 }
@@ -116,74 +84,66 @@ void LauncherUI::NewFrame() {
 }
 
 void LauncherUI::Render() {
-    // Only set theme if it has changed (not every frame)
-    // SetTheme is now only called when theme changes in Initialize() or menu selection
+    // NUCLEAR: Exact copy from official SDL3 renderer example
+    // Remove ALL custom window management and use pure ImGui defaults
     
-    // Render menu bar at application level FIRST
-    RenderMenuBar();
-    
-    // NUCLEAR OPTION: Simple side-by-side layout without dockspace
-    const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImVec2 work_pos = viewport->WorkPos;
-    ImVec2 work_size = viewport->WorkSize;
-    
-    // Left Panel: Game Selection and Configuration (60% width)
-    ImGui::SetNextWindowPos(work_pos);
-    ImGui::SetNextWindowSize(ImVec2(work_size.x * 0.6f, work_size.y));
-    ImGuiWindowFlags panel_flags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
-    
-    if (ImGui::Begin("Games & Configuration", nullptr, panel_flags)) {
-        RenderGameSelection();
-        ImGui::Separator();
-        RenderNetworkConfig();
-        ImGui::Separator();
-        RenderSessionControls();
-    }
-    ImGui::End();
+    // Simple window exactly like official example
+    {
+        static float f = 0.0f;
+        static int counter = 0;
 
-    // Right Panel: Debug and Diagnostics (40% width)
-    ImGui::SetNextWindowPos(ImVec2(work_pos.x + work_size.x * 0.6f, work_pos.y));
-    ImGui::SetNextWindowSize(ImVec2(work_size.x * 0.4f, work_size.y));
-    
-    if (ImGui::Begin("Debug & Diagnostics", nullptr, panel_flags)) {
-        RenderDebugTools();
+        ImGui::Begin("Hello, world!");                          // Create a window called "Hello, world!" and append into it.
+
+        ImGui::Text("This is some useful text.");               // Display some text (you can use a format strings too)
+        ImGui::Text("FM2K Rollback Launcher - Font Stack Test");
+
+        ImGui::SliderFloat("float", &f, 0.0f, 1.0f);            // Edit 1 float using a slider from 0.0f to 1.0f
+
+        if (ImGui::Button("Button"))                            // Buttons return true when clicked (most widgets return true when edited/activated)
+            counter++;
+        ImGui::SameLine();
+        ImGui::Text("counter = %d", counter);
+
+        ImGuiIO& io = ImGui::GetIO();
+        ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
+        ImGui::End();
     }
-    ImGui::End();
 }
 
 void LauncherUI::RenderMenuBar() {
-    if (ImGui::BeginMainMenuBar()) {
-        if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Select Games Folder...")) {
-                // ... folder selection logic ...
-            }
-            if (ImGui::MenuItem("Exit", "Alt+F4")) {
-                if (on_exit) on_exit();
-            }
-            ImGui::EndMenu();
-        }
-        if (ImGui::BeginMenu("Session")) {
-            if (launcher_state_ == LauncherState::InGame || launcher_state_ == LauncherState::Connecting) {
-                if (ImGui::MenuItem("Disconnect")) {
-                    if (on_session_stop) on_session_stop();
-                }
-            } else {
-                ImGui::MenuItem("Disconnect", nullptr, false, false); // Disabled
-            }
-            ImGui::EndMenu();
-        }
-        if (ImGui::BeginMenu("View")) {
-            // Theme menu temporarily disabled to eliminate font stack issues
-            // if (ImGui::BeginMenu("Theme")) {
-            //     if (ImGui::MenuItem("Dark")) SetTheme(UITheme::Dark);
-            //     if (ImGui::MenuItem("Light")) SetTheme(UITheme::Light);
-            //     if (ImGui::MenuItem("System")) SetTheme(UITheme::System);
-            //     ImGui::EndMenu();
-            // }
-            ImGui::EndMenu();
-        }
-        ImGui::EndMainMenuBar();
-    }
+    // NUCLEAR: Completely disable menu bar to isolate font stack issues
+    // if (ImGui::BeginMainMenuBar()) {
+    //     if (ImGui::BeginMenu("File")) {
+    //         if (ImGui::MenuItem("Select Games Folder...")) {
+    //             // ... folder selection logic ...
+    //         }
+    //         if (ImGui::MenuItem("Exit", "Alt+F4")) {
+    //             if (on_exit) on_exit();
+    //         }
+    //         ImGui::EndMenu();
+    //     }
+    //     if (ImGui::BeginMenu("Session")) {
+    //         if (launcher_state_ == LauncherState::InGame || launcher_state_ == LauncherState::Connecting) {
+    //             if (ImGui::MenuItem("Disconnect")) {
+    //                 if (on_session_stop) on_session_stop();
+    //             }
+    //         } else {
+    //             ImGui::MenuItem("Disconnect", nullptr, false, false); // Disabled
+    //         }
+    //         ImGui::EndMenu();
+    //     }
+    //     if (ImGui::BeginMenu("View")) {
+    //         // Theme menu temporarily disabled to eliminate font stack issues
+    //         // if (ImGui::BeginMenu("Theme")) {
+    //         //     if (ImGui::MenuItem("Dark")) SetTheme(UITheme::Dark);
+    //         //     if (ImGui::MenuItem("Light")) SetTheme(UITheme::Light);
+    //         //     if (ImGui::MenuItem("System")) SetTheme(UITheme::System);
+    //         //     ImGui::EndMenu();
+    //         // }
+    //         ImGui::EndMenu();
+    //     }
+    //     ImGui::EndMainMenuBar();
+    // }
 }
 
 void LauncherUI::RenderGameSelection() {

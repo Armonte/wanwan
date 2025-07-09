@@ -337,11 +337,3 @@
 
 ● Task(Find SDL_LogInfo performance bottlenecks)
   ⎿  Done (13 tool uses · 0 tokens · 53.5s)                                        
-  ⎿  Claude usage limit reached. Your limit will reset at 11pm (America/New_York).
-
-      • /upgrade to increase your usage limit.
-
-> /export 
-  ⎿ Failed to copy to clipboard. Make sure the `clip.exe` command is available in 
-    your WSL environment and try again.
-

@@ -24,7 +24,7 @@ With state management solved, the next logical and exciting phase is to integrat
     *   **`load_state`**: GekkoNet's load state callback (triggered during a rollback) will use our implemented `LoadCoreState` function to write a past state back into the game's memory.
     *   **`advance_frame`**: We will hand over control of the game's progression to GekkoNet. Our `OnFrameAdvanced` IPC event will now be used to drive GekkoNet's `advance_frame` function.
 
-3.  **Hook and Feed Player Inputs**: We will intercept local player inputs and feed them directly into the GekkoNet session. GekkoNet will then handle synchronizing these inputs between both players, which is the core of how rollback netcode functions.
+3.  **Hook and Feed Player Inputs**: We will intercept local player inputs and feed them directly into the GekkoNet session. GekkoNet will then handle synchronizing 2these inputs between both players, which is the core of how rollback netcode functions.
 
 4.  **Test and Validate**: Using GekkoNet's built-in tools, like `netstats` and desync detection, we will thoroughly test the implementation to ensure save/load cycles work perfectly and the game state remains synchronized between clients. 
 

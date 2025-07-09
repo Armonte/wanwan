@@ -661,6 +661,12 @@ void FM2KLauncher::Render() {
     
     // Render UI
     ui_->Render();
+
+    // Finalize ImGui draw data
+    ImGui::Render();
+    
+    // Render ImGui draw data using the SDL_Renderer backend
+    ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer_);
     
     // Update and Render additional Platform Windows
     if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {

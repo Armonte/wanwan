@@ -313,17 +313,24 @@ public:
     // Data binding
     void SetGames(const std::vector<FM2K::FM2KGameInfo>& games);
     void SetNetworkConfig(const NetworkConfig& config);
-    void SetNetworkStats(const ISession::NetworkStats& stats);
+    void SetNetworkStats(const GekkoNetworkStats& stats);
     void SetLauncherState(LauncherState state);
+    void SetFramesAhead(float frames_ahead);
     // Update scanning progress (0-1). Only meaningful while scanning flag is true.
     void SetScanning(bool scanning);
     void SetGamesRootPath(const std::string& path);
 
 private:
+    // Logging
+    void AddLog(const char* message);
+    void ClearLog();
+    static void SDLCustomLogOutput(void* userdata, int category, SDL_LogPriority priority, const char* message);
+
     // UI state
     std::vector<FM2K::FM2KGameInfo> games_;
     NetworkConfig network_config_;
-    ISession::NetworkStats network_stats_;
+    GekkoNetworkStats network_stats_;
+    float frames_ahead_;
     LauncherState launcher_state_;
     SDL_Renderer* renderer_;
     SDL_Window* window_;
@@ -331,6 +338,13 @@ private:
     int selected_game_index_ = -1; // -1 means no selection
     bool scanning_games_ = false;  // True while background discovery is running
     
+    // Console Log
+    ImGuiTextBuffer log_buffer_;
+    SDL_Mutex* log_buffer_mutex_;
+    bool scroll_to_bottom_;
+    SDL_LogOutputFunction original_log_function_;
+    void* original_log_userdata_;
+
     // UI components
     void RenderGameSelection();
     void RenderNetworkConfig();
@@ -345,10 +359,13 @@ private:
     void ShowNetworkDiagnostics();
     bool ValidateNetworkConfig();
     
-    enum class UITheme { Dark, Light, System };
+    enum class UITheme { Dark, Light, System, DarkCyan };
     void SetTheme(UITheme theme);
     UITheme current_theme_;
 
     // int selected_game_index_ = -1; // -1 means no selection
     // bool scanning_games_ = false;  // True while background discovery is running
+
+private:
+    void ApplyDarkCyanThemeStyle();
 }; 

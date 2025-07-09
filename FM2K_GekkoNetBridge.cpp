@@ -28,8 +28,9 @@ GekkoNetBridge::~GekkoNetBridge() {
 }
 
 bool GekkoNetBridge::InitializeLocalSession(const FM2KNetworkConfig& config) {
+    config_ = config; // Store config
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-        "Initializing GekkoNet LOCAL session: input_delay=%d", config.input_delay);
+        "Initializing GekkoNet LOCAL session: input_delay=%d", config_.input_delay);
     
     // Create GekkoNet session
     gekko_create(&session_);
@@ -73,9 +74,10 @@ bool GekkoNetBridge::InitializeLocalSession(const FM2KNetworkConfig& config) {
 }
 
 bool GekkoNetBridge::InitializeHostSession(const FM2KNetworkConfig& config) {
+    config_ = config; // Store config
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
         "Initializing GekkoNet HOST session on port %d",
-        config.local_port);
+        config_.local_port);
 
     gekko_create(&session_);
     GekkoConfig conf{};
@@ -86,13 +88,13 @@ bool GekkoNetBridge::InitializeHostSession(const FM2KNetworkConfig& config) {
     conf.desync_detection = true;
     gekko_start(session_, &conf);
 
-    auto adapter = gekko_default_adapter(config.local_port);
+    auto adapter = gekko_default_adapter(config_.local_port);
     gekko_net_adapter_set(session_, adapter);
 
     local_player_handle_ = gekko_add_actor(session_, LocalPlayer, nullptr);
     p2_player_handle_ = gekko_add_actor(session_, RemotePlayer, nullptr); // Awaits connection
 
-    gekko_set_local_delay(session_, local_player_handle_, config.input_delay);
+    gekko_set_local_delay(session_, local_player_handle_, config_.input_delay);
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
         "HOST session initialized: local handle %d, remote handle %d, awaiting connection...",
@@ -102,9 +104,10 @@ bool GekkoNetBridge::InitializeHostSession(const FM2KNetworkConfig& config) {
 }
 
 bool GekkoNetBridge::InitializeClientSession(const FM2KNetworkConfig& config) {
+    config_ = config; // Store config
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
         "Initializing GekkoNet CLIENT session, connecting to %s",
-        config.remote_address.c_str());
+        config_.remote_address.c_str());
 
     gekko_create(&session_);
     GekkoConfig conf{};
@@ -115,18 +118,18 @@ bool GekkoNetBridge::InitializeClientSession(const FM2KNetworkConfig& config) {
     conf.desync_detection = true;
     gekko_start(session_, &conf);
 
-    auto adapter = gekko_default_adapter(config.local_port);
+    auto adapter = gekko_default_adapter(config_.local_port);
     gekko_net_adapter_set(session_, adapter);
     
     local_player_handle_ = gekko_add_actor(session_, LocalPlayer, nullptr);
     
     GekkoNetAddress remote_addr{
-        const_cast<void*>(static_cast<const void*>(config.remote_address.c_str())),
-        static_cast<unsigned int>(config.remote_address.length())
+        const_cast<void*>(static_cast<const void*>(config_.remote_address.c_str())),
+        static_cast<unsigned int>(config_.remote_address.length())
     };
     p2_player_handle_ = gekko_add_actor(session_, RemotePlayer, &remote_addr);
 
-    gekko_set_local_delay(session_, local_player_handle_, config.input_delay);
+    gekko_set_local_delay(session_, local_player_handle_, config_.input_delay);
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
         "CLIENT session initialized: local handle %d, remote handle %d, connecting...",
@@ -350,18 +353,22 @@ void GekkoNetBridge::OnAdvanceFrame(GekkoGameEvent* event) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Cannot advance frame - no game instance");
         return;
     }
-    
-    // Extract inputs for both players (converted back from 8-bit to 16-bit for logging)
+
+    // Extract inputs for both players
     uint8_t p1_gekko = event->data.adv.inputs[0];
     uint8_t p2_gekko = event->data.adv.inputs[1];
     
+    // Inject the confirmed inputs into the game instance
+    game_instance_->InjectInputs(p1_gekko, p2_gekko);
+
+    // Tell the game instance to advance one frame with the new inputs
+    if (!game_instance_->AdvanceFrame()) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to advance game frame");
+    }
+
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
         "GekkoNet AdvanceEvent: Frame %d with inputs P1:0x%02x P2:0x%02x", 
         event->data.adv.frame, p1_gekko, p2_gekko);
-    
-    // For FM2K integration, the game drives itself through the hook
-    // GekkoNet provides confirmed inputs via AdvanceEvent
-    // The hook should use these inputs when the game asks for them
 }
 
 float GekkoNetBridge::GetFrameTime(float frames_ahead) const {

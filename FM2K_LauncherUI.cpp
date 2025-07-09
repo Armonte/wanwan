@@ -3,12 +3,16 @@
 #include <algorithm>
 #include "vendored/imgui/imgui.h"
 #include "imgui_internal.h"
+#include "vendored/GekkoNet/GekkoLib/include/gekkonet.h"
+#include <chrono>
+#include <ctime>
 
 // LauncherUI Implementation
 LauncherUI::LauncherUI() 
     : games_{}
     , network_config_{} // Zero-initialize network config
     , network_stats_{}  // Zero-initialize network stats
+    , frames_ahead_(0.0f)
     , launcher_state_(LauncherState::GameSelection)
     , renderer_(nullptr)
     , window_(nullptr)
@@ -16,6 +20,9 @@ LauncherUI::LauncherUI()
     , games_root_path_("")
     , selected_game_index_(-1)
     , current_theme_(UITheme::System)
+    , scroll_to_bottom_(true)
+    , original_log_function_(nullptr)
+    , original_log_userdata_(nullptr)
 {
     // Initialize callbacks to null
     on_game_selected = nullptr;
@@ -24,9 +31,15 @@ LauncherUI::LauncherUI()
     on_session_stop = nullptr;
     on_exit = nullptr;
     on_games_folder_set = nullptr;
+
+    log_buffer_mutex_ = SDL_CreateMutex();
 }
 
 LauncherUI::~LauncherUI() {
+    if (log_buffer_mutex_) {
+        SDL_DestroyMutex(log_buffer_mutex_);
+        log_buffer_mutex_ = nullptr;
+    }
     Shutdown();
 }
 
@@ -56,10 +69,19 @@ bool LauncherUI::Initialize(SDL_Window* window, SDL_Renderer* renderer) {
     ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer3_Init(renderer);
     
+    // Setup our logging to capture SDL logs
+    SDL_GetLogOutputFunction(&original_log_function_, &original_log_userdata_);
+    SDL_SetLogOutputFunction(SDLCustomLogOutput, this);
+
+    SDL_Log("Launcher UI Initialized");
+    
     return true;
 }
 
 void LauncherUI::Shutdown() {
+    // Restore original logger
+    SDL_SetLogOutputFunction(original_log_function_, original_log_userdata_);
+
     // Cleanup ImGui
     if (ImGui::GetCurrentContext()) {
         // Make sure we finish any pending viewport operations
@@ -92,9 +114,9 @@ void LauncherUI::Render() {
     ImVec2 work_pos = viewport->WorkPos;
     ImVec2 work_size = viewport->WorkSize;
     
-    // Left Panel: Games & Configuration (60% width)
+    // Left Panel: Games & Configuration (35% width)
     ImGui::SetNextWindowPos(work_pos);
-    ImGui::SetNextWindowSize(ImVec2(work_size.x * 0.6f, work_size.y));
+    ImGui::SetNextWindowSize(ImVec2(work_size.x * 0.35f, work_size.y));
     ImGuiWindowFlags panel_flags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
     
     if (ImGui::Begin("Games & Configuration", nullptr, panel_flags)) {
@@ -106,9 +128,9 @@ void LauncherUI::Render() {
     }
     ImGui::End();
 
-    // Right Panel: Debug & Diagnostics (40% width)
-    ImGui::SetNextWindowPos(ImVec2(work_pos.x + work_size.x * 0.6f, work_pos.y));
-    ImGui::SetNextWindowSize(ImVec2(work_size.x * 0.4f, work_size.y));
+    // Right Panel: Debug & Diagnostics (65% width)
+    ImGui::SetNextWindowPos(ImVec2(work_pos.x + work_size.x * 0.35f, work_pos.y));
+    ImGui::SetNextWindowSize(ImVec2(work_size.x * 0.65f, work_size.y));
     
     if (ImGui::Begin("Debug & Diagnostics", nullptr, panel_flags)) {
         RenderDebugTools();
@@ -142,12 +164,13 @@ void LauncherUI::RenderMenuBar() {
         }
         if (ImGui::BeginMenu("View")) {
             // Theme menu temporarily disabled to keep things simple initially
-            // if (ImGui::BeginMenu("Theme")) {
-            //     if (ImGui::MenuItem("Dark")) SetTheme(UITheme::Dark);
-            //     if (ImGui::MenuItem("Light")) SetTheme(UITheme::Light);
-            //     if (ImGui::MenuItem("System")) SetTheme(UITheme::System);
-            //     ImGui::EndMenu();
-            // }
+            if (ImGui::BeginMenu("Theme")) {
+                if (ImGui::MenuItem("Dark")) SetTheme(UITheme::Dark);
+                if (ImGui::MenuItem("Light")) SetTheme(UITheme::Light);
+                if (ImGui::MenuItem("Dark Cyan")) SetTheme(UITheme::DarkCyan);
+                if (ImGui::MenuItem("System")) SetTheme(UITheme::System);
+                ImGui::EndMenu();
+            }
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();
@@ -303,8 +326,8 @@ void LauncherUI::ShowNetworkDiagnostics() {
     // Remove window creation - this is now rendered inline within the debug tools panel
     ImGui::Text("Network Performance:");
     
-    // Network quality indicator
-    float quality = std::max(0.0f, std::min(1.0f, (100.0f - network_stats_.ping) / 100.0f));
+    // Network quality indicator based on average ping
+    float quality = std::max(0.0f, std::min(1.0f, (100.0f - network_stats_.avg_ping) / 100.0f));
     ImVec4 quality_color = ImVec4(1.0f - quality, quality, 0.0f, 1.0f);
     
     ImGui::Text("Connection Quality:");
@@ -313,13 +336,13 @@ void LauncherUI::ShowNetworkDiagnostics() {
     
     ImGui::Separator();
     
-    // Detailed stats
-    ImGui::Text("Ping: %u ms", network_stats_.ping);
+    // Detailed stats from GekkoNetworkStats
+    ImGui::Text("Avg Ping: %.2f ms", network_stats_.avg_ping);
     ImGui::SameLine(150);
-    ImGui::Text("Jitter: %u ms", network_stats_.jitter);
-    ImGui::Text("Frames Ahead: %u", network_stats_.frames_ahead);
+    ImGui::Text("Last Ping: %u ms", network_stats_.last_ping);
+    ImGui::Text("Jitter: %.2f ms", network_stats_.jitter);
     ImGui::SameLine(150);
-    ImGui::Text("Rollbacks/s: %u", network_stats_.rollbacks_per_second);
+    ImGui::Text("Frames Ahead: %.2f", frames_ahead_);
     
     // Rollback information
     ImGui::Separator();
@@ -384,7 +407,7 @@ void LauncherUI::SetNetworkConfig(const NetworkConfig& config) {
     network_config_ = config;
 }
 
-void LauncherUI::SetNetworkStats(const ISession::NetworkStats& stats) {
+void LauncherUI::SetNetworkStats(const GekkoNetworkStats& stats) {
     network_stats_ = stats;
 }
 
@@ -400,10 +423,13 @@ void LauncherUI::SetGamesRootPath(const std::string& path) {
     games_root_path_ = path;
 }
 
+void LauncherUI::SetFramesAhead(float frames_ahead) {
+    frames_ahead_ = frames_ahead;
+}
+
 // NOTE: This is the correctly scoped implementation for the SetTheme method
 void LauncherUI::SetTheme(UITheme theme) {
-    // Only apply theme if it actually changed to avoid font stack issues
-    if (current_theme_ == theme) {
+    if (current_theme_ == theme && theme != UITheme::System) {
         return; // No change needed
     }
     
@@ -411,7 +437,6 @@ void LauncherUI::SetTheme(UITheme theme) {
     
     UITheme theme_to_apply = theme;
     if (theme_to_apply == UITheme::System) {
-        // Detect system theme
         if (SDL_GetSystemTheme() == SDL_SYSTEM_THEME_DARK) {
             theme_to_apply = UITheme::Dark;
         } else {
@@ -419,13 +444,112 @@ void LauncherUI::SetTheme(UITheme theme) {
         }
     }
     
-    // Only call ImGui style functions when theme actually changes
-    if (theme_to_apply == UITheme::Dark) {
-        ImGui::StyleColorsDark();
-    } else {
-        ImGui::StyleColorsLight();
+    switch (theme_to_apply) {
+        case UITheme::Dark:
+            ImGui::StyleColorsDark();
+            break;
+        case UITheme::Light:
+            ImGui::StyleColorsLight();
+            break;
+        case UITheme::DarkCyan:
+            ApplyDarkCyanThemeStyle();
+            break;
+        default:
+            ImGui::StyleColorsDark(); // Default fallback
+            break;
     }
-} 
+}
+
+void LauncherUI::ApplyDarkCyanThemeStyle()
+{
+	// Comfortable Dark Cyan style by SouthCraftX from ImThemes
+	ImGuiStyle& style = ImGui::GetStyle();
+	
+	style.Alpha = 1.0f;
+	style.DisabledAlpha = 1.0f;
+	style.WindowPadding = ImVec2(20.0f, 20.0f);
+	style.WindowRounding = 11.5f;
+	style.WindowBorderSize = 0.0f;
+	style.WindowMinSize = ImVec2(20.0f, 20.0f);
+	style.WindowTitleAlign = ImVec2(0.5f, 0.5f);
+	style.WindowMenuButtonPosition = ImGuiDir_None;
+	style.ChildRounding = 20.0f;
+	style.ChildBorderSize = 1.0f;
+	style.PopupRounding = 17.39999961853027f;
+	style.PopupBorderSize = 1.0f;
+	style.FramePadding = ImVec2(20.0f, 3.400000095367432f);
+	style.FrameRounding = 11.89999961853027f;
+	style.FrameBorderSize = 0.0f;
+	style.ItemSpacing = ImVec2(8.899999618530273f, 13.39999961853027f);
+	style.ItemInnerSpacing = ImVec2(7.099999904632568f, 1.799999952316284f);
+	style.CellPadding = ImVec2(12.10000038146973f, 9.199999809265137f);
+	style.IndentSpacing = 0.0f;
+	style.ColumnsMinSpacing = 8.699999809265137f;
+	style.ScrollbarSize = 11.60000038146973f;
+	style.ScrollbarRounding = 15.89999961853027f;
+	style.GrabMinSize = 3.700000047683716f;
+	style.GrabRounding = 20.0f;
+	style.TabRounding = 9.800000190734863f;
+	style.TabBorderSize = 0.0f;
+	style.TabCloseButtonMinWidthUnselected = 0.0f;
+	style.ColorButtonPosition = ImGuiDir_Right;
+	style.ButtonTextAlign = ImVec2(0.5f, 0.5f);
+	style.SelectableTextAlign = ImVec2(0.0f, 0.0f);
+	
+	style.Colors[ImGuiCol_Text] = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+	style.Colors[ImGuiCol_TextDisabled] = ImVec4(0.2745098173618317f, 0.3176470696926117f, 0.4509803950786591f, 1.0f);
+	style.Colors[ImGuiCol_WindowBg] = ImVec4(0.0784313753247261f, 0.08627451211214066f, 0.1019607856869698f, 1.0f);
+	style.Colors[ImGuiCol_ChildBg] = ImVec4(0.09411764889955521f, 0.1019607856869698f, 0.1176470592617989f, 1.0f);
+	style.Colors[ImGuiCol_PopupBg] = ImVec4(0.0784313753247261f, 0.08627451211214066f, 0.1019607856869698f, 1.0f);
+	style.Colors[ImGuiCol_Border] = ImVec4(0.1568627506494522f, 0.168627455830574f, 0.1921568661928177f, 1.0f);
+	style.Colors[ImGuiCol_BorderShadow] = ImVec4(0.0784313753247261f, 0.08627451211214066f, 0.1019607856869698f, 1.0f);
+	style.Colors[ImGuiCol_FrameBg] = ImVec4(0.1137254908680916f, 0.125490203499794f, 0.1529411822557449f, 1.0f);
+	style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.1568627506494522f, 0.168627455830574f, 0.1921568661928177f, 1.0f);
+	style.Colors[ImGuiCol_FrameBgActive] = ImVec4(0.1568627506494522f, 0.168627455830574f, 0.1921568661928177f, 1.0f);
+	style.Colors[ImGuiCol_TitleBg] = ImVec4(0.0470588244497776f, 0.05490196123719215f, 0.07058823853731155f, 1.0f);
+	style.Colors[ImGuiCol_TitleBgActive] = ImVec4(0.0470588244497776f, 0.05490196123719215f, 0.07058823853731155f, 1.0f);
+	style.Colors[ImGuiCol_TitleBgCollapsed] = ImVec4(0.0784313753247261f, 0.08627451211214066f, 0.1019607856869698f, 1.0f);
+	style.Colors[ImGuiCol_MenuBarBg] = ImVec4(0.09803921729326248f, 0.105882354080677f, 0.1215686276555061f, 1.0f);
+	style.Colors[ImGuiCol_ScrollbarBg] = ImVec4(0.0470588244497776f, 0.05490196123719215f, 0.07058823853731155f, 1.0f);
+	style.Colors[ImGuiCol_ScrollbarGrab] = ImVec4(0.1176470592617989f, 0.1333333402872086f, 0.1490196138620377f, 1.0f);
+	style.Colors[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.1568627506494522f, 0.168627455830574f, 0.1921568661928177f, 1.0f);
+	style.Colors[ImGuiCol_ScrollbarGrabActive] = ImVec4(0.1176470592617989f, 0.1333333402872086f, 0.1490196138620377f, 1.0f);
+	style.Colors[ImGuiCol_CheckMark] = ImVec4(0.0313725508749485f, 0.9490196108818054f, 0.843137264251709f, 1.0f);
+	style.Colors[ImGuiCol_SliderGrab] = ImVec4(0.0313725508749485f, 0.9490196108818054f, 0.843137264251709f, 1.0f);
+	style.Colors[ImGuiCol_SliderGrabActive] = ImVec4(0.6000000238418579f, 0.9647058844566345f, 0.0313725508749485f, 1.0f);
+	style.Colors[ImGuiCol_Button] = ImVec4(0.1176470592617989f, 0.1333333402872086f, 0.1490196138620377f, 1.0f);
+	style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.1803921610116959f, 0.1882352977991104f, 0.196078434586525f, 1.0f);
+	style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.1529411822557449f, 0.1529411822557449f, 0.1529411822557449f, 1.0f);
+	style.Colors[ImGuiCol_Header] = ImVec4(0.1411764770746231f, 0.1647058874368668f, 0.2078431397676468f, 1.0f);
+	style.Colors[ImGuiCol_HeaderHovered] = ImVec4(0.105882354080677f, 0.105882354080677f, 0.105882354080677f, 1.0f);
+	style.Colors[ImGuiCol_HeaderActive] = ImVec4(0.0784313753247261f, 0.08627451211214066f, 0.1019607856869698f, 1.0f);
+	style.Colors[ImGuiCol_Separator] = ImVec4(0.1294117718935013f, 0.1490196138620377f, 0.1921568661928177f, 1.0f);
+	style.Colors[ImGuiCol_SeparatorHovered] = ImVec4(0.1568627506494522f, 0.1843137294054031f, 0.250980406999588f, 1.0f);
+	style.Colors[ImGuiCol_SeparatorActive] = ImVec4(0.1568627506494522f, 0.1843137294054031f, 0.250980406999588f, 1.0f);
+	style.Colors[ImGuiCol_ResizeGrip] = ImVec4(0.1450980454683304f, 0.1450980454683304f, 0.1450980454683304f, 1.0f);
+	style.Colors[ImGuiCol_ResizeGripHovered] = ImVec4(0.0313725508749485f, 0.9490196108818054f, 0.843137264251709f, 1.0f);
+	style.Colors[ImGuiCol_ResizeGripActive] = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+	style.Colors[ImGuiCol_Tab] = ImVec4(0.0784313753247261f, 0.08627451211214066f, 0.1019607856869698f, 1.0f);
+	style.Colors[ImGuiCol_TabHovered] = ImVec4(0.1176470592617989f, 0.1333333402872086f, 0.1490196138620377f, 1.0f);
+	style.Colors[ImGuiCol_TabActive] = ImVec4(0.1176470592617989f, 0.1333333402872086f, 0.1490196138620377f, 1.0f);
+	style.Colors[ImGuiCol_TabUnfocused] = ImVec4(0.0784313753247261f, 0.08627451211214066f, 0.1019607856869698f, 1.0f);
+	style.Colors[ImGuiCol_TabUnfocusedActive] = ImVec4(0.125490203499794f, 0.2745098173618317f, 0.572549045085907f, 1.0f);
+	style.Colors[ImGuiCol_PlotLines] = ImVec4(0.5215686559677124f, 0.6000000238418579f, 0.7019608020782471f, 1.0f);
+	style.Colors[ImGuiCol_PlotLinesHovered] = ImVec4(0.03921568766236305f, 0.9803921580314636f, 0.9803921580314636f, 1.0f);
+	style.Colors[ImGuiCol_PlotHistogram] = ImVec4(0.0313725508749485f, 0.9490196108818054f, 0.843137264251709f, 1.0f);
+	style.Colors[ImGuiCol_PlotHistogramHovered] = ImVec4(0.1568627506494522f, 0.1843137294054031f, 0.250980406999588f, 1.0f);
+	style.Colors[ImGuiCol_TableHeaderBg] = ImVec4(0.0470588244497776f, 0.05490196123719215f, 0.07058823853731155f, 1.0f);
+	style.Colors[ImGuiCol_TableBorderStrong] = ImVec4(0.0470588244497776f, 0.05490196123719215f, 0.07058823853731155f, 1.0f);
+	style.Colors[ImGuiCol_TableBorderLight] = ImVec4(0.0f, 0.0f, 0.0f, 1.0f);
+	style.Colors[ImGuiCol_TableRowBg] = ImVec4(0.1176470592617989f, 0.1333333402872086f, 0.1490196138620377f, 1.0f);
+	style.Colors[ImGuiCol_TableRowBgAlt] = ImVec4(0.09803921729326248f, 0.105882354080677f, 0.1215686276555061f, 1.0f);
+	style.Colors[ImGuiCol_TextSelectedBg] = ImVec4(0.9372549057006836f, 0.9372549057006836f, 0.9372549057006836f, 1.0f);
+	style.Colors[ImGuiCol_DragDropTarget] = ImVec4(0.4980392158031464f, 0.5137255191802979f, 1.0f, 1.0f);
+	style.Colors[ImGuiCol_NavHighlight] = ImVec4(0.2666666805744171f, 0.2901960909366608f, 1.0f, 1.0f);
+	style.Colors[ImGuiCol_NavWindowingHighlight] = ImVec4(0.4980392158031464f, 0.5137255191802979f, 1.0f, 1.0f);
+	style.Colors[ImGuiCol_NavWindowingDimBg] = ImVec4(0.196078434586525f, 0.1764705926179886f, 0.5450980663299561f, 0.501960813999176f);
+	style.Colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0.196078434586525f, 0.1764705926179886f, 0.5450980663299561f, 0.501960813999176f);
+}
 
 void LauncherUI::RenderSessionControls() {
     if (ImGui::CollapsingHeader("Session Controls", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -488,4 +612,73 @@ void LauncherUI::RenderDebugTools() {
     ImGui::Separator();
     
     ShowNetworkDiagnostics();
+
+    ImGui::Separator();
+    if (ImGui::CollapsingHeader("Console Log", ImGuiTreeNodeFlags_DefaultOpen)) {
+        SDL_LockMutex(log_buffer_mutex_);
+
+        if (ImGui::Button("Clear")) {
+            ClearLog();
+        }
+        ImGui::SameLine();
+        bool copy = ImGui::Button("Copy to Clipboard");
+        
+        ImGui::Separator();
+        
+        ImGui::BeginChild("LogScrollingRegion", ImVec2(0, 200), false, ImGuiWindowFlags_HorizontalScrollbar);
+        
+        if (copy) {
+            SDL_SetClipboardText(log_buffer_.c_str());
+        }
+        
+        ImGui::TextUnformatted(log_buffer_.begin(), log_buffer_.end());
+        
+        if (scroll_to_bottom_) {
+            ImGui::SetScrollHereY(1.0f);
+            scroll_to_bottom_ = false;
+        }
+        
+        ImGui::EndChild();
+
+        SDL_UnlockMutex(log_buffer_mutex_);
+    }
+} 
+
+// Custom log capture implementation
+void LauncherUI::SDLCustomLogOutput(void* userdata, int category, SDL_LogPriority priority, const char* message) {
+    LauncherUI* ui = static_cast<LauncherUI*>(userdata);
+    if (!ui) {
+        return;
+    }
+
+    // Chain to the original logger to keep console output
+    if (ui->original_log_function_) {
+        ui->original_log_function_(ui->original_log_userdata_, category, priority, message);
+    }
+    
+    // Add to our internal buffer for the UI
+    ui->AddLog(message);
+}
+
+void LauncherUI::AddLog(const char* message) {
+    if (!log_buffer_mutex_) {
+        return;
+    }
+
+    SDL_LockMutex(log_buffer_mutex_);
+    
+    log_buffer_.appendf("%s\n", message);
+    scroll_to_bottom_ = true;
+
+    SDL_UnlockMutex(log_buffer_mutex_);
+}
+
+void LauncherUI::ClearLog() {
+    if (!log_buffer_mutex_) {
+        return;
+    }
+
+    SDL_LockMutex(log_buffer_mutex_);
+    log_buffer_.clear();
+    SDL_UnlockMutex(log_buffer_mutex_);
 } 

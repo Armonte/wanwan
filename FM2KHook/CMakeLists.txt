@@ -12,7 +12,7 @@ set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g")
 
 # Create simple DLL target
 add_library(FM2KHook SHARED
-    src/dllmain_simple.cpp
+    src/dllmain.cpp
 )
 
 # Export symbols for DLL
@@ -20,12 +20,17 @@ target_compile_definitions(FM2KHook PRIVATE
     FM2KHOOK_EXPORTS 
     _CRT_SECURE_NO_WARNINGS
     WIN32_LEAN_AND_MEAN
+    GEKKONET_STATIC
+    _WIN32_WINNT=0x0601
 )
 
 # Link against MinHook and GekkoNet
 target_link_libraries(FM2KHook PRIVATE 
     MinHook
     GekkoNet
+    SDL3::SDL3-static
+    ws2_32
+    winmm
 )
 
 # Include directories

@@ -37,14 +37,11 @@ std::wstring UTF8ToWide(const std::string& str) {
 FM2KGameInstance::FM2KGameInstance()
     : process_handle_(nullptr)
     , process_id_(0)
-    , game_state_(std::make_unique<FM2K::GameState>())
-    , session_(nullptr)
     , shared_memory_handle_(nullptr)
     , shared_memory_data_(nullptr)
     , last_processed_frame_(0)
 {
     process_info_ = {};
-    SDL_zero(*game_state_);
 }
 
 FM2KGameInstance::~FM2KGameInstance() {
@@ -69,36 +66,34 @@ bool FM2KGameInstance::Initialize() {
     return true;
 }
 
-bool FM2KGameInstance::Launch(const FM2K::FM2KGameInfo& game) {
+bool FM2KGameInstance::Launch(const std::string& exe_path) {
     // Use SDL3's cross-platform filesystem helpers for existence checks.
-    if (!SDL_GetPathInfo(game.exe_path.c_str(), nullptr)) {
+    if (!SDL_GetPathInfo(exe_path.c_str(), nullptr)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
             "Game executable not found: %s (%s)",
-            game.exe_path.c_str(), SDL_GetError());
+            exe_path.c_str(), SDL_GetError());
         return false;
     }
-
-    // No DLL required for direct hooking
 
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Creating game process in suspended state...");
 
     // Convert path to Windows format for CreateProcess
-    std::string exe_path = game.exe_path;
-    std::replace(exe_path.begin(), exe_path.end(), '/', '\\');
+    std::string exe_path_win = exe_path;
+    std::replace(exe_path_win.begin(), exe_path_win.end(), '/', '\\');
 
     // Extract directory from exe path for working directory
-    std::filesystem::path exe_file_path(exe_path);
+    std::filesystem::path exe_file_path(exe_path_win);
     std::string working_dir = exe_file_path.parent_path().string();
     
     STARTUPINFOW si = {};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi = {};
 
-    std::wstring wide_exe_path(exe_path.begin(), exe_path.end());
+    std::wstring wide_exe_path(exe_path_win.begin(), exe_path_win.end());
     std::wstring wide_cmd_line = L"\"" + wide_exe_path + L"\"";
     std::wstring wide_working_dir(working_dir.begin(), working_dir.end());
 
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Creating process: %s", exe_path.c_str());
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Creating process: %s", exe_path_win.c_str());
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Working directory: %s", working_dir.c_str());
 
     if (!CreateProcessW(
@@ -187,26 +182,26 @@ bool FM2KGameInstance::UninstallHooks() {
 }
 
 bool FM2KGameInstance::SaveState(void* buffer, size_t buffer_size) {
-    if (!buffer || buffer_size < sizeof(FM2K::GameState)) {
+    if (!buffer || buffer_size == 0) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
             "Invalid buffer for state save");
         return false;
     }
 
-    // Copy current state to buffer
-    memcpy(buffer, game_state_.get(), sizeof(FM2K::GameState));
+    // DLL handles state saving directly
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "State save requested");
     return true;
 }
 
 bool FM2KGameInstance::LoadState(const void* buffer, size_t buffer_size) {
-    if (!buffer || buffer_size < sizeof(FM2K::GameState)) {
+    if (!buffer || buffer_size == 0) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
             "Invalid buffer for state load");
         return false;
     }
 
-    // Copy buffer to current state
-    memcpy(game_state_.get(), buffer, sizeof(FM2K::GameState));
+    // DLL handles state loading directly
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "State load requested");
     return true;
 }
 
@@ -227,10 +222,9 @@ bool FM2KGameInstance::AdvanceFrame() {
 }
 
 void FM2KGameInstance::InjectInputs(uint32_t p1_input, uint32_t p2_input) {
-    if (!game_state_) return;
-
-    game_state_->players[0].input_current = p1_input;
-    game_state_->players[1].input_current = p2_input;
+    // DLL handles input injection directly
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
+        "Input injection requested: P1=0x%04X, P2=0x%04X", p1_input, p2_input);
 }
 
 bool FM2KGameInstance::SetupProcessForHooking(const std::string& dll_path) {
@@ -321,10 +315,7 @@ bool FM2KGameInstance::LoadGameExecutable(const std::filesystem::path& exe_path)
     return true;
 }
 
-void FM2KGameInstance::ProcessIPCEvents() {
-    // DLL handles GekkoNet directly - no need to poll for inputs
-    // PollInputs();
-    
+void FM2KGameInstance::ProcessDLLEvents() {
     // Process SDL events (for UI)
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
@@ -390,11 +381,7 @@ void FM2KGameInstance::HandleDLLEvent(const SDL_Event& event) {
     }
 }
 
-void FM2KGameInstance::HandleIPCEvent(const FM2K::IPC::Event& event) {
-    // Direct hooks - no IPC events to handle
-    // This function is kept for compatibility but does nothing
-    (void)event; // Suppress unused parameter warning
-}
+
 
 // Helper function to execute a function in the game process
 bool FM2KGameInstance::ExecuteRemoteFunction(HANDLE process, uintptr_t function_address) {
@@ -419,42 +406,7 @@ bool FM2KGameInstance::ExecuteRemoteFunction(HANDLE process, uintptr_t function_
     return true;
 }
 
-void FM2KGameInstance::OnFrameAdvanced(const FM2K::IPC::Event& event) {
-    (void)event; // Suppress unused parameter warning
-    // Direct hooks - frame advancement handled directly in hooks
-}
 
-void FM2KGameInstance::OnStateSaved(const FM2K::IPC::Event& event) {
-    (void)event; // Suppress unused parameter warning
-    // Direct hooks - state management handled directly in hooks
-}
-
-void FM2KGameInstance::OnStateLoaded(const FM2K::IPC::Event& event) {
-    (void)event; // Suppress unused parameter warning
-    // Direct hooks - state management handled directly in hooks
-}
-
-void FM2KGameInstance::OnInputCaptured(const FM2K::IPC::Event& event) {
-    (void)event; // Suppress unused parameter warning
-    // Direct hooks - input capture handled directly in hooks
-    // TODO: Implement direct input forwarding to session
-}
-
-void FM2KGameInstance::OnHitTablesInit(const FM2K::IPC::Event& event) {
-    (void)event; // currently unused
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-        "Hit tables initialized");
-}
-
-void FM2KGameInstance::OnVisualStateChanged(const FM2K::IPC::Event& event) {
-    (void)event; // Suppress unused parameter warning
-    // Direct hooks - visual state changes handled directly in hooks
-}
-
-void FM2KGameInstance::OnHookError(const FM2K::IPC::Event& event) {
-    (void)event; // Suppress unused parameter warning
-    // Direct hooks - errors handled directly in hooks
-}
 
 // Shared memory structure matching the DLL
 struct SharedInputData {
@@ -504,31 +456,6 @@ void FM2KGameInstance::CleanupSharedMemory() {
 }
 
 void FM2KGameInstance::PollInputs() {
-    if (!shared_memory_data_ || !session_) {
-        return;
-    }
-    
-    SharedInputData* input_data = static_cast<SharedInputData*>(shared_memory_data_);
-    
-    // Check if there's new input data
-    if (input_data->valid && input_data->frame_number > last_processed_frame_) {
-        // Forward inputs to GekkoNet session
-        // For local session, we add both P1 and P2 inputs together
-        uint32_t p1_input = static_cast<uint32_t>(input_data->p1_input);
-        uint32_t p2_input = static_cast<uint32_t>(input_data->p2_input);
-        
-        if (session_) {
-            // Use AddBothInputs for LocalSession (proper GekkoNet API)
-            session_->AddBothInputs(p1_input, p2_input);
-        }
-        
-        last_processed_frame_ = input_data->frame_number;
-        
-        // Log occasionally for debugging
-        if (last_processed_frame_ % 60 == 0) {
-            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
-                        "Polled inputs - Frame %u: P1=0x%04X, P2=0x%04X", 
-                        input_data->frame_number, input_data->p1_input, input_data->p2_input);
-        }
-    }
+    // DLL handles input polling and GekkoNet directly
+    // No need for shared memory polling from launcher
 } 

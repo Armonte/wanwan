@@ -230,7 +230,6 @@ add_executable(FM2K_RollbackLauncher
     OnlineSession.cpp
     LocalSession.cpp
     FM2K_LauncherUI.cpp
-    FM2K_GekkoNetBridge.cpp
     FM2K_Integration.h
     # DLL injection approach - hooks are in FM2KHook DLL
     

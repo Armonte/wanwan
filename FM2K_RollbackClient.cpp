@@ -660,13 +660,11 @@ void FM2KLauncher::Update(float delta_time SDL_UNUSED) {
         return;
     }
 
-    if (session_ && session_->IsActive()) {
-        session_->Update();
-    }
+    // DLL handles GekkoNet directly - no launcher-side session needed
     
-    // Process IPC events from the game instance
+    // Process DLL events from the game instance
     if (game_instance_ && game_instance_->IsRunning()) {
-        game_instance_->ProcessIPCEvents();
+        game_instance_->ProcessDLLEvents();
     }
     
     // Check for game termination
@@ -788,10 +786,7 @@ bool FM2KLauncher::InitializeSDL() {
 
 void FM2KLauncher::Shutdown() {
     // Stop network and game first
-    if (session_) {
-        session_->Stop();
-        session_.reset();
-    }
+    // DLL handles GekkoNet directly - no launcher-side session needed
     
     if (game_instance_) {
         game_instance_->Terminate();
@@ -973,7 +968,7 @@ bool FM2KLauncher::LaunchGame(const FM2K::FM2KGameInfo& game) {
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Launching game with EXE: %s, KGT: %s", 
                  game.exe_path.c_str(), game.dll_path.c_str());
                  
-    if (!game_instance_->Launch(game)) {
+    if (!game_instance_->Launch(game.exe_path)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to launch game: %s", game.exe_path.c_str());
         game_instance_.reset();
         return false;
@@ -1017,10 +1012,6 @@ void FM2KLauncher::StartOfflineSession() {
     local_config.session_mode = SessionMode::LOCAL;
 
     // DLL handles GekkoNet directly - no launcher session needed
-    if (session_) {
-        session_->Stop();
-        session_.reset();
-    }
     
     // NOTE: GekkoNet session is now initialized directly in the injected DLL
     // No need for launcher-side session management
@@ -1046,32 +1037,15 @@ void FM2KLauncher::StartOnlineSession(const NetworkConfig& config, bool is_host)
         // Potentially configure to listen on 0.0.0.0
     }
 
-    if (session_) {
-        session_->Stop();
-    }
-    session_ = std::make_unique<OnlineSession>();
-
-    if (!session_->Start(network_config_)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to start online session");
-        session_.reset();
-        return;
-    }
-
-    if (game_instance_) {
-        session_->SetGameInstance(game_instance_.get());
-        game_instance_->SetNetworkSession(session_.get());
-    }
+    // DLL handles GekkoNet directly - no launcher-side session needed
 
     SetState(LauncherState::Connecting);
     std::cout << "? ONLINE session started (" << (is_host ? "Hosting" : "Joining") << ")\n";
 }
 
 void FM2KLauncher::StopSession() {
-    if (session_) {
-        session_->Stop();
-        session_.reset();
-        std::cout << "? Session stopped\n";
-    }
+    // DLL handles GekkoNet directly - no launcher-side session needed
+    std::cout << "? Session stopped\n";
     if (game_instance_) {
         game_instance_->Terminate();
         game_instance_.reset();

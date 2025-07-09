@@ -13,7 +13,7 @@ enum class SessionMode {
     ONLINE   // One local + one remote player (network play)
 };
 
-// Abstract base class for all session types (local, online, etc.)
+// Abstract base class for all session types
 class ISession {
 public:
     virtual ~ISession() = default;

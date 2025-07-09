@@ -129,32 +129,7 @@ bool VisualStateChanged() {
 }
 ```
 
-### 7. IPC Event Processing (Important)
-```cpp
-// In FM2K_GameInstance.cpp
-void FM2KGameInstance::ProcessIPCEvents() {
-    FM2K::IPC::Event event;
-    while (FM2K::IPC::PollEvent(&event)) {
-        switch (event.type) {
-            case FM2K::IPC::EventType::FRAME_ADVANCED:
-                OnFrameAdvanced(event);
-                break;
-            case FM2K::IPC::EventType::STATE_SAVED:
-                OnStateSaved(event);
-                break;
-            case FM2K::IPC::EventType::STATE_LOADED:
-                OnStateLoaded(event);
-                break;
-            case FM2K::IPC::EventType::VISUAL_STATE_CHANGED:
-                OnVisualStateChanged(event);
-                break;
-            case FM2K::IPC::EventType::ERROR:
-                OnHookError(event);
-                break;
-        }
-    }
-}
-```
+
 
 ## Implementation Order
 
@@ -166,7 +141,7 @@ void FM2KGameInstance::ProcessIPCEvents() {
 
 2. Second Pass (State Management):
    - ShouldSaveState()
-   - ProcessIPCEvents()
+
    - Visual state tracking
 
 ## Critical Memory Addresses (from FM2K_Rollback_Research.md)
@@ -197,6 +172,6 @@ void FM2KGameInstance::ProcessIPCEvents() {
 2. Test each hook with logging before adding full functionality
 3. Verify game stays running after hook installation
 4. Add state saving once basic hooks are stable
-5. Implement IPC events after core stability is achieved
+
 
 Remember: The goal is to keep the game running first, then add functionality incrementally. 

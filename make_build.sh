@@ -11,15 +11,13 @@ fi
 
 # Create build directory if it doesn't exist
 if [ ! -d "build" ]; then
-    mkdir build
+    rm -rf build # remove build directory if it exists
+    mkdir build # create new build directory
 fi
 
-cd build
+cd build # change to build directory
 
-# Clean if build.ninja exists
-if [ -f "build.ninja" ]; then
-    ninja clean
-fi
+
 
 # Force CMake to run
 cmake .. -G "Ninja" -D CMAKE_BUILD_TYPE=RelWithDebInfo \

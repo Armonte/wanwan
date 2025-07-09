@@ -1,7 +1,6 @@
 #include "OnlineSession.h"
 #include "FM2K_GameInstance.h"
 #include "FM2K_Integration.h"
-#include "FM2K_GekkoNetBridge.h"
 #include <iostream>
 #include <cstring>
 #include <chrono>
@@ -9,8 +8,7 @@
 
 // OnlineSession Implementation
 OnlineSession::OnlineSession() 
-    : gekko_bridge_(std::make_unique<FM2K::GekkoNetBridge>())
-    , game_instance_(nullptr)
+    : game_instance_(nullptr)
     , state_mutex_(nullptr)
     , input_buffer_lock_(nullptr)
     , rollback_thread_(nullptr)
@@ -46,79 +44,22 @@ OnlineSession::~OnlineSession() {
 }
 
 bool OnlineSession::Start(const NetworkConfig& config) {
-    if (!gekko_bridge_) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet bridge not initialized");
-        return false;
-    }
-    
-    // Convert NetworkConfig to FM2KNetworkConfig
-    FM2K::FM2KNetworkConfig bridge_config{};
-    bridge_config.session_mode = SessionMode::ONLINE;
-    bridge_config.local_port = config.local_port;
-    bridge_config.remote_address = config.remote_address;
-    bridge_config.input_delay = config.input_delay;
-    bridge_config.desync_detection = true;
-    
-    // Initialize the bridge for either a host or client session
-    bool success = false;
-    if (config.is_host) {
-        success = gekko_bridge_->InitializeHostSession(bridge_config);
-    } else {
-        success = gekko_bridge_->InitializeClientSession(bridge_config);
-    }
-
-    if (!success) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize GekkoNet bridge for online session");
-        return false;
-    }
-    
-    // Game instance connection handled in SetGameInstance() - no need to connect here
-    
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "OnlineSession started successfully");
+    // DLL handles GekkoNet directly - no launcher-side session needed
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "OnlineSession: DLL handles GekkoNet directly");
     return true;
 }
 
 void OnlineSession::Stop() {
-    if (!gekko_bridge_) return;
-    
-    // Stop threads
-    SDL_SetAtomicInt(&running_, 0);
-    
-    if (rollback_thread_) {
-        SDL_WaitThread(rollback_thread_, nullptr);
-        rollback_thread_ = nullptr;
-    }
-    
-    if (network_thread_) {
-        SDL_WaitThread(network_thread_, nullptr);
-        network_thread_ = nullptr;
-    }
-    
-    // Shutdown GekkoNet bridge
-    gekko_bridge_->Shutdown();
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "NetworkSession stopped successfully");
+    // DLL handles GekkoNet directly - no launcher-side cleanup needed
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "OnlineSession: DLL handles GekkoNet directly");
 }
 
 void OnlineSession::Update() {
-    if (!gekko_bridge_) return;
-    
-    // Update the bridge with frame timing
-    static auto last_update = std::chrono::steady_clock::now();
-    auto now = std::chrono::steady_clock::now();
-    float delta_time = std::chrono::duration<float>(now - last_update).count();
-    last_update = now;
-    
-    // Let the bridge handle all GekkoNet events
-    gekko_bridge_->Update(delta_time);
+    // DLL handles GekkoNet directly - no launcher-side updates needed
 }
 
 void OnlineSession::AddLocalInput(uint32_t input) {
-    if (!gekko_bridge_) return;
-    
-    // Convert to FM2K input format and add to bridge
-    FM2K::FM2KInput fm2k_input{};
-    fm2k_input.input.value = static_cast<uint16_t>(input & 0xFFFF);
-    gekko_bridge_->AddLocalInput(fm2k_input);
+    // DLL handles input capture and GekkoNet directly
 }
 
 void OnlineSession::AddBothInputs(uint32_t p1_input, uint32_t p2_input) {
@@ -246,33 +187,19 @@ int OnlineSession::NetworkThreadFunction(void* data) {
 }
 
 bool OnlineSession::IsActive() const {
-    return gekko_bridge_ && gekko_bridge_->IsConnected();
+    // DLL handles GekkoNet directly - always return false for launcher
+    return false;
 }
 
 void OnlineSession::SetGameInstance(FM2KGameInstance* instance) {
     game_instance_ = instance;
-    
-    // Forward to GekkoNet bridge for state management
-    if (gekko_bridge_) {
-        gekko_bridge_->SetGameInstance(instance);
-        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
-            "Game instance connected to NetworkSession and GekkoNet bridge");
-    }
+    // DLL handles GekkoNet directly - no bridge connection needed
 }
 
 ISession::NetworkStats OnlineSession::GetStats() const {
     NetworkStats stats;
-    
-    if (gekko_bridge_ && gekko_bridge_->IsConnected()) {
-        auto bridge_stats = gekko_bridge_->GetNetworkStats();
-        
-        stats.ping = bridge_stats.ping_ms;
-        stats.jitter = bridge_stats.jitter_ms;
-        stats.frames_ahead = static_cast<uint32_t>(bridge_stats.frames_ahead);
-        stats.rollbacks_per_second = bridge_stats.rollback_count;
-        stats.connected = true;
-    }
-    
+    // DLL handles GekkoNet directly - no stats available from launcher
+    stats.connected = false;
     return stats;
 }
 
@@ -297,9 +224,8 @@ void OnlineSession::ProcessRollback(int target_frame) {
 }
 
 bool OnlineSession::ShouldRollback(uint32_t remote_input, int frame_number) {
-    // Rollback logic is now handled internally by GekkoNetBridge
-    // This method is kept for compatibility but delegates to the bridge
-    return false; // Bridge handles rollback decisions automatically
+    // DLL handles rollback logic directly
+    return false; // DLL handles rollback decisions automatically
 }
 
 void OnlineSession::UpdatePredictionWindow() {
@@ -315,20 +241,15 @@ void OnlineSession::ProcessEvents(FM2KGameInstance* game) {
         return;
     }
     
-    // Event processing is now handled internally by GekkoNetBridge::Update()
-    // This method is kept for compatibility but no longer needed
+    // DLL handles event processing directly
 }
 
 void OnlineSession::HandleGameEvents(FM2KGameInstance* game) {
-    // Game event handling is now done internally by GekkoNetBridge
-    // This method is kept for compatibility but no longer used
-    // The bridge handles SaveEvent, LoadEvent, and AdvanceEvent directly
+    // DLL handles game events directly
 }
 
 void OnlineSession::HandleSessionEvents() {
-    // Session event handling is now done internally by GekkoNetBridge
-    // This method is kept for compatibility but no longer used
-    // The bridge handles connection events, desyncs, etc. directly
+    // DLL handles session events directly
 }
 
 // End of implementation 

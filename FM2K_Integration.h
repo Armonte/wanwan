@@ -7,6 +7,7 @@
 
 #include "vendored/GekkoNet/GekkoLib/include/gekkonet.h"
 #include "MinHook.h"
+#include "ISession.h"
 
 #include <string>
 #include <vector>
@@ -16,9 +17,7 @@
 #include <windows.h>
 #include <filesystem>
 #include <cstdint>
-#include "FM2KHook/src/ipc.h"
 #include <unordered_map>
-#include "ISession.h"
 
 // Forward declarations
 class FM2KGameInstance;
@@ -130,8 +129,8 @@ namespace FM2K {
             uint32_t state_flags;
         } players[2];
 
-        // Visual effects state
-        IPC::VisualState visual_state;
+        // Visual effects state (simplified - no IPC)
+        uint32_t visual_state_flags;
 
         // Hit detection tables
         struct HitBox {
@@ -270,7 +269,6 @@ private:
     SDL_Renderer* renderer_;
     std::unique_ptr<LauncherUI> ui_;
     std::unique_ptr<FM2KGameInstance> game_instance_;
-    std::unique_ptr<ISession> session_;
     std::vector<FM2K::FM2KGameInfo> discovered_games_;
     FM2K::FM2KGameInfo selected_game_;
     NetworkConfig network_config_;

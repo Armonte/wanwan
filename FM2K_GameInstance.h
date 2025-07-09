@@ -5,18 +5,8 @@
 #include <memory>
 #include <filesystem>
 #include <windows.h>
-#include "FM2KHook/src/ipc.h"
 
-// Forward declarations
-class ISession;
 
-namespace FM2K {
-    struct FM2KGameInfo;
-    struct GameState;
-    namespace IPC {
-        struct Event;
-    }
-}
 
 class FM2KGameInstance {
 public:
@@ -24,7 +14,7 @@ public:
     ~FM2KGameInstance();
     
     bool Initialize();
-    bool Launch(const FM2K::FM2KGameInfo& game);
+    bool Launch(const std::string& exe_path);
     void Terminate();
     bool IsRunning() const { 
         if (!process_handle_) return false;
@@ -62,22 +52,10 @@ public:
     // Input injection
     void InjectInputs(uint32_t p1_input, uint32_t p2_input);
     
-    // IPC event processing
-    void ProcessIPCEvents();
+    // DLL communication (simplified)
+    void ProcessDLLEvents();
     
-    // Event handlers
-    void OnFrameAdvanced(const FM2K::IPC::Event& event);
-    void OnStateSaved(const FM2K::IPC::Event& event);
-    void OnStateLoaded(const FM2K::IPC::Event& event);
-    void OnHitTablesInit(const FM2K::IPC::Event& event);
-    void OnVisualStateChanged(const FM2K::IPC::Event& event);
-    void OnInputCaptured(const FM2K::IPC::Event& event);
-    void OnHookError(const FM2K::IPC::Event& event);
-    
-    // Network session for input forwarding
-    void SetNetworkSession(ISession* session) {
-        session_ = session;
-    }
+
     
     // Shared memory input polling
     void PollInputs();
@@ -88,7 +66,6 @@ protected:
     // Process management
     bool SetupProcessForHooking(const std::string& dll_path);
     bool LoadGameExecutable(const std::filesystem::path& exe_path);
-    void HandleIPCEvent(const FM2K::IPC::Event& event);
     void HandleDLLEvent(const SDL_Event& event);
     bool ExecuteRemoteFunction(HANDLE process, uintptr_t function_address);
 
@@ -96,10 +73,8 @@ private:
     HANDLE process_handle_;
     DWORD process_id_;
     PROCESS_INFORMATION process_info_;
-    std::unique_ptr<FM2K::GameState> game_state_;
     std::string game_exe_path_;  // Store the game executable path
     std::string game_dll_path_;  // Store the game's KGT/DLL path
-    ISession* session_;  // For input forwarding to GekkoNet
     
     // Shared memory for input communication with injected DLL
     HANDLE shared_memory_handle_;

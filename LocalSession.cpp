@@ -1,11 +1,8 @@
 #include "LocalSession.h"
-#include "FM2K_GekkoNetBridge.h"
-#include "FM2K_GameInstance.h"
 #include <SDL3/SDL.h>
 
 LocalSession::LocalSession()
-    : gekko_bridge_(std::make_unique<FM2K::GekkoNetBridge>())
-    , game_instance_(nullptr) 
+    : game_instance_(nullptr) 
 {}
 
 LocalSession::~LocalSession() {
@@ -13,28 +10,15 @@ LocalSession::~LocalSession() {
 }
 
 bool LocalSession::Start(const NetworkConfig& config) {
-    if (!gekko_bridge_) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet bridge not initialized");
-        return false;
-    }
-
-    FM2K::FM2KNetworkConfig bridge_config{};
-    bridge_config.session_mode = SessionMode::LOCAL;
-    bridge_config.input_delay = config.input_delay;
-
-    if (!gekko_bridge_->InitializeLocalSession(bridge_config)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize GekkoNet bridge for local session");
-        return false;
-    }
-
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LocalSession started successfully");
+    (void)config; // Suppress unused parameter warning
+    // DLL handles GekkoNet directly - no launcher-side session needed
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LocalSession: DLL handles GekkoNet directly");
     return true;
 }
 
 void LocalSession::Stop() {
-    if (gekko_bridge_) {
-        gekko_bridge_->Shutdown();
-    }
+    // DLL handles GekkoNet directly - no launcher-side cleanup needed
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LocalSession: DLL handles GekkoNet directly");
 }
 
 void LocalSession::Update() {
@@ -43,7 +27,8 @@ void LocalSession::Update() {
 }
 
 bool LocalSession::IsActive() const {
-    return gekko_bridge_ && gekko_bridge_->IsConnected();
+    // DLL handles GekkoNet directly - always return false for launcher
+    return false;
 }
 
 void LocalSession::AddLocalInput(uint32_t input) {
@@ -51,27 +36,25 @@ void LocalSession::AddLocalInput(uint32_t input) {
 }
 
 void LocalSession::AddBothInputs(uint32_t p1_input, uint32_t p2_input) {
-    if (!gekko_bridge_) return;
-    
-    FM2K::FM2KInput fm2k_p1_input{}, fm2k_p2_input{};
-    fm2k_p1_input.input.value = static_cast<uint16_t>(p1_input & 0xFFFF);
-    fm2k_p2_input.input.value = static_cast<uint16_t>(p2_input & 0xFFFF);
-    gekko_bridge_->AddBothInputs(fm2k_p1_input, fm2k_p2_input);
+    // DLL handles input capture and GekkoNet directly
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
+        "LocalSession: Input P1=0x%04X, P2=0x%04X handled by DLL", p1_input, p2_input);
 }
 
 SessionMode LocalSession::GetSessionMode() const {
     return SessionMode::LOCAL;  // Using the enum from FM2K_Integration.h
 }
 
+
+
 ISession::NetworkStats LocalSession::GetStats() const {
-    // Local sessions don't have network stats like ping or jitter.
-    // We can return a default-constructed struct.
-    return ISession::NetworkStats();
+    NetworkStats stats;
+    // DLL handles GekkoNet directly - no stats available from launcher
+    stats.connected = false;
+    return stats;
 }
 
 void LocalSession::SetGameInstance(FM2KGameInstance* instance) {
     game_instance_ = instance;
-    if (gekko_bridge_) {
-        gekko_bridge_->SetGameInstance(instance);
-    }
+    // DLL handles GekkoNet directly - no bridge connection needed
 }

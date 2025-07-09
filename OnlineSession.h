@@ -9,7 +9,7 @@
 // Forward declarations
 struct NetworkConfig;
 namespace FM2K {
-    class GekkoNetBridge;
+    
 }
 struct GekkoGameEvent;
 
@@ -33,7 +33,7 @@ public:
 
 private:
     // GekkoNet bridge (replaces direct GekkoNet usage)
-    std::unique_ptr<FM2K::GekkoNetBridge> gekko_bridge_;
+    // GekkoNetBridge removed - DLL handles GekkoNet directly
     FM2KGameInstance* game_instance_;
     
     // Synchronization

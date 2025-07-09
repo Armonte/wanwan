@@ -146,8 +146,8 @@ bool FM2KGameInstance::Launch(const FM2K::FM2KGameInfo& game) {
     // Simple DLL injection complete - no IPC needed
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Hook DLL injected successfully");
     
-    // Initialize shared memory for input communication
-    InitializeSharedMemory();
+    // DLL handles GekkoNet directly - no shared memory needed
+    // InitializeSharedMemory();
     
     return true;
 }
@@ -322,8 +322,8 @@ bool FM2KGameInstance::LoadGameExecutable(const std::filesystem::path& exe_path)
 }
 
 void FM2KGameInstance::ProcessIPCEvents() {
-    // Poll for new inputs from the injected DLL via shared memory
-    PollInputs();
+    // DLL handles GekkoNet directly - no need to poll for inputs
+    // PollInputs();
     
     // Process SDL events (for UI)
     SDL_Event event;
@@ -513,14 +513,13 @@ void FM2KGameInstance::PollInputs() {
     // Check if there's new input data
     if (input_data->valid && input_data->frame_number > last_processed_frame_) {
         // Forward inputs to GekkoNet session
-        // For local session, we add both P1 and P2 inputs
+        // For local session, we add both P1 and P2 inputs together
         uint32_t p1_input = static_cast<uint32_t>(input_data->p1_input);
         uint32_t p2_input = static_cast<uint32_t>(input_data->p2_input);
         
         if (session_) {
-            // Add inputs to the session - values should be packed properly
-            session_->AddLocalInput(p1_input);
-            session_->AddLocalInput(p2_input);
+            // Use AddBothInputs for LocalSession (proper GekkoNet API)
+            session_->AddBothInputs(p1_input, p2_input);
         }
         
         last_processed_frame_ = input_data->frame_number;

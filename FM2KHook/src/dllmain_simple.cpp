@@ -3,16 +3,14 @@
 #include <cstdio>
 #include <cstdint>
 
-// Simple shared memory structure for input communication
-struct SharedInputData {
-    uint32_t frame_number;
-    uint16_t p1_input;
-    uint16_t p2_input;
-    bool valid;
-};
+// Direct GekkoNet integration
+#include "gekkonet.h"
 
-static HANDLE shared_memory_handle = nullptr;
-static SharedInputData* shared_data = nullptr;
+// Direct GekkoNet session (no shared memory needed)
+static GekkoSession* gekko_session = nullptr;
+static int p1_handle = -1;
+static int p2_handle = -1;
+static bool gekko_initialized = false;
 
 // Simple hook function types (matching FM2K patterns)
 typedef int (__cdecl *ProcessGameInputsFn)();
@@ -34,9 +32,57 @@ static constexpr uintptr_t FRAME_COUNTER_ADDR = 0x447EE0;
 static constexpr uintptr_t P1_INPUT_ADDR = 0x470100;
 static constexpr uintptr_t P2_INPUT_ADDR = 0x470300;
 
+// GekkoNet initialization function
+bool InitializeGekkoNet() {
+    OutputDebugStringA("FM2K HOOK: *** INSIDE InitializeGekkoNet FUNCTION ***\n");
+    OutputDebugStringA("FM2K HOOK: Initializing GekkoNet session...\n");
+    
+    // Create GekkoNet session
+    OutputDebugStringA("FM2K HOOK: Calling gekko_create...\n");
+    gekko_create(&gekko_session);
+    if (!gekko_session) {
+        OutputDebugStringA("ERROR: gekko_create failed - session is null\n");
+        return false;
+    }
+    OutputDebugStringA("FM2K HOOK: gekko_create succeeded\n");
+    
+    // Configure for local session (both players local)
+    GekkoConfig config = {};
+    config.num_players = 2;                           // FM2K is 2-player
+    config.input_size = sizeof(uint8_t);              // Use 8-bit inputs like bridge
+    config.max_spectators = 0;                        // No spectators for local testing
+    config.input_prediction_window = 0;               // No prediction needed for local testing
+    
+    gekko_start(gekko_session, &config);
+    
+    // Add local players (both local for offline mode)
+    p1_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);  // P1
+    p2_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);  // P2
+    
+    if (p1_handle < 0 || p2_handle < 0) {
+        OutputDebugStringA("Failed to add players to GekkoNet session\n");
+        return false;
+    }
+    
+    // Set input delay (2 frames = 20ms at 100 FPS)
+    gekko_set_local_delay(gekko_session, p1_handle, 2);
+    gekko_set_local_delay(gekko_session, p2_handle, 2);
+    
+    gekko_initialized = true;
+    OutputDebugStringA("FM2K HOOK: GekkoNet session initialized successfully!\n");
+    return true;
+}
+
 // Simple hook implementations (like your working ML2 code)
 int __cdecl Hook_ProcessGameInputs() {
     g_frame_counter++;
+    
+    // Always output on first few calls to verify hook is working
+    if (g_frame_counter <= 5) {
+        char init_msg[128];
+        snprintf(init_msg, sizeof(init_msg), "FM2K HOOK: Hook called! Frame %u\n", g_frame_counter);
+        OutputDebugStringA(init_msg);
+    }
     
     // Read the actual frame counter from game memory (with basic validation)
     uint32_t game_frame = 0;
@@ -78,12 +124,15 @@ int __cdecl Hook_ProcessGameInputs() {
         p2_input = *p2_input_ptr;
     }
     
-    // Log every 60 frames to reduce spam
-    if (g_frame_counter % 60 == 0) {
-        char input_msg[256];
+    // Log more frequently to debug input capture
+    if (g_frame_counter % 10 == 0) {
+        char input_msg[512];
         snprintf(input_msg, sizeof(input_msg), 
-                 "FM2K HOOK: Frame %u - P1: 0x%04X, P2: 0x%04X\n", 
-                 g_frame_counter, p1_input, p2_input);
+                 "FM2K HOOK: Frame %u - Game frame: %u - P1: 0x%04X (addr valid: %s), P2: 0x%04X (addr valid: %s)\n", 
+                 g_frame_counter, game_frame, p1_input, 
+                 (!IsBadReadPtr(p1_input_ptr, sizeof(uint16_t))) ? "YES" : "NO",
+                 p2_input,
+                 (!IsBadReadPtr(p2_input_ptr, sizeof(uint16_t))) ? "YES" : "NO");
         OutputDebugStringA(input_msg);
         
         FILE* log = fopen("C:\\Games\\fm2k_hook_log.txt", "a");
@@ -94,12 +143,47 @@ int __cdecl Hook_ProcessGameInputs() {
         }
     }
     
-    // Forward inputs to launcher via shared memory
-    if (shared_data) {
-        shared_data->frame_number = g_frame_counter;
-        shared_data->p1_input = p1_input;
-        shared_data->p2_input = p2_input;
-        shared_data->valid = true;
+    // Forward inputs directly to GekkoNet (no shared memory needed)
+    if (gekko_initialized && gekko_session) {
+        // Convert 16-bit FM2K inputs to 8-bit GekkoNet format
+        uint8_t p1_gekko = 0;
+        uint8_t p2_gekko = 0;
+        
+        // Map FM2K input bits to 8-bit GekkoNet format (matching bridge logic)
+        if (p1_input & 0x01) p1_gekko |= 0x01;  // left
+        if (p1_input & 0x02) p1_gekko |= 0x02;  // right
+        if (p1_input & 0x04) p1_gekko |= 0x04;  // up
+        if (p1_input & 0x08) p1_gekko |= 0x08;  // down
+        if (p1_input & 0x10) p1_gekko |= 0x10;  // button1
+        if (p1_input & 0x20) p1_gekko |= 0x20;  // button2
+        if (p1_input & 0x40) p1_gekko |= 0x40;  // button3
+        if (p1_input & 0x80) p1_gekko |= 0x80;  // button4
+        
+        if (p2_input & 0x01) p2_gekko |= 0x01;  // left
+        if (p2_input & 0x02) p2_gekko |= 0x02;  // right
+        if (p2_input & 0x04) p2_gekko |= 0x04;  // up
+        if (p2_input & 0x08) p2_gekko |= 0x08;  // down
+        if (p2_input & 0x10) p2_gekko |= 0x10;  // button1
+        if (p2_input & 0x20) p2_gekko |= 0x20;  // button2
+        if (p2_input & 0x40) p2_gekko |= 0x40;  // button3
+        if (p2_input & 0x80) p2_gekko |= 0x80;  // button4
+        
+        // Add inputs to GekkoNet session
+        gekko_add_local_input(gekko_session, p1_handle, &p1_gekko);
+        gekko_add_local_input(gekko_session, p2_handle, &p2_gekko);
+        
+        // Process GekkoNet updates after adding inputs
+        int update_count = 0;
+        auto updates = gekko_update_session(gekko_session, &update_count);
+        
+        // Log successful input processing occasionally
+        if (g_frame_counter % 60 == 0) {
+            char gekko_msg[256];
+            snprintf(gekko_msg, sizeof(gekko_msg), 
+                     "GekkoNet: Frame %u - P1: 0x%04X→0x%02X, P2: 0x%04X→0x%02X, Updates: %d\n", 
+                     g_frame_counter, p1_input, p1_gekko, p2_input, p2_gekko, update_count);
+            OutputDebugStringA(gekko_msg);
+        }
     }
     
     // Call original function
@@ -212,45 +296,41 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             
             OutputDebugStringA("FM2K HOOK: DLL attached to process!\n");
             
-            // Initialize shared memory for input communication
-            shared_memory_handle = CreateFileMappingA(
-                INVALID_HANDLE_VALUE,
-                nullptr,
-                PAGE_READWRITE,
-                0,
-                sizeof(SharedInputData),
-                "FM2K_InputSharedMemory"
-            );
-            
-            if (shared_memory_handle != nullptr) {
-                shared_data = (SharedInputData*)MapViewOfFile(
-                    shared_memory_handle,
-                    FILE_MAP_ALL_ACCESS,
-                    0,
-                    0,
-                    sizeof(SharedInputData)
-                );
-                
-                if (shared_data) {
-                    // Initialize shared data
-                    shared_data->frame_number = 0;
-                    shared_data->p1_input = 0;
-                    shared_data->p2_input = 0;
-                    shared_data->valid = false;
-                    OutputDebugStringA("FM2K HOOK: Shared memory initialized\n");
-                } else {
-                    OutputDebugStringA("FM2K HOOK: Failed to map shared memory view\n");
-                }
-            } else {
-                OutputDebugStringA("FM2K HOOK: Failed to create shared memory\n");
-            }
-
-            // Write initial log entry
+            // Write initial log entry first
             FILE* log = fopen("C:\\Games\\fm2k_hook_log.txt", "w");
             if (log) {
                 fprintf(log, "FM2K HOOK: DLL attached to process at %lu\n", GetTickCount());
+                fprintf(log, "FM2K HOOK: About to initialize GekkoNet...\n");
+                fflush(log);
                 fclose(log);
             }
+            
+            // Initialize GekkoNet session directly in DLL
+            OutputDebugStringA("FM2K HOOK: About to initialize GekkoNet...\n");
+            
+            bool gekko_result = InitializeGekkoNet();
+            OutputDebugStringA("FM2K HOOK: InitializeGekkoNet returned\n");
+            
+            if (!gekko_result) {
+                OutputDebugStringA("ERROR FM2K HOOK: Failed to initialize GekkoNet!\n");
+                FILE* error_log = fopen("C:\\Games\\fm2k_hook_log.txt", "a");
+                if (error_log) {
+                    fprintf(error_log, "ERROR FM2K HOOK: Failed to initialize GekkoNet!\n");
+                    fflush(error_log);
+                    fclose(error_log);
+                }
+                // Continue anyway - we can still hook without rollback
+            } else {
+                OutputDebugStringA("FM2K HOOK: GekkoNet initialized successfully!\n");
+                FILE* success_log = fopen("C:\\Games\\fm2k_hook_log.txt", "a");
+                if (success_log) {
+                    fprintf(success_log, "FM2K HOOK: GekkoNet initialized successfully!\n");
+                    fflush(success_log);
+                    fclose(success_log);
+                }
+            }
+
+            // Log entry already written above
             
             // Wait a bit for the game to initialize before installing hooks
             Sleep(100);
@@ -268,14 +348,12 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     case DLL_PROCESS_DETACH:
         OutputDebugStringA("FM2K HOOK: DLL detaching from process\n");
         
-        // Cleanup shared memory
-        if (shared_data) {
-            UnmapViewOfFile(shared_data);
-            shared_data = nullptr;
-        }
-        if (shared_memory_handle) {
-            CloseHandle(shared_memory_handle);
-            shared_memory_handle = nullptr;
+        // Cleanup GekkoNet session
+        if (gekko_session) {
+            gekko_destroy(gekko_session);
+            gekko_session = nullptr;
+            gekko_initialized = false;
+            OutputDebugStringA("FM2K HOOK: GekkoNet session closed\n");
         }
         
         ShutdownHooks();

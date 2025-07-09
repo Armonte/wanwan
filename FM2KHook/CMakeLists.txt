@@ -22,9 +22,10 @@ target_compile_definitions(FM2KHook PRIVATE
     WIN32_LEAN_AND_MEAN
 )
 
-# Link against MinHook only (no SDL needed for simple version)
+# Link against MinHook and GekkoNet
 target_link_libraries(FM2KHook PRIVATE 
     MinHook
+    GekkoNet
 )
 
 # Include directories
@@ -33,6 +34,8 @@ target_include_directories(FM2KHook PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/vendored/minhook/include
     ${CMAKE_SOURCE_DIR}/vendored/SDL/include
+    ${CMAKE_SOURCE_DIR}/vendored/GekkoNet/include
+    ${CMAKE_SOURCE_DIR}/vendored/GekkoNet/GekkoLib/include
 )
 
 # Set output directories

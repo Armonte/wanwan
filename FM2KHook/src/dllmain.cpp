@@ -47,6 +47,8 @@ bool CreateSDL3Window(HWND gameHwnd);
 bool CreateSDL3Renderer();
 bool CreateSDL3Textures();
 void SetupDirectDrawReplacement();
+void SetupSurfaceVirtualTables();
+void RenderFrame();
 DWORD WINAPI InitializeThread(LPVOID hModule);
 
 // --- Implementations ---
@@ -91,9 +93,8 @@ HWND WINAPI Hook_CreateWindowExA(
                 LogMessage("WARNING: Could not access g_hwnd_parent at 0x4246F8");
             }
             
-            // MINIMAL APPROACH: Just detect and store, don't hijack yet
-            // Let the game initialize normally first
-            LogMessage("Allowing game to initialize normally without SDL3 interference");
+            // Window detection complete - SDL3 takeover will happen in Hook_InitializeGame
+            LogMessage("Main game window detected and stored for SDL3 takeover");
         }
     }
     
@@ -101,8 +102,47 @@ HWND WINAPI Hook_CreateWindowExA(
 }
 
 BOOL WINAPI Hook_InitializeGame(HWND windowHandle) {
-    LogMessage("Hook_InitializeGame triggered!");
-    return original_initialize_game(windowHandle);
+    LogMessage("Hook_InitializeGame triggered - initiating SDL3 window takeover!");
+    
+    char buffer[256];
+    sprintf_s(buffer, sizeof(buffer), "Game provided window handle: %p", windowHandle);
+    LogMessage(buffer);
+    
+    // Phase 1: Initialize SDL3 if not already done
+    if (!InitializeSDL3()) {
+        LogMessage("SDL3 initialization failed in Hook_InitializeGame");
+        return original_initialize_game(windowHandle);
+    }
+    
+    // Phase 2: Create SDL3 window alongside game window
+    if (g_gameWindow && !g_sdlContext.window) {
+        if (!CreateSDL3Window(g_gameWindow)) {
+            LogMessage("SDL3 window creation failed");
+            return original_initialize_game(windowHandle);
+        }
+        
+        // Hide the original game window and show SDL3 window
+        ShowWindow(g_gameWindow, SW_HIDE);
+        SDL_ShowWindow(g_sdlContext.window);
+        LogMessage("SDL3 window takeover complete - game window hidden, SDL3 window shown");
+    }
+    
+    // Phase 3: Create SDL3 renderer and textures
+    if (!CreateSDL3Renderer() || !CreateSDL3Textures()) {
+        LogMessage("SDL3 renderer/texture creation failed");
+        return original_initialize_game(windowHandle);
+    }
+    
+    // Phase 4: Set up DirectDraw replacement pointers
+    SetupDirectDrawReplacement();
+    
+    LogMessage("SDL3 initialization complete in Hook_InitializeGame");
+    
+    // Call original game initialization
+    BOOL result = original_initialize_game(windowHandle);
+    
+    LogMessage("Game initialization completed, SDL3 ready for rendering");
+    return result;
 }
 
 BOOL WINAPI Hook_InitializeDirectDraw(BOOL isFullScreen, HWND windowHandle) {
@@ -141,8 +181,73 @@ LRESULT WINAPI Hook_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
 }
 
 BOOL WINAPI Hook_ProcessInputHistory() {
-    // This hook is for input handling.
-    return original_process_input_history();
+    // This hook is called 60 times per second - perfect for rendering
+    BOOL result = original_process_input_history();
+    
+    // If SDL3 is initialized, perform rendering
+    if (g_sdlContext.initialized && g_sdlContext.renderer) {
+        RenderFrame();
+    }
+    
+    return result;
+}
+
+void RenderFrame() {
+    // Clear the renderer
+    SDL_SetRenderDrawColor(g_sdlContext.renderer, 0, 0, 0, 255);
+    SDL_RenderClear(g_sdlContext.renderer);
+    
+    // Render test content to game buffer to verify SDL3 rendering
+    if (g_sdlContext.gameBuffer) {
+        // Set render target to game buffer  
+        SDL_SetRenderTarget(g_sdlContext.renderer, g_sdlContext.gameBuffer);
+        
+        // Fill game buffer with test pattern
+        SDL_SetRenderDrawColor(g_sdlContext.renderer, 64, 128, 255, 255);  // Blue background
+        SDL_RenderClear(g_sdlContext.renderer);
+        
+        // Draw some test rectangles
+        SDL_SetRenderDrawColor(g_sdlContext.renderer, 255, 255, 255, 255);  // White
+        SDL_FRect testRect = {50, 50, 156, 140};
+        SDL_RenderFillRect(g_sdlContext.renderer, &testRect);
+        
+        SDL_SetRenderDrawColor(g_sdlContext.renderer, 255, 0, 0, 255);  // Red
+        SDL_FRect testRect2 = {75, 75, 106, 90};
+        SDL_RenderFillRect(g_sdlContext.renderer, &testRect2);
+        
+        // Reset render target to window
+        SDL_SetRenderTarget(g_sdlContext.renderer, nullptr);
+        // Render game buffer to window with proper scaling
+        int windowWidth, windowHeight;
+        SDL_GetWindowSize(g_sdlContext.window, &windowWidth, &windowHeight);
+        
+        // Calculate scaling to maintain aspect ratio
+        float windowAspect = (float)windowWidth / windowHeight;
+        float gameAspect = (float)g_sdlContext.gameWidth / g_sdlContext.gameHeight;
+        
+        SDL_FRect destRect;
+        if (windowAspect > gameAspect) {
+            // Window is wider - letterbox on sides
+            float scale = (float)windowHeight / g_sdlContext.gameHeight;
+            destRect.w = g_sdlContext.gameWidth * scale;
+            destRect.h = (float)windowHeight;
+            destRect.x = (windowWidth - destRect.w) / 2;
+            destRect.y = 0;
+        } else {
+            // Window is taller - letterbox on top/bottom  
+            float scale = (float)windowWidth / g_sdlContext.gameWidth;
+            destRect.w = (float)windowWidth;
+            destRect.h = g_sdlContext.gameHeight * scale;
+            destRect.x = 0;
+            destRect.y = (windowHeight - destRect.h) / 2;
+        }
+        
+        // Render game buffer to window
+        SDL_RenderTexture(g_sdlContext.renderer, g_sdlContext.gameBuffer, nullptr, &destRect);
+    }
+    
+    // Present the frame
+    SDL_RenderPresent(g_sdlContext.renderer);
 }
 
 bool InitializeSDL3() {
@@ -186,12 +291,12 @@ bool CreateSDL3Window(HWND gameHwnd) {
     sprintf_s(buffer, sizeof(buffer), "Game window dimensions: %dx%d at (%d, %d)", gameWidth, gameHeight, gameRect.left, gameRect.top);
     LogMessage(buffer);
     
-    // Create a separate SDL3 window
+    // Create a separate SDL3 window for rendering takeover
     g_sdlContext.window = SDL_CreateWindow(
-        "FM2K SDL3 Renderer",
+        "Fighter Maker 2K - SDL3 Renderer",
         gameWidth,
         gameHeight,
-        SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN  // Start hidden
+        SDL_WINDOW_RESIZABLE  // Start visible, ready for takeover
     );
     
     if (!g_sdlContext.window) {
@@ -346,7 +451,31 @@ void SetupDirectDrawReplacement() {
         LogMessage("Set g_dest_height to 240");
     }
     
+    // Initialize virtual function tables for DirectDraw surfaces
+    SetupSurfaceVirtualTables();
+    
     LogMessage("DirectDraw SDL3 replacement setup complete");
+}
+
+void SetupSurfaceVirtualTables() {
+    // For now, we'll set up basic compatibility without full COM interface
+    // The game typically just accesses the texture/pixel data directly
+    // Most DirectDraw games use Lock/Unlock for pixel access
+    
+    // Set up basic surface properties that the game might check
+    g_primarySurface.width = g_sdlContext.gameWidth;
+    g_primarySurface.height = g_sdlContext.gameHeight;
+    g_primarySurface.locked = false;
+    
+    g_backSurface.width = 640;
+    g_backSurface.height = 480;
+    g_backSurface.locked = false;
+    
+    g_spriteSurface.width = 256;
+    g_spriteSurface.height = 256;
+    g_spriteSurface.locked = false;
+    
+    LogMessage("Surface virtual tables initialized");
 }
 
 bool InitializeHooks() {
@@ -381,23 +510,29 @@ bool InitializeHooks() {
         LogMessage("SUCCESS: Created Hook_CreateWindowExA");
     }
 
-    // TEMPORARILY DISABLED - Let game initialize normally first
-    /*
-    if (MH_CreateHook((LPVOID)0x4056C0, (LPVOID)Hook_InitializeGame, (LPVOID*)&original_initialize_game) != MH_OK) {
-        LogMessage("ERROR: Failed to create Hook_InitializeGame.");
-        return false;
-    }
-
+    // Hook 3: DirectDraw initialization (critical for rendering)
     if (MH_CreateHook((LPVOID)0x404980, (LPVOID)Hook_InitializeDirectDraw, (LPVOID*)&original_initialize_directdraw) != MH_OK) {
         LogMessage("ERROR: Failed to create Hook_InitializeDirectDraw.");
         return false;
+    } else {
+        LogMessage("SUCCESS: Created Hook_InitializeDirectDraw");
     }
 
+    // Hook 4: Game initialization (for full SDL3 setup)
+    if (MH_CreateHook((LPVOID)0x4056C0, (LPVOID)Hook_InitializeGame, (LPVOID*)&original_initialize_game) != MH_OK) {
+        LogMessage("ERROR: Failed to create Hook_InitializeGame.");
+        return false;
+    } else {
+        LogMessage("SUCCESS: Created Hook_InitializeGame");
+    }
+
+    // Hook 5: Window procedure (for message forwarding)
     if (MH_CreateHook((LPVOID)0x405F50, (LPVOID)Hook_WindowProc, (LPVOID*)&original_window_proc) != MH_OK) {
         LogMessage("ERROR: Failed to create Hook_WindowProc.");
         return false;
+    } else {
+        LogMessage("SUCCESS: Created Hook_WindowProc");
     }
-    */
 
     LogMessage("Enabling hooks...");
     if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {

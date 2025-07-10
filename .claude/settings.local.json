@@ -14,7 +14,13 @@
       "Bash(./make_build.sh)",
       "mcp__github_com_mrexodia_ida-pro-mcp__check_connection",
       "mcp__github_com_mrexodia_ida-pro-mcp__get_current_address",
-      "mcp__github_com_mrexodia_ida-pro-mcp__data_read_word"
+      "mcp__github_com_mrexodia_ida-pro-mcp__data_read_word",
+      "mcp__github_com_mrexodia_ida-pro-mcp__get_metadata",
+      "mcp__github_com_mrexodia_ida-pro-mcp__get_function_by_name",
+      "mcp__github_com_mrexodia_ida-pro-mcp__list_functions",
+      "mcp__github_com_mrexodia_ida-pro-mcp__decompile_function",
+      "Bash(timeout 300 ninja -C build)",
+      "Bash(timeout:*)"
     ],
     "deny": []
   }

@@ -52,11 +52,68 @@ static InitializeGameFn original_initialize_game = nullptr;
 static InitializeDirectDrawFn original_initialize_directdraw = nullptr;
 static WindowProcFn original_window_proc = nullptr;
 static CreateWindowExAFn original_create_window_ex_a = nullptr;
+
+typedef int (__cdecl *RenderGameFn)();
+static RenderGameFn original_render_game = nullptr;
+
+typedef void (__thiscall *InitializeDirectDrawModeFn)(void* this_ptr);
+static InitializeDirectDrawModeFn original_initialize_directdraw_mode = nullptr;
 static uint32_t hook_call_count = 0;
 static HWND g_game_window = nullptr;
 
-// Function declarations
+// Forward declarations
 void CopySDLContentToGameWindow();
+
+// DirectDraw Surface Virtual Function Table - IDirectDrawSurface interface
+// Based on the actual DirectDraw COM interface layout
+struct DirectDrawSurfaceVTable {
+    void* QueryInterface;        // offset 0
+    void* AddRef;               // offset 4
+    void* Release;              // offset 8
+    void* AddAttachedSurface;   // offset 12
+    void* AddOverlayDirtyRect;  // offset 16
+    void* Blt;                  // offset 20
+    void* BltBatch;             // offset 24
+    void* BltFast;              // offset 28
+    void* DeleteAttachedSurface; // offset 32
+    void* EnumAttachedSurfaces; // offset 36
+    void* EnumOverlayZOrders;   // offset 40
+    void* Flip;                 // offset 44  - Called by game at offset 44
+    void* GetAttachedSurface;   // offset 48
+    void* GetBltStatus;         // offset 52
+    void* GetCaps;              // offset 56
+    void* GetClipper;           // offset 60
+    void* GetColorKey;          // offset 64
+    void* GetDC;                // offset 68
+    void* GetFlipStatus;        // offset 72
+    void* GetOverlayPosition;   // offset 76
+    void* GetPalette;           // offset 80
+    void* GetPixelFormat;       // offset 84
+    void* GetSurfaceDesc;       // offset 88
+    void* Initialize;           // offset 92
+    void* IsLost;               // offset 96  - Called by game at offset 96
+    void* Lock;                 // offset 100 - Called by game at offset 100
+    void* ReleaseDC;            // offset 104
+    void* Restore;              // offset 108 - Called by game at offset 108
+    void* SetClipper;           // offset 112
+    void* SetColorKey;          // offset 116
+    void* SetOverlayPosition;   // offset 120
+    void* SetPalette;           // offset 124
+    void* Unlock;               // offset 128 - Called by game at offset 128
+    void* UpdateOverlay;        // offset 132
+    void* UpdateOverlayDisplay; // offset 136
+    void* UpdateOverlayZOrder;  // offset 140
+};
+
+// DirectDraw Surface structure
+struct DummySurface {
+    DirectDrawSurfaceVTable* vtable;
+    SDL_Texture* texture;
+    int width;
+    int height;
+    void* pixels;
+    int pitch;
+};
 
 // SDL3 helper functions
 bool InitializeSDL3Context() {
@@ -95,13 +152,13 @@ bool HijackGameWindow(HWND gameHwnd) {
     sprintf(buffer, "Game window dimensions: %dx%d at (%d, %d)", gameWidth, gameHeight, gameRect.left, gameRect.top);
     LogMessage(buffer);
     
-    // Create a separate SDL3 window instead of wrapping the existing one
-    g_sdlContext.window = SDL_CreateWindow(
-        "FM2K SDL3 Renderer",
-        gameWidth,
-        gameHeight,
-        SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN  // Start hidden until we're ready
-    );
+            // Create a separate SDL3 window instead of wrapping the existing one
+        g_sdlContext.window = SDL_CreateWindow(
+            "FM2K SDL3 Renderer",
+            gameWidth,
+            gameHeight,
+            SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN | SDL_WINDOW_ALWAYS_ON_TOP  // Start hidden, stay on top when shown
+        );
     
     if (!g_sdlContext.window) {
         sprintf(buffer, "SDL_CreateWindow failed: %s", SDL_GetError());
@@ -177,7 +234,7 @@ bool CreateGameTextures() {
     g_sdlContext.gameBuffer = SDL_CreateTexture(
         g_sdlContext.renderer,
         SDL_PIXELFORMAT_RGBA8888,
-        SDL_TEXTUREACCESS_TARGET,
+        SDL_TEXTUREACCESS_STREAMING,  // Use STREAMING for Lock/Unlock access
         g_sdlContext.gameWidth,
         g_sdlContext.gameHeight
     );
@@ -402,19 +459,155 @@ int __cdecl Hook_InitializeGame() {
     return result;
 }
 
-// DirectDraw compatibility structures
+// DirectDraw Surface Method Implementations
+// These will be called directly by the game instead of going through vtables
+
+HRESULT __stdcall SDL3_SurfaceLock(void* This, void* lpDestRect, void* lpDDSurfaceDesc, DWORD dwFlags, void* hEvent) {
+    LogMessage("DirectDraw Surface Lock called - redirecting to SDL3 texture");
+    
+    DummySurface* surface = (DummySurface*)This;
+    if (!surface || !surface->texture) {
+        LogMessage("ERROR: Invalid surface in Lock call");
+        return 0x80004005; // DDERR_GENERIC
+    }
+    
+    // Lock the SDL3 texture for pixel access
+    void* pixels;
+    int pitch;
+    if (SDL_LockTexture(surface->texture, NULL, &pixels, &pitch) < 0) {
+        char buffer[256];
+        sprintf(buffer, "SDL_LockTexture failed: %s", SDL_GetError());
+        LogMessage(buffer);
+        return 0x80004005; // DDERR_GENERIC
+    }
+    
+    // Store the pixel data for Unlock
+    surface->pixels = pixels;
+    surface->pitch = pitch;
+    
+    // Fill DirectDraw surface descriptor if provided
+    // Based on the decompiled code, this is a DDSURFACEDESC structure
+    if (lpDDSurfaceDesc) {
+        // Clear the structure first
+        memset(lpDDSurfaceDesc, 0, 108);
+        
+        int* desc = (int*)lpDDSurfaceDesc;
+        desc[0] = 108;                    // dwSize (DDSURFACEDESC size)
+        desc[1] = 0x1 | 0x4 | 0x8 | 0x20; // dwFlags (DDSD_HEIGHT | DDSD_WIDTH | DDSD_PITCH | DDSD_LPSURFACE)
+        desc[2] = surface->height;        // dwHeight
+        desc[3] = surface->width;         // dwWidth
+        desc[4] = pitch;                  // lPitch
+        // Skip some fields...
+        desc[9] = (int)pixels;            // lpSurface (pixel data pointer)
+        
+        char buffer[256];
+        sprintf(buffer, "Surface Lock: %dx%d, pitch=%d, pixels=%p", surface->width, surface->height, pitch, pixels);
+        LogMessage(buffer);
+    }
+    
+    return 0; // S_OK
+}
+
+HRESULT __stdcall SDL3_SurfaceUnlock(void* This, void* lpSurfaceData) {
+    LogMessage("DirectDraw Surface Unlock called - updating SDL3 texture");
+    
+    DummySurface* surface = (DummySurface*)This;
+    if (!surface || !surface->texture) {
+        LogMessage("ERROR: Invalid surface in Unlock call");
+        return 0x80004005; // DDERR_GENERIC
+    }
+    
+    // Unlock the SDL3 texture
+    SDL_UnlockTexture(surface->texture);
+    surface->pixels = nullptr;
+    surface->pitch = 0;
+    
+    LogMessage("Surface Unlock completed successfully");
+    return 0; // S_OK
+}
+
+HRESULT __stdcall SDL3_SurfaceBlt(void* This, void* lpDestRect, void* lpDDSrcSurface, void* lpSrcRect, DWORD dwFlags, void* lpDDBltFx) {
+    LogMessage("DirectDraw Surface Blt called - performing SDL3 texture copy");
+    
+    // For now, just return success - the game's main rendering happens through Lock/Unlock
+    // More complex Blt operations can be implemented later if needed
+    return 0; // S_OK
+}
+
+HRESULT __stdcall SDL3_SurfaceIsLost(void* This) {
+    LogMessage("DirectDraw Surface IsLost called - SDL3 surfaces are never lost");
+    
+    // SDL3 surfaces are never lost, so always return S_OK
+    return 0; // S_OK
+}
+
+HRESULT __stdcall SDL3_SurfaceRestore(void* This) {
+    LogMessage("DirectDraw Surface Restore called - SDL3 surfaces don't need restoration");
+    
+    // SDL3 surfaces don't need restoration, so always return S_OK
+    return 0; // S_OK
+}
+
+HRESULT __stdcall SDL3_SurfaceFlip(void* This, void* lpDDSurfaceTargetOverride, DWORD dwFlags) {
+    LogMessage("DirectDraw Surface Flip called - triggering SDL3 frame presentation");
+    
+    // This is called when the game wants to present the frame
+    // Trigger our SDL3 rendering pipeline
+    if (g_sdl3_initialized && g_sdlContext.renderer) {
+        RenderGameToWindow();
+    }
+    
+    return 0; // S_OK
+}
+
+// Simplified vtable with just the essential methods
+// DirectDrawSurfaceVTable already defined at top of file
+
+// Create the vtable with our implementations
+static DirectDrawSurfaceVTable g_surfaceVTable = {
+    nullptr, // QueryInterface
+    nullptr, // AddRef
+    nullptr, // Release
+    nullptr, // AddAttachedSurface
+    nullptr, // AddOverlayDirtyRect
+    (void*)SDL3_SurfaceBlt, // Blt
+    nullptr, // BltBatch
+    nullptr, // BltFast
+    nullptr, // DeleteAttachedSurface
+    nullptr, // EnumAttachedSurfaces
+    nullptr, // EnumOverlayZOrders
+    (void*)SDL3_SurfaceFlip, // Flip - offset 44
+    nullptr, // GetAttachedSurface
+    nullptr, // GetBltStatus
+    nullptr, // GetCaps
+    nullptr, // GetClipper
+    nullptr, // GetColorKey
+    nullptr, // GetDC
+    nullptr, // GetFlipStatus
+    nullptr, // GetOverlayPosition
+    nullptr, // GetPalette
+    nullptr, // GetPixelFormat
+    nullptr, // GetSurfaceDesc
+    nullptr, // Initialize
+    (void*)SDL3_SurfaceIsLost, // IsLost - offset 96
+    (void*)SDL3_SurfaceLock, // Lock - offset 100
+    nullptr, // ReleaseDC
+    (void*)SDL3_SurfaceRestore, // Restore - offset 108
+    nullptr, // SetClipper
+    nullptr, // SetColorKey
+    nullptr, // SetOverlayPosition
+    nullptr, // SetPalette
+    (void*)SDL3_SurfaceUnlock, // Unlock - offset 128
+    nullptr, // UpdateOverlay
+    nullptr, // UpdateOverlayDisplay
+    nullptr, // UpdateOverlayZOrder
+};
+
 struct DummyDirectDraw {
     void* vtable;
 };
 
-struct DummySurface {
-    void* vtable;
-    SDL_Texture* texture;
-    int width;
-    int height;
-    int pitch;
-    void* pixels;
-};
+// DirectDraw Surface structure already defined at top of file
 
 static DummyDirectDraw g_dummyDirectDraw;
 static DummySurface g_primarySurface;
@@ -492,7 +685,7 @@ int __cdecl Hook_InitializeDirectDraw(int isFullScreen, void* windowHandle) {
         g_sdlContext.backBuffer = SDL_CreateTexture(
             g_sdlContext.renderer,
             SDL_PIXELFORMAT_RGBA8888,
-            SDL_TEXTUREACCESS_TARGET,
+            SDL_TEXTUREACCESS_STREAMING,  // Use STREAMING for Lock/Unlock access
             640, 480  // Standard back buffer size
         );
         if (g_sdlContext.backBuffer) {
@@ -505,12 +698,20 @@ int __cdecl Hook_InitializeDirectDraw(int isFullScreen, void* windowHandle) {
     SDL_Texture* spriteTexture = SDL_CreateTexture(
         g_sdlContext.renderer,
         SDL_PIXELFORMAT_RGBA8888,
-        SDL_TEXTUREACCESS_TARGET,
+        SDL_TEXTUREACCESS_STREAMING,  // Use STREAMING for Lock/Unlock access
         256, 256
     );
     if (spriteTexture) {
         SDL_SetTextureScaleMode(spriteTexture, SDL_SCALEMODE_NEAREST);
         LogMessage("Created SDL3 sprite texture (256x256)");
+        
+        // Set up sprite surface structure
+        g_spriteSurface.vtable = &g_surfaceVTable;
+        g_spriteSurface.texture = spriteTexture;
+        g_spriteSurface.width = 256;
+        g_spriteSurface.height = 256;
+        g_spriteSurface.pixels = nullptr;
+        g_spriteSurface.pitch = 0;
     }
     
     // Set up dummy DirectDraw interfaces for game compatibility
@@ -521,35 +722,49 @@ int __cdecl Hook_InitializeDirectDraw(int isFullScreen, void* windowHandle) {
     // g_dd_primary_surface @ 0x424750  
     // g_dd_back_buffer @ 0x424754
     
-    // Point game's DirectDraw globals to our dummy structures
-    void** pDirectDraw = (void**)0x424758;
-    void** pPrimarySurface = (void**)0x424750;
-    void** pBackBuffer = (void**)0x424754;
+    // Set up DirectDraw global variables using IDA verified addresses
+    void** pDirectDraw = (void**)0x424758;        // g_direct_draw
+    void** pPrimarySurface = (void**)0x424750;    // g_dd_primary_surface  
+    void** pBackBuffer = (void**)0x424754;        // g_dd_back_buffer
     
     if (pDirectDraw) {
         *pDirectDraw = &g_dummyDirectDraw;
-        LogMessage("Set DirectDraw pointer at 0x424758");
+        LogMessage("Set DirectDraw pointer at 0x424758 (g_direct_draw)");
     }
     
     if (pPrimarySurface) {
+        g_primarySurface.vtable = &g_surfaceVTable;
         g_primarySurface.texture = g_sdlContext.gameBuffer;
         g_primarySurface.width = g_sdlContext.gameWidth;
         g_primarySurface.height = g_sdlContext.gameHeight;
+        g_primarySurface.pixels = nullptr;
+        g_primarySurface.pitch = 0;
         *pPrimarySurface = &g_primarySurface;
-        LogMessage("Set primary surface pointer at 0x424750");
+        LogMessage("Set primary surface pointer at 0x424750 (g_dd_primary_surface) with vtable");
     }
     
     if (pBackBuffer) {
+        g_backSurface.vtable = &g_surfaceVTable;
         g_backSurface.texture = g_sdlContext.backBuffer;
         g_backSurface.width = 640;
         g_backSurface.height = 480;
+        g_backSurface.pixels = nullptr;
+        g_backSurface.pitch = 0;
         *pBackBuffer = &g_backSurface;
-        LogMessage("Set back buffer pointer at 0x424754");
+        LogMessage("Set back buffer pointer at 0x424754 (g_dd_back_buffer) with vtable");
     }
+    
+    // Set up sprite surface with vtable (this was missing!)
+    g_spriteSurface.vtable = &g_surfaceVTable;
+    g_spriteSurface.texture = spriteTexture;
+    g_spriteSurface.width = 256;
+    g_spriteSurface.height = 256;
+    g_spriteSurface.pixels = nullptr;
+    g_spriteSurface.pitch = 0;
     
     // Set up critical game variables for resolution using IDA-verified addresses
     short* pStageWidth = (short*)0x4452B8;   // g_stage_width_pixels
-    short* pStageHeight = (short*)0x4452BA;  // g_stage_height_pixels
+    short* pStageHeight = (short*)0x4452BA;  // g_stage_height_pixels  
     int* pDestWidth = (int*)0x447F20;        // g_dest_width
     int* pDestHeight = (int*)0x447F24;       // g_dest_height
     
@@ -580,6 +795,20 @@ int __cdecl Hook_InitializeDirectDraw(int isFullScreen, void* windowHandle) {
         LogMessage("Set g_dest_height to 240");
     } else {
         LogMessage("ERROR: Cannot access g_dest_height at 0x447F24");
+    }
+    
+    // Set the game's window handle global at the correct IDA-verified address
+    HWND* pGameWindowHandle = (HWND*)0x4246F8; // g_hwnd_parent from IDA
+    if (!IsBadWritePtr(pGameWindowHandle, sizeof(HWND))) {
+        *pGameWindowHandle = g_game_window;
+        LogMessage("Set g_hwnd_parent global with game window handle");
+        
+        // Verify the setting worked
+        char buffer[256];
+        sprintf(buffer, "g_hwnd_parent verification: stored=%p, game=%p", *pGameWindowHandle, g_game_window);
+        LogMessage(buffer);
+    } else {
+        LogMessage("ERROR: Failed to access g_hwnd_parent at 0x4246F8");
     }
     
     LogMessage("DirectDraw SDL3 replacement initialization complete");
@@ -657,9 +886,9 @@ HWND WINAPI Hook_CreateWindowExA(DWORD dwExStyle, LPCSTR lpClassName, LPCSTR lpW
                     g_sdl3_initialized = true;
                     LogMessage("SDL3 window hijacking completed successfully");
                     
-                    // Show the SDL3 window now that everything is set up
-                    SDL_ShowWindow(g_sdlContext.window);
-                    LogMessage("SDL3 window is now visible");
+                                            // Keep the SDL3 window hidden - we only use it for rendering
+                        // SDL_ShowWindow(g_sdlContext.window);
+                        LogMessage("SDL3 window created but kept hidden for rendering");
                 } else {
                     LogMessage("SDL3 window hijacking failed");
                 }
@@ -669,6 +898,126 @@ HWND WINAPI Hook_CreateWindowExA(DWORD dwExStyle, LPCSTR lpClassName, LPCSTR lpW
     
     return gameWindow;
 }
+
+// Hook for initialize_directdraw_mode to override DirectDraw surface creation
+void __thiscall Hook_InitializeDirectDrawMode(void* this_ptr) {
+    LogMessage("Hook_InitializeDirectDrawMode called - preventing real DirectDraw creation");
+    
+    // Call the original function first to let it do its setup
+    if (original_initialize_directdraw_mode) {
+        original_initialize_directdraw_mode(this_ptr);
+    }
+    
+    // Now override the DirectDraw pointers with our SDL3 surfaces
+    LogMessage("Overriding DirectDraw surfaces with SDL3 surfaces after game initialization");
+    
+    // Set up DirectDraw global variables using IDA verified addresses
+    void** pDirectDraw = (void**)0x424758;        // g_direct_draw
+    void** pPrimarySurface = (void**)0x424750;    // g_dd_primary_surface  
+    void** pBackBuffer = (void**)0x424754;        // g_dd_back_buffer
+    
+    if (pDirectDraw) {
+        *pDirectDraw = &g_dummyDirectDraw;
+        LogMessage("Re-set DirectDraw pointer at 0x424758 (g_direct_draw) after game init");
+    }
+    
+    if (pPrimarySurface) {
+        g_primarySurface.vtable = &g_surfaceVTable;
+        g_primarySurface.texture = g_sdlContext.gameBuffer;
+        g_primarySurface.width = g_sdlContext.gameWidth;
+        g_primarySurface.height = g_sdlContext.gameHeight;
+        g_primarySurface.pixels = nullptr;
+        g_primarySurface.pitch = 0;
+        *pPrimarySurface = &g_primarySurface;
+        LogMessage("Re-set primary surface pointer at 0x424750 after game init");
+    }
+    
+    if (pBackBuffer) {
+        g_backSurface.vtable = &g_surfaceVTable;
+        g_backSurface.texture = g_sdlContext.backBuffer;
+        g_backSurface.width = 640;
+        g_backSurface.height = 480;
+        g_backSurface.pixels = nullptr;
+        g_backSurface.pitch = 0;
+        *pBackBuffer = &g_backSurface;
+        LogMessage("Re-set back buffer pointer at 0x424754 after game init");
+    }
+    
+    LogMessage("DirectDraw surface override completed");
+}
+
+// Main rendering loop hook - intercepts render_game function
+int __cdecl Hook_ProcessScreenUpdates() {
+    static int callCount = 0;
+    callCount++;
+    
+    // First, let the original game do its rendering to DirectDraw surfaces
+    int originalResult = 0;
+    if (original_render_game) {
+        originalResult = original_render_game();
+    }
+    
+    // Update SDL events once per frame (essential for input and timing)
+    UpdateSDL3Events();
+    
+    // If SDL3 is not initialized, just return the original result
+    if (!g_sdl3_initialized || !g_sdlContext.renderer) {
+        return originalResult;
+    }
+    
+    // Now intercept the DirectDraw surface data and transfer it to SDL3
+    // The game has already rendered to the back buffer, so we can copy from there
+    
+    // Get the back buffer pixels that the game just rendered to
+    void** ppBackBufferPixels = (void**)0x46FF64;  // From the decompiled render_game function
+    if (ppBackBufferPixels && *ppBackBufferPixels) {
+        unsigned char* gamePixels = (unsigned char*)*ppBackBufferPixels;
+        
+        // Lock our SDL3 game buffer texture
+        void* sdlPixels;
+        int sdlPitch;
+        if (SDL_LockTexture(g_sdlContext.gameBuffer, NULL, &sdlPixels, &sdlPitch) == 0) {
+            unsigned char* dstData = (unsigned char*)sdlPixels;
+            
+            // Copy the game's rendered pixels to our SDL3 texture
+            // The game uses 640x480 back buffer, but the actual game area is 256x240
+            for (int y = 0; y < 240; y++) {
+                for (int x = 0; x < 256; x++) {
+                    // The game buffer might be palettized, so we need to handle that
+                    unsigned char pixelValue = gamePixels[y * 1280 + x];  // 1280 = pitch from BlitPitched call
+                    
+                    // Convert to RGBA (simple grayscale for now)
+                    int dstOffset = y * sdlPitch + x * 4;
+                    if (dstOffset + 3 < sdlPitch * 240) {
+                        dstData[dstOffset + 0] = pixelValue;  // R
+                        dstData[dstOffset + 1] = pixelValue;  // G
+                        dstData[dstOffset + 2] = pixelValue;  // B
+                        dstData[dstOffset + 3] = 255;        // A
+                    }
+                }
+            }
+            
+            SDL_UnlockTexture(g_sdlContext.gameBuffer);
+            
+            // Now render our SDL3 content to the window
+            RenderGameToWindow();
+            
+            // Present the final frame
+            SDL_RenderPresent(g_sdlContext.renderer);
+            
+            // Log success occasionally
+            static int renderCount = 0;
+            renderCount++;
+            if (renderCount % 300 == 0) {  // Every 5 seconds at 60fps
+                LogMessage("Successfully intercepted and rendered game data via SDL3");
+            }
+        }
+    }
+    
+    return originalResult;
+}
+
+// Main rendering loop hook function
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
@@ -723,13 +1072,13 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                 // Continue without this hook
             }
             
-            // Hook 3: initialize_directdraw_mode function at 0x404980 (for DirectDraw replacement)
+            // Hook 3: initialize_directdraw_mode function at 0x404980 (to override surface creation)
             void* target3 = (void*)0x404980;
-            LogMessage("Creating initialize_directdraw hook...");
-            MH_STATUS status3 = MH_CreateHook(target3, (void*)Hook_InitializeDirectDraw, (void**)&original_initialize_directdraw);
+            LogMessage("Creating initialize_directdraw_mode hook...");
+            MH_STATUS status3 = MH_CreateHook(target3, (void*)Hook_InitializeDirectDrawMode, (void**)&original_initialize_directdraw_mode);
             if (status3 != MH_OK) {
                 char buffer[256];
-                sprintf(buffer, "WARNING: Failed to create initialize_directdraw hook, status %d", status3);
+                sprintf(buffer, "WARNING: Failed to create initialize_directdraw_mode hook, status %d", status3);
                 LogMessage(buffer);
                 // Continue without this hook
             }
@@ -754,6 +1103,17 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                 LogMessage(buffer);
                 // Continue without this hook
             }
+            
+                         // Hook 6: render_game function at 0x404dd0 (main game rendering function)
+             void* target6 = (void*)0x404dd0;
+             LogMessage("Creating render_game hook...");
+             MH_STATUS status6 = MH_CreateHook(target6, (void*)Hook_ProcessScreenUpdates, (void**)&original_render_game);
+             if (status6 != MH_OK) {
+                 char buffer[256];
+                 sprintf(buffer, "WARNING: Failed to create render_game hook, status %d", status6);
+                 LogMessage(buffer);
+                 // Continue without this hook
+             }
             
             LogMessage("Enabling all hooks...");
             

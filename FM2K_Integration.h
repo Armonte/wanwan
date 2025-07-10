@@ -6,7 +6,6 @@
 #include "imgui_impl_sdlrenderer3.h"
 
 #include "vendored/GekkoNet/GekkoLib/include/gekkonet.h"
-#include "MinHook.h"
 #include "ISession.h"
 
 #include <string>

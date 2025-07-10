@@ -15,29 +15,28 @@ A thorough understanding of the original engine was necessary to ensure a compat
 The engine featured a dual rendering system, allowing it to switch between a hardware-accelerated DirectDraw mode and a software-based GDI fallback mode.
 
 ```mermaid
-graph TD
+flowchart TB
     subgraph "Original Engine Architecture"
-        direction TB
-        A[Game Logic] --> B{Graphics Mode Check}
-        B -->|Mode 1| C[DirectDraw Pipeline]
-        B -->|Mode 0| D[GDI Pipeline]
+        A["Game Logic"] --> B{"Graphics Mode Check"}
+        B -->|Mode 1| C["DirectDraw Pipeline"]
+        B -->|Mode 0| D["GDI Pipeline"]
         
-        C --> E[Primary Surface]
-        C --> F[Back Buffer]
-        C --> G[Sprite Surface 256x256]
+        C --> E["Primary Surface"]
+        C --> F["Back Buffer"]
+        C --> G["Sprite Surface 256x256"]
         
-        D --> H[Device Context HDC]
-        D --> I[BitBlt/StretchBlt]
+        D --> H["Device Context HDC"]
+        D --> I["BitBlt/StretchBlt"]
         
-        E --> J[Screen Display]
+        E --> J["Screen Display"]
         F --> E
         H --> J
     end
     
     subgraph "Memory Management"
-        K[Global Memory Pool<br>0x138800 bytes]
-        L[Graphics Buffer<br>0xA00 bytes]
-        M[Replay System<br>0x701F8 bytes]
+        K["Global Memory Pool<br>0x138800 bytes"]
+        L["Graphics Buffer<br>0xA00 bytes"]
+        M["Replay System<br>0x701F8 bytes"]
     end
     
     A --> K

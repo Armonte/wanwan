@@ -48,7 +48,6 @@ FM2KGameInstance::FM2KGameInstance()
 
 FM2KGameInstance::~FM2KGameInstance() {
     Terminate();
-    FM2K::IPC::Shutdown();
 }
 
 bool FM2KGameInstance::Initialize() {
@@ -154,18 +153,10 @@ bool FM2KGameInstance::Launch(const FM2K::FM2KGameInfo& game) {
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Game process launched successfully");
     
-    // Wait a moment for the hook DLL to initialize and create IPC shared memory
+    // Wait a moment for the hook DLL to initialize
     SDL_Delay(500); // 500ms should be enough
     
-    // Now initialize IPC connection to read events from the injected DLL
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launcher: Connecting to hook DLL IPC...");
-    if (!FM2K::IPC::Init()) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-            "LAUNCHER: Failed to connect to IPC system - hook may not be initialized");
-        // Don't fail the launch, just log the error
-    } else {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launcher: Successfully connected to IPC");
-    }
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launcher: Hook DLL should be initialized");
     
     return true;
 }
@@ -310,28 +301,7 @@ bool FM2KGameInstance::LoadGameExecutable(const std::filesystem::path& exe_path)
 }
 
 void FM2KGameInstance::ProcessIPCEvents() {
-    // First process IPC events from the hook DLL
-    FM2K::IPC::Event ipc_event;
-    int events_processed = 0;
-    while (FM2K::IPC::PollEvent(&ipc_event)) {
-        HandleIPCEvent(ipc_event);
-        events_processed++;
-        
-        // Prevent infinite loop in case of issues
-        if (events_processed > 1000) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, 
-                "Too many IPC events in single frame - breaking");
-            break;
-        }
-    }
-    
-    // Reduced logging - only log significant processing
-    static int total_processed = 0;
-    total_processed += events_processed;
-    if (total_processed % 1000 == 0 && events_processed > 0) {
-        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
-            "Processed %d total IPC events", total_processed);
-    }
+    // IPC events are now handled entirely within the DLL
     
     // Then process SDL events
     SDL_Event event;

@@ -5,7 +5,6 @@
 #include <memory>
 #include <filesystem>
 #include <windows.h>
-#include "FM2KHook/src/ipc.h"
 
 // Forward declarations
 class ISession;

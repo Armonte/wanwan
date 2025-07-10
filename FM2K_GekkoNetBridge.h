@@ -5,8 +5,6 @@ enum class SessionMode;
 
 #define GEKKONET_STATIC
 #include "vendored/GekkoNet/GekkoLib/include/gekkonet.h"
-#include "FM2KHook/src/state_manager.h"
-#include "FM2KHook/src/ipc.h"
 #include <SDL3/SDL.h>
 #include <memory>
 
@@ -99,8 +97,7 @@ private:
     // Configuration
     FM2KNetworkConfig config_;
     
-    // Game state buffer for GekkoNet
-    std::unique_ptr<State::GameState> current_state_;
+    // Game state management is now handled by the DLL
     
     // Timing for frame rate control
     float accumulator_;

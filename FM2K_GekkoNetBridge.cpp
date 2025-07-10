@@ -17,7 +17,6 @@ GekkoNetBridge::GekkoNetBridge()
     , local_player_handle_(-1)
     , p2_player_handle_(-1)
     , game_instance_(nullptr)
-    , current_state_(std::make_unique<State::GameState>())
     , accumulator_(0.0f)
     , target_frame_time_(0.01f) // 100 FPS = 10ms per frame
 {
@@ -81,7 +80,7 @@ bool GekkoNetBridge::InitializeHostSession(const FM2KNetworkConfig& config) {
     GekkoConfig conf{};
     conf.num_players = 2;
     conf.input_size = sizeof(uint8_t);
-    conf.state_size = sizeof(State::CoreGameState);
+    conf.state_size = 400 * 1024; // ~400KB per frame as documented
     conf.input_prediction_window = 8;
     conf.desync_detection = true;
     gekko_start(session_, &conf);
@@ -110,7 +109,7 @@ bool GekkoNetBridge::InitializeClientSession(const FM2KNetworkConfig& config) {
     GekkoConfig conf{};
     conf.num_players = 2;
     conf.input_size = sizeof(uint8_t);
-    conf.state_size = sizeof(State::CoreGameState);
+    conf.state_size = 400 * 1024; // ~400KB per frame as documented
     conf.input_prediction_window = 8;
     conf.desync_detection = true;
     gekko_start(session_, &conf);
@@ -330,16 +329,8 @@ void GekkoNetBridge::OnLoadState(GekkoGameEvent* event) {
         return;
     }
     
-    // Copy state from GekkoNet
-    std::memcpy(&current_state_->core, event->data.load.state, sizeof(State::CoreGameState));
-    current_state_->frame_number = event->data.load.frame;
-    current_state_->timestamp_ms = SDL_GetTicks();
-    
-    // Load state into game using our state manager
-    if (!State::LoadCoreState(&current_state_->core)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to load core game state");
-        return;
-    }
+    // TODO: State loading now handled by DLL
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "State loading delegated to DLL for frame %d", event->data.load.frame);
     
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
         "Loaded state for frame %d", event->data.load.frame);

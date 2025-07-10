@@ -10,7 +10,7 @@ set(CMAKE_GENERATOR_PLATFORM Win32)
 set(CMAKE_BUILD_TYPE Debug)
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g")
 
-# Create DLL target - minimal working hook system
+# Create DLL target - enhanced hook system with SDL3 rendering
 add_library(FM2KHook SHARED
     src/dllmain.cpp
 )

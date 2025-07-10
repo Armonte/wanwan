@@ -5,7 +5,6 @@
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_sdlrenderer3.h"
 #include "vendored/GekkoNet/GekkoLib/include/gekkonet.h"
-#include "MinHook.h"
 #include "FM2K_GameInstance.h"
 #include "FM2K_Integration.h"
 #include "LocalSession.h"
@@ -531,11 +530,6 @@ bool FM2KLauncher::Initialize() {
         return false;
     }
     
-    // Initialize MinHook
-    if (MH_Initialize() != MH_OK) {
-        SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize MinHook");
-        return false;
-    }
     
     // Create subsystems
     ui_ = std::make_unique<LauncherUI>();
@@ -824,7 +818,6 @@ void FM2KLauncher::Shutdown() {
     }
     
     SDL_Quit();
-    MH_Uninitialize();
 }
 
 void FM2KLauncher::StartAsyncDiscovery() {

@@ -250,13 +250,11 @@ static LRESULT __stdcall Hook_WindowProc(HWND hWnd, UINT uMsg, WPARAM wParam, LP
     // Let SDL3 handle events first
     UpdateSDL3Events();
     
-    // Check for Alt+Enter fullscreen toggle
-    if (uMsg == WM_KEYDOWN && wParam == VK_RETURN) {
-        if (GetAsyncKeyState(VK_MENU) & 0x8000) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[Hook] Alt+Enter detected in window proc");
-            ToggleFullscreen();
-            return 0;
-        }
+    // Check for F11 fullscreen toggle
+    if (uMsg == WM_KEYDOWN && wParam == VK_F11) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[Hook] F11 detected in window proc");
+        ToggleFullscreen();
+        return 0;
     }
     
     // Call original window procedure

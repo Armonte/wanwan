@@ -101,31 +101,20 @@ void UpdateMemoryPointers() {
     // Update FM2K memory addresses to point to our dummy structures
     // These addresses are from the IDA Pro analysis of WonderfulWorld
     
-    // DirectDraw interface pointer
-    void** pDirectDraw = (void**)0x439848;  // Needs to be verified for this binary
+    // DirectDraw interface pointer - WonderfulWorld address from IDA analysis
+    void** pDirectDraw = (void**)0x424758;  // g_direct_draw
     if (pDirectDraw) {
         *pDirectDraw = &g_dummyDirectDraw;
     }
     
-    // Surface pointers - these may need adjustment for WonderfulWorld
-    void** pPrimarySurface = (void**)0x43984C;
+    void** pPrimarySurface = (void**)0x424750;  // g_dd_primary_surface
     if (pPrimarySurface) {
         *pPrimarySurface = &g_primarySurface;
     }
     
-    void** pSpriteSurface = (void**)0x439850;
-    if (pSpriteSurface) {
-        *pSpriteSurface = &g_spriteSurface;
-    }
-    
-    void** pBackBuffer = (void**)0x439854;
+    void** pBackBuffer = (void**)0x424754;  // g_dd_back_buffer
     if (pBackBuffer) {
         *pBackBuffer = &g_backSurface;
-    }
-    
-    void** pGraphicsManager = (void**)0x439858;
-    if (pGraphicsManager) {
-        *pGraphicsManager = &g_graphicsSurface;
     }
     
     // Bit depth and resolution settings

@@ -20,7 +20,8 @@
       "mcp__github_com_mrexodia_ida-pro-mcp__list_functions",
       "mcp__github_com_mrexodia_ida-pro-mcp__decompile_function",
       "Bash(timeout 300 ninja -C build)",
-      "Bash(timeout:*)"
+      "Bash(timeout:*)",
+      "mcp__github_com_mrexodia_ida-pro-mcp__list_strings_filter"
     ],
     "deny": []
   }

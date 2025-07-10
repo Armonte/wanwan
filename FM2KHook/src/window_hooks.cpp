@@ -84,6 +84,13 @@ HWND WINAPI Hook_CreateWindowExA(
             if (sdl_hwnd) {
                 printf("WINDOW HOOK: Successfully hijacked window creation with SDL3 HWND: 0x%p\n", sdl_hwnd);
                 
+                // Update game's global window handle (g_hwnd_parent @ 0x4246f8 from IDA)
+                HWND* game_hwnd_ptr = (HWND*)0x4246f8;
+                if (game_hwnd_ptr) {
+                    *game_hwnd_ptr = sdl_hwnd;
+                    printf("WINDOW HOOK: Updated game's global window handle to SDL3 window\n");
+                }
+                
                 // Subclass the SDL3 window to forward messages to game logic
                 SubclassSDL3Window(sdl_hwnd);
                 

@@ -13,9 +13,10 @@ set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g")
 # Create DLL target - enhanced hook system with SDL3 rendering
 add_library(FM2KHook SHARED
     src/dllmain.cpp
-    src/sdl3_context.cpp
-    src/directdraw_compat.cpp
-    src/window_hooks.cpp
+    # Temporarily disabled - SDL3 integration is handled directly in dllmain.cpp
+    # src/sdl3_context.cpp
+    # src/directdraw_compat.cpp
+    # src/window_hooks.cpp
 )
 
 # Export symbols for DLL

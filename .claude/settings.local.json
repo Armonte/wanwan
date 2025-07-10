@@ -22,7 +22,8 @@
       "Bash(timeout 300 ninja -C build)",
       "Bash(timeout:*)",
       "mcp__github_com_mrexodia_ida-pro-mcp__list_strings_filter",
-      "Bash(bash:*)"
+      "Bash(bash:*)",
+      "mcp__github_com_mrexodia_ida-pro-mcp__list_globals_filter"
     ],
     "deny": []
   }

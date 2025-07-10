@@ -60,7 +60,6 @@ bool FM2KGameInstance::Initialize() {
     // Set up logging
     SDL_SetLogPriority(SDL_LOG_CATEGORY_APPLICATION, SDL_LOG_PRIORITY_INFO);
     
-    // Note: IPC initialization moved to after game launch to avoid race condition
     
     return true;
 }
@@ -363,7 +362,6 @@ void FM2KGameInstance::HandleDLLEvent(const SDL_Event& event) {
     }
 }
 
-// IPC event handling has been moved to the DLL
 
 // Helper function to execute a function in the game process
 bool FM2KGameInstance::ExecuteRemoteFunction(HANDLE process, uintptr_t function_address) {
@@ -388,6 +386,4 @@ bool FM2KGameInstance::ExecuteRemoteFunction(HANDLE process, uintptr_t function_
     return true;
 }
 
-// All IPC event handlers have been moved to the DLL
 
-// All IPC event handlers have been removed - functionality moved to DLL 

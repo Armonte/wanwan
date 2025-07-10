@@ -55,6 +55,9 @@ static CreateWindowExAFn original_create_window_ex_a = nullptr;
 static uint32_t hook_call_count = 0;
 static HWND g_game_window = nullptr;
 
+// Function declarations
+void CopySDLContentToGameWindow();
+
 // SDL3 helper functions
 bool InitializeSDL3Context() {
     if (g_sdlContext.initialized) {
@@ -80,50 +83,50 @@ bool HijackGameWindow(HWND gameHwnd) {
         return true;
     }
     
-    LogMessage("Hijacking game window with SDL3...");
+    LogMessage("Creating separate SDL3 window for rendering...");
     
-    // Create SDL3 window using the same size as game window
+    // Get the game window's position and size for reference
     RECT gameRect;
     GetWindowRect(gameHwnd, &gameRect);
-    int width = gameRect.right - gameRect.left;
-    int height = gameRect.bottom - gameRect.top;
+    int gameWidth = gameRect.right - gameRect.left;
+    int gameHeight = gameRect.bottom - gameRect.top;
     
+    char buffer[256];
+    sprintf(buffer, "Game window dimensions: %dx%d at (%d, %d)", gameWidth, gameHeight, gameRect.left, gameRect.top);
+    LogMessage(buffer);
+    
+    // Create a separate SDL3 window instead of wrapping the existing one
     g_sdlContext.window = SDL_CreateWindow(
-        "FM2K Rollback (SDL3)",
-        width,
-        height,
-        SDL_WINDOW_RESIZABLE
+        "FM2K SDL3 Renderer",
+        gameWidth,
+        gameHeight,
+        SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN  // Start hidden until we're ready
     );
     
     if (!g_sdlContext.window) {
-        char buffer[256];
         sprintf(buffer, "SDL_CreateWindow failed: %s", SDL_GetError());
         LogMessage(buffer);
         return false;
     }
     
-    // Get the SDL3 window's HWND and replace the game's window handle
+    // Get the SDL3 window's native HWND
     HWND sdlHwnd = (HWND)SDL_GetPointerProperty(
-        SDL_GetWindowProperties(g_sdlContext.window),
-        SDL_PROP_WINDOW_WIN32_HWND_POINTER,
+        SDL_GetWindowProperties(g_sdlContext.window), 
+        SDL_PROP_WINDOW_WIN32_HWND_POINTER, 
         NULL
     );
     
-    if (sdlHwnd) {
-        g_game_window = sdlHwnd;
-        
-        // Hide the original game window and show the SDL3 window  
-        ShowWindow(gameHwnd, SW_HIDE);
-        SetWindowPos(sdlHwnd, HWND_TOP, gameRect.left, gameRect.top, 0, 0, SWP_NOSIZE | SWP_SHOWWINDOW);
-        
-        char buffer[256];
-        sprintf(buffer, "Window hijacking successful - SDL3 HWND: %p, Game HWND: %p", sdlHwnd, gameHwnd);
-        LogMessage(buffer);
-        return true;
-    }
+    // Store both window handles
+    g_game_window = gameHwnd;  // Original game window
     
-    LogMessage("Failed to get SDL3 window HWND");
-    return false;
+    sprintf(buffer, "Created separate SDL3 window: game_hwnd=%p, sdl_hwnd=%p", gameHwnd, sdlHwnd);
+    LogMessage(buffer);
+    
+    // Position the SDL3 window at the same location as the game window
+    SDL_SetWindowPosition(g_sdlContext.window, gameRect.left, gameRect.top);
+    
+    LogMessage("Separate SDL3 window created successfully");
+    return true;
 }
 
 bool CreateSDL3Renderer() {
@@ -131,21 +134,37 @@ bool CreateSDL3Renderer() {
         return true;
     }
     
-    // Force DirectX 11 renderer for optimal performance
-    SDL_PropertiesID rendererProps = SDL_CreateProperties();
-    SDL_SetStringProperty(rendererProps, SDL_PROP_RENDERER_CREATE_NAME_STRING, "direct3d11");
-    SDL_SetNumberProperty(rendererProps, SDL_PROP_RENDERER_CREATE_PRESENT_VSYNC_NUMBER, 1);
-    g_sdlContext.renderer = SDL_CreateRendererWithProperties(rendererProps);
-    SDL_DestroyProperties(rendererProps);
-    
-    if (!g_sdlContext.renderer) {
-        char buffer[256];
-        sprintf(buffer, "SDL_CreateRenderer failed: %s", SDL_GetError());
-        LogMessage(buffer);
+    if (!g_sdlContext.window) {
+        LogMessage("ERROR: Cannot create renderer - no SDL3 window available");
         return false;
     }
     
-    LogMessage("SDL3 DirectX 11 renderer created successfully");
+    // Try to create renderer with DirectX 11 backend first
+    g_sdlContext.renderer = SDL_CreateRenderer(g_sdlContext.window, "direct3d11");
+    
+    if (!g_sdlContext.renderer) {
+        char buffer[256];
+        sprintf(buffer, "DirectX 11 renderer failed: %s", SDL_GetError());
+        LogMessage(buffer);
+        
+        // Fall back to default renderer (let SDL3 choose)
+        LogMessage("Falling back to default renderer...");
+        g_sdlContext.renderer = SDL_CreateRenderer(g_sdlContext.window, nullptr);
+        
+        if (!g_sdlContext.renderer) {
+            sprintf(buffer, "Default renderer also failed: %s", SDL_GetError());
+            LogMessage(buffer);
+            return false;
+        }
+        
+        LogMessage("SDL3 default renderer created successfully");
+    } else {
+        LogMessage("SDL3 DirectX 11 renderer created successfully");
+    }
+    
+    // Enable VSync
+    SDL_SetRenderVSync(g_sdlContext.renderer, 1);
+    
     return true;
 }
 
@@ -191,43 +210,115 @@ void ProcessGameFrame() {
 }
 
 void RenderGameToWindow() {
-    if (!g_sdlContext.renderer || !g_sdlContext.gameBuffer) {
+    if (!g_sdlContext.renderer || !g_sdlContext.gameBuffer || !g_game_window) {
         return;
     }
     
-    // Set render target to window (nullptr = default framebuffer)
+    // Step 1: Render to SDL3 window first
     SDL_SetRenderTarget(g_sdlContext.renderer, nullptr);
     SDL_SetRenderDrawColor(g_sdlContext.renderer, 0, 0, 0, 255);
     SDL_RenderClear(g_sdlContext.renderer);
     
-    // Get actual window dimensions
-    int actualWindowWidth, actualWindowHeight;
-    SDL_GetWindowSize(g_sdlContext.window, &actualWindowWidth, &actualWindowHeight);
+    // Get SDL3 window dimensions
+    int sdlWindowWidth, sdlWindowHeight;
+    SDL_GetWindowSize(g_sdlContext.window, &sdlWindowWidth, &sdlWindowHeight);
     
     // Calculate scaling to maintain aspect ratio and center the game
-    float windowAspect = (float)actualWindowWidth / actualWindowHeight;
+    float windowAspect = (float)sdlWindowWidth / sdlWindowHeight;
     float gameAspect = (float)g_sdlContext.gameWidth / g_sdlContext.gameHeight;  // 256/240 = 1.067
     
     SDL_FRect destRect;
     if (windowAspect > gameAspect) {
         // Window is wider - letterbox on sides
-        float scale = (float)actualWindowHeight / g_sdlContext.gameHeight;
+        float scale = (float)sdlWindowHeight / g_sdlContext.gameHeight;
         destRect.w = g_sdlContext.gameWidth * scale;
-        destRect.h = (float)actualWindowHeight;
-        destRect.x = (actualWindowWidth - destRect.w) / 2;
+        destRect.h = (float)sdlWindowHeight;
+        destRect.x = (sdlWindowWidth - destRect.w) / 2;
         destRect.y = 0;
     } else {
         // Window is taller - letterbox on top/bottom
-        float scale = (float)actualWindowWidth / g_sdlContext.gameWidth;
-        destRect.w = (float)actualWindowWidth;
+        float scale = (float)sdlWindowWidth / g_sdlContext.gameWidth;
+        destRect.w = (float)sdlWindowWidth;
         destRect.h = g_sdlContext.gameHeight * scale;
         destRect.x = 0;
-        destRect.y = (actualWindowHeight - destRect.h) / 2;
+        destRect.y = (sdlWindowHeight - destRect.h) / 2;
     }
     
-    // Render the scaled game buffer to window using NEAREST_NEIGHBOR filtering
+    // Render the scaled game buffer to SDL3 window using NEAREST_NEIGHBOR filtering
     SDL_RenderTexture(g_sdlContext.renderer, g_sdlContext.gameBuffer, nullptr, &destRect);
     SDL_RenderPresent(g_sdlContext.renderer);
+    
+    // Step 2: Copy SDL3 window content to the original game window
+    CopySDLContentToGameWindow();
+}
+
+void CopySDLContentToGameWindow() {
+    if (!g_sdlContext.window || !g_game_window) {
+        return;
+    }
+    
+    HWND sdlHwnd = (HWND)SDL_GetPointerProperty(
+        SDL_GetWindowProperties(g_sdlContext.window), 
+        SDL_PROP_WINDOW_WIN32_HWND_POINTER, 
+        NULL
+    );
+    
+    if (!sdlHwnd) {
+        LogMessage("ERROR: Failed to get SDL3 window HWND for content copying");
+        return;
+    }
+    
+    // Get device contexts for both windows
+    HDC sdlDC = GetDC(sdlHwnd);
+    HDC gameDC = GetDC(g_game_window);
+    
+    if (!sdlDC || !gameDC) {
+        char buffer[256];
+        sprintf(buffer, "Failed to get device contexts: sdlDC=%p, gameDC=%p", sdlDC, gameDC);
+        LogMessage(buffer);
+        if (sdlDC) ReleaseDC(sdlHwnd, sdlDC);
+        if (gameDC) ReleaseDC(g_game_window, gameDC);
+        return;
+    }
+    
+    // Get window dimensions with error checking
+    RECT sdlRect, gameRect;
+    if (!GetClientRect(sdlHwnd, &sdlRect) || !GetClientRect(g_game_window, &gameRect)) {
+        LogMessage("ERROR: Failed to get window client rectangles");
+        ReleaseDC(sdlHwnd, sdlDC);
+        ReleaseDC(g_game_window, gameDC);
+        return;
+    }
+    
+    int sdlWidth = sdlRect.right - sdlRect.left;
+    int sdlHeight = sdlRect.bottom - sdlRect.top;
+    int gameWidth = gameRect.right - gameRect.left;
+    int gameHeight = gameRect.bottom - gameRect.top;
+    
+    // Validate dimensions
+    if (sdlWidth <= 0 || sdlHeight <= 0 || gameWidth <= 0 || gameHeight <= 0) {
+        char buffer[256];
+        sprintf(buffer, "Invalid window dimensions: SDL=%dx%d, Game=%dx%d", sdlWidth, sdlHeight, gameWidth, gameHeight);
+        LogMessage(buffer);
+        ReleaseDC(sdlHwnd, sdlDC);
+        ReleaseDC(g_game_window, gameDC);
+        return;
+    }
+    
+    // Copy SDL3 window content to game window using StretchBlt for scaling
+    BOOL copyResult = StretchBlt(
+        gameDC, 0, 0, gameWidth, gameHeight,     // Destination
+        sdlDC, 0, 0, sdlWidth, sdlHeight,        // Source
+        SRCCOPY                                   // Copy operation
+    );
+    
+    if (!copyResult) {
+        LogMessage("WARNING: StretchBlt operation failed during content copying");
+    }
+    
+    // Release device contexts
+    ReleaseDC(sdlHwnd, sdlDC);
+    ReleaseDC(g_game_window, gameDC);
 }
 
 void UpdateSDL3Events() {
@@ -340,15 +431,59 @@ int __cdecl Hook_InitializeDirectDraw(int isFullScreen, void* windowHandle) {
     // Ensure SDL3 is initialized
     if (!g_sdl3_initialized) {
         LogMessage("SDL3 not initialized, attempting initialization...");
-        if (InitializeSDL3Context() && CreateSDL3Renderer() && CreateGameTextures()) {
-            g_sdl3_initialized = true;
-            LogMessage("SDL3 initialized during DirectDraw setup");
+        
+        // Try to initialize SDL3 with comprehensive error handling
+        bool sdl3_success = false;
+        const char* failure_reason = "";
+        
+        if (!InitializeSDL3Context()) {
+            failure_reason = "SDL3 context initialization failed";
+        } else if (!CreateSDL3Renderer()) {
+            failure_reason = "SDL3 renderer creation failed";
+        } else if (!CreateGameTextures()) {
+            failure_reason = "SDL3 texture creation failed";
         } else {
-            LogMessage("Failed to initialize SDL3, falling back to original DirectDraw");
-            if (original_initialize_directdraw) {
-                return original_initialize_directdraw(isFullScreen, windowHandle);
+            sdl3_success = true;
+        }
+        
+        if (sdl3_success) {
+            g_sdl3_initialized = true;
+            LogMessage("SDL3 initialized successfully during DirectDraw setup");
+        } else {
+            char buffer[256];
+            sprintf(buffer, "SDL3 initialization failed: %s - falling back to original DirectDraw", failure_reason);
+            LogMessage(buffer);
+            
+            // Clean up any partial SDL3 state
+            if (g_sdlContext.gameBuffer) {
+                SDL_DestroyTexture(g_sdlContext.gameBuffer);
+                g_sdlContext.gameBuffer = nullptr;
             }
-            return 0;
+            if (g_sdlContext.backBuffer) {
+                SDL_DestroyTexture(g_sdlContext.backBuffer);
+                g_sdlContext.backBuffer = nullptr;
+            }
+            if (g_sdlContext.renderer) {
+                SDL_DestroyRenderer(g_sdlContext.renderer);
+                g_sdlContext.renderer = nullptr;
+            }
+            if (g_sdlContext.window) {
+                SDL_DestroyWindow(g_sdlContext.window);
+                g_sdlContext.window = nullptr;
+            }
+            if (g_sdlContext.initialized) {
+                SDL_Quit();
+                g_sdlContext.initialized = false;
+            }
+            
+            // Fall back to original DirectDraw implementation
+            if (original_initialize_directdraw) {
+                LogMessage("Calling original DirectDraw initialization as fallback");
+                return original_initialize_directdraw(isFullScreen, windowHandle);
+            } else {
+                LogMessage("ERROR: No original DirectDraw function available for fallback");
+                return 0;
+            }
         }
     }
     
@@ -412,23 +547,39 @@ int __cdecl Hook_InitializeDirectDraw(int isFullScreen, void* windowHandle) {
         LogMessage("Set back buffer pointer at 0x424754");
     }
     
-    // Set up critical game variables for resolution
-    // From research docs - these control the game's rendering resolution
-    int* pMaxWidth = (int*)0x6B3060;
-    int* pMaxHeight = (int*)0x6B305C;
-    int* pBitCount = (int*)0x6B3058;
+    // Set up critical game variables for resolution using IDA-verified addresses
+    short* pStageWidth = (short*)0x4452B8;   // g_stage_width_pixels
+    short* pStageHeight = (short*)0x4452BA;  // g_stage_height_pixels
+    int* pDestWidth = (int*)0x447F20;        // g_dest_width
+    int* pDestHeight = (int*)0x447F24;       // g_dest_height
     
-    if (pMaxWidth) {
-        *pMaxWidth = 256;  // Native game width
-        LogMessage("Set max width to 256");
+    // Validate address access before writing
+    if (!IsBadWritePtr(pStageWidth, sizeof(short))) {
+        *pStageWidth = 256;  // Native game width
+        LogMessage("Set g_stage_width_pixels to 256");
+    } else {
+        LogMessage("ERROR: Cannot access g_stage_width_pixels at 0x4452B8");
     }
-    if (pMaxHeight) {
-        *pMaxHeight = 240; // Native game height  
-        LogMessage("Set max height to 240");
+    
+    if (!IsBadWritePtr(pStageHeight, sizeof(short))) {
+        *pStageHeight = 240; // Native game height  
+        LogMessage("Set g_stage_height_pixels to 240");
+    } else {
+        LogMessage("ERROR: Cannot access g_stage_height_pixels at 0x4452BA");
     }
-    if (pBitCount) {
-        *pBitCount = 8;    // 8-bit palettized
-        LogMessage("Set bit count to 8");
+    
+    if (!IsBadWritePtr(pDestWidth, sizeof(int))) {
+        *pDestWidth = 256;   // Destination width
+        LogMessage("Set g_dest_width to 256");
+    } else {
+        LogMessage("ERROR: Cannot access g_dest_width at 0x447F20");
+    }
+    
+    if (!IsBadWritePtr(pDestHeight, sizeof(int))) {
+        *pDestHeight = 240;  // Destination height
+        LogMessage("Set g_dest_height to 240");
+    } else {
+        LogMessage("ERROR: Cannot access g_dest_height at 0x447F24");
     }
     
     LogMessage("DirectDraw SDL3 replacement initialization complete");
@@ -483,8 +634,21 @@ HWND WINAPI Hook_CreateWindowExA(DWORD dwExStyle, LPCSTR lpClassName, LPCSTR lpW
     LogMessage(buffer);
     
     // If this looks like the main game window, hijack it with SDL3
-    if (lpWindowName && (strstr(lpWindowName, "Moon Lights") || strstr(lpWindowName, "Fighter Maker") || strstr(lpWindowName, "WonderfulWorld"))) {
-        LogMessage("Detected main game window - initiating SDL3 hijack");
+    if (strcmp(className, "KGT2KGAME") == 0) {
+        LogMessage("Detected main game window (KGT2KGAME class) - initiating SDL3 hijack");
+        
+        // Set the game's window handle global at the correct address from IDA verified addresses
+        HWND* pGameWindowHandle = (HWND*)0x4246F8; // g_hwnd_parent from IDA
+        if (pGameWindowHandle) {
+            *pGameWindowHandle = gameWindow;
+            LogMessage("Updated g_hwnd_parent global with game window handle");
+            
+            // Verify the setting worked
+            sprintf(buffer, "g_hwnd_parent verification: stored=%p, game=%p", *pGameWindowHandle, gameWindow);
+            LogMessage(buffer);
+        } else {
+            LogMessage("ERROR: Failed to access g_hwnd_parent at 0x4246F8");
+        }
         
         // Initialize SDL3 if not already done
         if (!g_sdl3_initialized) {
@@ -492,6 +656,10 @@ HWND WINAPI Hook_CreateWindowExA(DWORD dwExStyle, LPCSTR lpClassName, LPCSTR lpW
                 if (HijackGameWindow(gameWindow) && CreateSDL3Renderer() && CreateGameTextures()) {
                     g_sdl3_initialized = true;
                     LogMessage("SDL3 window hijacking completed successfully");
+                    
+                    // Show the SDL3 window now that everything is set up
+                    SDL_ShowWindow(g_sdlContext.window);
+                    LogMessage("SDL3 window is now visible");
                 } else {
                     LogMessage("SDL3 window hijacking failed");
                 }

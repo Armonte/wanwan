@@ -101,6 +101,48 @@ Implement an optional SDL3 console overlay (or log-to-file build flag) that repo
 5. **Checksum Channel** ? Embed checksum in `AdvanceEvent` payload.
 6. **Stress Harness** ? Deterministic replay script driving FM2K headless for 10k frames.
 
+### 7  Input System Modernisation (SDL3 / Controller Manager)
+Building on `docs/input_descriptor.md`, we will port the full **Modern Input System** (keyboard + gamepad via SDL3) to FM2K so players no longer require Joy2Key-style tools.
+
+#### 7.1  Hook Points
+| Purpose | Original Addr | New Responsibility |
+|---------|--------------|--------------------|
+| P1 Input | `0x411280` | Detour to `HandleP1InputsHook` Å® `InputManager::getInput(0)` |
+| P2 Input | `0x411380` | Detour to `HandleP2InputsHook` Å® `InputManager::getInput(1)` |
+| Menu Keys| `0x405F50` (WndProc) | Sub-class via `SDL3GameWindowProc` to feed SDL event pump |
+
+IDA-MCP command examples:
+```
+# Identify all reads of legacy input byte
+mcp_get_xrefs_to 0x4259C0      # g_p1_input
+mcp_get_xrefs_to 0x4259C4      # g_p2_input
+```
+This ensures every legacy path is accounted for before replacement.
+
+#### 7.2  SDL3 Manager Stack
+```
+KeyboardManager  Ñ¢
+GamepadManager   Ñ†Å® InputManager (32-bit NEW_INPUT mask)
+                 Ñ£
+InputConverter  Å® converts NEW_INPUT Å® 8-bit legacy
+```
+Each manager runs **once per frame** inside the new hook; for netplay frames, the definitive 32-bit masks come from `GekkoIntegration::GetPlayerInputs()`.
+
+#### 7.3  ImGui Overlay
+An in-game ImGui overlay will expose:
+- Controller assignment UI (drag-&-drop devices to player slots)
+- Live input visualiser (per-frame button states)
+- Netplay delay/rollback counters (re-use Debug Telemetry HUD)
+
+Overlay lives in the main render loop; toggle with F1.  Uses SDL_RenderGeometry for speed.
+
+#### 7.4  Roadmap Additions
+Add the following to the **Implementation Roadmap**:
+7. **Input Hook Layer** ? Implement `HandleP1/P2InputsHook`, build `InputManager` with Keyboard & Gamepad managers.  
+8. **ImGui Overlay** ? Integrate Dear ImGui (SDL3 + OpenGL path) for controller config & stats.
+
+Progress tracked in `docs/INPUT_REWRITE_PROGRESS.md`.
+
 ---
 
 ## Discovery Plan
@@ -123,3 +165,15 @@ Progress will be logged in `docs/ROLLBACK_INSIGHTS.md`.
 - `FM2K_Hook_Implementation.md`
 - `gekkonet.h`
 - Giuroll source analysis (EFZ rollback netcode) 
+
+#### 7.5  Research Tasks (IDA-MCP Assisted)
+| Task ID | Objective | MCP Commands / Steps | Deliverable |
+|---------|-----------|----------------------|-------------|
+| I-1 | Confirm FM2K equivalents of ML2 input functions | `mcp_get_function_by_address 0x411280`, `mcp_disassemble_function 0x411280` Å® ensure it returns `unsigned char` input byte.<br/>Repeat for `0x411380`. | Function sigs documented, added to `FM2K_Rollback_Research.md` |
+| I-2 | Enumerate all legacy input reads/writes | `mcp_get_xrefs_to 0x4259C0`, `mcp_get_xrefs_to 0x4259C4`; export list to CSV. | CSV of xrefs; identify any hidden input paths |
+| I-3 | Map WndProc pathway | `mcp_get_function_by_address 0x405F50` + `mcp_disassemble_function` Å® locate `WM_KEYDOWN` handling.<br/>Note offset for message forwarding hook. | Annotated WndProc pseudocode |
+| I-4 | Validate menu-input split | Trace from highlighted xrefs to see if any direct reads bypass `HandleP1/P2Inputs`. | List of bypass sites (expected <5) |
+| I-5 | Build stub InputManager prototype | Stub SDL3 managers returning dummy data; ensure hooks compile & game runs locally. | Binary launches, receives inputs via new path |
+| I-6 | Integrate with GekkoNet | Feed 32-bit masks via `GekkoIntegration`. | Remote/local input parity test passes |
+
+Progress for I-tasks will be logged in `docs/INPUT_REWRITE_PROGRESS.md` with screenshots of MCP output where relevant. 

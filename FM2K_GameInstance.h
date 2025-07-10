@@ -12,9 +12,6 @@ class ISession;
 namespace FM2K {
     struct FM2KGameInfo;
     struct GameState;
-    namespace IPC {
-        struct Event;
-    }
 }
 
 class FM2KGameInstance {
@@ -61,17 +58,8 @@ public:
     // Input injection
     void InjectInputs(uint32_t p1_input, uint32_t p2_input);
     
-    // IPC event processing
-    void ProcessIPCEvents();
-    
-    // Event handlers
-    void OnFrameAdvanced(const FM2K::IPC::Event& event);
-    void OnStateSaved(const FM2K::IPC::Event& event);
-    void OnStateLoaded(const FM2K::IPC::Event& event);
-    void OnHitTablesInit(const FM2K::IPC::Event& event);
-    void OnVisualStateChanged(const FM2K::IPC::Event& event);
-    void OnInputCaptured(const FM2K::IPC::Event& event);
-    void OnHookError(const FM2K::IPC::Event& event);
+    // SDL event processing
+    void ProcessSDLEvents();
     
     // Network session for input forwarding
     void SetNetworkSession(ISession* session) {
@@ -82,7 +70,6 @@ protected:
     // Process management
     bool SetupProcessForHooking(const std::string& dll_path);
     bool LoadGameExecutable(const std::filesystem::path& exe_path);
-    void HandleIPCEvent(const FM2K::IPC::Event& event);
     void HandleDLLEvent(const SDL_Event& event);
     bool ExecuteRemoteFunction(HANDLE process, uintptr_t function_address);
 

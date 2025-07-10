@@ -658,9 +658,9 @@ void FM2KLauncher::Update(float delta_time SDL_UNUSED) {
         session_->Update();
     }
     
-    // Process IPC events from the game instance
+    // Process SDL events from the game instance
     if (game_instance_ && game_instance_->IsRunning()) {
-        game_instance_->ProcessIPCEvents();
+        game_instance_->ProcessSDLEvents();
     }
     
     // Check for game termination

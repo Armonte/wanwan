@@ -1,8 +1,6 @@
 #include "FM2K_GameInstance.h"
 #include "FM2K_Integration.h"
 #include "FM2K_DLLInjector.h"
-#include "FM2KHook/src/ipc.h"
-#include "FM2KHook/src/state_manager.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <filesystem>
@@ -15,7 +13,6 @@ namespace {
 // Constants
 constexpr uint32_t PROCESS_MONITOR_INTERVAL_MS = 100;
 constexpr uint32_t DLL_INIT_TIMEOUT_MS = 5000;
-constexpr uint32_t IPC_EVENT_TIMEOUT_MS = 100;
 
 // Helper functions
 [[maybe_unused]] static std::wstring GetDLLPath() {
@@ -264,8 +261,8 @@ bool FM2KGameInstance::AdvanceFrame() {
     // No need to call remote functions - the hook does this automatically
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "AdvanceFrame called - letting hook handle frame advancement");
 
-    // Process any pending IPC events
-    ProcessIPCEvents();
+    // Process any pending SDL events from DLL
+    ProcessSDLEvents();
 
     return true;
 }
@@ -300,10 +297,8 @@ bool FM2KGameInstance::LoadGameExecutable(const std::filesystem::path& exe_path)
     return true;
 }
 
-void FM2KGameInstance::ProcessIPCEvents() {
-    // IPC events are now handled entirely within the DLL
-    
-    // Then process SDL events
+void FM2KGameInstance::ProcessSDLEvents() {
+    // Process SDL events from DLL
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         // Process custom events from the injected DLL
@@ -368,41 +363,7 @@ void FM2KGameInstance::HandleDLLEvent(const SDL_Event& event) {
     }
 }
 
-void FM2KGameInstance::HandleIPCEvent(const FM2K::IPC::Event& event) {
-    switch (event.type) {
-        case FM2K::IPC::EventType::FRAME_ADVANCED:
-            OnFrameAdvanced(event);
-            break;
-            
-        case FM2K::IPC::EventType::STATE_SAVED:
-            OnStateSaved(event);
-            break;
-            
-        case FM2K::IPC::EventType::STATE_LOADED:
-            OnStateLoaded(event);
-            break;
-            
-        case FM2K::IPC::EventType::VISUAL_STATE_CHANGED:
-            OnVisualStateChanged(event);
-            break;
-            
-        case FM2K::IPC::EventType::INPUT_CAPTURED:
-        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-            "input captured");
-            OnInputCaptured(event);
-
-            break;
-            
-        case FM2K::IPC::EventType::HOOK_ERROR:
-            OnHookError(event);
-            break;
-            
-        default:
-            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-                "Unknown IPC event type: %d", static_cast<int>(event.type));
-            break;
-    }
-}
+// IPC event handling has been moved to the DLL
 
 // Helper function to execute a function in the game process
 bool FM2KGameInstance::ExecuteRemoteFunction(HANDLE process, uintptr_t function_address) {
@@ -427,67 +388,6 @@ bool FM2KGameInstance::ExecuteRemoteFunction(HANDLE process, uintptr_t function_
     return true;
 }
 
-void FM2KGameInstance::OnFrameAdvanced(const FM2K::IPC::Event& event) {
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-        "Frame advanced: %u", event.frame_number);
-}
+// All IPC event handlers have been moved to the DLL
 
-void FM2KGameInstance::OnStateSaved(const FM2K::IPC::Event& event) {
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-        "State saved: frame %u, checksum %08x",
-        event.frame_number, event.data.state.checksum);
-}
-
-void FM2KGameInstance::OnStateLoaded(const FM2K::IPC::Event& event) {
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-        "State loaded: frame %u, checksum %08x",
-        event.frame_number, event.data.state.checksum);
-}
-
-void FM2KGameInstance::OnInputCaptured(const FM2K::IPC::Event& event) {
-    auto& input_event = event.data.input;
-    if (session_) {
-        // Choose input method based on session mode
-        if (session_->GetSessionMode() == SessionMode::LOCAL) {
-            // LOCAL mode: Forward both P1 and P2 inputs (LocalSession pattern)
-            uint32_t p1_input_32 = static_cast<uint32_t>(input_event.p1_input);
-            uint32_t p2_input_32 = static_cast<uint32_t>(input_event.p2_input);
-            
-            session_->AddBothInputs(p1_input_32, p2_input_32);
-            
-            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-                "LOCAL mode: Both inputs forwarded to Session: P1=0x%04x, P2=0x%04x, frame=%u",
-                input_event.p1_input, input_event.p2_input, event.frame_number);
-        } else {
-            // ONLINE mode: Forward only local player input (OnlineSession pattern)
-            uint32_t p1_input_32 = static_cast<uint32_t>(input_event.p1_input);
-            
-            session_->AddLocalInput(p1_input_32);
-            
-            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-                "ONLINE mode: Local input forwarded to Session: P1=0x%04x, frame=%u",
-                input_event.p1_input, event.frame_number);
-        }
-    } else {
-        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-            "Input captured but no Session connected: P1=0x%04x, P2=0x%04x",
-            input_event.p1_input, input_event.p2_input);
-    }
-}
-
-void FM2KGameInstance::OnHitTablesInit(const FM2K::IPC::Event& event) {
-    (void)event; // currently unused
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-        "Hit tables initialized");
-}
-
-void FM2KGameInstance::OnVisualStateChanged(const FM2K::IPC::Event& event) {
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-        "Visual state changed: flags %08x",
-        event.data.visual.effect_flags);
-}
-
-void FM2KGameInstance::OnHookError(const FM2K::IPC::Event& event) {
-    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-        "Hook error: %s", event.data.error.message);
-} 
+// All IPC event handlers have been removed - functionality moved to DLL 

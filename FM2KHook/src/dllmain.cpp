@@ -4,42 +4,121 @@
 #include <cstdio>
 #include <cstdlib>
 #include <MinHook.h>
+#include <stdarg.h>  // For va_list
+#include <ddraw.h>
+
+// DirectDraw error codes if not defined
+#ifndef DDERR_GENERIC
+#define DDERR_GENERIC                   MAKE_HRESULT(1, 0x876, 1)
+#define DDERR_INVALIDPARAMS            MAKE_HRESULT(1, 0x876, 2)
+#define DDERR_UNSUPPORTED              MAKE_HRESULT(1, 0x876, 3)
+#define DDERR_ALREADYINITIALIZED       MAKE_HRESULT(1, 0x876, 4)
+#endif
+
+// DirectDraw flags if not defined
+#ifndef DDBLT_COLORFILL
+#define DDBLT_COLORFILL               0x00000400l
+#endif
+
+// SDL3 Window and Renderer flags
+#define SDL_WINDOW_SHOWN              0x00000004
+#define SDL_WINDOW_RESIZABLE         0x00000020
+#define SDL_WINDOW_FULLSCREEN        0x00000001
+#define SDL_WINDOW_FULLSCREEN_DESKTOP 0x00001001
+#define SDL_RENDERER_ACCELERATED      0x00000002
+#define SDL_RENDERER_PRESENTVSYNC     0x00000004
 
 // DirectDraw constants
 #define DD_OK                   0x00000000L
 #define DDERR_INVALIDPARAMS     0x887000057L
 #define DDERR_SURFACEBUSY       0x887000176L
 #define DDERR_NOTLOCKED         0x887000094L
+#define DDSCAPS_PRIMARYSURFACE  0x00000200L
+#define DDSCAPS_FLIP           0x00000001L
+#define DDSCAPS_COMPLEX        0x00000008L
+#define DDSCAPS_VIDEOMEMORY    0x00004000L
+
+// Forward declarations
+void LogMessage(const char* message);
+void InitializeSurfaces();
+void CleanupSurfaces();
+bool InitializeSDL3();
+bool CreateSDL3Window(HWND gameHwnd);
+bool CreateSDL3Renderer();
+void RenderFrame();
+BOOL WINAPI Hook_InitializeGame(HWND windowHandle);
+BOOL WINAPI Hook_InitializeDirectDraw(BOOL isFullScreen, HWND windowHandle);
+LRESULT CALLBACK WindowProc_Hook(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+bool EventFilter(void* userdata, SDL_Event* event);
+bool WindowsMessageHook(void* userdata, MSG* msg);
+bool CreateSDL3Textures();
+void SetupSurfaceVirtualTables();
+void CleanupHooks();
+
+// --- Forward declarations for hooks ---
+BOOL WINAPI InitGame_Hook(HWND windowHandle);
+BOOL WINAPI InitDirectDraw_Hook(BOOL isFullScreen, HWND windowHandle);
+
+// Function pointers for original functions
+extern "C" {
+    static BOOL (WINAPI* original_process_input_history)() = nullptr;
+    static BOOL (WINAPI* original_initialize_game)(HWND windowHandle) = nullptr;
+    static BOOL (WINAPI* original_initialize_directdraw)(BOOL isFullScreen, HWND windowHandle) = nullptr;
+    static LRESULT (WINAPI* original_window_proc)(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) = nullptr;
+    static HWND (WINAPI* original_create_window_ex_a)(DWORD, LPCSTR, LPCSTR, DWORD, int, int, int, int, HWND, HMENU, HINSTANCE, LPVOID) = nullptr;
+}
+
+// DirectDraw Surface vtable declarations
+HRESULT STDMETHODCALLTYPE Surface_QueryInterface(void* This, REFIID riid, void** ppvObject);
+ULONG STDMETHODCALLTYPE Surface_AddRef(void* This);
+ULONG STDMETHODCALLTYPE Surface_Release(void* This);
+HRESULT STDMETHODCALLTYPE Surface_Lock(void* This, LPRECT lpDestRect, void* lpDDSurfaceDesc, DWORD dwFlags, HANDLE hEvent);
+HRESULT STDMETHODCALLTYPE Surface_Unlock(void* This, void* lpRect);
+HRESULT STDMETHODCALLTYPE Surface_Blt(void* This, LPRECT lpDestRect, void* lpDDSrcSurface, LPRECT lpSrcRect, DWORD dwFlags, void* lpDDBltFx);
+HRESULT STDMETHODCALLTYPE Surface_Flip(void* This, void* lpDDSurfaceTargetOverride, DWORD dwFlags);
+HRESULT STDMETHODCALLTYPE Surface_SetPalette(void* This, void* lpDDPalette);
+HRESULT STDMETHODCALLTYPE Surface_GetDC(void* This, HDC* lphDC);
+HRESULT STDMETHODCALLTYPE Surface_ReleaseDC(void* This, HDC hDC);
+HRESULT STDMETHODCALLTYPE Surface_GetAttachedSurface(void* This, void* lpDDSCaps, void** lplpDDAttachedSurface);
+HRESULT STDMETHODCALLTYPE Surface_GetCaps(void* This, void* lpDDSCaps);
+HRESULT STDMETHODCALLTYPE Surface_GetPixelFormat(void* This, void* lpDDPixelFormat);
+HRESULT STDMETHODCALLTYPE Surface_GetSurfaceDesc(void* This, void* lpDDSurfaceDesc);
 
 // --- Globals ---
 static HANDLE g_init_event = nullptr;
 static bool g_dll_initialized = false;
 static bool g_hooks_initialized = false;
 static FILE* g_console_stream = nullptr;
+static HWND g_gameWindow = nullptr;
 
-// SDL3 Context Structure
+// SDL3 Context
 struct SDL3Context {
-    SDL_Window* window;
-    SDL_Renderer* renderer;
-    SDL_Texture* gameBuffer;
-    SDL_Texture* backBuffer;
-    int windowWidth;
-    int windowHeight;
-    int gameWidth;
-    int gameHeight;
-    bool initialized;
-} g_sdlContext = {nullptr, nullptr, nullptr, nullptr, 640, 480, 256, 240, false};
+    SDL_Window* window;              // SDL window
+    SDL_Renderer* renderer;          // SDL renderer
+    SDL_Texture* gameBuffer;         // Game buffer texture
+    SDL_Surface* gameSurface;        // Game buffer surface
+    SDL_Texture* backBuffer;         // Back buffer texture
+    SDL_Surface* backSurface;        // Back buffer surface
+    SDL_Texture* spriteBuffer;       // Sprite buffer texture
+    SDL_Surface* spriteSurface;      // Sprite buffer surface
+    SDL_Palette* gamePalette;        // Shared palette for all surfaces
+    int gameWidth;                   // Game buffer width
+    int gameHeight;                  // Game buffer height
+    int windowWidth;                 // Window width
+    int windowHeight;                // Window height
+    bool initialized;                // Context initialization state
+};
 
-// SDL3Surface forward declaration (defined below with vtable)
+static SDL3Context g_sdlContext = {nullptr};
 
-// DirectDraw Surface vtable structure
-struct SDL3SurfaceVtbl {
+// DirectDraw Surface COM Interface
+struct IDirectDrawSurfaceVtbl {
     // IUnknown methods
     HRESULT (STDMETHODCALLTYPE *QueryInterface)(void* This, REFIID riid, void** ppvObject);
     ULONG (STDMETHODCALLTYPE *AddRef)(void* This);
     ULONG (STDMETHODCALLTYPE *Release)(void* This);
     
-    // Essential IDirectDrawSurface methods that FM2K uses
+    // IDirectDrawSurface methods (in vtable order)
     HRESULT (STDMETHODCALLTYPE *AddAttachedSurface)(void* This, void* lpDDSAttachedSurface);
     HRESULT (STDMETHODCALLTYPE *AddOverlayDirtyRect)(void* This, LPRECT lpRect);
     HRESULT (STDMETHODCALLTYPE *Blt)(void* This, LPRECT lpDestRect, void* lpDDSrcSurface, LPRECT lpSrcRect, DWORD dwFlags, void* lpDDBltFx);
@@ -75,19 +154,20 @@ struct SDL3SurfaceVtbl {
     HRESULT (STDMETHODCALLTYPE *UpdateOverlayZOrder)(void* This, DWORD dwFlags, void* lpDDSReference);
 };
 
-// Updated SDL3 Surface Structure for DirectDraw compatibility
+// DirectDraw Surface Implementation
 struct SDL3Surface {
-    SDL3SurfaceVtbl* lpVtbl;  // Must be first member (COM object layout)
-    SDL_Texture* texture;
-    void* pixels;
-    int width;
-    int height;
-    int pitch;
-    bool locked;
-    DWORD lastLockFlags;
+    IDirectDrawSurfaceVtbl* lpVtbl;  // Must be first (COM layout)
+    SDL_Surface* surface;            // SDL surface for pixel access
+    SDL_Texture* texture;            // SDL texture for rendering
+    bool isPrimary;                  // Is this the primary surface?
+    bool isBackBuffer;               // Is this the back buffer?
+    bool isSprite;                   // Is this the sprite surface?
+    LONG refCount;                   // COM reference count
+    bool locked;                     // Surface lock state
+    DWORD lockFlags;                 // Last lock flags
 };
 
-// SDL3 DirectDraw Structure
+// DirectDraw Structure
 struct SDL3DirectDraw {
     void* lpVtbl;  // DirectDraw vtable (not implemented yet)
     bool initialized;
@@ -96,50 +176,241 @@ struct SDL3DirectDraw {
     SDL3Surface* spriteSurface;
 };
 
-// --- DirectDraw Objects ---
-static SDL3DirectDraw g_directDraw;
-static SDL3Surface g_primarySurface;
-static SDL3Surface g_backSurface;
-static SDL3Surface g_spriteSurface;
-static HWND g_gameWindow = nullptr;
-
-// --- Function Pointers for Originals ---
-static BOOL (WINAPI* original_process_input_history)() = nullptr;
-static BOOL (WINAPI* original_initialize_game)(HWND windowHandle) = nullptr;
-static BOOL (WINAPI* original_initialize_directdraw)(BOOL isFullScreen, HWND windowHandle) = nullptr;
-static LRESULT (WINAPI* original_window_proc)(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) = nullptr;
-static HWND (WINAPI* original_create_window_ex_a)(DWORD, LPCSTR, LPCSTR, DWORD, int, int, int, int, HWND, HMENU, HINSTANCE, LPVOID) = nullptr;
-
-// --- Forward Declarations ---
-void LogMessage(const char* message);
-bool InitializeHooks();
-void CleanupHooks();
-bool InitializeSDL3();
-bool CreateSDL3Window(HWND gameHwnd);
-bool CreateSDL3Renderer();
-bool CreateSDL3Textures();
-void SetupDirectDrawReplacement();
-void SetupSurfaceVirtualTables();
-void RenderFrame();
-DWORD WINAPI InitializeThread(LPVOID hModule);
-
-// DirectDraw Surface Method Implementations
-HRESULT STDMETHODCALLTYPE Surface_QueryInterface(void* This, REFIID riid, void** ppvObject);
-ULONG STDMETHODCALLTYPE Surface_AddRef(void* This);
-ULONG STDMETHODCALLTYPE Surface_Release(void* This);
-HRESULT STDMETHODCALLTYPE Surface_Lock(void* This, LPRECT lpDestRect, void* lpDDSurfaceDesc, DWORD dwFlags, HANDLE hEvent);
-HRESULT STDMETHODCALLTYPE Surface_Unlock(void* This, LPVOID lpSurfaceData);
-HRESULT STDMETHODCALLTYPE Surface_Blt(void* This, LPRECT lpDestRect, void* lpDDSrcSurface, LPRECT lpSrcRect, DWORD dwFlags, void* lpDDBltFx);
-HRESULT STDMETHODCALLTYPE Surface_Flip(void* This, void* lpDDSurfaceTargetOverride, DWORD dwFlags);
-HRESULT STDMETHODCALLTYPE Surface_GetSurfaceDesc(void* This, void* lpDDSurfaceDesc);
+// Global instances
+static SDL3DirectDraw g_directDraw = {nullptr};
+static SDL3Surface g_primarySurface = {nullptr};
+static SDL3Surface g_backSurface = {nullptr};
+static SDL3Surface g_spriteSurface = {nullptr};
+static IDirectDrawSurfaceVtbl g_surfaceVtbl = {nullptr};
 
 // Stub implementation for non-critical methods
 HRESULT STDMETHODCALLTYPE Surface_Stub(void* This, ...) {
+    // Just return success for any unimplemented method
     return DD_OK;
 }
 
-// Global vtable instance
-static SDL3SurfaceVtbl g_surfaceVtbl;
+// Surface method implementations
+// Surface method implementations
+HRESULT STDMETHODCALLTYPE Surface_QueryInterface(void* This, REFIID riid, void** ppvObject);
+ULONG STDMETHODCALLTYPE Surface_AddRef(void* This);
+ULONG STDMETHODCALLTYPE Surface_Release(void* This);
+
+// Surface locking implementation
+HRESULT STDMETHODCALLTYPE Surface_Lock(void* This, LPRECT lpDestRect, void* lpDDSurfaceDesc, DWORD dwFlags, HANDLE hEvent) {
+    SDL3Surface* surface = (SDL3Surface*)This;
+    if (!surface || !lpDDSurfaceDesc) {
+        return DDERR_INVALIDPARAMS;
+    }
+    
+    // Already locked
+    if (surface->locked) {
+        return DDERR_SURFACEBUSY;
+    }
+    
+    // Lock the surface
+    if (!SDL_LockSurface(surface->surface)) {
+        LogMessage("Failed to lock surface");
+        return DDERR_GENERIC;
+    }
+    
+    // Fill out the surface description
+    DDSURFACEDESC* desc = (DDSURFACEDESC*)lpDDSurfaceDesc;
+    desc->dwSize = sizeof(DDSURFACEDESC);
+    desc->dwFlags = DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PITCH | DDSD_PIXELFORMAT;
+    desc->dwHeight = surface->surface->h;
+    desc->dwWidth = surface->surface->w;
+    desc->lPitch = surface->surface->pitch;
+    desc->lpSurface = surface->surface->pixels;
+    
+    // Set lock state
+    surface->locked = true;
+    surface->lockFlags = dwFlags;
+    
+    return DD_OK;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_Unlock(void* This, void* lpRect) {
+    SDL3Surface* surface = (SDL3Surface*)This;
+    if (!surface) {
+        return DDERR_INVALIDPARAMS;
+    }
+    
+    // Not locked
+    if (!surface->locked) {
+        return DDERR_NOTLOCKED;
+    }
+    
+    // Unlock the surface
+    SDL_UnlockSurface(surface->surface);
+    
+    // Update texture from surface
+    if (surface->texture) {
+        SDL_UpdateTexture(surface->texture, NULL, surface->surface->pixels, surface->surface->pitch);
+    }
+    
+    // Clear lock state
+    surface->locked = false;
+    surface->lockFlags = 0;
+    
+    return DD_OK;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_Flip(void* This, void* lpDDSurfaceTargetOverride, DWORD dwFlags) {
+    SDL3Surface* surface = (SDL3Surface*)This;
+    if (!surface || !surface->isPrimary) {
+        return DDERR_INVALIDPARAMS;
+    }
+    
+    // Clear the renderer
+    SDL_RenderClear(g_sdlContext.renderer);
+    
+    // Set up source and destination rectangles for proper scaling
+    SDL_FRect srcRect = {0, 0, (float)surface->surface->w, (float)surface->surface->h};
+    SDL_FRect dstRect = {0, 0, (float)g_sdlContext.windowWidth, (float)g_sdlContext.windowHeight};
+    
+    // Render the back buffer to the screen with proper scaling
+    if (g_sdlContext.backBuffer) {
+        SDL_RenderTexture(g_sdlContext.renderer, g_sdlContext.backBuffer, &srcRect, &dstRect);
+    }
+    
+    // Present the renderer
+    SDL_RenderPresent(g_sdlContext.renderer);
+    
+    return DD_OK;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_GetSurfaceDesc(void* This, void* lpDDSurfaceDesc) {
+    SDL3Surface* surface = (SDL3Surface*)This;
+    if (!surface || !lpDDSurfaceDesc) {
+        return DDERR_INVALIDPARAMS;
+    }
+    
+    DDSURFACEDESC* desc = (DDSURFACEDESC*)lpDDSurfaceDesc;
+    desc->dwSize = sizeof(DDSURFACEDESC);
+    desc->dwFlags = DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PITCH | DDSD_PIXELFORMAT;
+    desc->dwHeight = surface->surface->h;
+    desc->dwWidth = surface->surface->w;
+    desc->lPitch = surface->surface->pitch;
+    desc->ddpfPixelFormat.dwSize = sizeof(DDPIXELFORMAT);
+    desc->ddpfPixelFormat.dwFlags = DDPF_RGB | DDPF_PALETTEINDEXED8;
+    desc->ddpfPixelFormat.dwRGBBitCount = 8;
+    
+    return DD_OK;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_Blt(void* This, LPRECT lpDestRect, void* lpDDSrcSurface, LPRECT lpSrcRect, DWORD dwFlags, void* lpDDBltFx) {
+    SDL3Surface* destSurface = (SDL3Surface*)This;
+    SDL3Surface* srcSurface = (SDL3Surface*)lpDDSrcSurface;
+    
+    if (!destSurface || !destSurface->surface) {
+        LogMessage("Invalid destination surface");
+        return DDERR_INVALIDPARAMS;
+    }
+    
+    // Handle color fill operation
+    if (!srcSurface && lpDDBltFx && (dwFlags & DDBLT_COLORFILL)) {
+        DDBLTFX* bltFx = (DDBLTFX*)lpDDBltFx;
+        SDL_Rect dstRect;
+        
+        if (lpDestRect) {
+            dstRect.x = lpDestRect->left;
+            dstRect.y = lpDestRect->top;
+            dstRect.w = lpDestRect->right - lpDestRect->left;
+            dstRect.h = lpDestRect->bottom - lpDestRect->top;
+        } else {
+            dstRect.x = 0;
+            dstRect.y = 0;
+            dstRect.w = destSurface->surface->w;
+            dstRect.h = destSurface->surface->h;
+        }
+        
+        SDL_FillSurfaceRect(destSurface->surface, &dstRect, bltFx->dwFillColor);
+        return DD_OK;
+    }
+    
+    // Handle surface to surface blit
+    if (srcSurface && srcSurface->surface) {
+        SDL_Rect srcRect, dstRect;
+        
+        if (lpSrcRect) {
+            srcRect.x = lpSrcRect->left;
+            srcRect.y = lpSrcRect->top;
+            srcRect.w = lpSrcRect->right - lpSrcRect->left;
+            srcRect.h = lpSrcRect->bottom - lpSrcRect->top;
+        } else {
+            srcRect.x = 0;
+            srcRect.y = 0;
+            srcRect.w = srcSurface->surface->w;
+            srcRect.h = srcSurface->surface->h;
+        }
+        
+        if (lpDestRect) {
+            dstRect.x = lpDestRect->left;
+            dstRect.y = lpDestRect->top;
+            dstRect.w = lpDestRect->right - lpDestRect->left;
+            dstRect.h = lpDestRect->bottom - lpDestRect->top;
+        } else {
+            dstRect.x = 0;
+            dstRect.y = 0;
+            dstRect.w = destSurface->surface->w;
+            dstRect.h = destSurface->surface->h;
+        }
+        
+        SDL_BlitSurface(srcSurface->surface, &srcRect, destSurface->surface, &dstRect);
+        return DD_OK;
+    }
+    
+    return DDERR_INVALIDPARAMS;
+}
+
+// Function to set up DirectDraw surface interception
+void SetupDirectDrawSurfaces() {
+    LogMessage("Setting up DirectDraw surfaces...");
+    
+    // Initialize primary surface
+    g_primarySurface.lpVtbl = &g_surfaceVtbl;
+    g_primarySurface.surface = SDL_CreateSurface(g_sdlContext.gameWidth, g_sdlContext.gameHeight, SDL_PIXELFORMAT_INDEX8);
+    g_primarySurface.texture = SDL_CreateTextureFromSurface(g_sdlContext.renderer, g_primarySurface.surface);
+    g_primarySurface.isPrimary = true;
+    g_primarySurface.isBackBuffer = false;
+    g_primarySurface.isSprite = false;
+    g_primarySurface.refCount = 1;
+    g_primarySurface.locked = false;
+    g_primarySurface.lockFlags = 0;
+    
+    // Initialize back buffer surface
+    g_backSurface.lpVtbl = &g_surfaceVtbl;
+    g_backSurface.surface = SDL_CreateSurface(640, 480, SDL_PIXELFORMAT_INDEX8);
+    g_backSurface.texture = SDL_CreateTextureFromSurface(g_sdlContext.renderer, g_backSurface.surface);
+    g_backSurface.isPrimary = false;
+    g_backSurface.isBackBuffer = true;
+    g_backSurface.isSprite = false;
+    g_backSurface.refCount = 1;
+    g_backSurface.locked = false;
+    g_backSurface.lockFlags = 0;
+    
+    // Initialize sprite surface
+    g_spriteSurface.lpVtbl = &g_surfaceVtbl;
+    g_spriteSurface.surface = SDL_CreateSurface(256, 256, SDL_PIXELFORMAT_INDEX8);
+    g_spriteSurface.texture = SDL_CreateTextureFromSurface(g_sdlContext.renderer, g_spriteSurface.surface);
+    g_spriteSurface.isPrimary = false;
+    g_spriteSurface.isBackBuffer = false;
+    g_spriteSurface.isSprite = true;
+    g_spriteSurface.refCount = 1;
+    g_spriteSurface.locked = false;
+    g_spriteSurface.lockFlags = 0;
+    
+    // Create shared palette for all surfaces
+    SDL_Palette* palette = SDL_CreatePalette(256);
+    if (palette) {
+        SDL_SetSurfacePalette(g_primarySurface.surface, palette);
+        SDL_SetSurfacePalette(g_backSurface.surface, palette);
+        SDL_SetSurfacePalette(g_spriteSurface.surface, palette);
+        SDL_DestroyPalette(palette);  // Surfaces will keep a reference
+    }
+    
+    LogMessage("DirectDraw surfaces initialized successfully");
+}
 
 // Exception handler for debugging crashes
 LONG WINAPI CrashHandler(EXCEPTION_POINTERS* pExceptionInfo) {
@@ -151,7 +422,7 @@ LONG WINAPI CrashHandler(EXCEPTION_POINTERS* pExceptionInfo) {
         pExceptionInfo->ExceptionRecord->ExceptionCode,
         (DWORD)pExceptionInfo->ExceptionRecord->ExceptionAddress);
     LogMessage(buffer);
-    
+
     // Try to get more context
     CONTEXT* ctx = pExceptionInfo->ContextRecord;
     sprintf_s(buffer, sizeof(buffer),
@@ -219,7 +490,7 @@ BOOL WINAPI Hook_InitializeGame(HWND windowHandle) {
     char buffer[256];
     sprintf_s(buffer, sizeof(buffer), "Game provided window handle: %p", windowHandle);
     LogMessage(buffer);
-    
+
     // Call original game initialization FIRST
     LogMessage("*** Calling original game initialization function FIRST ***");
     BOOL result = original_initialize_game(windowHandle);
@@ -247,79 +518,46 @@ BOOL WINAPI Hook_InitializeGame(HWND windowHandle) {
             LogMessage("SDL3 setup failed - game will run normally");
         }
     }
-    
+
     return result;
 }
 
 BOOL WINAPI Hook_InitializeDirectDraw(BOOL isFullScreen, HWND windowHandle) {
-    LogMessage("Hook_InitializeDirectDraw triggered - SDL3 DirectDraw replacement");
+    LogMessage("Hook_InitializeDirectDraw triggered - intercepting surfaces");
     
     char buffer[256];
     sprintf_s(buffer, sizeof(buffer), "DirectDraw init: fullscreen=%d, windowHandle=%p", isFullScreen, windowHandle);
     LogMessage(buffer);
-    
-    // Check if game window was detected by CreateWindowExA hook
-    if (!g_gameWindow) {
-        LogMessage("ERROR: No game window detected yet - cannot proceed with SDL3 setup");
-        // Fall back to original DirectDraw
-        if (original_initialize_directdraw) {
-            return original_initialize_directdraw(isFullScreen, windowHandle);
-        }
-        return FALSE;
-    }
-    
-    // Now we can perform full SDL3 setup since game window exists
-    LogMessage("Game window available - proceeding with full SDL3 setup");
-    
-    // Phase 1: Create SDL3 window alongside game window
-    if (!g_sdlContext.window) {
-        if (!CreateSDL3Window(g_gameWindow)) {
-            LogMessage("SDL3 window creation failed");
-            if (original_initialize_directdraw) {
-                return original_initialize_directdraw(isFullScreen, windowHandle);
-            }
+
+    // Initialize SDL3 if not already done
+    if (!g_sdlContext.initialized) {
+        if (!InitializeSDL3()) {
+            LogMessage("ERROR: SDL3 initialization failed");
             return FALSE;
         }
         
-        // Hide the original game window and show SDL3 window
+        if (!CreateSDL3Window(g_gameWindow) || !CreateSDL3Renderer() || !CreateSDL3Textures()) {
+            LogMessage("ERROR: SDL3 setup failed");
+            return FALSE;
+        }
+
+        // Hide the game window - we'll render in our window
         ShowWindow(g_gameWindow, SW_HIDE);
         SDL_ShowWindow(g_sdlContext.window);
-        LogMessage("SDL3 window takeover complete - game window hidden, SDL3 window shown");
+        LogMessage("Game window hidden, SDL3 window shown");
     }
     
-    // Phase 2: Create SDL3 renderer and textures
-    if (!CreateSDL3Renderer() || !CreateSDL3Textures()) {
-        LogMessage("SDL3 renderer/texture creation failed");
-        if (original_initialize_directdraw) {
-            return original_initialize_directdraw(isFullScreen, windowHandle);
-        }
-        return FALSE;
-    }
+    // Set up DirectDraw surface interception
+    SetupDirectDrawSurfaces();
     
-    // Phase 3: Let the original DirectDraw function run first (but it will fail)
-    LogMessage("*** Calling original DirectDraw initialization first ***");
-    BOOL originalResult = FALSE;
+    // Let the original function run to set up any necessary state
+    BOOL result = FALSE;
     if (original_initialize_directdraw) {
-        originalResult = original_initialize_directdraw(isFullScreen, windowHandle);
-        char buffer[256];
-        sprintf_s(buffer, sizeof(buffer), "Original DirectDraw initialization returned: %d", originalResult);
-        LogMessage(buffer);
+        result = original_initialize_directdraw(isFullScreen, windowHandle);
+        LogMessage("Original DirectDraw initialization complete");
     }
     
-    // Phase 4: TEMPORARILY DISABLE DirectDraw replacement to avoid crash
-    LogMessage("*** TEMPORARILY DISABLING DirectDraw replacement - letting original DirectDraw work ***");
-    // SetupDirectDrawReplacement(); // COMMENTED OUT TO PREVENT CRASH
-    
-    // Phase 5: Start immediate test rendering to verify SDL3 is working
-    LogMessage("Starting immediate test rendering...");
-    for (int i = 0; i < 5; i++) {
-        RenderFrame();
-        Sleep(100); // 100ms delay between test frames
-    }
-    
-    LogMessage("SDL3 DirectDraw replacement setup complete!");
-    LogMessage("*** CRITICAL: Now allowing game to continue - watching for DirectDraw calls ***");
-    return TRUE;
+    return TRUE; // Always return success since we're handling rendering
 }
 
 LRESULT WINAPI Hook_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -331,159 +569,221 @@ BOOL WINAPI Hook_ProcessInputHistory() {
     // This hook is called 60 times per second - perfect for rendering
     static int renderCallCount = 0;
     renderCallCount++;
-    
+
     BOOL result = original_process_input_history();
-    
+
     // If SDL3 is initialized, perform rendering
     if (g_sdlContext.initialized && g_sdlContext.renderer) {
         if (renderCallCount <= 10) {
-            char buffer[256];
+        char buffer[256];
             sprintf_s(buffer, sizeof(buffer), "Hook_ProcessInputHistory call #%d - starting render", renderCallCount);
             LogMessage(buffer);
         }
         RenderFrame();
     }
-    
+
     return result;
 }
 
 void RenderFrame() {
-    static int frameCount = 0;
-    frameCount++;
-    
-    if (frameCount <= 5) {
-        char buffer[256];
-        sprintf_s(buffer, sizeof(buffer), "RenderFrame() call #%d", frameCount);
-        LogMessage(buffer);
+    if (!g_sdlContext.initialized || !g_sdlContext.renderer) {
+        return;
     }
     
     // Clear the renderer
     SDL_SetRenderDrawColor(g_sdlContext.renderer, 0, 0, 0, 255);
     SDL_RenderClear(g_sdlContext.renderer);
     
-    // Render test content to game buffer to verify SDL3 rendering
-    if (g_sdlContext.gameBuffer) {
-        // Set render target to game buffer  
-        SDL_SetRenderTarget(g_sdlContext.renderer, g_sdlContext.gameBuffer);
-        
-        // Fill game buffer with test pattern
-        SDL_SetRenderDrawColor(g_sdlContext.renderer, 64, 128, 255, 255);  // Blue background
-        SDL_RenderClear(g_sdlContext.renderer);
-        
-        // Draw some test rectangles
-        SDL_SetRenderDrawColor(g_sdlContext.renderer, 255, 255, 255, 255);  // White
-        SDL_FRect testRect = {50, 50, 156, 140};
-        SDL_RenderFillRect(g_sdlContext.renderer, &testRect);
-        
-        SDL_SetRenderDrawColor(g_sdlContext.renderer, 255, 0, 0, 255);  // Red
-        SDL_FRect testRect2 = {75, 75, 106, 90};
-        SDL_RenderFillRect(g_sdlContext.renderer, &testRect2);
-        
-        // Reset render target to window
-        SDL_SetRenderTarget(g_sdlContext.renderer, nullptr);
-        // Render game buffer to window with proper scaling
-        int windowWidth, windowHeight;
-        SDL_GetWindowSize(g_sdlContext.window, &windowWidth, &windowHeight);
-        
-        // Calculate scaling to maintain aspect ratio
-        float windowAspect = (float)windowWidth / windowHeight;
-        float gameAspect = (float)g_sdlContext.gameWidth / g_sdlContext.gameHeight;
-        
-        SDL_FRect destRect;
-        if (windowAspect > gameAspect) {
-            // Window is wider - letterbox on sides
-            float scale = (float)windowHeight / g_sdlContext.gameHeight;
-            destRect.w = g_sdlContext.gameWidth * scale;
-            destRect.h = (float)windowHeight;
-            destRect.x = (windowWidth - destRect.w) / 2;
-            destRect.y = 0;
-        } else {
-            // Window is taller - letterbox on top/bottom  
-            float scale = (float)windowWidth / g_sdlContext.gameWidth;
-            destRect.w = (float)windowWidth;
-            destRect.h = g_sdlContext.gameHeight * scale;
-            destRect.x = 0;
-            destRect.y = (windowHeight - destRect.h) / 2;
-        }
-        
-        // Render game buffer to window
-        SDL_RenderTexture(g_sdlContext.renderer, g_sdlContext.gameBuffer, nullptr, &destRect);
+    // Get the window size for scaling
+    int windowWidth, windowHeight;
+    SDL_GetWindowSize(g_sdlContext.window, &windowWidth, &windowHeight);
+    
+    // Calculate aspect ratio preserving scaling
+    float gameAspect = (float)g_sdlContext.gameWidth / g_sdlContext.gameHeight;
+    float windowAspect = (float)windowWidth / windowHeight;
+    
+    SDL_FRect dstRect = {0};
+    if (windowAspect > gameAspect) {
+        // Window is wider than game aspect
+        dstRect.h = (float)windowHeight;
+        dstRect.w = dstRect.h * gameAspect;
+        dstRect.x = (windowWidth - dstRect.w) / 2;
+        dstRect.y = 0;
+    } else {
+        // Window is taller than game aspect
+        dstRect.w = (float)windowWidth;
+        dstRect.h = dstRect.w / gameAspect;
+        dstRect.x = 0;
+        dstRect.y = (windowHeight - dstRect.h) / 2;
     }
     
-    // Present the frame
+    // Render the game texture
+    if (g_sdlContext.gameBuffer) {
+        SDL_RenderTexture(g_sdlContext.renderer, g_sdlContext.gameBuffer, NULL, &dstRect);
+    }
+    
+    // Present the renderer
     SDL_RenderPresent(g_sdlContext.renderer);
 }
 
 bool InitializeSDL3() {
-    if (g_sdlContext.initialized) {
-        return true;
-    }
-    
     LogMessage("Initializing SDL3 context...");
     
+    // Initialize SDL
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) < 0) {
-        char buffer[256];
-        sprintf_s(buffer, sizeof(buffer), "SDL_Init failed: %s", SDL_GetError());
-        LogMessage(buffer);
+        LogMessage("SDL_Init failed");
         return false;
     }
     
+    // Set up event handling
+    SDL_SetEventFilter(EventFilter, NULL);
+    
+    // Initialize context values
+    g_sdlContext.gameWidth = 256;
+    g_sdlContext.gameHeight = 240;
+    g_sdlContext.windowWidth = 640;
+    g_sdlContext.windowHeight = 480;
     g_sdlContext.initialized = true;
-    LogMessage("SDL3 context initialized successfully");
+    
     return true;
 }
 
+void InitializeSurfaces() {
+    LogMessage("Initializing DirectDraw surfaces...");
+    
+    // Initialize primary surface
+    g_primarySurface.lpVtbl = &g_surfaceVtbl;
+    g_primarySurface.surface = SDL_CreateSurface(g_sdlContext.gameWidth, g_sdlContext.gameHeight, SDL_PIXELFORMAT_INDEX8);
+    g_primarySurface.texture = SDL_CreateTextureFromSurface(g_sdlContext.renderer, g_primarySurface.surface);
+    g_primarySurface.isPrimary = true;
+    g_primarySurface.isBackBuffer = false;
+    g_primarySurface.isSprite = false;
+    g_primarySurface.refCount = 1;
+    g_primarySurface.locked = false;
+    g_primarySurface.lockFlags = 0;
+    
+    // Initialize back buffer surface
+    g_backSurface.lpVtbl = &g_surfaceVtbl;
+    g_backSurface.surface = SDL_CreateSurface(g_sdlContext.gameWidth, g_sdlContext.gameHeight, SDL_PIXELFORMAT_INDEX8);
+    g_backSurface.texture = SDL_CreateTextureFromSurface(g_sdlContext.renderer, g_backSurface.surface);
+    g_backSurface.isPrimary = false;
+    g_backSurface.isBackBuffer = true;
+    g_backSurface.isSprite = false;
+    g_backSurface.refCount = 1;
+    g_backSurface.locked = false;
+    g_backSurface.lockFlags = 0;
+    
+    // Initialize sprite surface
+    g_spriteSurface.lpVtbl = &g_surfaceVtbl;
+    g_spriteSurface.surface = SDL_CreateSurface(g_sdlContext.gameWidth, g_sdlContext.gameHeight, SDL_PIXELFORMAT_INDEX8);
+    g_spriteSurface.texture = SDL_CreateTextureFromSurface(g_sdlContext.renderer, g_spriteSurface.surface);
+    g_spriteSurface.isPrimary = false;
+    g_spriteSurface.isBackBuffer = false;
+    g_spriteSurface.isSprite = true;
+    g_spriteSurface.refCount = 1;
+    g_spriteSurface.locked = false;
+    g_spriteSurface.lockFlags = 0;
+    
+    // Create shared palette for all surfaces
+    SDL_Palette* palette = SDL_CreatePalette(256);
+    if (palette) {
+        SDL_SetSurfacePalette(g_primarySurface.surface, palette);
+        SDL_SetSurfacePalette(g_backSurface.surface, palette);
+        SDL_SetSurfacePalette(g_spriteSurface.surface, palette);
+        SDL_DestroyPalette(palette);  // Surfaces will keep a reference
+    }
+}
+
 bool CreateSDL3Window(HWND gameHwnd) {
-    if (g_sdlContext.window) {
-        return true;
-    }
+    LogMessage("Creating SDL3 window...");
     
-    if (!gameHwnd) {
-        LogMessage("ERROR: No game window handle provided");
-        return false;
-    }
+    // Store the game window handle
+    g_gameWindow = gameHwnd;
     
-    char buffer[256];
-    sprintf_s(buffer, sizeof(buffer), "Creating SDL3 window for game window handle: %p", gameHwnd);
-    LogMessage(buffer);
+    // Hide the game window
+    ShowWindow(g_gameWindow, SW_HIDE);
     
-    // Get the game window's position and size for reference
+    // Get the game window's position and size
     RECT gameRect;
-    if (!GetWindowRect(gameHwnd, &gameRect)) {
-        sprintf_s(buffer, sizeof(buffer), "ERROR: GetWindowRect failed for handle %p", gameHwnd);
-        LogMessage(buffer);
-        return false;
-    }
+    GetWindowRect(g_gameWindow, &gameRect);
     
-    int gameWidth = gameRect.right - gameRect.left;
-    int gameHeight = gameRect.bottom - gameRect.top;
-    
-    sprintf_s(buffer, sizeof(buffer), "Game window dimensions: %dx%d at (%d, %d)", gameWidth, gameHeight, gameRect.left, gameRect.top);
-    LogMessage(buffer);
-    
-    // Create a separate SDL3 window for rendering takeover
-    LogMessage("Calling SDL_CreateWindow...");
+    // Create our SDL window
     g_sdlContext.window = SDL_CreateWindow(
-        "Fighter Maker 2K - SDL3 Renderer",
-        gameWidth,
-        gameHeight,
-        SDL_WINDOW_RESIZABLE  // Start visible, ready for takeover
+        "Fighter Maker 2nd - SDL3",
+        gameRect.right - gameRect.left,
+        gameRect.bottom - gameRect.top,
+        SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN
     );
-    
+
     if (!g_sdlContext.window) {
-        sprintf_s(buffer, sizeof(buffer), "ERROR: SDL_CreateWindow failed: %s", SDL_GetError());
-        LogMessage(buffer);
+        LogMessage("Failed to create SDL window");
         return false;
     }
     
-    sprintf_s(buffer, sizeof(buffer), "SDL3 window created successfully: %p", g_sdlContext.window);
-    LogMessage(buffer);
-    
-    // Position the SDL3 window at the same location as the game window
-    LogMessage("Setting SDL3 window position...");
+    // Set window position
     SDL_SetWindowPosition(g_sdlContext.window, gameRect.left, gameRect.top);
     
-    LogMessage("SDL3 window creation and positioning complete");
+    // Set up Windows message hook
+    SDL_SetWindowsMessageHook(WindowsMessageHook, NULL);
+    
+    return true;
+}
+
+// Get the native window handle if needed
+HWND GetNativeWindowHandle(SDL_Window* window) {
+    if (!window) return NULL;
+    
+    #if defined(SDL_PLATFORM_WIN32)
+    return (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+    #else
+    return NULL;
+    #endif
+}
+
+// Window event callback
+int WINAPI WindowEventWatch(void* userdata, SDL_Event* event) {
+    if (!event) return 0;
+    
+    switch (event->type) {
+        case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+            if (g_gameWindow) {
+                PostMessage(g_gameWindow, WM_CLOSE, 0, 0);
+            }
+            return 0;
+            
+        case SDL_EVENT_WINDOW_RESIZED:
+            RenderFrame();
+            return 0;
+    }
+    
+    return 1;
+}
+
+// Event filter callback
+bool EventFilter(void* userdata, SDL_Event* event) {
+    if (!event) return false;
+    
+    switch (event->type) {
+        case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+            if (g_gameWindow) {
+                PostMessage(g_gameWindow, WM_CLOSE, 0, 0);
+            }
+            return false;
+            
+        case SDL_EVENT_WINDOW_RESIZED:
+            RenderFrame();
+            return false;
+    }
+    
+    return true;
+}
+
+// Windows message hook callback
+bool WindowsMessageHook(void* userdata, MSG* msg) {
+    // Forward relevant messages to our window proc
+    if (msg && msg->hwnd == g_gameWindow) {
+        WindowProc_Hook(msg->hwnd, msg->message, msg->wParam, msg->lParam);
+    }
     return true;
 }
 
@@ -491,7 +791,7 @@ bool CreateSDL3Renderer() {
     if (g_sdlContext.renderer) {
         return true;
     }
-    
+
     if (!g_sdlContext.window) {
         LogMessage("ERROR: Cannot create renderer - no SDL3 window available");
         return false;
@@ -504,7 +804,7 @@ bool CreateSDL3Renderer() {
         char buffer[256];
         sprintf_s(buffer, sizeof(buffer), "DirectX 11 renderer failed: %s", SDL_GetError());
         LogMessage(buffer);
-        
+
         // Fall back to default renderer
         LogMessage("Falling back to default renderer...");
         g_sdlContext.renderer = SDL_CreateRenderer(g_sdlContext.window, nullptr);
@@ -519,7 +819,7 @@ bool CreateSDL3Renderer() {
     } else {
         LogMessage("SDL3 DirectX 11 renderer created successfully");
     }
-    
+
     // Enable VSync
     SDL_SetRenderVSync(g_sdlContext.renderer, 1);
     
@@ -527,46 +827,106 @@ bool CreateSDL3Renderer() {
 }
 
 bool CreateSDL3Textures() {
-    if (g_sdlContext.gameBuffer) {
-        return true;
-    }
+    LogMessage("Creating SDL3 textures...");
     
-    if (!g_sdlContext.renderer) {
-        LogMessage("ERROR: Cannot create textures - no renderer available");
-        return false;
-    }
-    
-    // Create game buffer at native resolution (256x240)
-    g_sdlContext.gameBuffer = SDL_CreateTexture(
-        g_sdlContext.renderer,
-        SDL_PIXELFORMAT_RGBA8888,
-        SDL_TEXTUREACCESS_TARGET,
+    // Create game buffer surface and texture (256x240)
+    SDL_Surface* gameSurface = SDL_CreateSurface(
         g_sdlContext.gameWidth,
-        g_sdlContext.gameHeight
+        g_sdlContext.gameHeight,
+        SDL_PIXELFORMAT_INDEX8
     );
     
-    if (!g_sdlContext.gameBuffer) {
-        char buffer[256];
-        sprintf_s(buffer, sizeof(buffer), "Failed to create game buffer: %s", SDL_GetError());
-        LogMessage(buffer);
+    if (!gameSurface) {
+        LogMessage("Failed to create game surface");
         return false;
     }
     
-    SDL_SetTextureScaleMode(g_sdlContext.gameBuffer, SDL_SCALEMODE_NEAREST);
-    LogMessage("Game buffer texture created (256x240)");
+    // Create palette for 8-bit indexed color
+    SDL_Palette* palette = SDL_CreatePalette(256);
+    if (!palette) {
+        LogMessage("Failed to create palette");
+        SDL_DestroySurface(gameSurface);
+        return false;
+    }
     
-    // Create back buffer texture (640x480)
-    g_sdlContext.backBuffer = SDL_CreateTexture(
-        g_sdlContext.renderer,
-        SDL_PIXELFORMAT_RGBA8888,
-        SDL_TEXTUREACCESS_TARGET,
-        640, 480
+    // Set the palette for the surface
+    if (!SDL_SetSurfacePalette(gameSurface, palette)) {
+        LogMessage("Failed to set surface palette");
+        SDL_DestroyPalette(palette);
+        SDL_DestroySurface(gameSurface);
+        return false;
+    }
+    
+    // Create texture from surface
+    g_sdlContext.gameBuffer = SDL_CreateTextureFromSurface(g_sdlContext.renderer, gameSurface);
+    if (!g_sdlContext.gameBuffer) {
+        LogMessage("Failed to create game buffer texture");
+        SDL_DestroyPalette(palette);
+        SDL_DestroySurface(gameSurface);
+        return false;
+    }
+    
+    // Store the palette and surface for later use
+    g_sdlContext.gamePalette = palette;
+    g_sdlContext.gameSurface = gameSurface;
+    
+    // Create back buffer surface and texture (640x480)
+    SDL_Surface* backSurface = SDL_CreateSurface(
+        640, 480,
+        SDL_PIXELFORMAT_INDEX8
     );
     
-    if (g_sdlContext.backBuffer) {
-        SDL_SetTextureScaleMode(g_sdlContext.backBuffer, SDL_SCALEMODE_NEAREST);
-        LogMessage("Back buffer texture created (640x480)");
+    if (!backSurface) {
+        LogMessage("Failed to create back buffer surface");
+        return false;
     }
+    
+    // Set the palette for the back buffer
+    if (!SDL_SetSurfacePalette(backSurface, palette)) {
+        LogMessage("Failed to set back buffer palette");
+        SDL_DestroySurface(backSurface);
+        return false;
+    }
+    
+    // Create texture from surface
+    g_sdlContext.backBuffer = SDL_CreateTextureFromSurface(g_sdlContext.renderer, backSurface);
+    if (!g_sdlContext.backBuffer) {
+        LogMessage("Failed to create back buffer texture");
+        SDL_DestroySurface(backSurface);
+        return false;
+    }
+    
+    // Store the back buffer surface
+    g_sdlContext.backSurface = backSurface;
+    
+    // Create sprite buffer surface and texture (256x256)
+    SDL_Surface* spriteSurface = SDL_CreateSurface(
+        256, 256,
+        SDL_PIXELFORMAT_INDEX8
+    );
+    
+    if (!spriteSurface) {
+        LogMessage("Failed to create sprite buffer surface");
+        return false;
+    }
+    
+    // Set the palette for the sprite buffer
+    if (!SDL_SetSurfacePalette(spriteSurface, palette)) {
+        LogMessage("Failed to set sprite buffer palette");
+        SDL_DestroySurface(spriteSurface);
+        return false;
+    }
+    
+    // Create texture from surface
+    g_sdlContext.spriteBuffer = SDL_CreateTextureFromSurface(g_sdlContext.renderer, spriteSurface);
+    if (!g_sdlContext.spriteBuffer) {
+        LogMessage("Failed to create sprite buffer texture");
+        SDL_DestroySurface(spriteSurface);
+        return false;
+    }
+    
+    // Store the sprite buffer surface
+    g_sdlContext.spriteSurface = spriteSurface;
     
     return true;
 }
@@ -586,16 +946,12 @@ void SetupDirectDrawReplacement() {
     
     if (!IsBadWritePtr(pPrimarySurface, sizeof(void*))) {
         g_primarySurface.texture = g_sdlContext.gameBuffer;
-        g_primarySurface.width = g_sdlContext.gameWidth;
-        g_primarySurface.height = g_sdlContext.gameHeight;
         *pPrimarySurface = &g_primarySurface;
         LogMessage("Set primary surface pointer at 0x424750");
     }
     
     if (!IsBadWritePtr(pBackBuffer, sizeof(void*))) {
         g_backSurface.texture = g_sdlContext.backBuffer;
-        g_backSurface.width = 640;
-        g_backSurface.height = 480;
         *pBackBuffer = &g_backSurface;
         LogMessage("Set back buffer pointer at 0x424754");
     }
@@ -633,261 +989,384 @@ void SetupDirectDrawReplacement() {
 }
 
 void SetupSurfaceVirtualTables() {
-    LogMessage("Setting up DirectDraw surface virtual function tables...");
+    LogMessage("Setting up surface virtual tables...");
     
     // Initialize the virtual function table
     g_surfaceVtbl.QueryInterface = Surface_QueryInterface;
     g_surfaceVtbl.AddRef = Surface_AddRef;
     g_surfaceVtbl.Release = Surface_Release;
-    g_surfaceVtbl.AddAttachedSurface = (HRESULT (STDMETHODCALLTYPE *)(void*, void*))Surface_Stub;
-    g_surfaceVtbl.AddOverlayDirtyRect = (HRESULT (STDMETHODCALLTYPE *)(void*, LPRECT))Surface_Stub;
-    g_surfaceVtbl.Blt = Surface_Blt;
-    g_surfaceVtbl.BltBatch = (HRESULT (STDMETHODCALLTYPE *)(void*, void*, DWORD, DWORD))Surface_Stub;
-    g_surfaceVtbl.BltFast = (HRESULT (STDMETHODCALLTYPE *)(void*, DWORD, DWORD, void*, LPRECT, DWORD))Surface_Stub;
-    g_surfaceVtbl.DeleteAttachedSurface = (HRESULT (STDMETHODCALLTYPE *)(void*, DWORD, void*))Surface_Stub;
-    g_surfaceVtbl.EnumAttachedSurfaces = (HRESULT (STDMETHODCALLTYPE *)(void*, LPVOID, void*))Surface_Stub;
-    g_surfaceVtbl.EnumOverlayZOrders = (HRESULT (STDMETHODCALLTYPE *)(void*, DWORD, LPVOID, void*))Surface_Stub;
-    g_surfaceVtbl.Flip = Surface_Flip;
-    g_surfaceVtbl.GetAttachedSurface = (HRESULT (STDMETHODCALLTYPE *)(void*, void*, void**))Surface_Stub;
-    g_surfaceVtbl.GetBltStatus = (HRESULT (STDMETHODCALLTYPE *)(void*, DWORD))Surface_Stub;
-    g_surfaceVtbl.GetCaps = (HRESULT (STDMETHODCALLTYPE *)(void*, void*))Surface_Stub;
-    g_surfaceVtbl.GetClipper = (HRESULT (STDMETHODCALLTYPE *)(void*, void**))Surface_Stub;
-    g_surfaceVtbl.GetColorKey = (HRESULT (STDMETHODCALLTYPE *)(void*, DWORD, void*))Surface_Stub;
-    g_surfaceVtbl.GetDC = (HRESULT (STDMETHODCALLTYPE *)(void*, HDC*))Surface_Stub;
-    g_surfaceVtbl.GetFlipStatus = (HRESULT (STDMETHODCALLTYPE *)(void*, DWORD))Surface_Stub;
-    g_surfaceVtbl.GetOverlayPosition = (HRESULT (STDMETHODCALLTYPE *)(void*, LPLONG, LPLONG))Surface_Stub;
-    g_surfaceVtbl.GetPalette = (HRESULT (STDMETHODCALLTYPE *)(void*, void**))Surface_Stub;
-    g_surfaceVtbl.GetPixelFormat = (HRESULT (STDMETHODCALLTYPE *)(void*, void*))Surface_Stub;
-    g_surfaceVtbl.GetSurfaceDesc = Surface_GetSurfaceDesc;
-    g_surfaceVtbl.Initialize = (HRESULT (STDMETHODCALLTYPE *)(void*, void*, void*))Surface_Stub;
-    g_surfaceVtbl.IsLost = (HRESULT (STDMETHODCALLTYPE *)(void*))Surface_Stub;
     g_surfaceVtbl.Lock = Surface_Lock;
-    g_surfaceVtbl.ReleaseDC = (HRESULT (STDMETHODCALLTYPE *)(void*, HDC))Surface_Stub;
-    g_surfaceVtbl.Restore = (HRESULT (STDMETHODCALLTYPE *)(void*))Surface_Stub;
-    g_surfaceVtbl.SetClipper = (HRESULT (STDMETHODCALLTYPE *)(void*, void*))Surface_Stub;
-    g_surfaceVtbl.SetColorKey = (HRESULT (STDMETHODCALLTYPE *)(void*, DWORD, void*))Surface_Stub;
-    g_surfaceVtbl.SetOverlayPosition = (HRESULT (STDMETHODCALLTYPE *)(void*, LONG, LONG))Surface_Stub;
-    g_surfaceVtbl.SetPalette = (HRESULT (STDMETHODCALLTYPE *)(void*, void*))Surface_Stub;
     g_surfaceVtbl.Unlock = Surface_Unlock;
-    g_surfaceVtbl.UpdateOverlay = (HRESULT (STDMETHODCALLTYPE *)(void*, LPRECT, void*, LPRECT, DWORD, void*))Surface_Stub;
-    g_surfaceVtbl.UpdateOverlayDisplay = (HRESULT (STDMETHODCALLTYPE *)(void*, DWORD))Surface_Stub;
-    g_surfaceVtbl.UpdateOverlayZOrder = (HRESULT (STDMETHODCALLTYPE *)(void*, DWORD, void*))Surface_Stub;
-    
+    g_surfaceVtbl.Blt = Surface_Blt;
+    g_surfaceVtbl.Flip = Surface_Flip;
+    g_surfaceVtbl.SetPalette = Surface_SetPalette;
+    g_surfaceVtbl.GetDC = Surface_GetDC;
+    g_surfaceVtbl.ReleaseDC = Surface_ReleaseDC;
+    g_surfaceVtbl.GetAttachedSurface = Surface_GetAttachedSurface;
+    g_surfaceVtbl.GetCaps = Surface_GetCaps;
+    g_surfaceVtbl.GetPixelFormat = Surface_GetPixelFormat;
+    g_surfaceVtbl.GetSurfaceDesc = Surface_GetSurfaceDesc;
+
     // Set up surface structures with virtual function table pointers
     g_primarySurface.lpVtbl = &g_surfaceVtbl;
     g_primarySurface.texture = g_sdlContext.gameBuffer;
-    g_primarySurface.width = g_sdlContext.gameWidth;
-    g_primarySurface.height = g_sdlContext.gameHeight;
     g_primarySurface.locked = false;
-    g_primarySurface.pixels = nullptr;
+    g_primarySurface.refCount = 1;
+    g_primarySurface.isPrimary = true;
+    g_primarySurface.isBackBuffer = false;
+    g_primarySurface.isSprite = false;
     
     g_backSurface.lpVtbl = &g_surfaceVtbl;
     g_backSurface.texture = g_sdlContext.backBuffer;
-    g_backSurface.width = 640;
-    g_backSurface.height = 480;
     g_backSurface.locked = false;
-    g_backSurface.pixels = nullptr;
+    g_backSurface.refCount = 1;
+    g_backSurface.isPrimary = false;
+    g_backSurface.isBackBuffer = true;
+    g_backSurface.isSprite = false;
     
     g_spriteSurface.lpVtbl = &g_surfaceVtbl;
-    g_spriteSurface.texture = nullptr; // Will create separate sprite texture
-    g_spriteSurface.width = 256;
-    g_spriteSurface.height = 256;
+    g_spriteSurface.texture = g_sdlContext.spriteBuffer;
     g_spriteSurface.locked = false;
-    g_spriteSurface.pixels = nullptr;
+    g_spriteSurface.refCount = 1;
+    g_spriteSurface.isPrimary = false;
+    g_spriteSurface.isBackBuffer = false;
+    g_spriteSurface.isSprite = true;
     
     LogMessage("DirectDraw surface virtual function tables initialized successfully");
 }
 
 // DirectDraw Surface Method Implementations
 HRESULT STDMETHODCALLTYPE Surface_QueryInterface(void* This, REFIID riid, void** ppvObject) {
-    LogMessage("Surface_QueryInterface called");
-    return E_NOINTERFACE;
+    if (!ppvObject) return E_POINTER;
+    *ppvObject = This;
+    ((SDL3Surface*)This)->refCount++;
+    return S_OK;
 }
 
 ULONG STDMETHODCALLTYPE Surface_AddRef(void* This) {
-    return 1;
+    SDL3Surface* surface = (SDL3Surface*)This;
+    return ++surface->refCount;
 }
 
 ULONG STDMETHODCALLTYPE Surface_Release(void* This) {
-    return 0;
-}
-
-HRESULT STDMETHODCALLTYPE Surface_Lock(void* This, LPRECT lpDestRect, void* lpDDSurfaceDesc, DWORD dwFlags, HANDLE hEvent) {
-    LogMessage("Surface_Lock called - providing fake surface data");
     SDL3Surface* surface = (SDL3Surface*)This;
-    
-    if (!surface) {
-        LogMessage("ERROR: Surface_Lock called with null surface");
-        return DDERR_INVALIDPARAMS;
-    }
-    
-    if (surface->locked) {
-        LogMessage("WARNING: Surface already locked");
-        return DDERR_SURFACEBUSY;
-    }
-    
-    // Set up fake surface description for the game
-    struct FakeDDSURFACEDESC {
-        DWORD dwSize;
-        DWORD dwFlags;
-        DWORD dwHeight;
-        DWORD dwWidth;
-        LONG lPitch;
-        LPVOID lpSurface;
-        // ... other members the game might check
-    };
-    
-    FakeDDSURFACEDESC* desc = (FakeDDSURFACEDESC*)lpDDSurfaceDesc;
-    if (desc) {
-        desc->dwSize = sizeof(FakeDDSURFACEDESC);
-        desc->dwFlags = 0x00001007; // DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PITCH | DDSD_LPSURFACE
-        desc->dwHeight = surface->height;
-        desc->dwWidth = surface->width;
-        desc->lPitch = surface->width; // Assume 8-bit pixels for now
-        
-        // Allocate a temporary pixel buffer for the game to write to
-        if (!surface->pixels) {
-            surface->pixels = malloc(surface->width * surface->height);
-            surface->pitch = surface->width;
+    ULONG ref = --surface->refCount;
+    if (ref == 0) {
+        if (surface->surface) {
+            SDL_DestroySurface(surface->surface);
+            surface->surface = nullptr;
         }
-        desc->lpSurface = surface->pixels;
-        
-        char buffer[256];
-        sprintf_s(buffer, sizeof(buffer), "Surface_Lock: %dx%d, pitch=%d, buffer=%p", 
-                surface->width, surface->height, surface->pitch, surface->pixels);
-        LogMessage(buffer);
-    }
-    
-    surface->locked = true;
-    surface->lastLockFlags = dwFlags;
-    return DD_OK;
-}
-
-HRESULT STDMETHODCALLTYPE Surface_Unlock(void* This, LPVOID lpSurfaceData) {
-    LogMessage("Surface_Unlock called - copying data to SDL3 texture");
-    SDL3Surface* surface = (SDL3Surface*)This;
-    
-    if (!surface || !surface->locked) {
-        LogMessage("ERROR: Surface_Unlock called on unlocked surface");
-        return DDERR_NOTLOCKED;
-    }
-    
-    // Copy pixel data from temporary buffer to SDL3 texture
-    if (surface->pixels && surface->texture && g_sdlContext.renderer) {
-        void* sdlPixels;
-        int sdlPitch;
-        
-        if (SDL_LockTexture(surface->texture, NULL, &sdlPixels, &sdlPitch) == 0) {
-            // For now, just copy the raw data (8-bit to 32-bit conversion needed)
-            // This is where palette conversion would happen
-            memset(sdlPixels, 0x80, sdlPitch * surface->height); // Gray for now
-            SDL_UnlockTexture(surface->texture);
-            LogMessage("Game pixel data copied to SDL3 texture");
+        if (surface->texture) {
+            SDL_DestroyTexture(surface->texture);
+            surface->texture = nullptr;
         }
     }
+    return ref;
+}
+
+// Stub implementations for unused methods
+HRESULT STDMETHODCALLTYPE Surface_AddAttachedSurface(void* This, void* lpDDSAttachedSurface) {
+    return DDERR_UNSUPPORTED;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_AddOverlayDirtyRect(void* This, LPRECT lpRect) {
+    return DDERR_UNSUPPORTED;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_BltBatch(void* This, void* lpDDBltBatch, DWORD dwCount, DWORD dwFlags) {
+    return DDERR_UNSUPPORTED;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_BltFast(void* This, DWORD dwX, DWORD dwY, void* lpDDSrcSurface, LPRECT lpSrcRect, DWORD dwTrans) {
+    return DDERR_UNSUPPORTED;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_DeleteAttachedSurface(void* This, DWORD dwFlags, void* lpDDSAttachedSurface) {
+    return DDERR_UNSUPPORTED;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_EnumAttachedSurfaces(void* This, LPVOID lpContext, void* lpEnumSurfacesCallback) {
+    return DDERR_UNSUPPORTED;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_GetAttachedSurface(void* This, void* lpDDSCaps, void** lplpDDAttachedSurface) {
+    LogMessage("Surface_GetAttachedSurface called (STUB)");
+    if (lplpDDAttachedSurface) *lplpDDAttachedSurface = nullptr;
+    return DD_OK;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_EnumOverlayZOrders(void* This, DWORD dwFlags, LPVOID lpContext, void* lpfnCallback) {
+    return DDERR_UNSUPPORTED;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_GetBltStatus(void* This, DWORD dwFlags) {
+    return DD_OK;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_GetCaps(void* This, void* lpDDSCaps) {
+    return DDERR_UNSUPPORTED;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_GetClipper(void* This, void** lplpDDClipper) {
+    if (lplpDDClipper) *lplpDDClipper = nullptr;
+    return DD_OK;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_GetColorKey(void* This, DWORD dwFlags, void* lpDDColorKey) {
+    LogMessage("Surface_GetColorKey called (STUB)");
+    return DD_OK;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_GetDC(void* This, HDC* lphDC) {
+    LogMessage("Surface_GetDC called (STUB)");
+    // This should ideally return a DC compatible with the SDL surface
+    return DDERR_UNSUPPORTED;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_GetFlipStatus(void* This, DWORD dwFlags) {
+    LogMessage("Surface_GetFlipStatus called (STUB)");
+    return DD_OK;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_GetOverlayPosition(void* This, LPLONG lplX, LPLONG lplY) {
+    return DDERR_UNSUPPORTED;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_GetPalette(void* This, void** lplpDDPalette) {
+    if (lplpDDPalette) *lplpDDPalette = nullptr;
+    return DD_OK;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_GetPixelFormat(void* This, void* lpDDPixelFormat) {
+    LogMessage("Surface_GetPixelFormat called (STUB)");
+    // This should fill out the pixel format structure
+    return DD_OK;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_Initialize(void* This, void* lpDD, void* lpDDSurfaceDesc) {
+    return DDERR_ALREADYINITIALIZED;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_IsLost(void* This) {
+    return DD_OK;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_ReleaseDC(void* This, HDC hDC) {
+    LogMessage("Surface_ReleaseDC called (STUB)");
+    return DD_OK;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_Restore(void* This) {
+    LogMessage("Surface_Restore called (STUB)");
+    return DD_OK;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_SetClipper(void* This, void* lpDDClipper) {
+    return DD_OK;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_SetColorKey(void* This, DWORD dwFlags, void* lpDDColorKey) {
+    return DDERR_UNSUPPORTED;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_SetOverlayPosition(void* This, LONG lX, LONG lY) {
+    return DDERR_UNSUPPORTED;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_SetPalette(void* This, void* lpDDPalette) {
+    SDL3Surface* surface = (SDL3Surface*)This;
+    if (!surface || !lpDDPalette) return DDERR_INVALIDPARAMS;
     
-    surface->locked = false;
-    return DD_OK;
-}
-
-HRESULT STDMETHODCALLTYPE Surface_Blt(void* This, LPRECT lpDestRect, void* lpDDSrcSurface, LPRECT lpSrcRect, DWORD dwFlags, void* lpDDBltFx) {
-    LogMessage("Surface_Blt called - SDL3 texture blitting");
-    return DD_OK;
-}
-
-HRESULT STDMETHODCALLTYPE Surface_Flip(void* This, void* lpDDSurfaceTargetOverride, DWORD dwFlags) {
-    LogMessage("Surface_Flip called - triggering SDL3 present");
-    // This is where we'd trigger our SDL3 rendering
-    if (g_sdlContext.initialized && g_sdlContext.renderer) {
-        RenderFrame();
+    // Get the palette entries from the DirectDraw palette
+    PALETTEENTRY entries[256];
+    IDirectDrawPalette* ddPalette = (IDirectDrawPalette*)lpDDPalette;
+    if (ddPalette) {
+        ddPalette->GetEntries(0, 0, 256, entries);
+        
+        // Convert DirectDraw palette entries to SDL colors
+        SDL_Color colors[256];
+        for (int i = 0; i < 256; i++) {
+            colors[i].r = entries[i].peRed;
+            colors[i].g = entries[i].peGreen;
+            colors[i].b = entries[i].peBlue;
+            colors[i].a = 255;  // Full opacity
+        }
+        
+        // Update the palette colors
+        if (!SDL_SetPaletteColors(g_sdlContext.gamePalette, colors, 0, 256)) {
+            LogMessage("Failed to set palette colors");
+            return DDERR_GENERIC;
+        }
+        
+        // Update the surface palette
+        if (!SDL_SetSurfacePalette(surface->surface, g_sdlContext.gamePalette)) {
+            LogMessage("Failed to set surface palette");
+            return DDERR_GENERIC;
+        }
+        
+        // If this is a primary surface, update all other surfaces that share the palette
+        if (surface->isPrimary) {
+            // Update back buffer palette
+            if (g_sdlContext.backSurface) {
+                SDL_SetSurfacePalette(g_sdlContext.backSurface, g_sdlContext.gamePalette);
+            }
+            
+            // Update sprite buffer palette
+            if (g_sdlContext.spriteSurface) {
+                SDL_SetSurfacePalette(g_sdlContext.spriteSurface, g_sdlContext.gamePalette);
+            }
+        }
+    } else {
+        // Remove palette
+        if (!SDL_SetSurfacePalette(surface->surface, NULL)) {
+            LogMessage("Failed to remove surface palette");
+            return DDERR_GENERIC;
+        }
     }
+    
+    LogMessage("Surface_SetPalette called");
     return DD_OK;
 }
 
-HRESULT STDMETHODCALLTYPE Surface_GetSurfaceDesc(void* This, void* lpDDSurfaceDesc) {
-    LogMessage("Surface_GetSurfaceDesc called");
-    return DD_OK;
+HRESULT STDMETHODCALLTYPE Surface_UpdateOverlay(void* This, LPRECT lpSrcRect, void* lpDDDestSurface, LPRECT lpDestRect, DWORD dwFlags, void* lpDDOverlayFx) {
+    return DDERR_UNSUPPORTED;
 }
 
-// Surface_Stub already defined above
+HRESULT STDMETHODCALLTYPE Surface_UpdateOverlayDisplay(void* This, DWORD dwFlags) {
+    return DDERR_UNSUPPORTED;
+}
+
+HRESULT STDMETHODCALLTYPE Surface_UpdateOverlayZOrder(void* This, DWORD dwFlags, void* lpDDSReference) {
+    return DDERR_UNSUPPORTED;
+}
 
 bool InitializeHooks() {
-    if (g_hooks_initialized) {
-        LogMessage("Hooks already initialized.");
-        return true;
-    }
-
-    LogMessage("Initializing MinHook...");
-    if (MH_Initialize() != MH_OK) {
-        LogMessage("ERROR: MH_Initialize failed.");
-        return false;
-    }
-
-    LogMessage("Creating minimal hooks for debugging...");
-
-    // MINIMAL HOOK STRATEGY: Start with only essential hooks to let game initialize
+    LogMessage("Initializing hooks...");
     
-    // Hook 1: Input processing (working baseline)
-    if (MH_CreateHook((LPVOID)0x4025A0, (LPVOID)Hook_ProcessInputHistory, (LPVOID*)&original_process_input_history) != MH_OK) {
-        LogMessage("ERROR: Failed to create Hook_ProcessInputHistory.");
+    // Initialize MinHook
+    if (MH_Initialize() != MH_OK) {
+        LogMessage("ERROR: Failed to initialize MinHook");
         return false;
-    } else {
-        LogMessage("SUCCESS: Created Hook_ProcessInputHistory");
+    }
+    
+    // Create hooks for the game's functions
+    HMODULE hModule = GetModuleHandle(NULL);
+    if (!hModule) {
+        LogMessage("ERROR: Failed to get module handle");
+        return false;
+    }
+    
+    // Hook the game initialization function
+    FARPROC pInitGame = GetProcAddress(hModule, "initialize_game");
+    if (pInitGame) {
+        if (MH_CreateHook((void*)pInitGame, (void*)&InitGame_Hook, (void**)&original_initialize_game) != MH_OK) {
+            LogMessage("ERROR: Failed to create initialize_game hook");
+            return false;
+        }
+    }
+    
+    // Hook the DirectDraw initialization function
+    FARPROC pInitDirectDraw = GetProcAddress(hModule, "initialize_directdraw_mode");
+    if (pInitDirectDraw) {
+        if (MH_CreateHook((void*)pInitDirectDraw, (void*)&InitDirectDraw_Hook, (void**)&original_initialize_directdraw) != MH_OK) {
+            LogMessage("ERROR: Failed to create initialize_directdraw hook");
+            return false;
+        }
+    }
+    
+    // Hook the window procedure
+    FARPROC pWndProc = GetProcAddress(hModule, "main_window_proc");
+    if (pWndProc) {
+        if (MH_CreateHook((void*)pWndProc, (void*)&WindowProc_Hook, (void**)&original_window_proc) != MH_OK) {
+            LogMessage("ERROR: Failed to create window_proc hook");
+            return false;
+        }
     }
 
-    // Hook 2: Window creation (essential for detecting main window)
-    if (MH_CreateHookApi(L"user32", "CreateWindowExA", (LPVOID)Hook_CreateWindowExA, (LPVOID*)&original_create_window_ex_a) != MH_OK) {
-        LogMessage("ERROR: Failed to create Hook_CreateWindowExA.");
-        return false;
-    } else {
-        LogMessage("SUCCESS: Created Hook_CreateWindowExA");
+    // Hook the ProcessInputHistory function
+    FARPROC pProcessInputHistory = GetProcAddress(hModule, "process_input_history");
+    if (pProcessInputHistory) {
+        if (MH_CreateHook((LPVOID)pProcessInputHistory, (void*)&Hook_ProcessInputHistory, (void**)&original_process_input_history) != MH_OK) {
+            LogMessage("Failed to create hook for ProcessInputHistory");
+            return false;
+        }
     }
-
-    // Hook 3: DirectDraw initialization (DISABLED to avoid crash)
-    /*
-    if (MH_CreateHook((LPVOID)0x404980, (LPVOID)Hook_InitializeDirectDraw, (LPVOID*)&original_initialize_directdraw) != MH_OK) {
-        LogMessage("ERROR: Failed to create Hook_InitializeDirectDraw.");
-        return false;
-    } else {
-        LogMessage("SUCCESS: Created Hook_InitializeDirectDraw");
-    }
-    */
-    LogMessage("DISABLED: Hook_InitializeDirectDraw to prevent crash");
-
-    // Hook 4: Game initialization (for full SDL3 setup)
-    if (MH_CreateHook((LPVOID)0x4056C0, (LPVOID)Hook_InitializeGame, (LPVOID*)&original_initialize_game) != MH_OK) {
-        LogMessage("ERROR: Failed to create Hook_InitializeGame.");
-        return false;
-    } else {
-        LogMessage("SUCCESS: Created Hook_InitializeGame");
-    }
-
-    // Hook 5: Window procedure (for message forwarding)
-    if (MH_CreateHook((LPVOID)0x405F50, (LPVOID)Hook_WindowProc, (LPVOID*)&original_window_proc) != MH_OK) {
-        LogMessage("ERROR: Failed to create Hook_WindowProc.");
-        return false;
-    } else {
-        LogMessage("SUCCESS: Created Hook_WindowProc");
-    }
-
-    LogMessage("Enabling hooks...");
+    
+    // Enable all hooks
     if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {
-        LogMessage("ERROR: MH_EnableHook failed.");
+        LogMessage("ERROR: Failed to enable hooks");
         return false;
     }
-
-    LogMessage("Hooks initialized and enabled successfully.");
+    
     g_hooks_initialized = true;
     return true;
 }
 
 void CleanupHooks() {
-    if (!g_hooks_initialized) return;
-    LogMessage("Disabling and removing all hooks...");
     MH_DisableHook(MH_ALL_HOOKS);
     MH_Uninitialize();
-    g_hooks_initialized = false;
-    LogMessage("Hooks cleaned up.");
+    LogMessage("All hooks cleaned up.");
+}
+
+
+// Hook function implementations
+BOOL WINAPI InitGame_Hook(HWND windowHandle) {
+    LogMessage("InitGame_Hook called");
+    
+    // Call original function first
+    BOOL result = original_initialize_game(windowHandle);
+    if (!result) {
+        LogMessage("Original initialize_game failed");
+        return result;
+    }
+    
+    // Initialize our SDL3 context
+    if (InitializeSDL3() && CreateSDL3Window(g_gameWindow) && CreateSDL3Renderer()) {
+        LogMessage("SDL3 initialization successful");
+        return TRUE;
+    }
+    
+    LogMessage("SDL3 initialization failed");
+    return FALSE;
+}
+
+BOOL WINAPI InitDirectDraw_Hook(BOOL isFullScreen, HWND windowHandle) {
+    LogMessage("InitDirectDraw_Hook called");
+    
+    // Initialize SDL3 first
+    if (!g_sdlContext.initialized) {
+        if (!InitializeSDL3()) {
+            LogMessage("SDL3 initialization failed");
+            return FALSE;
+        }
+        
+        if (!CreateSDL3Window(g_gameWindow) || !CreateSDL3Renderer() || !CreateSDL3Textures()) {
+            LogMessage("SDL3 setup failed");
+            return FALSE;
+        }
+        
+        // Hide the game window - we'll render in our window
+        ShowWindow(g_gameWindow, SW_HIDE);
+        SDL_ShowWindow(g_sdlContext.window);
+        LogMessage("Game window hidden, SDL3 window shown");
+    }
+    
+    // Set up DirectDraw surface interception
+    SetupDirectDrawSurfaces();
+    
+    // Call original function
+    BOOL result = original_initialize_directdraw(isFullScreen, windowHandle);
+    if (!result) {
+        LogMessage("Original initialize_directdraw failed");
+        return result;
+    }
+    
+    return TRUE;
+}
+
+LRESULT CALLBACK WindowProc_Hook(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    // Forward to original window proc
+    return original_window_proc(hwnd, msg, wParam, lParam);
 }
 
 DWORD WINAPI InitializeThread(LPVOID hModule) {
@@ -918,7 +1397,7 @@ DWORD WINAPI InitializeThread(LPVOID hModule) {
     // --- Phase 3: Signal Success & Wait ---
     g_dll_initialized = true;
     LogMessage("Initialization complete. Signaling launcher...");
-    if (g_init_event) {
+            if (g_init_event) {
         BOOL result = SetEvent(g_init_event);
         char signal_msg[256];
         sprintf_s(signal_msg, sizeof(signal_msg), "SetEvent(success path) result: %d, handle: %p, error: %lu", result, g_init_event, GetLastError());
@@ -966,7 +1445,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             DisableThreadLibraryCalls(hModule);
             HANDLE hThread = CreateThread(NULL, 0, InitializeThread, hModule, 0, NULL);
             if (hThread == NULL) {
-                CloseHandle(g_init_event);
+                    CloseHandle(g_init_event);
                 return FALSE; // Failed to create init thread
             }
             CloseHandle(hThread); // We don't need to manage the thread, so close handle.
@@ -993,4 +1472,97 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         }
     }
     return TRUE;
+}
+
+void CleanupSDL3() {
+    LogMessage("Cleaning up SDL3 resources...");
+    
+    // Destroy textures
+    if (g_sdlContext.gameBuffer) {
+        SDL_DestroyTexture(g_sdlContext.gameBuffer);
+        g_sdlContext.gameBuffer = nullptr;
+    }
+    
+    if (g_sdlContext.backBuffer) {
+        SDL_DestroyTexture(g_sdlContext.backBuffer);
+        g_sdlContext.backBuffer = nullptr;
+    }
+    
+    if (g_sdlContext.spriteBuffer) {
+        SDL_DestroyTexture(g_sdlContext.spriteBuffer);
+        g_sdlContext.spriteBuffer = nullptr;
+    }
+    
+    // Destroy surfaces
+    if (g_sdlContext.gameSurface) {
+        SDL_DestroySurface(g_sdlContext.gameSurface);
+        g_sdlContext.gameSurface = nullptr;
+    }
+    
+    if (g_sdlContext.backSurface) {
+        SDL_DestroySurface(g_sdlContext.backSurface);
+        g_sdlContext.backSurface = nullptr;
+    }
+    
+    if (g_sdlContext.spriteSurface) {
+        SDL_DestroySurface(g_sdlContext.spriteSurface);
+        g_sdlContext.spriteSurface = nullptr;
+    }
+    
+    // Destroy palette
+    if (g_sdlContext.gamePalette) {
+        SDL_DestroyPalette(g_sdlContext.gamePalette);
+        g_sdlContext.gamePalette = nullptr;
+    }
+    
+    // Destroy renderer
+    if (g_sdlContext.renderer) {
+        SDL_DestroyRenderer(g_sdlContext.renderer);
+        g_sdlContext.renderer = nullptr;
+    }
+    
+    // Destroy window
+    if (g_sdlContext.window) {
+        SDL_DestroyWindow(g_sdlContext.window);
+        g_sdlContext.window = nullptr;
+    }
+    
+    g_sdlContext.initialized = false;
+    LogMessage("SDL3 cleanup complete");
+}
+
+void CleanupSurfaces() {
+    LogMessage("Cleaning up DirectDraw surfaces...");
+    
+    // Clean up primary surface
+    if (g_primarySurface.texture) {
+        SDL_DestroyTexture(g_primarySurface.texture);
+        g_primarySurface.texture = nullptr;
+    }
+    if (g_primarySurface.surface) {
+        SDL_DestroySurface(g_primarySurface.surface);
+        g_primarySurface.surface = nullptr;
+    }
+    
+    // Clean up back buffer surface
+    if (g_backSurface.texture) {
+        SDL_DestroyTexture(g_backSurface.texture);
+        g_backSurface.texture = nullptr;
+    }
+    if (g_backSurface.surface) {
+        SDL_DestroySurface(g_backSurface.surface);
+        g_backSurface.surface = nullptr;
+    }
+    
+    // Clean up sprite surface
+    if (g_spriteSurface.texture) {
+        SDL_DestroyTexture(g_spriteSurface.texture);
+        g_spriteSurface.texture = nullptr;
+    }
+    if (g_spriteSurface.surface) {
+        SDL_DestroySurface(g_spriteSurface.surface);
+        g_spriteSurface.surface = nullptr;
+    }
+    
+    LogMessage("DirectDraw surfaces cleaned up successfully");
 }

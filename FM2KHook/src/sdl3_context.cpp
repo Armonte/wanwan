@@ -1,5 +1,4 @@
 #include "sdl3_context.h"
-#include "fm2k_hook.h"
 #include <MinHook.h>
 #include <cstdio>
 #include <cmath>

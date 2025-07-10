@@ -198,60 +198,54 @@ ULONG STDMETHODCALLTYPE Surface_Release(void* This);
 // Surface locking implementation
 HRESULT STDMETHODCALLTYPE Surface_Lock(void* This, LPRECT lpDestRect, void* lpDDSurfaceDesc, DWORD dwFlags, HANDLE hEvent) {
     SDL3Surface* surface = (SDL3Surface*)This;
-    if (!surface || !lpDDSurfaceDesc) {
+    if (!surface || !surface->surface || !lpDDSurfaceDesc) {
         return DDERR_INVALIDPARAMS;
     }
-    
-    // Already locked
+
     if (surface->locked) {
         return DDERR_SURFACEBUSY;
     }
-    
-    // Lock the surface
-    if (!SDL_LockSurface(surface->surface)) {
-        LogMessage("Failed to lock surface");
+
+    if (SDL_LockSurface(surface->surface) != 0) {
+        LogMessage("Failed to lock SDL surface");
         return DDERR_GENERIC;
     }
-    
-    // Fill out the surface description
+
     DDSURFACEDESC* desc = (DDSURFACEDESC*)lpDDSurfaceDesc;
     desc->dwSize = sizeof(DDSURFACEDESC);
-    desc->dwFlags = DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PITCH | DDSD_PIXELFORMAT;
-    desc->dwHeight = surface->surface->h;
+    desc->dwFlags = DDSD_HEIGHT | DDSD_WIDTH | DDSD_PITCH | DDSD_PIXELFORMAT | DDSD_LPSURFACE;
     desc->dwWidth = surface->surface->w;
+    desc->dwHeight = surface->surface->h;
     desc->lPitch = surface->surface->pitch;
     desc->lpSurface = surface->surface->pixels;
     
-    // Set lock state
     surface->locked = true;
     surface->lockFlags = dwFlags;
-    
+
     return DD_OK;
 }
 
 HRESULT STDMETHODCALLTYPE Surface_Unlock(void* This, void* lpRect) {
     SDL3Surface* surface = (SDL3Surface*)This;
-    if (!surface) {
+    if (!surface || !surface->surface) {
         return DDERR_INVALIDPARAMS;
     }
-    
-    // Not locked
+
     if (!surface->locked) {
         return DDERR_NOTLOCKED;
     }
-    
-    // Unlock the surface
+
     SDL_UnlockSurface(surface->surface);
-    
-    // Update texture from surface
-    if (surface->texture) {
-        SDL_UpdateTexture(surface->texture, NULL, surface->surface->pixels, surface->surface->pitch);
-    }
-    
-    // Clear lock state
     surface->locked = false;
-    surface->lockFlags = 0;
-    
+
+    if (surface->texture) {
+        if (SDL_UpdateTexture(surface->texture, NULL, surface->surface->pixels, surface->surface->pitch) != 0) {
+            char buffer[256];
+            sprintf(buffer, "SDL_UpdateTexture failed: %s", SDL_GetError());
+            LogMessage(buffer);
+        }
+    }
+
     return DD_OK;
 }
 
@@ -590,7 +584,7 @@ void RenderFrame() {
         return;
     }
     
-    // Clear the renderer
+    // Clear the renderer to prevent visual artifacts
     SDL_SetRenderDrawColor(g_sdlContext.renderer, 0, 0, 0, 255);
     SDL_RenderClear(g_sdlContext.renderer);
     
@@ -617,9 +611,9 @@ void RenderFrame() {
         dstRect.y = (windowHeight - dstRect.h) / 2;
     }
     
-    // Render the game texture
-    if (g_sdlContext.gameBuffer) {
-        SDL_RenderTexture(g_sdlContext.renderer, g_sdlContext.gameBuffer, NULL, &dstRect);
+    // Render the game's primary surface texture, which should contain the latest frame
+    if (g_primarySurface.texture) {
+        SDL_RenderTexture(g_sdlContext.renderer, g_primarySurface.texture, NULL, &dstRect);
     }
     
     // Present the renderer
@@ -1241,63 +1235,56 @@ HRESULT STDMETHODCALLTYPE Surface_UpdateOverlayZOrder(void* This, DWORD dwFlags,
 }
 
 bool InitializeHooks() {
-    LogMessage("Initializing hooks...");
-    
-    // Initialize MinHook
+    LogMessage("Initializing hooks with verified addresses...");
+
     if (MH_Initialize() != MH_OK) {
-        LogMessage("ERROR: Failed to initialize MinHook");
+        LogMessage("ERROR: MinHook failed to initialize.");
         return false;
-    }
-    
-    // Create hooks for the game's functions
-    HMODULE hModule = GetModuleHandle(NULL);
-    if (!hModule) {
-        LogMessage("ERROR: Failed to get module handle");
-        return false;
-    }
-    
-    // Hook the game initialization function
-    FARPROC pInitGame = GetProcAddress(hModule, "initialize_game");
-    if (pInitGame) {
-        if (MH_CreateHook((void*)pInitGame, (void*)&InitGame_Hook, (void**)&original_initialize_game) != MH_OK) {
-            LogMessage("ERROR: Failed to create initialize_game hook");
-            return false;
-        }
-    }
-    
-    // Hook the DirectDraw initialization function
-    FARPROC pInitDirectDraw = GetProcAddress(hModule, "initialize_directdraw_mode");
-    if (pInitDirectDraw) {
-        if (MH_CreateHook((void*)pInitDirectDraw, (void*)&InitDirectDraw_Hook, (void**)&original_initialize_directdraw) != MH_OK) {
-            LogMessage("ERROR: Failed to create initialize_directdraw hook");
-            return false;
-        }
-    }
-    
-    // Hook the window procedure
-    FARPROC pWndProc = GetProcAddress(hModule, "main_window_proc");
-    if (pWndProc) {
-        if (MH_CreateHook((void*)pWndProc, (void*)&WindowProc_Hook, (void**)&original_window_proc) != MH_OK) {
-            LogMessage("ERROR: Failed to create window_proc hook");
-            return false;
-        }
     }
 
-    // Hook the ProcessInputHistory function
-    FARPROC pProcessInputHistory = GetProcAddress(hModule, "process_input_history");
-    if (pProcessInputHistory) {
-        if (MH_CreateHook((LPVOID)pProcessInputHistory, (void*)&Hook_ProcessInputHistory, (void**)&original_process_input_history) != MH_OK) {
-            LogMessage("Failed to create hook for ProcessInputHistory");
-            return false;
-        }
-    }
-    
-    // Enable all hooks
-    if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {
-        LogMessage("ERROR: Failed to enable hooks");
+    // Hook CreateWindowExA to capture the game window handle
+    if (MH_CreateHook((LPVOID)&CreateWindowExA, (LPVOID)&Hook_CreateWindowExA, (void**)&original_create_window_ex_a) != MH_OK) {
+        LogMessage("ERROR: Failed to create hook for CreateWindowExA.");
         return false;
     }
-    
+    LogMessage("Hook for CreateWindowExA created.");
+
+    // Hook key game functions using direct addresses from IDA
+    uintptr_t baseAddress = (uintptr_t)GetModuleHandle(NULL);
+    if (!baseAddress) {
+        LogMessage("ERROR: Failed to get game module handle.");
+        return false;
+    }
+    LogMessage("Game module base address obtained.");
+
+    void* pInitGame = (void*)(baseAddress + 0x56C0); // 0x4056C0 - 0x400000
+    if (MH_CreateHook(pInitGame, (LPVOID)&InitGame_Hook, (void**)&original_initialize_game) != MH_OK) {
+        LogMessage("ERROR: Failed to create hook for initialize_game at 0x4056C0.");
+        return false;
+    }
+    LogMessage("Hook for initialize_game created.");
+
+    void* pInitDirectDraw = (void*)(baseAddress + 0x4980); // 0x404980 - 0x400000
+    if (MH_CreateHook(pInitDirectDraw, (LPVOID)&InitDirectDraw_Hook, (void**)&original_initialize_directdraw) != MH_OK) {
+        LogMessage("ERROR: Failed to create hook for initialize_directdraw_mode at 0x404980.");
+        return false;
+    }
+    LogMessage("Hook for initialize_directdraw_mode created.");
+
+    void* pProcessInput = (void*)(baseAddress + 0x25A0); // 0x4025A0 - 0x400000
+    if (MH_CreateHook(pProcessInput, (LPVOID)&Hook_ProcessInputHistory, (void**)&original_process_input_history) != MH_OK) {
+        LogMessage("ERROR: Failed to create hook for process_input_history at 0x4025A0.");
+        return false;
+    }
+    LogMessage("Hook for process_input_history created.");
+
+    // Enable all created hooks
+    if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {
+        LogMessage("ERROR: Failed to enable hooks.");
+        return false;
+    }
+
+    LogMessage("All hooks enabled successfully.");
     g_hooks_initialized = true;
     return true;
 }

@@ -23,7 +23,8 @@
       "Bash(timeout:*)",
       "mcp__github_com_mrexodia_ida-pro-mcp__list_strings_filter",
       "Bash(bash:*)",
-      "mcp__github_com_mrexodia_ida-pro-mcp__list_globals_filter"
+      "mcp__github_com_mrexodia_ida-pro-mcp__list_globals_filter",
+      "mcp__github_com_mrexodia_ida-pro-mcp__get_current_function"
     ],
     "deny": []
   }

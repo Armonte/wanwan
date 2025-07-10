@@ -1,0 +1,31 @@
+#pragma once
+
+#include <windows.h>
+
+// DirectDraw error codes
+#define DD_OK                   S_OK
+#define DDERR_GENERIC          E_FAIL
+#define DDERR_INVALIDOBJECT    0x88760102L
+#define DDERR_INVALIDPARAMS    0x88760057L
+#define DDERR_SURFACEBUSY      0x88760EE2L
+#define DDERR_SURFACELOST      0x887601C2L
+#define DDERR_WASSTILLDRAWING  0x887601CDL
+
+// DirectDraw flags
+#define DDSD_CAPS              0x00000001L
+#define DDSD_HEIGHT            0x00000002L
+#define DDSD_WIDTH             0x00000004L
+#define DDSD_PITCH            0x00000008L
+#define DDSD_PIXELFORMAT      0x00001000L
+#define DDSD_LPSURFACE        0x00000800L
+#define DDSD_ALL              (DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PITCH | DDSD_PIXELFORMAT)
+
+#define DDSCAPS_PRIMARYSURFACE 0x00000200L
+#define DDSCAPS_OFFSCREENPLAIN 0x00000040L
+#define DDSCAPS_SYSTEMMEMORY   0x00000800L
+#define DDSCAPS_VIDEOMEMORY    0x00004000L
+
+// DirectDraw cooperative levels
+#define DDSCL_NORMAL          0x00000008L
+#define DDSCL_FULLSCREEN      0x00000001L
+#define DDSCL_EXCLUSIVE       0x00000010L 

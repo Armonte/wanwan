@@ -53,7 +53,6 @@ BOOL WINAPI Hook_InitializeDirectDraw(BOOL isFullScreen, HWND windowHandle);
 LRESULT CALLBACK WindowProc_Hook(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 LONG WINAPI Hook_SetWindowLongA(HWND hWnd, int nIndex, LONG dwNewLong);
 bool EventFilter(void* userdata, SDL_Event* event);
-bool WindowsMessageHook(void* userdata, MSG* msg);
 bool CreateSDL3Textures();
 void SetupDirectDrawVirtualTable();
 void SetupSurfaceVirtualTables();
@@ -314,6 +313,8 @@ HRESULT STDMETHODCALLTYPE Surface_Unlock(void* This, void* lpRect) {
     SDL_UnlockSurface(surface->surface);
     surface->locked = false;
 
+    // CRITICAL: After the game unlocks the surface, its pixel data has been updated.
+    // We must now update our corresponding SDL_Texture with this new data.
     if (surface->texture) {
         if (SDL_UpdateTexture(surface->texture, NULL, surface->surface->pixels, surface->surface->pitch) != 0) {
             char buffer[256];
@@ -331,22 +332,44 @@ HRESULT STDMETHODCALLTYPE Surface_Flip(void* This, void* lpDDSurfaceTargetOverri
         return DDERR_INVALIDPARAMS;
     }
     
-    // Clear the renderer
+    if (!g_sdlContext.initialized || !g_sdlContext.renderer) {
+        return DD_OK;
+    }
+    
+    // Clear the renderer to prevent visual artifacts
+    SDL_SetRenderDrawColor(g_sdlContext.renderer, 0, 0, 0, 255);
     SDL_RenderClear(g_sdlContext.renderer);
     
-    // Set up source and destination rectangles for proper scaling
-    SDL_FRect srcRect = {0, 0, (float)surface->surface->w, (float)surface->surface->h};
-    SDL_FRect dstRect = {0, 0, (float)g_sdlContext.windowWidth, (float)g_sdlContext.windowHeight};
+    // Get the window size for scaling
+    int windowWidth, windowHeight;
+    SDL_GetWindowSize(g_sdlContext.window, &windowWidth, &windowHeight);
     
-    // Render the back buffer to the screen with proper scaling
-    if (g_sdlContext.backBuffer) {
-        SDL_RenderTexture(g_sdlContext.renderer, g_sdlContext.backBuffer, &srcRect, &dstRect);
+    // Calculate aspect ratio preserving scaling
+    float gameAspect = (float)g_sdlContext.gameWidth / g_sdlContext.gameHeight;
+    float windowAspect = (float)windowWidth / windowHeight;
+    
+    SDL_FRect dstRect = {0};
+    if (windowAspect > gameAspect) {
+        // Window is wider than game aspect
+        dstRect.h = (float)windowHeight;
+        dstRect.w = dstRect.h * gameAspect;
+        dstRect.x = (windowWidth - dstRect.w) / 2;
+        dstRect.y = 0;
+    } else {
+        // Window is taller than game aspect
+        dstRect.w = (float)windowWidth;
+        dstRect.h = dstRect.w / gameAspect;
+        dstRect.x = 0;
+        dstRect.y = (windowHeight - dstRect.h) / 2;
+    }
+    
+    // Render the game's primary surface texture, which should contain the latest frame
+    if (g_primarySurface.texture) {
+        SDL_RenderTexture(g_sdlContext.renderer, g_primarySurface.texture, NULL, &dstRect);
     }
     
     // Present the renderer
     SDL_RenderPresent(g_sdlContext.renderer);
-    
-    return DD_OK;
 }
 
 HRESULT STDMETHODCALLTYPE Surface_GetSurfaceDesc(void* This, void* lpDDSurfaceDesc) {
@@ -557,30 +580,43 @@ HWND WINAPI Hook_CreateWindowExA(
 {
     LogMessage("Hook_CreateWindowExA triggered!");
 
+    // Let the game create its window first.
+    HWND gameHwnd = original_create_window_ex_a(dwExStyle, lpClassName, lpWindowName, dwStyle, X, Y, nWidth, nHeight, hWndParent, hMenu, hInstance, lpParam);
+
     // Check if this is the main game window
-    if (lpClassName && strcmp(lpClassName, "KGT2KGAME") == 0) {
+    if (gameHwnd && lpClassName && strcmp(lpClassName, "KGT2KGAME") == 0) {
         LogMessage("*** DETECTED MAIN GAME WINDOW - INITIATING DIRECT TAKEOVER ***");
+        g_gameWindow = gameHwnd;
 
         // Initialize our entire SDL3 context right here
-        if (!InitializeSDL3() || !CreateSDL3Window(NULL) || !CreateSDL3Renderer() || !CreateSDL3Textures()) {
-            LogMessage("FATAL: SDL3 initialization failed during window creation hijack. Cannot proceed.");
-            return NULL; // Prevent window creation
+        if (!InitializeSDL3()) {
+            LogMessage("FATAL: SDL3 base initialization failed. Cannot proceed.");
+            return gameHwnd; // Return original handle to be safe
         }
         
-        // Get the native HWND from our new SDL3 window
-        HWND sdl_hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(g_sdlContext.window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
-        if (!sdl_hwnd) {
-            LogMessage("FATAL: Could not get HWND from SDL3 window.");
-            return NULL;
+        // Create an SDL window from the existing game window handle
+        SDL_PropertiesID props = SDL_CreateProperties();
+        SDL_SetPointerProperty(props, SDL_PROP_WINDOW_CREATE_WIN32_HWND_POINTER, gameHwnd);
+        g_sdlContext.window = SDL_CreateWindowWithProperties(props);
+        SDL_DestroyProperties(props);
+
+        if (!g_sdlContext.window) {
+            char buffer[256];
+            sprintf_s(buffer, sizeof(buffer), "FATAL: SDL_CreateWindowWithProperties failed: %s", SDL_GetError());
+            LogMessage(buffer);
+            return gameHwnd;
         }
 
-        LogMessage("Direct Takeover successful. Returning our SDL3 window handle to the game.");
-        g_gameWindow = sdl_hwnd; // Store our new window handle
-        return sdl_hwnd; // Return our window handle to the game
+        if (!CreateSDL3Renderer() || !CreateSDL3Textures()) {
+            LogMessage("FATAL: SDL3 renderer/texture creation failed. Cannot proceed.");
+            return gameHwnd;
+        }
+        
+        LogMessage("Direct Takeover successful. SDL is now docked to the game window.");
     }
     
-    // For all other windows, call the original function
-    return original_create_window_ex_a(dwExStyle, lpClassName, lpWindowName, dwStyle, X, Y, nWidth, nHeight, hWndParent, hMenu, hInstance, lpParam);
+    // Always return the original handle created by the game.
+    return gameHwnd;
 }
 
 BOOL WINAPI Hook_InitializeGame(HWND windowHandle) {
@@ -618,25 +654,32 @@ BOOL WINAPI Hook_InitializeDirectDraw(BOOL isFullScreen, HWND windowHandle) {
     return TRUE; 
 }
 
-LRESULT WINAPI Hook_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    // This hook is important for intercepting window messages.
-    return original_window_proc(hwnd, msg, wParam, lParam);
+LRESULT CALLBACK WindowProc_Hook(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    // This hook is called from our SDL message filter.
+    // We forward the message to the game's real window procedure, but only if it has been set.
+    if (original_window_proc) {
+        return CallWindowProc(original_window_proc, hwnd, msg, wParam, lParam);
+    }
+    
+    // If the game hasn't set its window proc yet, we must do default processing.
+    return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
 BOOL WINAPI Hook_ProcessInputHistory() {
-    // This hook is called 60 times per second - perfect for rendering
-    static int renderCallCount = 0;
-    renderCallCount++;
+    // This hook is called 60 times per second - perfect for our main loop.
+    
+    // Process all pending SDL events. This is crucial for window responsiveness and input handling.
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+        // Our EventFilter is called by SDL_PollEvent, so we don't need to do much here.
+        // We can add ImGui event handling here in the future.
+    }
 
+    // Call the original game logic.
     BOOL result = original_process_input_history();
 
-    // If SDL3 is initialized, perform rendering
+    // If SDL3 is initialized, perform rendering.
     if (g_sdlContext.initialized && g_sdlContext.renderer) {
-        if (renderCallCount <= 10) {
-        char buffer[256];
-            sprintf_s(buffer, sizeof(buffer), "Hook_ProcessInputHistory call #%d - starting render", renderCallCount);
-            LogMessage(buffer);
-        }
         RenderFrame();
     }
 
@@ -676,8 +719,10 @@ void RenderFrame() {
     }
     
     // Render the game's primary surface texture, which should contain the latest frame
-    if (g_primarySurface.texture) {
-        SDL_RenderTexture(g_sdlContext.renderer, g_primarySurface.texture, NULL, &dstRect);
+    // NOTE: The game seems to draw everything to the BACK buffer first, then flips.
+    // So we should render the BACK buffer's texture, not the primary one.
+    if (g_backSurface.texture) {
+        SDL_RenderTexture(g_sdlContext.renderer, g_backSurface.texture, NULL, &dstRect);
     }
     
     // Present the renderer
@@ -765,9 +810,6 @@ bool CreateSDL3Window(HWND gameHwnd) {
         return false;
     }
     
-    // Set up Windows message hook
-    SDL_SetWindowsMessageHook(WindowsMessageHook, NULL);
-    
     return true;
 }
 
@@ -817,15 +859,6 @@ bool EventFilter(void* userdata, SDL_Event* event) {
             return false;
     }
     
-    return true;
-}
-
-// Windows message hook callback
-bool WindowsMessageHook(void* userdata, MSG* msg) {
-    // Forward relevant messages to our window proc
-    if (msg && msg->hwnd == g_gameWindow) {
-        WindowProc_Hook(msg->hwnd, msg->message, msg->wParam, msg->lParam);
-    }
     return true;
 }
 
@@ -1463,6 +1496,15 @@ HRESULT WINAPI Hook_DirectDrawCreate(void* lpGUID, void** lplpDD, void* pUnkOute
         SetupDirectDrawVirtualTable();
         SetupSurfaceVirtualTables();
         InitializeSurfaces();
+
+        // CRITICAL FIX: The vtable for the main DirectDraw object was not being set here.
+        LogMessage("CRITICAL FIX: Explicitly setting g_directDraw vtable and state.");
+        g_directDraw.lpVtbl = &g_directDrawVtbl;
+        g_directDraw.initialized = true;
+        g_directDraw.refCount = 1; // Start with a reference count of 1
+        g_directDraw.primarySurface = &g_primarySurface;
+        g_directDraw.backSurface = &g_backSurface;
+        g_directDraw.spriteSurface = &g_spriteSurface;
     }
     
     // Return our fake DirectDraw object instead of creating a real one
@@ -1471,6 +1513,7 @@ HRESULT WINAPI Hook_DirectDrawCreate(void* lpGUID, void** lplpDD, void* pUnkOute
         g_directDraw.refCount++;
         LogMessage("DirectDrawCreate: Returning our fake DirectDraw object");
         
+        // This log should now show a valid vtable address
         sprintf_s(hookDebug, sizeof(hookDebug), "DirectDrawCreate: Set *lplpDD=%p, vtbl=%p", 
                  &g_directDraw, g_directDraw.lpVtbl);
         LogMessage(hookDebug);
@@ -1643,34 +1686,18 @@ BOOL WINAPI InitDirectDraw_Hook(BOOL isFullScreen, HWND windowHandle) {
 LONG WINAPI Hook_SetWindowLongA(HWND hWnd, int nIndex, LONG dwNewLong) {
     if (nIndex == GWLP_WNDPROC) {
         LogMessage("Hook_SetWindowLongA: Intercepted attempt to set a new window procedure.");
-        // Store the game's intended window procedure
-        original_window_proc = (WNDPROC)dwNewLong;
+        
+        // Store the game's intended window procedure if we haven't already
+        if (!original_window_proc) {
+            original_window_proc = (WNDPROC)dwNewLong;
+            LogMessage("Stored game's main window procedure.");
+        }
+        
         // Return the existing procedure, as we are managing it now.
-        return (LONG)WindowProc_Hook;
+        // We are replacing their call with our own subclassing.
+        return (LONG)SetWindowLongPtr(hWnd, nIndex, (LONG_PTR)WindowProc_Hook);
     }
     return original_set_window_long_a(hWnd, nIndex, dwNewLong);
-}
-
-LRESULT CALLBACK WindowProc_Hook(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    // This hook is important for intercepting window messages.
-    // For now, we'll just log some key messages and pass everything to the original.
-    switch (msg) {
-        case WM_ACTIVATEAPP:
-            LogMessage("WindowProc_Hook: WM_ACTIVATEAPP received.");
-            break;
-        case WM_DESTROY:
-            LogMessage("WindowProc_Hook: WM_DESTROY received.");
-            break;
-        case WM_CLOSE:
-            LogMessage("WindowProc_Hook: WM_CLOSE received.");
-            break;
-    }
-    
-    if (original_window_proc) {
-        return original_window_proc(hwnd, msg, wParam, lParam);
-    }
-    
-    return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
 DWORD WINAPI InitializeThread(LPVOID hModule) {

@@ -24,7 +24,10 @@
       "mcp__github_com_mrexodia_ida-pro-mcp__list_strings_filter",
       "Bash(bash:*)",
       "mcp__github_com_mrexodia_ida-pro-mcp__list_globals_filter",
-      "mcp__github_com_mrexodia_ida-pro-mcp__get_current_function"
+      "mcp__github_com_mrexodia_ida-pro-mcp__get_current_function",
+      "mcp__github_com_mrexodia_ida-pro-mcp__read_memory_bytes",
+      "mcp__github_com_mrexodia_ida-pro-mcp__get_global_variable_value_by_name",
+      "mcp__github_com_mrexodia_ida-pro-mcp__convert_number"
     ],
     "deny": []
   }

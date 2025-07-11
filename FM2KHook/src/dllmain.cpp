@@ -33,7 +33,9 @@
 #define DDERR_INVALIDPARAMS     0x887000057L
 #define DDERR_SURFACEBUSY       0x887000176L
 #define DDERR_NOTLOCKED         0x887000094L
+#define DDERR_NOTFOUND          0x887000076L
 #define DDSCAPS_PRIMARYSURFACE  0x00000200L
+#define DDSCAPS_BACKBUFFER      0x00000004L
 #define DDSCAPS_FLIP           0x00000001L
 #define DDSCAPS_COMPLEX        0x00000008L
 #define DDSCAPS_VIDEOMEMORY    0x00004000L
@@ -49,10 +51,13 @@ void RenderFrame();
 BOOL WINAPI Hook_InitializeGame(HWND windowHandle);
 BOOL WINAPI Hook_InitializeDirectDraw(BOOL isFullScreen, HWND windowHandle);
 LRESULT CALLBACK WindowProc_Hook(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+LONG WINAPI Hook_SetWindowLongA(HWND hWnd, int nIndex, LONG dwNewLong);
 bool EventFilter(void* userdata, SDL_Event* event);
 bool WindowsMessageHook(void* userdata, MSG* msg);
 bool CreateSDL3Textures();
+void SetupDirectDrawVirtualTable();
 void SetupSurfaceVirtualTables();
+void SetupDirectDrawReplacement();
 void CleanupHooks();
 
 // --- Forward declarations for hooks ---
@@ -65,24 +70,67 @@ extern "C" {
     static BOOL (WINAPI* original_initialize_game)(HWND windowHandle) = nullptr;
     static BOOL (WINAPI* original_initialize_directdraw)(BOOL isFullScreen, HWND windowHandle) = nullptr;
     static LRESULT (WINAPI* original_window_proc)(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) = nullptr;
+    static LONG (WINAPI* original_set_window_long_a)(HWND hWnd, int nIndex, LONG dwNewLong) = nullptr;
     static HWND (WINAPI* original_create_window_ex_a)(DWORD, LPCSTR, LPCSTR, DWORD, int, int, int, int, HWND, HMENU, HINSTANCE, LPVOID) = nullptr;
+    static HRESULT (WINAPI* original_directdraw_create)(void* lpGUID, void** lplpDD, void* pUnkOuter) = nullptr;
 }
 
-// DirectDraw Surface vtable declarations
+// DirectDraw vtable declarations
+// IUnknown methods
+HRESULT STDMETHODCALLTYPE DirectDraw_QueryInterface(void* This, REFIID riid, void** ppvObject);
+ULONG STDMETHODCALLTYPE DirectDraw_AddRef(void* This);
+ULONG STDMETHODCALLTYPE DirectDraw_Release(void* This);
+// IDirectDraw methods (essential ones based on assembly analysis)
+HRESULT STDMETHODCALLTYPE DirectDraw_SetCooperativeLevel(void* This, HWND hWnd, DWORD dwFlags);
+HRESULT STDMETHODCALLTYPE DirectDraw_SetDisplayMode(void* This, DWORD dwWidth, DWORD dwHeight, DWORD dwBPP);
+HRESULT STDMETHODCALLTYPE DirectDraw_CreateSurface(void* This, void* lpDDSurfaceDesc, void** lplpDDSurface, void* pUnkOuter);
+// Stub implementations for other DirectDraw methods
+HRESULT STDMETHODCALLTYPE DirectDraw_Stub(void* This, ...);
+// Test function with minimal implementation
+HRESULT __stdcall DirectDraw_TestFunction();
+
+// DirectDrawCreate hook
+HRESULT WINAPI Hook_DirectDrawCreate(void* lpGUID, void** lplpDD, void* pUnkOuter);
+
+// DirectDraw Surface vtable declarations - ALL 27 methods
+// IUnknown methods
 HRESULT STDMETHODCALLTYPE Surface_QueryInterface(void* This, REFIID riid, void** ppvObject);
 ULONG STDMETHODCALLTYPE Surface_AddRef(void* This);
 ULONG STDMETHODCALLTYPE Surface_Release(void* This);
-HRESULT STDMETHODCALLTYPE Surface_Lock(void* This, LPRECT lpDestRect, void* lpDDSurfaceDesc, DWORD dwFlags, HANDLE hEvent);
-HRESULT STDMETHODCALLTYPE Surface_Unlock(void* This, void* lpRect);
+// IDirectDrawSurface methods  
+HRESULT STDMETHODCALLTYPE Surface_AddAttachedSurface(void* This, void* lpDDSAttachedSurface);
+HRESULT STDMETHODCALLTYPE Surface_AddOverlayDirtyRect(void* This, LPRECT lpRect);
 HRESULT STDMETHODCALLTYPE Surface_Blt(void* This, LPRECT lpDestRect, void* lpDDSrcSurface, LPRECT lpSrcRect, DWORD dwFlags, void* lpDDBltFx);
+HRESULT STDMETHODCALLTYPE Surface_BltBatch(void* This, void* lpDDBltBatch, DWORD dwCount, DWORD dwFlags);
+HRESULT STDMETHODCALLTYPE Surface_BltFast(void* This, DWORD dwX, DWORD dwY, void* lpDDSrcSurface, LPRECT lpSrcRect, DWORD dwTrans);
+HRESULT STDMETHODCALLTYPE Surface_DeleteAttachedSurface(void* This, DWORD dwFlags, void* lpDDSAttachedSurface);
+HRESULT STDMETHODCALLTYPE Surface_EnumAttachedSurfaces(void* This, LPVOID lpContext, void* lpEnumSurfacesCallback);
+HRESULT STDMETHODCALLTYPE Surface_EnumOverlayZOrders(void* This, DWORD dwFlags, LPVOID lpContext, void* lpfnCallback);
 HRESULT STDMETHODCALLTYPE Surface_Flip(void* This, void* lpDDSurfaceTargetOverride, DWORD dwFlags);
-HRESULT STDMETHODCALLTYPE Surface_SetPalette(void* This, void* lpDDPalette);
-HRESULT STDMETHODCALLTYPE Surface_GetDC(void* This, HDC* lphDC);
-HRESULT STDMETHODCALLTYPE Surface_ReleaseDC(void* This, HDC hDC);
 HRESULT STDMETHODCALLTYPE Surface_GetAttachedSurface(void* This, void* lpDDSCaps, void** lplpDDAttachedSurface);
+HRESULT STDMETHODCALLTYPE Surface_GetBltStatus(void* This, DWORD dwFlags);
 HRESULT STDMETHODCALLTYPE Surface_GetCaps(void* This, void* lpDDSCaps);
+HRESULT STDMETHODCALLTYPE Surface_GetClipper(void* This, void** lplpDDClipper);
+HRESULT STDMETHODCALLTYPE Surface_GetColorKey(void* This, DWORD dwFlags, void* lpDDColorKey);
+HRESULT STDMETHODCALLTYPE Surface_GetDC(void* This, HDC* lphDC);
+HRESULT STDMETHODCALLTYPE Surface_GetFlipStatus(void* This, DWORD dwFlags);
+HRESULT STDMETHODCALLTYPE Surface_GetOverlayPosition(void* This, LPLONG lplX, LPLONG lplY);
+HRESULT STDMETHODCALLTYPE Surface_GetPalette(void* This, void** lplpDDPalette);
 HRESULT STDMETHODCALLTYPE Surface_GetPixelFormat(void* This, void* lpDDPixelFormat);
 HRESULT STDMETHODCALLTYPE Surface_GetSurfaceDesc(void* This, void* lpDDSurfaceDesc);
+HRESULT STDMETHODCALLTYPE Surface_Initialize(void* This, void* lpDD, void* lpDDSurfaceDesc);
+HRESULT STDMETHODCALLTYPE Surface_IsLost(void* This);
+HRESULT STDMETHODCALLTYPE Surface_Lock(void* This, LPRECT lpDestRect, void* lpDDSurfaceDesc, DWORD dwFlags, HANDLE hEvent);
+HRESULT STDMETHODCALLTYPE Surface_ReleaseDC(void* This, HDC hDC);
+HRESULT STDMETHODCALLTYPE Surface_Restore(void* This);
+HRESULT STDMETHODCALLTYPE Surface_SetClipper(void* This, void* lpDDClipper);
+HRESULT STDMETHODCALLTYPE Surface_SetColorKey(void* This, DWORD dwFlags, void* lpDDColorKey);
+HRESULT STDMETHODCALLTYPE Surface_SetOverlayPosition(void* This, LONG lX, LONG lY);
+HRESULT STDMETHODCALLTYPE Surface_SetPalette(void* This, void* lpDDPalette);
+HRESULT STDMETHODCALLTYPE Surface_Unlock(void* This, void* lpRect);
+HRESULT STDMETHODCALLTYPE Surface_UpdateOverlay(void* This, LPRECT lpSrcRect, void* lpDDDestSurface, LPRECT lpDestRect, DWORD dwFlags, void* lpDDOverlayFx);
+HRESULT STDMETHODCALLTYPE Surface_UpdateOverlayDisplay(void* This, DWORD dwFlags);
+HRESULT STDMETHODCALLTYPE Surface_UpdateOverlayZOrder(void* This, DWORD dwFlags, void* lpDDSReference);
 
 // --- Globals ---
 static HANDLE g_init_event = nullptr;
@@ -110,6 +158,36 @@ struct SDL3Context {
 };
 
 static SDL3Context g_sdlContext = {nullptr};
+
+// DirectDraw COM Interface - COMPLETE vtable with correct method order
+struct IDirectDrawVtbl {
+    // IUnknown methods (0-2)
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(void* This, REFIID riid, void** ppvObject);         // 0
+    ULONG (STDMETHODCALLTYPE *AddRef)(void* This);                                                  // 1
+    ULONG (STDMETHODCALLTYPE *Release)(void* This);                                                 // 2
+    
+    // IDirectDraw methods in EXACT order (3-21)
+    HRESULT (STDMETHODCALLTYPE *Compact)(void* This);                                               // 3
+    HRESULT (STDMETHODCALLTYPE *CreateClipper)(void* This, DWORD, void**, void*);                   // 4
+    HRESULT (STDMETHODCALLTYPE *CreatePalette)(void* This, DWORD, void*, void**, void*);            // 5
+    HRESULT (STDMETHODCALLTYPE *CreateSurface)(void* This, void*, void**, void*);                   // 6 - offset 0x18h
+    HRESULT (STDMETHODCALLTYPE *DuplicateSurface)(void* This, void*, void**);                       // 7
+    HRESULT (STDMETHODCALLTYPE *EnumDisplayModes)(void* This, DWORD, void*, void*, void*);          // 8
+    HRESULT (STDMETHODCALLTYPE *EnumSurfaces)(void* This, DWORD, void*, void*, void*);              // 9
+    HRESULT (STDMETHODCALLTYPE *FlipToGDISurface)(void* This);                                      // 10
+    HRESULT (STDMETHODCALLTYPE *GetCaps)(void* This, void*, void*);                                 // 11
+    HRESULT (STDMETHODCALLTYPE *GetDisplayMode)(void* This, void*);                                 // 12
+    HRESULT (STDMETHODCALLTYPE *GetFourCCCodes)(void* This, LPDWORD, LPDWORD);                     // 13
+    HRESULT (STDMETHODCALLTYPE *GetGDISurface)(void* This, void**);                                 // 14
+    HRESULT (STDMETHODCALLTYPE *GetMonitorFrequency)(void* This, LPDWORD);                         // 15
+    HRESULT (STDMETHODCALLTYPE *GetScanLine)(void* This, LPDWORD);                                  // 16
+    HRESULT (STDMETHODCALLTYPE *GetVerticalBlankStatus)(void* This, LPBOOL);                       // 17
+    HRESULT (STDMETHODCALLTYPE *Initialize)(void* This, GUID*);                                     // 18
+    HRESULT (STDMETHODCALLTYPE *RestoreDisplayMode)(void* This);                                    // 19
+    HRESULT (STDMETHODCALLTYPE *SetCooperativeLevel)(void* This, HWND, DWORD);                     // 20 - offset 0x50h
+    HRESULT (STDMETHODCALLTYPE *SetDisplayMode)(void* This, DWORD, DWORD, DWORD);                  // 21 - offset 0x54h
+    HRESULT (STDMETHODCALLTYPE *WaitForVerticalBlank)(void* This, DWORD, HANDLE);                  // 22
+};
 
 // DirectDraw Surface COM Interface
 struct IDirectDrawSurfaceVtbl {
@@ -169,11 +247,12 @@ struct SDL3Surface {
 
 // DirectDraw Structure
 struct SDL3DirectDraw {
-    void* lpVtbl;  // DirectDraw vtable (not implemented yet)
+    IDirectDrawVtbl* lpVtbl;  // DirectDraw vtable pointer
     bool initialized;
     SDL3Surface* primarySurface;
     SDL3Surface* backSurface;
     SDL3Surface* spriteSurface;
+    LONG refCount;
 };
 
 // Global instances
@@ -181,13 +260,10 @@ static SDL3DirectDraw g_directDraw = {nullptr};
 static SDL3Surface g_primarySurface = {nullptr};
 static SDL3Surface g_backSurface = {nullptr};
 static SDL3Surface g_spriteSurface = {nullptr};
-static IDirectDrawSurfaceVtbl g_surfaceVtbl = {nullptr};
+static IDirectDrawVtbl g_directDrawVtbl;
+static IDirectDrawSurfaceVtbl g_surfaceVtbl;
 
-// Stub implementation for non-critical methods
-HRESULT STDMETHODCALLTYPE Surface_Stub(void* This, ...) {
-    // Just return success for any unimplemented method
-    return DD_OK;
-}
+// All surface methods are now properly implemented with correct signatures
 
 // Surface method implementations
 // Surface method implementations
@@ -286,8 +362,8 @@ HRESULT STDMETHODCALLTYPE Surface_GetSurfaceDesc(void* This, void* lpDDSurfaceDe
     desc->dwWidth = surface->surface->w;
     desc->lPitch = surface->surface->pitch;
     desc->ddpfPixelFormat.dwSize = sizeof(DDPIXELFORMAT);
-    desc->ddpfPixelFormat.dwFlags = DDPF_RGB | DDPF_PALETTEINDEXED8;
-    desc->ddpfPixelFormat.dwRGBBitCount = 8;
+    desc->ddpfPixelFormat.dwFlags = DDPF_RGB;
+    desc->ddpfPixelFormat.dwRGBBitCount = 32;
     
     return DD_OK;
 }
@@ -361,9 +437,13 @@ HRESULT STDMETHODCALLTYPE Surface_Blt(void* This, LPRECT lpDestRect, void* lpDDS
 void SetupDirectDrawSurfaces() {
     LogMessage("Setting up DirectDraw surfaces...");
     
+    // CRITICAL: Initialize vtables FIRST before any surface assignments
+    SetupDirectDrawVirtualTable();
+    SetupSurfaceVirtualTables();
+    
     // Initialize primary surface
     g_primarySurface.lpVtbl = &g_surfaceVtbl;
-    g_primarySurface.surface = SDL_CreateSurface(g_sdlContext.gameWidth, g_sdlContext.gameHeight, SDL_PIXELFORMAT_INDEX8);
+    g_primarySurface.surface = SDL_CreateSurface(g_sdlContext.gameWidth, g_sdlContext.gameHeight, SDL_PIXELFORMAT_RGBA8888);
     g_primarySurface.texture = SDL_CreateTextureFromSurface(g_sdlContext.renderer, g_primarySurface.surface);
     g_primarySurface.isPrimary = true;
     g_primarySurface.isBackBuffer = false;
@@ -374,7 +454,7 @@ void SetupDirectDrawSurfaces() {
     
     // Initialize back buffer surface
     g_backSurface.lpVtbl = &g_surfaceVtbl;
-    g_backSurface.surface = SDL_CreateSurface(640, 480, SDL_PIXELFORMAT_INDEX8);
+    g_backSurface.surface = SDL_CreateSurface(640, 480, SDL_PIXELFORMAT_RGBA8888);
     g_backSurface.texture = SDL_CreateTextureFromSurface(g_sdlContext.renderer, g_backSurface.surface);
     g_backSurface.isPrimary = false;
     g_backSurface.isBackBuffer = true;
@@ -385,7 +465,7 @@ void SetupDirectDrawSurfaces() {
     
     // Initialize sprite surface
     g_spriteSurface.lpVtbl = &g_surfaceVtbl;
-    g_spriteSurface.surface = SDL_CreateSurface(256, 256, SDL_PIXELFORMAT_INDEX8);
+    g_spriteSurface.surface = SDL_CreateSurface(256, 256, SDL_PIXELFORMAT_RGBA8888);
     g_spriteSurface.texture = SDL_CreateTextureFromSurface(g_sdlContext.renderer, g_spriteSurface.surface);
     g_spriteSurface.isPrimary = false;
     g_spriteSurface.isBackBuffer = false;
@@ -394,16 +474,39 @@ void SetupDirectDrawSurfaces() {
     g_spriteSurface.locked = false;
     g_spriteSurface.lockFlags = 0;
     
-    // Create shared palette for all surfaces
-    SDL_Palette* palette = SDL_CreatePalette(256);
-    if (palette) {
-        SDL_SetSurfacePalette(g_primarySurface.surface, palette);
-        SDL_SetSurfacePalette(g_backSurface.surface, palette);
-        SDL_SetSurfacePalette(g_spriteSurface.surface, palette);
-        SDL_DestroyPalette(palette);  // Surfaces will keep a reference
-    }
+    // Initialize DirectDraw object
+    LogMessage("About to set DirectDraw vtable...");
+    char vtableDebug[256];
+    sprintf_s(vtableDebug, sizeof(vtableDebug), "g_directDrawVtbl address: %p, first method: %p", 
+             &g_directDrawVtbl, g_directDrawVtbl.QueryInterface);
+    LogMessage(vtableDebug);
+    
+    g_directDraw.lpVtbl = &g_directDrawVtbl;
+    g_directDraw.initialized = true;
+    g_directDraw.primarySurface = &g_primarySurface;
+    g_directDraw.backSurface = &g_backSurface;
+    g_directDraw.spriteSurface = &g_spriteSurface;
+    g_directDraw.refCount = 1;
+    
+    sprintf_s(vtableDebug, sizeof(vtableDebug), "DirectDraw object vtable set to: %p", g_directDraw.lpVtbl);
+    LogMessage(vtableDebug);
     
     LogMessage("DirectDraw surfaces initialized successfully");
+    
+    // Debug: Verify DirectDraw object is properly initialized
+    char ddObjectDebug[256];
+    sprintf_s(ddObjectDebug, sizeof(ddObjectDebug),
+        "DIRECTDRAW OBJECT DEBUG: lpVtbl=%p initialized=%d refCount=%d",
+        g_directDraw.lpVtbl, g_directDraw.initialized, g_directDraw.refCount);
+    LogMessage(ddObjectDebug);
+    
+    // Debug: Verify surface objects are properly initialized
+    char surfaceDebug[512];
+    sprintf_s(surfaceDebug, sizeof(surfaceDebug),
+        "SURFACE DEBUG: Primary lpVtbl=%p surface=%p texture=%p | Back lpVtbl=%p surface=%p texture=%p",
+        g_primarySurface.lpVtbl, g_primarySurface.surface, g_primarySurface.texture,
+        g_backSurface.lpVtbl, g_backSurface.surface, g_backSurface.texture);
+    LogMessage(surfaceDebug);
 }
 
 // Exception handler for debugging crashes
@@ -446,112 +549,66 @@ HWND WINAPI Hook_CreateWindowExA(
     HINSTANCE hInstance, LPVOID lpParam) 
 {
     LogMessage("Hook_CreateWindowExA triggered!");
-    
-    // Call original function to create the game window
-    HWND gameWindow = original_create_window_ex_a(dwExStyle, lpClassName, lpWindowName, dwStyle, X, Y, nWidth, nHeight, hWndParent, hMenu, hInstance, lpParam);
-    
-    if (gameWindow && lpClassName) {
-        char buffer[256];
-        sprintf_s(buffer, sizeof(buffer), "Window created: class='%s', title='%s', hwnd=%p", 
-                lpClassName, lpWindowName ? lpWindowName : "NULL", gameWindow);
-        LogMessage(buffer);
-        
-        // Check if this is the main game window
-        if (strcmp(lpClassName, "KGT2KGAME") == 0) {
-            LogMessage("*** DETECTED MAIN GAME WINDOW - storing for future use ***");
-            g_gameWindow = gameWindow;
-            
-            // Set the game's window handle global at verified address
-            HWND* pGameWindowHandle = (HWND*)0x4246F8; // g_hwnd_parent from IDA
-            if (!IsBadWritePtr(pGameWindowHandle, sizeof(HWND))) {
-                *pGameWindowHandle = gameWindow;
-                LogMessage("Updated g_hwnd_parent global with game window handle");
-            } else {
-                LogMessage("WARNING: Could not access g_hwnd_parent at 0x4246F8");
-            }
-            
-            // Window detection complete - SDL3 takeover will happen in Hook_InitializeGame
-            LogMessage("Main game window detected and stored for SDL3 takeover");
+
+    // Check if this is the main game window
+    if (lpClassName && strcmp(lpClassName, "KGT2KGAME") == 0) {
+        LogMessage("*** DETECTED MAIN GAME WINDOW - INITIATING DIRECT TAKEOVER ***");
+
+        // Initialize our entire SDL3 context right here
+        if (!InitializeSDL3() || !CreateSDL3Window(NULL) || !CreateSDL3Renderer() || !CreateSDL3Textures()) {
+            LogMessage("FATAL: SDL3 initialization failed during window creation hijack. Cannot proceed.");
+            return NULL; // Prevent window creation
         }
+        
+        // Get the native HWND from our new SDL3 window
+        HWND sdl_hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(g_sdlContext.window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+        if (!sdl_hwnd) {
+            LogMessage("FATAL: Could not get HWND from SDL3 window.");
+            return NULL;
+        }
+
+        LogMessage("Direct Takeover successful. Returning our SDL3 window handle to the game.");
+        g_gameWindow = sdl_hwnd; // Store our new window handle
+        return sdl_hwnd; // Return our window handle to the game
     }
     
-    return gameWindow;
+    // For all other windows, call the original function
+    return original_create_window_ex_a(dwExStyle, lpClassName, lpWindowName, dwStyle, X, Y, nWidth, nHeight, hWndParent, hMenu, hInstance, lpParam);
 }
 
 BOOL WINAPI Hook_InitializeGame(HWND windowHandle) {
-    LogMessage("Hook_InitializeGame triggered - setting up SDL3 side-by-side!");
+    LogMessage("Hook_InitializeGame triggered!");
     
+    // We now have a valid windowHandle from our SDL3 window, so we can proceed
     char buffer[256];
-    sprintf_s(buffer, sizeof(buffer), "Game provided window handle: %p", windowHandle);
+    sprintf_s(buffer, sizeof(buffer), "Game provided window handle: %p (This should be our SDL3 window)", windowHandle);
     LogMessage(buffer);
 
-    // Call original game initialization FIRST
-    LogMessage("*** Calling original game initialization function FIRST ***");
-    BOOL result = original_initialize_game(windowHandle);
-    
-    char resultBuffer[256];
-    sprintf_s(resultBuffer, sizeof(resultBuffer), "Original game initialization returned: %d", result);
-    LogMessage(resultBuffer);
-    
-    // NOW set up SDL3 after game is fully initialized
-    if (result && g_gameWindow) {
-        LogMessage("Game initialized successfully - setting up SDL3 side-by-side");
-        
-        if (InitializeSDL3() && CreateSDL3Window(g_gameWindow) && CreateSDL3Renderer() && CreateSDL3Textures()) {
-            LogMessage("SDL3 setup complete - running side-by-side with game!");
-            
-            // Test render a few frames
-            for (int i = 1; i <= 3; i++) {
-                char testBuffer[256];
-                sprintf_s(testBuffer, sizeof(testBuffer), "Initial SDL3 test render #%d", i);
-                LogMessage(testBuffer);
-                RenderFrame();
-                Sleep(100);
-            }
-        } else {
-            LogMessage("SDL3 setup failed - game will run normally");
-        }
-    }
-
-    return result;
+    // Call original game initialization
+    LogMessage("Calling original game initialization function...");
+    return original_initialize_game(windowHandle);
 }
 
 BOOL WINAPI Hook_InitializeDirectDraw(BOOL isFullScreen, HWND windowHandle) {
-    LogMessage("Hook_InitializeDirectDraw triggered - intercepting surfaces");
+    LogMessage("Hook_InitializeDirectDraw triggered - setting up DirectDraw compatibility layer.");
     
-    char buffer[256];
-    sprintf_s(buffer, sizeof(buffer), "DirectDraw init: fullscreen=%d, windowHandle=%p", isFullScreen, windowHandle);
-    LogMessage(buffer);
-
-    // Initialize SDL3 if not already done
+    // The SDL3 context should already be initialized by our CreateWindowExA hook.
     if (!g_sdlContext.initialized) {
-        if (!InitializeSDL3()) {
-            LogMessage("ERROR: SDL3 initialization failed");
-            return FALSE;
-        }
-        
-        if (!CreateSDL3Window(g_gameWindow) || !CreateSDL3Renderer() || !CreateSDL3Textures()) {
-            LogMessage("ERROR: SDL3 setup failed");
-            return FALSE;
-        }
-
-        // Hide the game window - we'll render in our window
-        ShowWindow(g_gameWindow, SW_HIDE);
-        SDL_ShowWindow(g_sdlContext.window);
-        LogMessage("Game window hidden, SDL3 window shown");
+        LogMessage("ERROR: Hook_InitializeDirectDraw called before SDL3 was initialized. This should not happen.");
+        return FALSE;
     }
     
-    // Set up DirectDraw surface interception
+    // Set up our fake DirectDraw surfaces to be used by the game.
     SetupDirectDrawSurfaces();
     
-    // Let the original function run to set up any necessary state
-    BOOL result = FALSE;
-    if (original_initialize_directdraw) {
-        result = original_initialize_directdraw(isFullScreen, windowHandle);
-        LogMessage("Original DirectDraw initialization complete");
-    }
+    // CRITICAL: Replace game's global pointers with our fake objects
+    SetupDirectDrawReplacement();
     
-    return TRUE; // Always return success since we're handling rendering
+    LogMessage("DirectDraw compatibility layer is set up.");
+
+    // DO NOT call the original function. We are replacing it entirely.
+    // The game will now use our fake surfaces, which are backed by SDL3 textures.
+    return TRUE; 
 }
 
 LRESULT WINAPI Hook_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -647,7 +704,7 @@ void InitializeSurfaces() {
     
     // Initialize primary surface
     g_primarySurface.lpVtbl = &g_surfaceVtbl;
-    g_primarySurface.surface = SDL_CreateSurface(g_sdlContext.gameWidth, g_sdlContext.gameHeight, SDL_PIXELFORMAT_INDEX8);
+    g_primarySurface.surface = SDL_CreateSurface(g_sdlContext.gameWidth, g_sdlContext.gameHeight, SDL_PIXELFORMAT_RGBA8888);
     g_primarySurface.texture = SDL_CreateTextureFromSurface(g_sdlContext.renderer, g_primarySurface.surface);
     g_primarySurface.isPrimary = true;
     g_primarySurface.isBackBuffer = false;
@@ -658,7 +715,7 @@ void InitializeSurfaces() {
     
     // Initialize back buffer surface
     g_backSurface.lpVtbl = &g_surfaceVtbl;
-    g_backSurface.surface = SDL_CreateSurface(g_sdlContext.gameWidth, g_sdlContext.gameHeight, SDL_PIXELFORMAT_INDEX8);
+    g_backSurface.surface = SDL_CreateSurface(g_sdlContext.gameWidth, g_sdlContext.gameHeight, SDL_PIXELFORMAT_RGBA8888);
     g_backSurface.texture = SDL_CreateTextureFromSurface(g_sdlContext.renderer, g_backSurface.surface);
     g_backSurface.isPrimary = false;
     g_backSurface.isBackBuffer = true;
@@ -669,7 +726,7 @@ void InitializeSurfaces() {
     
     // Initialize sprite surface
     g_spriteSurface.lpVtbl = &g_surfaceVtbl;
-    g_spriteSurface.surface = SDL_CreateSurface(g_sdlContext.gameWidth, g_sdlContext.gameHeight, SDL_PIXELFORMAT_INDEX8);
+    g_spriteSurface.surface = SDL_CreateSurface(g_sdlContext.gameWidth, g_sdlContext.gameHeight, SDL_PIXELFORMAT_RGBA8888);
     g_spriteSurface.texture = SDL_CreateTextureFromSurface(g_sdlContext.renderer, g_spriteSurface.surface);
     g_spriteSurface.isPrimary = false;
     g_spriteSurface.isBackBuffer = false;
@@ -678,34 +735,21 @@ void InitializeSurfaces() {
     g_spriteSurface.locked = false;
     g_spriteSurface.lockFlags = 0;
     
-    // Create shared palette for all surfaces
-    SDL_Palette* palette = SDL_CreatePalette(256);
-    if (palette) {
-        SDL_SetSurfacePalette(g_primarySurface.surface, palette);
-        SDL_SetSurfacePalette(g_backSurface.surface, palette);
-        SDL_SetSurfacePalette(g_spriteSurface.surface, palette);
-        SDL_DestroyPalette(palette);  // Surfaces will keep a reference
-    }
+    // No palette needed for 32-bit RGBA surfaces
 }
 
 bool CreateSDL3Window(HWND gameHwnd) {
     LogMessage("Creating SDL3 window...");
     
-    // Store the game window handle
-    g_gameWindow = gameHwnd;
-    
-    // Hide the game window
-    ShowWindow(g_gameWindow, SW_HIDE);
-    
-    // Get the game window's position and size
-    RECT gameRect;
-    GetWindowRect(g_gameWindow, &gameRect);
-    
+    // This function no longer needs the gameHwnd, but we keep the signature for now
+    // to avoid breaking other parts of the code during refactoring.
+    (void)gameHwnd;
+
     // Create our SDL window
     g_sdlContext.window = SDL_CreateWindow(
         "Fighter Maker 2nd - SDL3",
-        gameRect.right - gameRect.left,
-        gameRect.bottom - gameRect.top,
+        g_sdlContext.windowWidth,
+        g_sdlContext.windowHeight,
         SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN
     );
 
@@ -713,9 +757,6 @@ bool CreateSDL3Window(HWND gameHwnd) {
         LogMessage("Failed to create SDL window");
         return false;
     }
-    
-    // Set window position
-    SDL_SetWindowPosition(g_sdlContext.window, gameRect.left, gameRect.top);
     
     // Set up Windows message hook
     SDL_SetWindowsMessageHook(WindowsMessageHook, NULL);
@@ -827,7 +868,7 @@ bool CreateSDL3Textures() {
     SDL_Surface* gameSurface = SDL_CreateSurface(
         g_sdlContext.gameWidth,
         g_sdlContext.gameHeight,
-        SDL_PIXELFORMAT_INDEX8
+        SDL_PIXELFORMAT_RGBA8888
     );
     
     if (!gameSurface) {
@@ -835,39 +876,21 @@ bool CreateSDL3Textures() {
         return false;
     }
     
-    // Create palette for 8-bit indexed color
-    SDL_Palette* palette = SDL_CreatePalette(256);
-    if (!palette) {
-        LogMessage("Failed to create palette");
-        SDL_DestroySurface(gameSurface);
-        return false;
-    }
-    
-    // Set the palette for the surface
-    if (!SDL_SetSurfacePalette(gameSurface, palette)) {
-        LogMessage("Failed to set surface palette");
-        SDL_DestroyPalette(palette);
-        SDL_DestroySurface(gameSurface);
-        return false;
-    }
-    
-    // Create texture from surface
+    // Create texture from surface (32-bit RGBA, no palette needed)
     g_sdlContext.gameBuffer = SDL_CreateTextureFromSurface(g_sdlContext.renderer, gameSurface);
     if (!g_sdlContext.gameBuffer) {
         LogMessage("Failed to create game buffer texture");
-        SDL_DestroyPalette(palette);
         SDL_DestroySurface(gameSurface);
         return false;
     }
     
-    // Store the palette and surface for later use
-    g_sdlContext.gamePalette = palette;
+    // Store the surface for later use  
     g_sdlContext.gameSurface = gameSurface;
     
     // Create back buffer surface and texture (640x480)
     SDL_Surface* backSurface = SDL_CreateSurface(
         640, 480,
-        SDL_PIXELFORMAT_INDEX8
+        SDL_PIXELFORMAT_RGBA8888
     );
     
     if (!backSurface) {
@@ -875,14 +898,7 @@ bool CreateSDL3Textures() {
         return false;
     }
     
-    // Set the palette for the back buffer
-    if (!SDL_SetSurfacePalette(backSurface, palette)) {
-        LogMessage("Failed to set back buffer palette");
-        SDL_DestroySurface(backSurface);
-        return false;
-    }
-    
-    // Create texture from surface
+    // Create texture from surface (32-bit RGBA, no palette needed)
     g_sdlContext.backBuffer = SDL_CreateTextureFromSurface(g_sdlContext.renderer, backSurface);
     if (!g_sdlContext.backBuffer) {
         LogMessage("Failed to create back buffer texture");
@@ -896,7 +912,7 @@ bool CreateSDL3Textures() {
     // Create sprite buffer surface and texture (256x256)
     SDL_Surface* spriteSurface = SDL_CreateSurface(
         256, 256,
-        SDL_PIXELFORMAT_INDEX8
+        SDL_PIXELFORMAT_RGBA8888
     );
     
     if (!spriteSurface) {
@@ -904,14 +920,7 @@ bool CreateSDL3Textures() {
         return false;
     }
     
-    // Set the palette for the sprite buffer
-    if (!SDL_SetSurfacePalette(spriteSurface, palette)) {
-        LogMessage("Failed to set sprite buffer palette");
-        SDL_DestroySurface(spriteSurface);
-        return false;
-    }
-    
-    // Create texture from surface
+    // Create texture from surface (32-bit RGBA, no palette needed)
     g_sdlContext.spriteBuffer = SDL_CreateTextureFromSurface(g_sdlContext.renderer, spriteSurface);
     if (!g_sdlContext.spriteBuffer) {
         LogMessage("Failed to create sprite buffer texture");
@@ -928,26 +937,62 @@ bool CreateSDL3Textures() {
 void SetupDirectDrawReplacement() {
     LogMessage("Setting up DirectDraw replacement with verified addresses...");
     
+    // Debug: Check our DirectDraw object before assignment
+    char debugBuffer[512];
+    sprintf_s(debugBuffer, sizeof(debugBuffer), 
+             "BEFORE ASSIGNMENT: g_directDraw at %p, vtbl=%p, initialized=%d", 
+             &g_directDraw, g_directDraw.lpVtbl, g_directDraw.initialized);
+    LogMessage(debugBuffer);
+    
     // Set up DirectDraw global variables using IDA-verified addresses
     void** pDirectDraw = (void**)0x424758;       // g_direct_draw
     void** pPrimarySurface = (void**)0x424750;   // g_dd_primary_surface  
     void** pBackBuffer = (void**)0x424754;       // g_dd_back_buffer
     
     if (!IsBadWritePtr(pDirectDraw, sizeof(void*))) {
+        void* oldValue = *pDirectDraw;
+        
+        // CRITICAL FIX: Fully re-initialize DirectDraw object here
+        g_directDraw.lpVtbl = &g_directDrawVtbl;
+        g_directDraw.initialized = true;
+        g_directDraw.primarySurface = &g_primarySurface;
+        g_directDraw.backSurface = &g_backSurface;
+        g_directDraw.spriteSurface = &g_spriteSurface;
+        g_directDraw.refCount = 1;
+        
+        sprintf_s(debugBuffer, sizeof(debugBuffer), 
+                 "FIXED: g_directDraw at %p, vtbl=%p, initialized=%d", 
+                 &g_directDraw, g_directDraw.lpVtbl, g_directDraw.initialized);
+        LogMessage(debugBuffer);
+        
         *pDirectDraw = &g_directDraw;
-        LogMessage("Set DirectDraw pointer at 0x424758");
+        
+        // Verify the assignment worked and read back the vtable
+        SDL3DirectDraw* assignedDD = (SDL3DirectDraw*)*pDirectDraw;
+        sprintf_s(debugBuffer, sizeof(debugBuffer), 
+                 "ASSIGNMENT: 0x424758: %p -> %p, readback vtbl=%p", 
+                 oldValue, &g_directDraw, assignedDD ? assignedDD->lpVtbl : nullptr);
+        LogMessage(debugBuffer);
     }
     
     if (!IsBadWritePtr(pPrimarySurface, sizeof(void*))) {
+        void* oldValue = *pPrimarySurface;
         g_primarySurface.texture = g_sdlContext.gameBuffer;
         *pPrimarySurface = &g_primarySurface;
-        LogMessage("Set primary surface pointer at 0x424750");
+        char buffer[256];
+        sprintf_s(buffer, sizeof(buffer), "Set primary surface pointer at 0x424750: %p -> %p (vtbl=%p)", 
+                 oldValue, &g_primarySurface, g_primarySurface.lpVtbl);
+        LogMessage(buffer);
     }
     
     if (!IsBadWritePtr(pBackBuffer, sizeof(void*))) {
+        void* oldValue = *pBackBuffer;
         g_backSurface.texture = g_sdlContext.backBuffer;
         *pBackBuffer = &g_backSurface;
-        LogMessage("Set back buffer pointer at 0x424754");
+        char buffer[256];
+        sprintf_s(buffer, sizeof(buffer), "Set back buffer pointer at 0x424754: %p -> %p (vtbl=%p)", 
+                 oldValue, &g_backSurface, g_backSurface.lpVtbl);
+        LogMessage(buffer);
     }
     
     // Set up resolution globals using IDA-verified addresses
@@ -976,61 +1021,163 @@ void SetupDirectDrawReplacement() {
         LogMessage("Set g_dest_height to 240");
     }
     
-    // Initialize virtual function tables for DirectDraw surfaces
-    SetupSurfaceVirtualTables();
-    
     LogMessage("DirectDraw SDL3 replacement setup complete");
+    
+    // FINAL SAFETY CHECK: Add a small delay and verify our objects are still accessible
+    Sleep(100);  // Give the system a moment to settle
+    
+    // Try to access our DirectDraw object like the game would
+    SDL3DirectDraw* finalTestDD = (SDL3DirectDraw*)(*((void**)0x424758));
+    if (finalTestDD && finalTestDD->lpVtbl) {
+        LogMessage("FINAL VERIFICATION: DirectDraw object still accessible after setup");
+    } else {
+        LogMessage("CRITICAL ERROR: DirectDraw object became inaccessible!");
+    }
+    
+    LogMessage("Setup complete - waiting for game to call our methods...");
+    
+    // CRITICAL: Verify that the game can access our objects through the global pointers
+    void** testDD = (void**)0x424758;
+    void** testPrimary = (void**)0x424750;
+    void** testBack = (void**)0x424754;
+    
+    if (!IsBadReadPtr(testDD, sizeof(void*)) && *testDD) {
+        SDL3DirectDraw* dd = (SDL3DirectDraw*)*testDD;
+        if (!IsBadReadPtr(dd, sizeof(SDL3DirectDraw)) && dd->lpVtbl) {
+            LogMessage("VERIFICATION: DirectDraw object accessible and has valid vtable");
+        } else {
+            LogMessage("ERROR: DirectDraw object or vtable corrupted!");
+        }
+    }
+    
+    if (!IsBadReadPtr(testPrimary, sizeof(void*)) && *testPrimary) {
+        SDL3Surface* surf = (SDL3Surface*)*testPrimary;
+        if (!IsBadReadPtr(surf, sizeof(SDL3Surface)) && surf->lpVtbl) {
+            LogMessage("VERIFICATION: Primary surface accessible and has valid vtable");
+        } else {
+            LogMessage("ERROR: Primary surface or vtable corrupted!");
+        }
+    }
 }
 
 void SetupSurfaceVirtualTables() {
     LogMessage("Setting up surface virtual tables...");
     
-    // Initialize the virtual function table
+    // Initialize the virtual function table - ALL 27 methods must be set
+    // IUnknown methods
     g_surfaceVtbl.QueryInterface = Surface_QueryInterface;
     g_surfaceVtbl.AddRef = Surface_AddRef;
     g_surfaceVtbl.Release = Surface_Release;
-    g_surfaceVtbl.Lock = Surface_Lock;
-    g_surfaceVtbl.Unlock = Surface_Unlock;
-    g_surfaceVtbl.Blt = Surface_Blt;
-    g_surfaceVtbl.Flip = Surface_Flip;
-    g_surfaceVtbl.SetPalette = Surface_SetPalette;
-    g_surfaceVtbl.GetDC = Surface_GetDC;
-    g_surfaceVtbl.ReleaseDC = Surface_ReleaseDC;
+    
+    // IDirectDrawSurface methods (in exact vtable order)
+    // IDirectDrawSurface methods (in exact vtable order)
+    // Use actual function implementations with correct signatures
+    g_surfaceVtbl.AddAttachedSurface = Surface_AddAttachedSurface;
+    g_surfaceVtbl.AddOverlayDirtyRect = Surface_AddOverlayDirtyRect;
+    g_surfaceVtbl.Blt = Surface_Blt;  // CRITICAL - implemented
+    g_surfaceVtbl.BltBatch = Surface_BltBatch;
+    g_surfaceVtbl.BltFast = Surface_BltFast;
+    g_surfaceVtbl.DeleteAttachedSurface = Surface_DeleteAttachedSurface;
+    g_surfaceVtbl.EnumAttachedSurfaces = Surface_EnumAttachedSurfaces;
+    g_surfaceVtbl.EnumOverlayZOrders = Surface_EnumOverlayZOrders;
+    g_surfaceVtbl.Flip = Surface_Flip;  // CRITICAL - implemented
     g_surfaceVtbl.GetAttachedSurface = Surface_GetAttachedSurface;
+    g_surfaceVtbl.GetBltStatus = Surface_GetBltStatus;
     g_surfaceVtbl.GetCaps = Surface_GetCaps;
+    g_surfaceVtbl.GetClipper = Surface_GetClipper;
+    g_surfaceVtbl.GetColorKey = Surface_GetColorKey;
+    g_surfaceVtbl.GetDC = Surface_GetDC;
+    g_surfaceVtbl.GetFlipStatus = Surface_GetFlipStatus;
+    g_surfaceVtbl.GetOverlayPosition = Surface_GetOverlayPosition;
+    g_surfaceVtbl.GetPalette = Surface_GetPalette;
     g_surfaceVtbl.GetPixelFormat = Surface_GetPixelFormat;
-    g_surfaceVtbl.GetSurfaceDesc = Surface_GetSurfaceDesc;
-
-    // Set up surface structures with virtual function table pointers
-    g_primarySurface.lpVtbl = &g_surfaceVtbl;
-    g_primarySurface.texture = g_sdlContext.gameBuffer;
-    g_primarySurface.locked = false;
-    g_primarySurface.refCount = 1;
-    g_primarySurface.isPrimary = true;
-    g_primarySurface.isBackBuffer = false;
-    g_primarySurface.isSprite = false;
-    
-    g_backSurface.lpVtbl = &g_surfaceVtbl;
-    g_backSurface.texture = g_sdlContext.backBuffer;
-    g_backSurface.locked = false;
-    g_backSurface.refCount = 1;
-    g_backSurface.isPrimary = false;
-    g_backSurface.isBackBuffer = true;
-    g_backSurface.isSprite = false;
-    
-    g_spriteSurface.lpVtbl = &g_surfaceVtbl;
-    g_spriteSurface.texture = g_sdlContext.spriteBuffer;
-    g_spriteSurface.locked = false;
-    g_spriteSurface.refCount = 1;
-    g_spriteSurface.isPrimary = false;
-    g_spriteSurface.isBackBuffer = false;
-    g_spriteSurface.isSprite = true;
+    g_surfaceVtbl.GetSurfaceDesc = Surface_GetSurfaceDesc;  // CRITICAL - implemented  
+    g_surfaceVtbl.Initialize = Surface_Initialize;
+    g_surfaceVtbl.IsLost = Surface_IsLost;
+    g_surfaceVtbl.Lock = Surface_Lock;  // CRITICAL - implemented
+    g_surfaceVtbl.ReleaseDC = Surface_ReleaseDC;
+    g_surfaceVtbl.Restore = Surface_Restore;
+    g_surfaceVtbl.SetClipper = Surface_SetClipper;
+    g_surfaceVtbl.SetColorKey = Surface_SetColorKey;
+    g_surfaceVtbl.SetOverlayPosition = Surface_SetOverlayPosition;
+    g_surfaceVtbl.SetPalette = Surface_SetPalette;  // CRITICAL - implemented
+    g_surfaceVtbl.Unlock = Surface_Unlock;  // CRITICAL - implemented  
+    g_surfaceVtbl.UpdateOverlay = Surface_UpdateOverlay;
+    g_surfaceVtbl.UpdateOverlayDisplay = Surface_UpdateOverlayDisplay;
+    g_surfaceVtbl.UpdateOverlayZOrder = Surface_UpdateOverlayZOrder;
     
     LogMessage("DirectDraw surface virtual function tables initialized successfully");
+    
+    // Debug: Verify surface vtable function pointers are valid
+    char surfaceVtableDebug[512];
+    sprintf_s(surfaceVtableDebug, sizeof(surfaceVtableDebug), 
+        "SURFACE VTABLE DEBUG: QueryInterface=%p AddRef=%p Release=%p Blt=%p Lock=%p Unlock=%p Flip=%p GetAttachedSurface=%p",
+        g_surfaceVtbl.QueryInterface, g_surfaceVtbl.AddRef, g_surfaceVtbl.Release, 
+        g_surfaceVtbl.Blt, g_surfaceVtbl.Lock, g_surfaceVtbl.Unlock, g_surfaceVtbl.Flip, g_surfaceVtbl.GetAttachedSurface);
+    LogMessage(surfaceVtableDebug);
+    
+    // CRITICAL: Verify GetAttachedSurface is at correct offset 0x30 (method index 12)
+    void** surfaceVtableBase = (void**)&g_surfaceVtbl;
+    void* actualMethodAt0x30 = *(surfaceVtableBase + 12);  // What's actually stored at offset 0x30
+    char offsetVerify[256];
+    sprintf_s(offsetVerify, sizeof(offsetVerify),
+        "SURFACE OFFSET VERIFY: Base=%p, stored@0x30=%p, expected=%p %s",
+        surfaceVtableBase, actualMethodAt0x30, g_surfaceVtbl.GetAttachedSurface, 
+        (actualMethodAt0x30 == g_surfaceVtbl.GetAttachedSurface) ? "✓" : "✗");
+    LogMessage(offsetVerify);
+}
+
+void SetupDirectDrawVirtualTable() {
+    LogMessage("Setting up DirectDraw virtual table...");
+    
+    // IUnknown methods
+    g_directDrawVtbl.QueryInterface = DirectDraw_QueryInterface;
+    g_directDrawVtbl.AddRef = DirectDraw_AddRef;
+    g_directDrawVtbl.Release = DirectDraw_Release;
+    
+    // IDirectDraw methods - implement essential ones, stub the rest with proper casts
+    g_directDrawVtbl.Compact = (HRESULT (STDMETHODCALLTYPE *)(void*))DirectDraw_Stub;                     // 3
+    g_directDrawVtbl.CreateClipper = (HRESULT (STDMETHODCALLTYPE *)(void*, DWORD, void**, void*))DirectDraw_Stub;  // 4
+    g_directDrawVtbl.CreatePalette = (HRESULT (STDMETHODCALLTYPE *)(void*, DWORD, void*, void**, void*))DirectDraw_Stub;  // 5
+    g_directDrawVtbl.CreateSurface = DirectDraw_CreateSurface;  // 6 - CRITICAL at offset 0x18h
+    g_directDrawVtbl.DuplicateSurface = (HRESULT (STDMETHODCALLTYPE *)(void*, void*, void**))DirectDraw_Stub;  // 7
+    g_directDrawVtbl.EnumDisplayModes = (HRESULT (STDMETHODCALLTYPE *)(void*, DWORD, void*, void*, void*))DirectDraw_Stub;  // 8
+    g_directDrawVtbl.EnumSurfaces = (HRESULT (STDMETHODCALLTYPE *)(void*, DWORD, void*, void*, void*))DirectDraw_Stub;  // 9
+    g_directDrawVtbl.FlipToGDISurface = (HRESULT (STDMETHODCALLTYPE *)(void*))DirectDraw_Stub;             // 10
+    g_directDrawVtbl.GetCaps = (HRESULT (STDMETHODCALLTYPE *)(void*, void*, void*))DirectDraw_Stub;        // 11
+    g_directDrawVtbl.GetDisplayMode = (HRESULT (STDMETHODCALLTYPE *)(void*, void*))DirectDraw_Stub;       // 12
+    g_directDrawVtbl.GetFourCCCodes = (HRESULT (STDMETHODCALLTYPE *)(void*, LPDWORD, LPDWORD))DirectDraw_Stub;  // 13
+    g_directDrawVtbl.GetGDISurface = (HRESULT (STDMETHODCALLTYPE *)(void*, void**))DirectDraw_Stub;       // 14
+    g_directDrawVtbl.GetMonitorFrequency = (HRESULT (STDMETHODCALLTYPE *)(void*, LPDWORD))DirectDraw_Stub;  // 15
+    g_directDrawVtbl.GetScanLine = (HRESULT (STDMETHODCALLTYPE *)(void*, LPDWORD))DirectDraw_Stub;        // 16
+    g_directDrawVtbl.GetVerticalBlankStatus = (HRESULT (STDMETHODCALLTYPE *)(void*, LPBOOL))DirectDraw_Stub;  // 17
+    g_directDrawVtbl.Initialize = (HRESULT (STDMETHODCALLTYPE *)(void*, GUID*))DirectDraw_Stub;           // 18
+    g_directDrawVtbl.RestoreDisplayMode = (HRESULT (STDMETHODCALLTYPE *)(void*))DirectDraw_Stub;          // 19
+    g_directDrawVtbl.SetCooperativeLevel = DirectDraw_SetCooperativeLevel;  // 20 - CRITICAL at offset 0x50h
+    g_directDrawVtbl.SetDisplayMode = DirectDraw_SetDisplayMode;  // 21 - CRITICAL at offset 0x54h
+    g_directDrawVtbl.WaitForVerticalBlank = (HRESULT (STDMETHODCALLTYPE *)(void*, DWORD, HANDLE))DirectDraw_Stub;  // 22
+    
+    LogMessage("DirectDraw virtual function table initialized successfully");
+    
+    // Debug: Verify DirectDraw vtable function pointers are valid at critical offsets
+    char ddVtableDebug[512];
+    sprintf_s(ddVtableDebug, sizeof(ddVtableDebug), 
+        "DIRECTDRAW VTABLE: CreateSurface[6]=%p SetCooperativeLevel[20]=%p SetDisplayMode[21]=%p",
+        g_directDrawVtbl.CreateSurface, g_directDrawVtbl.SetCooperativeLevel, g_directDrawVtbl.SetDisplayMode);
+    LogMessage(ddVtableDebug);
+    
+    // Verify offset calculations
+    void** vtableBase = (void**)&g_directDrawVtbl;
+    char offsetDebug[256];
+    sprintf_s(offsetDebug, sizeof(offsetDebug),
+        "OFFSET VERIFICATION: Base=%p CreateSurface@0x18=%p SetCoop@0x50=%p SetDisplay@0x54=%p",
+        vtableBase, vtableBase + 6, vtableBase + 20, vtableBase + 21);
+    LogMessage(offsetDebug);
 }
 
 // DirectDraw Surface Method Implementations
 HRESULT STDMETHODCALLTYPE Surface_QueryInterface(void* This, REFIID riid, void** ppvObject) {
+    LogMessage("Surface_QueryInterface called");
     if (!ppvObject) return E_POINTER;
     *ppvObject = This;
     ((SDL3Surface*)This)->refCount++;
@@ -1038,11 +1185,13 @@ HRESULT STDMETHODCALLTYPE Surface_QueryInterface(void* This, REFIID riid, void**
 }
 
 ULONG STDMETHODCALLTYPE Surface_AddRef(void* This) {
+    LogMessage("Surface_AddRef called");
     SDL3Surface* surface = (SDL3Surface*)This;
     return ++surface->refCount;
 }
 
 ULONG STDMETHODCALLTYPE Surface_Release(void* This) {
+    LogMessage("Surface_Release called");
     SDL3Surface* surface = (SDL3Surface*)This;
     ULONG ref = --surface->refCount;
     if (ref == 0) {
@@ -1084,9 +1233,46 @@ HRESULT STDMETHODCALLTYPE Surface_EnumAttachedSurfaces(void* This, LPVOID lpCont
 }
 
 HRESULT STDMETHODCALLTYPE Surface_GetAttachedSurface(void* This, void* lpDDSCaps, void** lplpDDAttachedSurface) {
-    LogMessage("Surface_GetAttachedSurface called (STUB)");
-    if (lplpDDAttachedSurface) *lplpDDAttachedSurface = nullptr;
-    return DD_OK;
+    LogMessage("Surface_GetAttachedSurface called");
+    
+    if (!lplpDDAttachedSurface) {
+        LogMessage("ERROR: lplpDDAttachedSurface is NULL");
+        return DDERR_INVALIDPARAMS;
+    }
+    
+    // Parse the surface caps to determine what type of attached surface is requested
+    DWORD requestedCaps = 0;
+    if (lpDDSCaps) {
+        // Assume lpDDSCaps points to a DWORD containing surface capability flags
+        requestedCaps = *(DWORD*)lpDDSCaps;
+    }
+    
+    char buffer[256];
+    sprintf_s(buffer, sizeof(buffer), "GetAttachedSurface: Requested caps = 0x%X (expecting DDSCAPS_BACKBUFFER=0x%X)", requestedCaps, DDSCAPS_BACKBUFFER);
+    LogMessage(buffer);
+    
+    SDL3Surface* thisSurface = (SDL3Surface*)This;
+    
+    // Check if this is the primary surface and back buffer is requested
+    if (thisSurface && thisSurface->isPrimary) {
+        // Check if DDSCAPS_BACKBUFFER is being requested
+        if (requestedCaps == DDSCAPS_BACKBUFFER || requestedCaps == 0) {  // Handle both explicit request and default
+            *lplpDDAttachedSurface = &g_backSurface;
+            g_backSurface.refCount++; // AddRef the returned surface
+            LogMessage("SUCCESS: Returned back buffer from primary surface");
+            return DD_OK;
+        } else {
+            sprintf_s(buffer, sizeof(buffer), "Primary surface: Unsupported caps 0x%X requested", requestedCaps);
+            LogMessage(buffer);
+        }
+    } else {
+        LogMessage("GetAttachedSurface called on non-primary surface");
+    }
+    
+    // For unsupported requests, no attached surface
+    *lplpDDAttachedSurface = nullptr;
+    LogMessage("No attached surface found for request");
+    return DDERR_NOTFOUND;
 }
 
 HRESULT STDMETHODCALLTYPE Surface_EnumOverlayZOrders(void* This, DWORD dwFlags, LPVOID lpContext, void* lpfnCallback) {
@@ -1168,57 +1354,8 @@ HRESULT STDMETHODCALLTYPE Surface_SetOverlayPosition(void* This, LONG lX, LONG l
 }
 
 HRESULT STDMETHODCALLTYPE Surface_SetPalette(void* This, void* lpDDPalette) {
-    SDL3Surface* surface = (SDL3Surface*)This;
-    if (!surface || !lpDDPalette) return DDERR_INVALIDPARAMS;
-    
-    // Get the palette entries from the DirectDraw palette
-    PALETTEENTRY entries[256];
-    IDirectDrawPalette* ddPalette = (IDirectDrawPalette*)lpDDPalette;
-    if (ddPalette) {
-        ddPalette->GetEntries(0, 0, 256, entries);
-        
-        // Convert DirectDraw palette entries to SDL colors
-        SDL_Color colors[256];
-        for (int i = 0; i < 256; i++) {
-            colors[i].r = entries[i].peRed;
-            colors[i].g = entries[i].peGreen;
-            colors[i].b = entries[i].peBlue;
-            colors[i].a = 255;  // Full opacity
-        }
-        
-        // Update the palette colors
-        if (!SDL_SetPaletteColors(g_sdlContext.gamePalette, colors, 0, 256)) {
-            LogMessage("Failed to set palette colors");
-            return DDERR_GENERIC;
-        }
-        
-        // Update the surface palette
-        if (!SDL_SetSurfacePalette(surface->surface, g_sdlContext.gamePalette)) {
-            LogMessage("Failed to set surface palette");
-            return DDERR_GENERIC;
-        }
-        
-        // If this is a primary surface, update all other surfaces that share the palette
-        if (surface->isPrimary) {
-            // Update back buffer palette
-            if (g_sdlContext.backSurface) {
-                SDL_SetSurfacePalette(g_sdlContext.backSurface, g_sdlContext.gamePalette);
-            }
-            
-            // Update sprite buffer palette
-            if (g_sdlContext.spriteSurface) {
-                SDL_SetSurfacePalette(g_sdlContext.spriteSurface, g_sdlContext.gamePalette);
-            }
-        }
-    } else {
-        // Remove palette
-        if (!SDL_SetSurfacePalette(surface->surface, NULL)) {
-            LogMessage("Failed to remove surface palette");
-            return DDERR_GENERIC;
-        }
-    }
-    
-    LogMessage("Surface_SetPalette called");
+    // For 32-bit RGBA surfaces, palette operations are not needed
+    LogMessage("Surface_SetPalette called (32-bit mode - no palette needed)");
     return DD_OK;
 }
 
@@ -1232,6 +1369,98 @@ HRESULT STDMETHODCALLTYPE Surface_UpdateOverlayDisplay(void* This, DWORD dwFlags
 
 HRESULT STDMETHODCALLTYPE Surface_UpdateOverlayZOrder(void* This, DWORD dwFlags, void* lpDDSReference) {
     return DDERR_UNSUPPORTED;
+}
+
+// DirectDraw Method Implementations
+HRESULT STDMETHODCALLTYPE DirectDraw_QueryInterface(void* This, REFIID riid, void** ppvObject) {
+    LogMessage("DirectDraw_QueryInterface called");
+    if (!ppvObject) return E_POINTER;
+    *ppvObject = This;
+    ((SDL3DirectDraw*)This)->refCount++;
+    return S_OK;
+}
+
+ULONG STDMETHODCALLTYPE DirectDraw_AddRef(void* This) {
+    LogMessage("DirectDraw_AddRef called");
+    SDL3DirectDraw* dd = (SDL3DirectDraw*)This;
+    return ++dd->refCount;
+}
+
+ULONG STDMETHODCALLTYPE DirectDraw_Release(void* This) {
+    LogMessage("DirectDraw_Release called");
+    SDL3DirectDraw* dd = (SDL3DirectDraw*)This;
+    return --dd->refCount;
+}
+
+HRESULT STDMETHODCALLTYPE DirectDraw_SetCooperativeLevel(void* This, HWND hWnd, DWORD dwFlags) {
+    // CRITICAL: First thing - log that we've entered this function
+    LogMessage("*** ENTERED DirectDraw_SetCooperativeLevel ***");
+    
+    char buffer[256];
+    sprintf_s(buffer, sizeof(buffer), "DirectDraw_SetCooperativeLevel called: This=%p hWnd=%p dwFlags=0x%X", This, hWnd, dwFlags);
+    LogMessage(buffer);
+    LogMessage("DirectDraw_SetCooperativeLevel returning DD_OK");
+    return DD_OK;
+}
+
+HRESULT STDMETHODCALLTYPE DirectDraw_SetDisplayMode(void* This, DWORD dwWidth, DWORD dwHeight, DWORD dwBPP) {
+    char buffer[256];
+    sprintf_s(buffer, sizeof(buffer), "DirectDraw_SetDisplayMode called: This=%p %dx%d %d-bit", This, dwWidth, dwHeight, dwBPP);
+    LogMessage(buffer);
+    LogMessage("DirectDraw_SetDisplayMode returning DD_OK");
+    return DD_OK;
+}
+
+HRESULT STDMETHODCALLTYPE DirectDraw_CreateSurface(void* This, void* lpDDSurfaceDesc, void** lplpDDSurface, void* pUnkOuter) {
+    char buffer[256];
+    sprintf_s(buffer, sizeof(buffer), "DirectDraw_CreateSurface called: This=%p lpDDSurfaceDesc=%p lplpDDSurface=%p", This, lpDDSurfaceDesc, lplpDDSurface);
+    LogMessage(buffer);
+    
+    if (!lplpDDSurface) {
+        LogMessage("DirectDraw_CreateSurface: Invalid parameters");
+        return DDERR_INVALIDPARAMS;
+    }
+    
+    // For now, just return the primary surface
+    // In a complete implementation, we'd parse lpDDSurfaceDesc to determine which surface type to create
+    *lplpDDSurface = &g_primarySurface;
+    g_primarySurface.refCount++; // AddRef the returned surface
+    
+    LogMessage("DirectDraw_CreateSurface: Returning primary surface, DD_OK");
+    return DD_OK;
+}
+
+
+HRESULT __stdcall DirectDraw_TestFunction() {
+    LogMessage("*** DirectDraw_TestFunction called - minimal test ***");
+    return DD_OK;
+}
+
+HRESULT STDMETHODCALLTYPE DirectDraw_Stub(void* This, ...) {
+    LogMessage("DirectDraw_Stub called");
+    return DD_OK;
+}
+
+// Hook for DirectDrawCreate - intercept the real DirectDraw creation
+HRESULT WINAPI Hook_DirectDrawCreate(void* lpGUID, void** lplpDD, void* pUnkOuter) {
+    LogMessage("*** Hook_DirectDrawCreate called - intercepting DirectDraw creation ***");
+    
+    // Setup our fake DirectDraw system if not already done
+    if (!g_directDraw.initialized) {
+        LogMessage("Setting up DirectDraw surfaces from DirectDrawCreate hook...");
+        SetupDirectDrawVirtualTable();
+        SetupSurfaceVirtualTables();
+        InitializeSurfaces();
+    }
+    
+    // Return our fake DirectDraw object instead of creating a real one
+    if (lplpDD) {
+        *lplpDD = &g_directDraw;
+        g_directDraw.refCount++;
+        LogMessage("DirectDrawCreate: Returning our fake DirectDraw object");
+    }
+    
+    return DD_OK;  // S_OK - success
 }
 
 bool InitializeHooks() {
@@ -1257,6 +1486,14 @@ bool InitializeHooks() {
     }
     LogMessage("Game module base address obtained.");
 
+    // Hook DirectDrawCreate via actual import table entry (0x41c000 from IDA analysis)
+    void* pDirectDrawCreateImport = (void*)(baseAddress + 0x1c000); // 0x41c000 - 0x400000
+    if (MH_CreateHook(pDirectDrawCreateImport, (LPVOID)&Hook_DirectDrawCreate, (void**)&original_directdraw_create) != MH_OK) {
+        LogMessage("ERROR: Failed to create hook for DirectDrawCreate import at 0x41c000.");
+        return false;
+    }
+    LogMessage("Hook for DirectDrawCreate import table entry created at 0x41c000.");
+
     void* pInitGame = (void*)(baseAddress + 0x56C0); // 0x4056C0 - 0x400000
     if (MH_CreateHook(pInitGame, (LPVOID)&InitGame_Hook, (void**)&original_initialize_game) != MH_OK) {
         LogMessage("ERROR: Failed to create hook for initialize_game at 0x4056C0.");
@@ -1277,6 +1514,20 @@ bool InitializeHooks() {
         return false;
     }
     LogMessage("Hook for process_input_history created.");
+
+    void* pWindowProc = (void*)(baseAddress + 0x5F50); // 0x405F50 - 0x400000
+    if (MH_CreateHook(pWindowProc, (LPVOID)&WindowProc_Hook, (void**)&original_window_proc) != MH_OK) {
+        LogMessage("ERROR: Failed to create hook for main_window_proc at 0x405F50.");
+        return false;
+    }
+    LogMessage("Hook for main_window_proc created.");
+
+    // Hook SetWindowLongA to intercept window procedure changes
+    if (MH_CreateHook((LPVOID)&SetWindowLongA, (LPVOID)&Hook_SetWindowLongA, (void**)&original_set_window_long_a) != MH_OK) {
+        LogMessage("ERROR: Failed to create hook for SetWindowLongA.");
+        return false;
+    }
+    LogMessage("Hook for SetWindowLongA created.");
 
     // Enable all created hooks
     if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {
@@ -1338,22 +1589,61 @@ BOOL WINAPI InitDirectDraw_Hook(BOOL isFullScreen, HWND windowHandle) {
         LogMessage("Game window hidden, SDL3 window shown");
     }
     
-    // Set up DirectDraw surface interception
-    SetupDirectDrawSurfaces();
+    // Since DirectDrawCreate hook isn't working, set up our fake objects directly
+    LogMessage("Setting up DirectDraw surfaces directly in InitDirectDraw_Hook...");
+    SetupDirectDrawVirtualTable();
+    SetupSurfaceVirtualTables();
+    InitializeSurfaces();
     
-    // Call original function
+    // Call original function to set up game state, then immediately replace the globals
+    LogMessage("Calling original initialize_directdraw to set up game state...");
     BOOL result = original_initialize_directdraw(isFullScreen, windowHandle);
-    if (!result) {
-        LogMessage("Original initialize_directdraw failed");
-        return result;
-    }
     
+    char resultMsg[256];
+    sprintf_s(resultMsg, sizeof(resultMsg), "Original initialize_directdraw returned: %s (%d)", 
+             result ? "TRUE" : "FALSE", result);
+    LogMessage(resultMsg);
+    
+    // Immediately overwrite whatever the original function created with our fake objects
+    LogMessage("Overwriting DirectDraw globals with our fake objects...");
+    SetupDirectDrawReplacement();
+    
+    // Always return TRUE regardless of original result - we want our fake objects to be used
+    LogMessage("InitDirectDraw_Hook completed successfully - forcing success");
     return TRUE;
 }
 
+LONG WINAPI Hook_SetWindowLongA(HWND hWnd, int nIndex, LONG dwNewLong) {
+    if (nIndex == GWLP_WNDPROC) {
+        LogMessage("Hook_SetWindowLongA: Intercepted attempt to set a new window procedure.");
+        // Store the game's intended window procedure
+        original_window_proc = (WNDPROC)dwNewLong;
+        // Return the existing procedure, as we are managing it now.
+        return (LONG)WindowProc_Hook;
+    }
+    return original_set_window_long_a(hWnd, nIndex, dwNewLong);
+}
+
 LRESULT CALLBACK WindowProc_Hook(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    // Forward to original window proc
-    return original_window_proc(hwnd, msg, wParam, lParam);
+    // This hook is important for intercepting window messages.
+    // For now, we'll just log some key messages and pass everything to the original.
+    switch (msg) {
+        case WM_ACTIVATEAPP:
+            LogMessage("WindowProc_Hook: WM_ACTIVATEAPP received.");
+            break;
+        case WM_DESTROY:
+            LogMessage("WindowProc_Hook: WM_DESTROY received.");
+            break;
+        case WM_CLOSE:
+            LogMessage("WindowProc_Hook: WM_CLOSE received.");
+            break;
+    }
+    
+    if (original_window_proc) {
+        return original_window_proc(hwnd, msg, wParam, lParam);
+    }
+    
+    return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
 DWORD WINAPI InitializeThread(LPVOID hModule) {

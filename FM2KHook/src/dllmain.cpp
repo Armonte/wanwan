@@ -538,6 +538,13 @@ void LogMessage(const char* message) {
     fprintf(g_console_stream, "FM2K HOOK: %s\n", message);
     fflush(g_console_stream);
     
+    // Also write to file for detailed analysis
+    FILE* logFile = nullptr;
+    if (fopen_s(&logFile, "C:\\games\\fm2k_hook_log.txt", "a") == 0 && logFile) {
+        fprintf(logFile, "FM2K HOOK: %s\n", message);
+        fclose(logFile);
+    }
+    
     OutputDebugStringA("FM2K HOOK: ");
     OutputDebugStringA(message);
     OutputDebugStringA("\n");
@@ -1445,6 +1452,11 @@ HRESULT STDMETHODCALLTYPE DirectDraw_Stub(void* This, ...) {
 HRESULT WINAPI Hook_DirectDrawCreate(void* lpGUID, void** lplpDD, void* pUnkOuter) {
     LogMessage("*** Hook_DirectDrawCreate called - intercepting DirectDraw creation ***");
     
+    char hookDebug[256];
+    sprintf_s(hookDebug, sizeof(hookDebug), "DirectDrawCreate hook: lpGUID=%p, lplpDD=%p, pUnkOuter=%p", 
+             lpGUID, lplpDD, pUnkOuter);
+    LogMessage(hookDebug);
+    
     // Setup our fake DirectDraw system if not already done
     if (!g_directDraw.initialized) {
         LogMessage("Setting up DirectDraw surfaces from DirectDrawCreate hook...");
@@ -1458,8 +1470,13 @@ HRESULT WINAPI Hook_DirectDrawCreate(void* lpGUID, void** lplpDD, void* pUnkOute
         *lplpDD = &g_directDraw;
         g_directDraw.refCount++;
         LogMessage("DirectDrawCreate: Returning our fake DirectDraw object");
+        
+        sprintf_s(hookDebug, sizeof(hookDebug), "DirectDrawCreate: Set *lplpDD=%p, vtbl=%p", 
+                 &g_directDraw, g_directDraw.lpVtbl);
+        LogMessage(hookDebug);
     }
     
+    LogMessage("DirectDrawCreate hook completed successfully");
     return DD_OK;  // S_OK - success
 }
 
@@ -1486,13 +1503,13 @@ bool InitializeHooks() {
     }
     LogMessage("Game module base address obtained.");
 
-    // Hook DirectDrawCreate via actual import table entry (0x41c000 from IDA analysis)
-    void* pDirectDrawCreateImport = (void*)(baseAddress + 0x1c000); // 0x41c000 - 0x400000
-    if (MH_CreateHook(pDirectDrawCreateImport, (LPVOID)&Hook_DirectDrawCreate, (void**)&original_directdraw_create) != MH_OK) {
-        LogMessage("ERROR: Failed to create hook for DirectDrawCreate import at 0x41c000.");
+    // Hook DirectDrawCreate via jump stub (0x41b544 from IDA analysis)  
+    void* pDirectDrawCreateStub = (void*)(baseAddress + 0x1b544); // 0x41b544 - 0x400000
+    if (MH_CreateHook(pDirectDrawCreateStub, (LPVOID)&Hook_DirectDrawCreate, (void**)&original_directdraw_create) != MH_OK) {
+        LogMessage("ERROR: Failed to create hook for DirectDrawCreate stub at 0x41b544.");
         return false;
     }
-    LogMessage("Hook for DirectDrawCreate import table entry created at 0x41c000.");
+    LogMessage("Hook for DirectDrawCreate jump stub created at 0x41b544.");
 
     void* pInitGame = (void*)(baseAddress + 0x56C0); // 0x4056C0 - 0x400000
     if (MH_CreateHook(pInitGame, (LPVOID)&InitGame_Hook, (void**)&original_initialize_game) != MH_OK) {
@@ -1594,6 +1611,16 @@ BOOL WINAPI InitDirectDraw_Hook(BOOL isFullScreen, HWND windowHandle) {
     SetupDirectDrawVirtualTable();
     SetupSurfaceVirtualTables();
     InitializeSurfaces();
+    
+    // CRITICAL: Force DirectDraw mode by setting g_graphics_mode = 1
+    int* pGraphicsMode = (int*)0x424704; // g_graphics_mode from IDA
+    int oldGraphicsMode = *pGraphicsMode;
+    *pGraphicsMode = 1; // Force fullscreen DirectDraw mode
+    
+    char modeDebug[256];
+    sprintf_s(modeDebug, sizeof(modeDebug), "Forced g_graphics_mode from %d to %d to enable DirectDraw path", 
+             oldGraphicsMode, *pGraphicsMode);
+    LogMessage(modeDebug);
     
     // Call original function to set up game state, then immediately replace the globals
     LogMessage("Calling original initialize_directdraw to set up game state...");

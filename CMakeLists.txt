@@ -1,24 +1,25 @@
 cmake_minimum_required(VERSION 3.20)
 
 # Set up cross-compilation for Windows target from WSL
-# set(CMAKE_SYSTEM_NAME Windows)
-# set(CMAKE_SYSTEM_PROCESSOR i686)
-# set(CMAKE_CROSSCOMPILING TRUE)
+set(CMAKE_SYSTEM_NAME Windows)
+set(CMAKE_SYSTEM_PROCESSOR i686)
 
 # Configure compilers before project()
-# set(CMAKE_C_COMPILER /usr/bin/i686-w64-mingw32-gcc)
-# set(CMAKE_CXX_COMPILER /usr/bin/i686-w64-mingw32-g++)
-# set(CMAKE_RC_COMPILER /usr/bin/i686-w64-mingw32-windres)
-# set(CMAKE_ASM_COMPILER ${CMAKE_C_COMPILER})
+set(CMAKE_C_COMPILER i686-w64-mingw32-gcc)
+set(CMAKE_CXX_COMPILER i686-w64-mingw32-g++)
+set(CMAKE_RC_COMPILER i686-w64-mingw32-windres)
 
 # Configure paths
-# set(CMAKE_FIND_ROOT_PATH /usr/i686-w64-mingw32)
-# set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
-# set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
-# set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH /usr/i686-w64-mingw32)
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 
 # Define project
 project(FM2K_RollbackLauncher VERSION 1.0.0 LANGUAGES CXX C RC)
+
+# Set RPATH handling for cross-compilation with Ninja
+set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
 
 # Set C++ standard early
 set(CMAKE_CXX_STANDARD 20)
@@ -97,6 +98,7 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
 set(SDL_SHARED OFF CACHE BOOL "Build SDL3 as shared library" FORCE)
 set(SDL_STATIC ON CACHE BOOL "Build SDL3 as static library" FORCE)
+set(SDL_DYNAPI OFF CACHE BOOL "Disable dynamic API" FORCE)
 set(SDL3IMAGE_INSTALL OFF CACHE BOOL "Install SDL3_image" FORCE)
 set(SDL3IMAGE_BUILD_SHARED_LIBS OFF CACHE BOOL "Build SDL3_image shared" FORCE)
 set(SDL3IMAGE_VENDORED ON CACHE BOOL "Use vendored libraries in SDL3_image" FORCE)
@@ -181,6 +183,7 @@ set(MINHOOK_SOURCES
 )
 
 add_library(MinHook STATIC ${MINHOOK_SOURCES})
+add_library(MinHook::MinHook ALIAS MinHook)
 
 # Ensure MinHook is built with MinGW
 set_target_properties(MinHook PROPERTIES 

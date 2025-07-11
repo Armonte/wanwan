@@ -106,5 +106,5 @@ struct DirectDrawSurfaceVtbl {
 };
 
 // Global vtable instances
-extern DirectDrawVtbl g_directDrawVtbl;
-extern DirectDrawSurfaceVtbl g_surfaceVtbl; 
+    extern DirectDrawVtbl g_directDrawVtbl;
+    extern DirectDrawSurfaceVtbl g_surfaceVtbl; 

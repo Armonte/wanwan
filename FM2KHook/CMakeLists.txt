@@ -10,13 +10,11 @@ set(CMAKE_GENERATOR_PLATFORM Win32)
 set(CMAKE_BUILD_TYPE Debug)
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g")
 
-# Create DLL target - enhanced hook system with SDL3 rendering
-add_library(FM2KHook SHARED
+# Create the shared library for the hook
+add_library(FM2KHook SHARED 
     src/dllmain.cpp
-    # Temporarily disabled - SDL3 integration is handled directly in dllmain.cpp
-    # src/sdl3_context.cpp
-    # src/directdraw_compat.cpp
-    # src/window_hooks.cpp
+    src/sdl3_hooks.cpp
+    src/ddraw_hooks.cpp
 )
 
 # Export symbols for DLL
@@ -26,11 +24,8 @@ target_compile_definitions(FM2KHook PRIVATE
     WIN32_LEAN_AND_MEAN
 )
 
-# Link against MinHook and SDL3 (needed for launcher communication)
-target_link_libraries(FM2KHook PRIVATE 
-    MinHook
-    SDL3::SDL3-static
-)
+# Link against MinHook, SDL3, and DirectDraw
+target_link_libraries(FM2KHook PRIVATE MinHook SDL3::SDL3 ddraw)
 
 # Include directories
 target_include_directories(FM2KHook PRIVATE 

@@ -131,7 +131,6 @@ namespace FM2K {
             uint32_t state_flags;
         } players[2];
 
-        // Visual effects state (simplified - no IPC)
         uint32_t visual_state_flags;
 
         // Hit detection tables

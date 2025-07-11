@@ -189,6 +189,49 @@ HWND WINAPI Hook_CreateWindowExA(DWORD dwExStyle, LPCSTR lpClassName, LPCSTR lpW
                 ShowWindow(gameHwnd, SW_SHOW);
                 UpdateWindow(gameHwnd);
 =======
+// DirectDraw Surface COM Interface
+struct IDirectDrawSurfaceVtbl {
+    // IUnknown methods
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(void* This, REFIID riid, void** ppvObject);
+    ULONG (STDMETHODCALLTYPE *AddRef)(void* This);
+    ULONG (STDMETHODCALLTYPE *Release)(void* This);
+    
+    // IDirectDrawSurface methods (in vtable order)
+    HRESULT (STDMETHODCALLTYPE *AddAttachedSurface)(void* This, void* lpDDSAttachedSurface);
+    HRESULT (STDMETHODCALLTYPE *AddOverlayDirtyRect)(void* This, LPRECT lpRect);
+    HRESULT (STDMETHODCALLTYPE *Blt)(void* This, LPRECT lpDestRect, void* lpDDSrcSurface, LPRECT lpSrcRect, DWORD dwFlags, void* lpDDBltFx);
+    HRESULT (STDMETHODCALLTYPE *BltBatch)(void* This, void* lpDDBltBatch, DWORD dwCount, DWORD dwFlags);
+    HRESULT (STDMETHODCALLTYPE *BltFast)(void* This, DWORD dwX, DWORD dwY, void* lpDDSrcSurface, LPRECT lpSrcRect, DWORD dwTrans);
+    HRESULT (STDMETHODCALLTYPE *DeleteAttachedSurface)(void* This, DWORD dwFlags, void* lpDDSAttachedSurface);
+    HRESULT (STDMETHODCALLTYPE *EnumAttachedSurfaces)(void* This, LPVOID lpContext, void* lpEnumSurfacesCallback);
+    HRESULT (STDMETHODCALLTYPE *EnumOverlayZOrders)(void* This, DWORD dwFlags, LPVOID lpContext, void* lpfnCallback);
+    HRESULT (STDMETHODCALLTYPE *Flip)(void* This, void* lpDDSurfaceTargetOverride, DWORD dwFlags);
+    HRESULT (STDMETHODCALLTYPE *GetAttachedSurface)(void* This, void* lpDDSCaps, void** lplpDDAttachedSurface);
+    HRESULT (STDMETHODCALLTYPE *GetBltStatus)(void* This, DWORD dwFlags);
+    HRESULT (STDMETHODCALLTYPE *GetCaps)(void* This, void* lpDDSCaps);
+    HRESULT (STDMETHODCALLTYPE *GetClipper)(void* This, void** lplpDDClipper);
+    HRESULT (STDMETHODCALLTYPE *GetColorKey)(void* This, DWORD dwFlags, void* lpDDColorKey);
+    HRESULT (STDMETHODCALLTYPE *GetDC)(void* This, HDC* lphDC);
+    HRESULT (STDMETHODCALLTYPE *GetFlipStatus)(void* This, DWORD dwFlags);
+    HRESULT (STDMETHODCALLTYPE *GetOverlayPosition)(void* This, LPLONG lplX, LPLONG lplY);
+    HRESULT (STDMETHODCALLTYPE *GetPalette)(void* This, void** lplpDDPalette);
+    HRESULT (STDMETHODCALLTYPE *GetPixelFormat)(void* This, void* lpDDPixelFormat);
+    HRESULT (STDMETHODCALLTYPE *GetSurfaceDesc)(void* This, void* lpDDSurfaceDesc);
+    HRESULT (STDMETHODCALLTYPE *Initialize)(void* This, void* lpDD, void* lpDDSurfaceDesc);
+    HRESULT (STDMETHODCALLTYPE *IsLost)(void* This);
+    HRESULT (STDMETHODCALLTYPE *Lock)(void* This, LPRECT lpDestRect, void* lpDDSurfaceDesc, DWORD dwFlags, HANDLE hEvent);
+    HRESULT (STDMETHODCALLTYPE *ReleaseDC)(void* This, HDC hDC);
+    HRESULT (STDMETHODCALLTYPE *Restore)(void* This);
+    HRESULT (STDMETHODCALLTYPE *SetClipper)(void* This, void* lpDDClipper);
+    HRESULT (STDMETHODCALLTYPE *SetColorKey)(void* This, DWORD dwFlags, void* lpDDColorKey);
+    HRESULT (STDMETHODCALLTYPE *SetOverlayPosition)(void* This, LONG lX, LONG lY);
+    HRESULT (STDMETHODCALLTYPE *SetPalette)(void* This, void* lpDDPalette);
+    HRESULT (STDMETHODCALLTYPE *Unlock)(void* This, LPVOID lpSurfaceData);
+    HRESULT (STDMETHODCALLTYPE *UpdateOverlay)(void* This, LPRECT lpSrcRect, void* lpDDDestSurface, LPRECT lpDestRect, DWORD dwFlags, void* lpDDOverlayFx);
+    HRESULT (STDMETHODCALLTYPE *UpdateOverlayDisplay)(void* This, DWORD dwFlags);
+    HRESULT (STDMETHODCALLTYPE *UpdateOverlayZOrder)(void* This, DWORD dwFlags, void* lpDDSReference);
+};
+
 // DirectDraw Structure
 struct SDL3DirectDraw {
     IDirectDrawVtbl* lpVtbl;  // DirectDraw vtable pointer

@@ -13,8 +13,17 @@ set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g")
 # Create the shared library for the hook
 add_library(FM2KHook SHARED 
     src/dllmain.cpp
+<<<<<<< Updated upstream
     src/sdl3_hooks.cpp
     src/ddraw_hooks.cpp
+=======
+    src/dummy_directdraw.cpp
+    src/surface_manager.cpp
+    # Temporarily disabled - SDL3 integration is handled directly in dllmain.cpp
+    # src/sdl3_context.cpp
+    # src/directdraw_compat.cpp
+    # src/window_hooks.cpp
+>>>>>>> Stashed changes
 )
 
 # Export symbols for DLL

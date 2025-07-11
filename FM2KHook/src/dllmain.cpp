@@ -1721,9 +1721,9 @@ void InitializeHooks() {
         LogMessage("MinHook failed to initialize.");
         return;
     }
-
-    MH_CreateHook((LPVOID)&CreateWindowExA, (LPVOID)&Hook_CreateWindowExA, (void**)&original_create_window_ex_a);
-    MH_CreateHook((LPVOID)&DirectDrawCreate, (LPVOID)&Hook_DirectDrawCreate, (void**)&original_directdraw_create);
+  //it's not time yet
+  //  MH_CreateHook((LPVOID)&CreateWindowExA, (LPVOID)&Hook_CreateWindowExA, (void**)&original_create_window_ex_a);
+  //  MH_CreateHook((LPVOID)&DirectDrawCreate, (LPVOID)&Hook_DirectDrawCreate, (void**)&original_directdraw_create);
     MH_CreateHook((LPVOID)&SetWindowLongA, (LPVOID)&Hook_SetWindowLongA, (void**)&original_set_window_long_a);
     
     // We hook the game's main loop (process_input_history at 0x4025A0) to drive our rendering and event polling.

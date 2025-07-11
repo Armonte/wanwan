@@ -54,7 +54,6 @@ HRESULT STDMETHODCALLTYPE DD_CreateSurface(void* This, void* lpDDSurfaceDesc, vo
         return DD_OK;
     }
     
-    // For now, any other surface request will also get the primary surface.
     LogMessage(" -> Requested Other Surface (returning primary for now)");
     *lplpDDSurface = &g_fake_primary_surface;
     return DD_OK;

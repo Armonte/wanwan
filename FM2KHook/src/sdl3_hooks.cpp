@@ -11,11 +11,11 @@ static WNDPROC g_originalGameWindowProc = nullptr;
 void LogMessage(const char* message); // Forward declaration
 
 bool InitializeSDL3() {
+    LogMessage("Initializing SDL3...");
     if (g_sdlContext.initialized) {
         return true;
     }
 
-    LogMessage("Initializing SDL3...");
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) < 0) {
         char buffer[256];
         sprintf_s(buffer, sizeof(buffer), "SDL_Init failed: %s", SDL_GetError());
@@ -125,7 +125,6 @@ void PollSDLEvents() {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_KEY_DOWN) {
-            // SDL3 no longer uses the 'keysym' nested struct.
             if (event.key.scancode == SDL_SCANCODE_F11) {
                 ToggleFullscreen();
             }

@@ -9,7 +9,7 @@ static FILE* g_console_stream = nullptr;
 void LogMessage(const char* message);
 
 // --- Function Pointers for Original Game Functions ---
-static HRESULT (WINAPI* original_directdraw_create)(void* lpGUID, void** lplpDD, void* pUnkOuter) = nullptr;
+    static HRESULT (WINAPI* original_directdraw_create)(void* lpGUID, void** lplpDD, void* pUnkOuter) = nullptr;
 static HWND (WINAPI* original_create_window_ex_a)(DWORD, LPCSTR, LPCSTR, DWORD, int, int, int, int, HWND, HMENU, HINSTANCE, LPVOID) = nullptr;
 static LONG (WINAPI* original_set_window_long_a)(HWND, int, LONG) = nullptr;
 static BOOL (WINAPI* original_process_input_history)() = nullptr;
@@ -43,10 +43,20 @@ HRESULT WINAPI Hook_DirectDrawCreate(void* lpGUID, void** lplpDD, void* pUnkOute
 
 LONG WINAPI Hook_SetWindowLongA(HWND hWnd, int nIndex, LONG dwNewLong) {
     if (nIndex == GWLP_WNDPROC) {
-        LogMessage("Hook_SetWindowLongA: Intercepted and stored game's window procedure.");
+        LogMessage("Hook_SetWindowLongA: Intercepted game's attempt to set a new window procedure.");
+        
+        // Store the game's intended window procedure so our hook can call it.
         SetOriginalWindowProc((WNDPROC)dwNewLong);
-        // We've already subclassed with our interceptor, so we just return the original call's result.
+        
+        // IMPORTANT: Do NOT call the original SetWindowLongA for GWLP_WNDPROC.
+        // Doing so would overwrite our hook. We've already subclassed the window
+        // in CreateSDL3Context, and our goal here is just to capture the game's
+        // intended procedure. We can return the handle to our own hook,
+        // which mimics the behavior of SetWindowLongA returning the previous WNDPROC.
+        return (LONG)(LONG_PTR)InterceptedWindowProc;
     }
+    
+    // For any other nIndex value, pass the call through to the original function.
     return original_set_window_long_a(hWnd, nIndex, dwNewLong);
 }
 

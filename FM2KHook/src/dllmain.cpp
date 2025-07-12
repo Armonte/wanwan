@@ -153,12 +153,12 @@ static std::string GetLogFilePath() {
 // Simple hook function types (matching FM2K patterns)
 typedef int (__cdecl *ProcessGameInputsFn)();
 typedef int (__cdecl *UpdateGameStateFn)();
-typedef int (__cdecl *NetInitializeFn)();
+typedef BOOL (__cdecl *RunGameLoopFn)();
 
 // Original function pointers
 static ProcessGameInputsFn original_process_inputs = nullptr;
 static UpdateGameStateFn original_update_game = nullptr;
-static NetInitializeFn original_net_initialize = nullptr;
+static RunGameLoopFn original_run_game_loop = nullptr;
 
 // Hook state
 static uint32_t g_frame_counter = 0;
@@ -166,7 +166,7 @@ static uint32_t g_frame_counter = 0;
 // Key FM2K addresses (from IDA analysis)
 static constexpr uintptr_t PROCESS_INPUTS_ADDR = 0x4146D0;
 static constexpr uintptr_t UPDATE_GAME_ADDR = 0x404CD0;
-static constexpr uintptr_t NET_INITIALIZE_ADDR = 0x4029C0;  // Net_Initialize function
+static constexpr uintptr_t RUN_GAME_LOOP_ADDR = 0x405AD0;  // run_game_loop function (perfect post-graphics hook point)
 static constexpr uintptr_t FRAME_COUNTER_ADDR = 0x447EE0;
 
 // Input buffer addresses (correct addresses from IDA analysis)
@@ -1490,6 +1490,10 @@ bool ConfigureNetworkMode(bool online_mode, bool host_mode) {
 bool InitializeGekkoNet() {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** INITIALIZING GEKKONET WITH REAL UDP NETWORKING (OnlineSession Style) ***");
     
+    // TEMPORARY: Force online mode for testing (since launcher doesn't set config yet)
+    is_online_mode = true;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: FORCING ONLINE MODE FOR TESTING");
+    
     // Get networking configuration from environment variables (like OnlineSession example)
     uint16_t local_port = 7000;      // Default to host port
     std::string remote_address = "127.0.0.1:7001";  // Default to guest address
@@ -1593,6 +1597,51 @@ bool InitializeGekkoNet() {
     return true;
 }
 
+// BSNES PATTERN: AllPlayersValid() implementation (gekko.cpp lines 523-544)
+bool AllPlayersValid() {
+    if (!gekko_session || !gekko_initialized) {
+        return false;
+    }
+    
+    if (!gekko_session_started) {
+        // Check if all players are connected using session events (like BSNES CheckStatusActors)
+        int session_event_count = 0;
+        auto session_events = gekko_session_events(gekko_session, &session_event_count);
+        
+        bool session_started_event_found = false;
+        for (int i = 0; i < session_event_count; i++) {
+            auto event = session_events[i];
+            
+            // Only log important events, not every frame
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Session Event: %d", event->type);
+            
+            // Handle all event types like BSNES
+            if (event->type == SessionStarted) {
+                session_started_event_found = true;
+            } else if (event->type == DesyncDetected) {
+                auto desync = event->data.desynced;
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Desync detected! Frame: %d, Remote handle: %d, Local checksum: 0x%08X, Remote checksum: 0x%08X", 
+                            desync.frame, desync.remote_handle, desync.local_checksum, desync.remote_checksum);
+            } else if (event->type == PlayerDisconnected) {
+                auto disco = event->data.disconnected;
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Player disconnected: %d", disco.handle);
+            }
+        }
+        
+        // BSNES PATTERN: Only trigger SessionStarted ONCE (gekko.cpp lines 531-535)
+        if (session_started_event_found) {
+            gekko_session_started = true;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SESSION STARTED - All players connected and synchronized! (BSNES AllPlayersValid pattern)");
+            return true;
+        }
+        
+        return false;  // Still waiting for session to start
+    }
+    
+    // Session already started - always return true (BSNES pattern line 543)
+    return true;
+}
+
 // Simple hook implementations (like your working ML2 code)
 int __cdecl Hook_ProcessGameInputs() {
     g_frame_counter++;
@@ -1602,7 +1651,16 @@ int __cdecl Hook_ProcessGameInputs() {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Hook called! Frame %u", g_frame_counter);
     }
     
-    // NOTE: GekkoNet initialization now happens in Hook_NetInitialize (much earlier)
+    // BSNES PATTERN: Initialize GekkoNet lazily on frame 10 (after FM2K is fully stable)
+    if (!gekko_initialized && g_frame_counter == 10) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Initializing GekkoNet lazily (BSNES pattern) - frame %u", g_frame_counter);
+        bool gekko_result = InitializeGekkoNet();
+        if (gekko_result) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: ✓ GekkoNet initialized successfully after FM2K stabilization!");
+        } else {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: ✗ GekkoNet lazy initialization failed!");
+        }
+    }
     
     // Read the actual frame counter from game memory (with basic validation)
     uint32_t game_frame = 0;
@@ -1720,43 +1778,8 @@ int __cdecl Hook_ProcessGameInputs() {
                 }
             }
             
-            // Process GekkoNet session events first (connection events like OnlineSession example lines 275-291)
-            int session_event_count = 0;
-            auto session_events = gekko_session_events(gekko_session, &session_event_count);
-            for (int i = 0; i < session_event_count; i++) {
-                auto event = session_events[i];
-                
-                // CRITICAL FIX: Skip already-processed SessionStarted events to prevent infinite loop
-                if (event->type == SessionStarted && gekko_session_started) {
-                    // Already processed SessionStarted - skip to prevent event loop that breaks Client 2
-                    continue;
-                }
-                
-                // Only log important events, not every frame
-                if (event->type != SessionStarted || !gekko_session_started) {
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Session Event: %d", event->type);
-                }
-                
-                // CRITICAL: Check for SessionStartedEvent like BSNES AllPlayersValid() (lines 525-536 in gekko.cpp)
-                if (event->type == SessionStarted && !gekko_session_started) {
-                    gekko_session_started = true;
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SESSION STARTED - All players connected and synchronized!");
-                }
-                
-                if (event->type == DesyncDetected) {
-                    auto desync = event->data.desynced;
-                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Desync detected! Frame: %d, Remote handle: %d, Local checksum: 0x%08X, Remote checksum: 0x%08X", 
-                                desync.frame, desync.remote_handle, desync.local_checksum, desync.remote_checksum);
-                }
-                
-                if (event->type == PlayerDisconnected) {
-                    auto disco = event->data.disconnected;
-                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Player disconnected: %d", disco.handle);
-                }
-            }
-            
-            // CRITICAL BSNES PATTERN: Block gameplay until SessionStarted (like BSNES AllPlayersValid)
-            if (!gekko_session_started) {
+            // BSNES PATTERN: Implement AllPlayersValid() logic (gekko.cpp lines 523-544)
+            if (!AllPlayersValid()) {
                 // Network handshake in progress - block game advancement like BSNES netplayRun()
                 if (g_frame_counter % 60 == 0) {  // Log every 0.6 seconds
                     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "BSNES PATTERN: Blocking gameplay until session handshake completes (frame %u)", g_frame_counter);
@@ -2042,37 +2065,7 @@ int __cdecl Hook_UpdateGameState() {
     return result;
 }
 
-// Hook function for Net_Initialize - called much earlier in FM2K initialization
-int __cdecl Hook_NetInitialize() {
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Net_Initialize intercepted - injecting GekkoNet initialization!");
-    
-    // STEP 1: Initialize our GekkoNet system BEFORE FM2K's networking starts
-    if (!gekko_initialized) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Setting up GekkoNet networking (early injection)...");
-        bool gekko_result = InitializeGekkoNet();
-        if (gekko_result) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: ✓ GekkoNet initialized successfully!");
-        } else {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: ✗ GekkoNet initialization failed - continuing with FM2K init anyway");
-        }
-    } else {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet already initialized, skipping...");
-    }
-    
-    // STEP 2: CRITICAL - Call original FM2K Net_Initialize to avoid crashes
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Calling original FM2K Net_Initialize...");
-    int original_result = 0;
-    if (original_net_initialize) {
-        original_result = original_net_initialize();
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: ✓ Original Net_Initialize completed (returned: %d)", original_result);
-    } else {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: ✗ WARNING - original_net_initialize is NULL!");
-    }
-    
-    // STEP 3: Return to FM2K's initialization flow (joy1_setup, joy2_setup, etc.)
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Net_Initialize hook complete - returning to FM2K init sequence");
-    return original_result;
-}
+// BSNES PATTERN: No initialization hooks - let FM2K start naturally, then initialize GekkoNet lazily
 
 // Simple initialization function
 bool InitializeHooks() {
@@ -2086,7 +2079,7 @@ bool InitializeHooks() {
     }
     
     // Validate target addresses before hooking
-    if (IsBadCodePtr((FARPROC)PROCESS_INPUTS_ADDR) || IsBadCodePtr((FARPROC)UPDATE_GAME_ADDR) || IsBadCodePtr((FARPROC)NET_INITIALIZE_ADDR)) {
+    if (IsBadCodePtr((FARPROC)PROCESS_INPUTS_ADDR) || IsBadCodePtr((FARPROC)UPDATE_GAME_ADDR)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ERROR FM2K HOOK: Target addresses are invalid or not yet mapped");
         return false;
     }
@@ -2123,26 +2116,12 @@ bool InitializeHooks() {
         return false;
     }
     
-    // Install hook for Net_Initialize function (early GekkoNet initialization)
-    void* netInitFuncAddr = (void*)NET_INITIALIZE_ADDR;
-    MH_STATUS status3 = MH_CreateHook(netInitFuncAddr, (void*)Hook_NetInitialize, (void**)&original_net_initialize);
-    if (status3 != MH_OK) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ERROR FM2K HOOK: Failed to create Net_Initialize hook: %d", status3);
-        MH_Uninitialize();
-        return false;
-    }
+    // BSNES PATTERN: Don't hook initialization - initialize GekkoNet lazily on first gameplay frame
     
-    MH_STATUS enable3 = MH_EnableHook(netInitFuncAddr);
-    if (enable3 != MH_OK) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ERROR FM2K HOOK: Failed to enable Net_Initialize hook: %d", enable3);
-        MH_Uninitialize();
-        return false;
-    }
-    
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SUCCESS FM2K HOOK: All hooks installed successfully!");
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "   - Net_Initialize hook at 0x%08X (early GekkoNet initialization)", NET_INITIALIZE_ADDR);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SUCCESS FM2K HOOK: Core gameplay hooks installed successfully!");
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "   - Input processing hook at 0x%08X", PROCESS_INPUTS_ADDR);
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "   - Game state update hook at 0x%08X", UPDATE_GAME_ADDR);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "   - GekkoNet will initialize lazily on first gameplay frame (BSNES pattern)");
     return true;
 }
 

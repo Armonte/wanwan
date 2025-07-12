@@ -20,7 +20,8 @@
       "mcp__github_com_mrexodia_ida-pro-mcp__decompile_function",
       "mcp__github_com_mrexodia_ida-pro-mcp__get_metadata",
       "mcp__github_com_mrexodia_ida-pro-mcp__list_functions",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "mcp__github_com_mrexodia_ida-pro-mcp__get_function_by_name"
     ],
     "deny": []
   }

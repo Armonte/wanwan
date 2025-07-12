@@ -102,7 +102,11 @@ public:
     bool SetSaveStateProfile(SaveStateProfile profile);
     
     // GekkoNet client role configuration
-    bool SetClientRole(uint8_t player_index, bool is_host);
+    void SetClientRole(uint8_t player_index, bool is_host);
+    
+    // GekkoNet networking setup (like OnlineSession example)
+    void SetupGekkoNetEnvironment(uint8_t player_index, uint16_t local_port, const std::string& remote_address);
+    bool LaunchWithNetworking(uint8_t player_index, uint16_t local_port, const std::string& remote_address, const std::string& exe_path);
     
     // Environment variable configuration for OnlineSession-style networking
     void SetEnvironmentVariable(const std::string& name, const std::string& value);

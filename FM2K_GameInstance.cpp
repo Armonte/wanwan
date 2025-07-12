@@ -746,20 +746,51 @@ bool FM2KGameInstance::SetSaveStateProfile(SaveStateProfile profile) {
 }
 
 // Set client role for LocalNetworkAdapter (HOST = 0, GUEST = 1)
-bool FM2KGameInstance::SetClientRole(uint8_t player_index, bool is_host) {
+void FM2KGameInstance::SetClientRole(uint8_t player_index, bool is_host) {
     if (!shared_memory_data_) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not available for client role configuration");
-        return false;
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not available for client role setting");
+        return;
     }
     
     SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
     shared_data->player_index = player_index;
-    shared_data->session_role = is_host ? 0 : 1;
+    shared_data->session_role = is_host ? 0 : 1;  // 0 = Host, 1 = Guest
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Client role configured: Player %u, Role: %s", 
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Set client role - Player: %u, Role: %s", 
                 player_index, is_host ? "Host" : "Guest");
+}
+
+// Set up environment variables for GekkoNet networking (like OnlineSession example)
+void FM2KGameInstance::SetupGekkoNetEnvironment(uint8_t player_index, uint16_t local_port, const std::string& remote_address) {
+    // Set environment variables that the DLL will read (like OnlineSession command line args)
+    std::string player_index_str = std::to_string(player_index);
+    std::string port_str = std::to_string(local_port);
     
-    return true;
+    // Set environment variables for the current process (child processes will inherit them)
+    SetEnvironmentVariableA("FM2K_PLAYER_INDEX", player_index_str.c_str());
+    SetEnvironmentVariableA("FM2K_LOCAL_PORT", port_str.c_str());
+    SetEnvironmentVariableA("FM2K_REMOTE_ADDR", remote_address.c_str());
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+        "Set GekkoNet environment variables - Player: %u, Port: %u, Remote: %s", 
+        player_index, local_port, remote_address.c_str());
+}
+
+// Launch game with GekkoNet networking configuration
+bool FM2KGameInstance::LaunchWithNetworking(uint8_t player_index, uint16_t local_port, 
+                                           const std::string& remote_address, const std::string& exe_path) {
+    // Set up environment variables for GekkoNet
+    SetupGekkoNetEnvironment(player_index, local_port, remote_address);
+    
+    // Launch the game process
+    bool launch_success = Launch(exe_path);
+    
+    // Clean up environment variables to avoid conflicts with next client
+    SetEnvironmentVariableA("FM2K_PLAYER_INDEX", nullptr);
+    SetEnvironmentVariableA("FM2K_LOCAL_PORT", nullptr);
+    SetEnvironmentVariableA("FM2K_REMOTE_ADDR", nullptr);
+    
+    return launch_success;
 }
 
 // Environment variable configuration for OnlineSession-style networking

@@ -31,6 +31,21 @@ static bool gekko_initialized = false;
 static bool is_online_mode = false;
 static bool is_host = false;
 
+// Frame timing variables (like OnlineSession example)
+static std::chrono::steady_clock::time_point last_frame_time;
+static float frame_accumulator = 0.0f;
+static float current_frame_time = 1.0f / 60.0f;  // Default 60 FPS
+static float frames_ahead = 0.0f;
+
+// Input prediction and application
+static uint8_t last_p1_input = 0;
+static uint8_t last_p2_input = 0;
+static bool inputs_applied_this_frame = false;
+
+// Network statistics tracking
+static GekkoNetworkStats last_network_stats = {};
+static uint32_t last_stats_frame = 0;
+
 // Shared memory for configuration
 static HANDLE shared_memory_handle = nullptr;
 static void* shared_memory_data = nullptr;
@@ -66,6 +81,55 @@ static uint64_t total_load_time_us = 0;
 static inline uint64_t get_microseconds() {
     auto now = std::chrono::high_resolution_clock::now();
     return std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+}
+
+// Frame timing functions (like OnlineSession example)
+static float GetFrameTime(float frames_ahead) {
+    const float slow_frame_time = 1.0f / 58.0f;   // 58 FPS when ahead
+    const float normal_frame_time = 1.0f / 60.0f; // 60 FPS normal
+    const float fast_frame_time = 1.0f / 62.0f;   // 62 FPS when behind
+    
+    if (frames_ahead >= 1.0f) {
+        return slow_frame_time;
+    } else if (frames_ahead <= -1.0f) {
+        return fast_frame_time;
+    } else {
+        return normal_frame_time;
+    }
+}
+
+// Convert FM2K inputs to GekkoNet format
+static uint8_t ConvertFM2KInputToGekko(uint32_t fm2k_input) {
+    uint8_t gekko_input = 0;
+    
+    // Map FM2K input bits to 8-bit GekkoNet format
+    if (fm2k_input & 0x01) gekko_input |= 0x01;  // left
+    if (fm2k_input & 0x02) gekko_input |= 0x02;  // right
+    if (fm2k_input & 0x04) gekko_input |= 0x04;  // up
+    if (fm2k_input & 0x08) gekko_input |= 0x08;  // down
+    if (fm2k_input & 0x10) gekko_input |= 0x10;  // button1
+    if (fm2k_input & 0x20) gekko_input |= 0x20;  // button2
+    if (fm2k_input & 0x40) gekko_input |= 0x40;  // button3
+    if (fm2k_input & 0x80) gekko_input |= 0x80;  // button4
+    
+    return gekko_input;
+}
+
+// Convert GekkoNet inputs back to FM2K format
+static uint32_t ConvertGekkoInputToFM2K(uint8_t gekko_input) {
+    uint32_t fm2k_input = 0;
+    
+    // Map GekkoNet input bits back to FM2K format
+    if (gekko_input & 0x01) fm2k_input |= 0x01;  // left
+    if (gekko_input & 0x02) fm2k_input |= 0x02;  // right
+    if (gekko_input & 0x04) fm2k_input |= 0x04;  // up
+    if (gekko_input & 0x08) fm2k_input |= 0x08;  // down
+    if (gekko_input & 0x10) fm2k_input |= 0x10;  // button1
+    if (gekko_input & 0x20) fm2k_input |= 0x20;  // button2
+    if (gekko_input & 0x40) fm2k_input |= 0x40;  // button3
+    if (gekko_input & 0x80) fm2k_input |= 0x80;  // button4
+    
+    return fm2k_input;
 }
 
 // State change debugging
@@ -1517,7 +1581,7 @@ bool InitializeGekkoNet() {
     config.max_spectators = 0;
     config.input_prediction_window = 10;  // Higher window like the example
     config.spectator_delay = 0;
-    config.input_size = sizeof(char);     // 1 byte per input (like example)
+    config.input_size = sizeof(uint8_t);     // 1 byte per input (like example)
     config.state_size = sizeof(FM2K::State::GameState);  // Use our state size
     config.limited_saving = false;
     config.post_sync_joining = false;
@@ -1575,6 +1639,12 @@ bool InitializeGekkoNet() {
     
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Set input delay for local player handle %d", local_player_handle);
     
+    // Initialize frame timing variables
+    last_frame_time = std::chrono::steady_clock::now();
+    frame_accumulator = 0.0f;
+    current_frame_time = 1.0f / 60.0f;
+    frames_ahead = 0.0f;
+    
     gekko_initialized = true;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet initialization complete with real UDP networking!");
     return true;
@@ -1596,266 +1666,241 @@ int __cdecl Hook_ProcessGameInputs() {
         game_frame = *frame_ptr;
     }
     
-    //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: process_game_inputs called! Hook frame %u, Game frame %u", 
-             //g_frame_counter, game_frame);
-    
-    // Capture current inputs from game memory (with enhanced validation)
-    uint32_t p1_input = 0;
-    uint32_t p2_input = 0;
-    bool p1_input_valid = false;
-    bool p2_input_valid = false;
-    
-    uint32_t* p1_input_ptr = (uint32_t*)P1_INPUT_ADDR;
-    uint32_t* p2_input_ptr = (uint32_t*)P2_INPUT_ADDR;
-    
-    if (p1_input_ptr && !IsBadReadPtr(p1_input_ptr, sizeof(uint32_t))) {
-        p1_input = *p1_input_ptr;
-        p1_input_valid = true;
-    }
-    if (p2_input_ptr && !IsBadReadPtr(p2_input_ptr, sizeof(uint32_t))) {
-        p2_input = *p2_input_ptr;
-        p2_input_valid = true;
-    }
-    
-    // Validate input ranges (FM2K uses 11-bit inputs)
-    if (p1_input_valid && (p1_input & 0xFFFFF800)) {
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: P1 input has invalid high bits: 0x%08X", p1_input);
-        p1_input &= 0x07FF;  // Mask to 11 bits
-    }
-    if (p2_input_valid && (p2_input & 0xFFFFF800)) {
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: P2 input has invalid high bits: 0x%08X", p2_input);
-        p2_input &= 0x07FF;  // Mask to 11 bits
-    }
-    
     // Check for configuration updates from launcher
     CheckConfigurationUpdates();
     
     // Process debug commands from launcher
     ProcessDebugCommands();
     
-    // Log occasionally to debug input capture (reduced frequency to avoid spam)
-    if (g_frame_counter % 600 == 0) {  // Log every 600 frames (6 seconds) instead of every frame
-        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Frame %u - Game frame: %u - P1: 0x%08X (addr valid: %s), P2: 0x%08X (addr valid: %s)", 
-                 g_frame_counter, game_frame, p1_input, 
-                 (!IsBadReadPtr(p1_input_ptr, sizeof(uint32_t))) ? "YES" : "NO",
-                 p2_input,
-                 (!IsBadReadPtr(p2_input_ptr, sizeof(uint32_t))) ? "YES" : "NO");
-    }
-    
-    // Forward inputs directly to GekkoNet (with enhanced error handling)
+    // GekkoNet integration (following OnlineSession example pattern)
     if (gekko_initialized && gekko_session) {
-        // Critical: Poll network for incoming packets (like OnlineSession example line 255)
+        // Get current time for frame timing
+        auto current_time = std::chrono::steady_clock::now();
+        float delta_time = std::chrono::duration<float>(current_time - last_frame_time).count();
+        last_frame_time = current_time;
+        
+        // Update frame timing based on network conditions (like OnlineSession)
+        frames_ahead = gekko_frames_ahead(gekko_session);
+        current_frame_time = GetFrameTime(frames_ahead);
+        frame_accumulator += delta_time;
+        
+        // Poll network for incoming packets (like OnlineSession example line 255)
         gekko_network_poll(gekko_session);
         
-        // Only process inputs if we have valid data
-        if (p1_input_valid || p2_input_valid) {
-            // Convert 16-bit FM2K inputs to 8-bit GekkoNet format
-            uint8_t p1_gekko = 0;
-            uint8_t p2_gekko = 0;
+        // Process frame updates when accumulator is ready
+        while (frame_accumulator >= current_frame_time) {
+            // Capture current inputs from game memory
+            uint32_t p1_input = 0;
+            uint32_t p2_input = 0;
+            bool p1_input_valid = false;
+            bool p2_input_valid = false;
             
-            // Map FM2K input bits to 8-bit GekkoNet format (matching bridge logic)
-            if (p1_input & 0x01) p1_gekko |= 0x01;  // left
-            if (p1_input & 0x02) p1_gekko |= 0x02;  // right
-            if (p1_input & 0x04) p1_gekko |= 0x04;  // up
-            if (p1_input & 0x08) p1_gekko |= 0x08;  // down
-            if (p1_input & 0x10) p1_gekko |= 0x10;  // button1
-            if (p1_input & 0x20) p1_gekko |= 0x20;  // button2
-            if (p1_input & 0x40) p1_gekko |= 0x40;  // button3
-            if (p1_input & 0x80) p1_gekko |= 0x80;  // button4
+            uint32_t* p1_input_ptr = (uint32_t*)P1_INPUT_ADDR;
+            uint32_t* p2_input_ptr = (uint32_t*)P2_INPUT_ADDR;
             
-            if (p2_input & 0x01) p2_gekko |= 0x01;  // left
-            if (p2_input & 0x02) p2_gekko |= 0x02;  // right
-            if (p2_input & 0x04) p2_gekko |= 0x04;  // up
-            if (p2_input & 0x08) p2_gekko |= 0x08;  // down
-            if (p2_input & 0x10) p2_gekko |= 0x10;  // button1
-            if (p2_input & 0x20) p2_gekko |= 0x20;  // button2
-            if (p2_input & 0x40) p2_gekko |= 0x40;  // button3
-            if (p2_input & 0x80) p2_gekko |= 0x80;  // button4
+            if (p1_input_ptr && !IsBadReadPtr(p1_input_ptr, sizeof(uint32_t))) {
+                p1_input = *p1_input_ptr;
+                p1_input_valid = true;
+            }
+            if (p2_input_ptr && !IsBadReadPtr(p2_input_ptr, sizeof(uint32_t))) {
+                p2_input = *p2_input_ptr;
+                p2_input_valid = true;
+            }
             
-            // Add inputs to GekkoNet session based on valid player handles and input data
-            if (p1_handle >= 0 && p1_input_valid) {
+            // Validate input ranges (FM2K uses 11-bit inputs)
+            if (p1_input_valid && (p1_input & 0xFFFFF800)) {
+                p1_input &= 0x07FF;  // Mask to 11 bits
+            }
+            if (p2_input_valid && (p2_input & 0xFFFFF800)) {
+                p2_input &= 0x07FF;  // Mask to 11 bits
+            }
+            
+            // Convert inputs to GekkoNet format and add to session
+            if (p1_input_valid && p1_handle >= 0) {
+                uint8_t p1_gekko = ConvertFM2KInputToGekko(p1_input);
                 gekko_add_local_input(gekko_session, p1_handle, &p1_gekko);
+                last_p1_input = p1_gekko;
             }
-            if (p2_handle >= 0 && p2_input_valid) {
+            if (p2_input_valid && p2_handle >= 0) {
+                uint8_t p2_gekko = ConvertFM2KInputToGekko(p2_input);
                 gekko_add_local_input(gekko_session, p2_handle, &p2_gekko);
+                last_p2_input = p2_gekko;
             }
             
-            // Save current state before processing GekkoNet updates (reduced frequency for performance)
-            if (state_manager_initialized && (g_frame_counter % 8) == 0) {  // Save every 8 frames for rollback buffer
+            // Save current state before processing GekkoNet updates
+            if (state_manager_initialized && (g_frame_counter % 8) == 0) {
                 SaveStateToBuffer(g_frame_counter);
             }
             
-            // Auto-save to slot 0 if enabled (with proper enable/disable logic)
-            if (shared_memory_data && state_manager_initialized) {
-                SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data);
-                if (shared_data->auto_save_enabled) {
-                    // Only auto-save if enough frames have passed since last auto-save
-                    if ((g_frame_counter - last_auto_save_frame) >= shared_data->auto_save_interval_frames) {
-                        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Auto-save triggered at frame %u (interval: %u)", 
-                                    g_frame_counter, shared_data->auto_save_interval_frames);
-                        SaveStateToSlot(0, g_frame_counter);  // Auto-save always goes to slot 0
-                        last_auto_save_frame = g_frame_counter;
+            // Process GekkoNet session events (like OnlineSession example lines 238-267)
+            int session_event_count = 0;
+            auto session_events = gekko_session_events(gekko_session, &session_event_count);
+            
+            for (int i = 0; i < session_event_count; i++) {
+                auto* event = session_events[i];
+                if (!event) continue;
+                
+                switch (event->type) {
+                    case DesyncDetected: {
+                        auto desync = event->data.desynced;
+                        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, 
+                            "GekkoNet: Desync detected at frame %u, remote handle %d, local checksum 0x%08X, remote checksum 0x%08X",
+                            desync.frame, desync.remote_handle, desync.local_checksum, desync.remote_checksum);
+                        break;
                     }
-                } else {
-                    // Auto-save is disabled - log occasionally for debugging
-                    if (g_frame_counter % 3000 == 0) {  // Log every 30 seconds when disabled
-                        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Auto-save disabled at frame %u", g_frame_counter);
+                    case PlayerDisconnected: {
+                        auto disco = event->data.disconnected;
+                        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, 
+                            "GekkoNet: Player %d disconnected", disco.handle);
+                        break;
                     }
+                    default:
+                        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Session event type %d", event->type);
+                        break;
                 }
             }
             
-            // Process GekkoNet updates after adding inputs
+            // Process GekkoNet game updates (like OnlineSession example lines 255-267)
             int update_count = 0;
             auto updates = gekko_update_session(gekko_session, &update_count);
             
-            // Handle GekkoNet events (AdvanceEvent, SaveEvent, LoadEvent)
-            if (updates && update_count > 0) {
-                for (int i = 0; i < update_count; i++) {
-                    auto* update = updates[i];
-                    if (!update) {
-                        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Null update at index %d", i);
-                        continue;
+            inputs_applied_this_frame = false;
+            
+            for (int i = 0; i < update_count; i++) {
+                auto* update = updates[i];
+                if (!update) continue;
+                
+                switch (update->type) {
+                    case AdvanceEvent: {
+                        // Game should advance one frame with predicted inputs
+                        uint32_t target_frame = update->data.adv.frame;
+                        uint32_t input_length = update->data.adv.input_len;
+                        uint8_t* inputs = update->data.adv.inputs;
+                        
+                        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
+                            "GekkoNet: AdvanceEvent to frame %u (inputs: %u bytes)", target_frame, input_length);
+                        
+                        // Apply predicted inputs to game memory if available
+                        if (inputs && input_length >= 2 && !inputs_applied_this_frame) {
+                            uint8_t p1_predicted = inputs[0];
+                            uint8_t p2_predicted = inputs[1];
+                            
+                            // Convert back to FM2K format
+                            uint32_t p1_fm2k = ConvertGekkoInputToFM2K(p1_predicted);
+                            uint32_t p2_fm2k = ConvertGekkoInputToFM2K(p2_predicted);
+                            
+                            // Write predicted inputs to game memory
+                            if (p1_input_ptr && !IsBadWritePtr(p1_input_ptr, sizeof(uint32_t))) {
+                                *p1_input_ptr = p1_fm2k;
+                            }
+                            if (p2_input_ptr && !IsBadWritePtr(p2_input_ptr, sizeof(uint32_t))) {
+                                *p2_input_ptr = p2_fm2k;
+                            }
+                            
+                            inputs_applied_this_frame = true;
+                            
+                            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
+                                "GekkoNet: Applied predicted inputs - P1: 0x%02X->0x%08X, P2: 0x%02X->0x%08X", 
+                                p1_predicted, p1_fm2k, p2_predicted, p2_fm2k);
+                        }
+                        break;
                     }
                     
-                    switch (update->type) {
-                        case AdvanceEvent: {
-                            // Game should advance one frame with predicted inputs
-                            uint32_t target_frame = update->data.adv.frame;
-                            uint32_t input_length = update->data.adv.input_len;
-                            uint8_t* inputs = update->data.adv.inputs;
-                            
-                            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent to frame %u (inputs: %u bytes)", 
-                                        target_frame, input_length);
-                            
-                            // Apply predicted inputs to game memory if available
-                            if (inputs && input_length >= 2) {
-                                uint8_t p1_predicted = inputs[0];
-                                uint8_t p2_predicted = inputs[1];
-                                
-                                // Convert back to FM2K format and apply to game memory
-                                uint32_t p1_fm2k = 0, p2_fm2k = 0;
-                                if (p1_predicted & 0x01) p1_fm2k |= 0x01;  // left
-                                if (p1_predicted & 0x02) p1_fm2k |= 0x02;  // right
-                                if (p1_predicted & 0x04) p1_fm2k |= 0x04;  // up
-                                if (p1_predicted & 0x08) p1_fm2k |= 0x08;  // down
-                                if (p1_predicted & 0x10) p1_fm2k |= 0x10;  // button1
-                                if (p1_predicted & 0x20) p1_fm2k |= 0x20;  // button2
-                                if (p1_predicted & 0x40) p1_fm2k |= 0x40;  // button3
-                                if (p1_predicted & 0x80) p1_fm2k |= 0x80;  // button4
-                                
-                                if (p2_predicted & 0x01) p2_fm2k |= 0x01;  // left
-                                if (p2_predicted & 0x02) p2_fm2k |= 0x02;  // right
-                                if (p2_predicted & 0x04) p2_fm2k |= 0x04;  // up
-                                if (p2_predicted & 0x08) p2_fm2k |= 0x08;  // down
-                                if (p2_predicted & 0x10) p2_fm2k |= 0x10;  // button1
-                                if (p2_predicted & 0x20) p2_fm2k |= 0x20;  // button2
-                                if (p2_predicted & 0x40) p2_fm2k |= 0x40;  // button3
-                                if (p2_predicted & 0x80) p2_fm2k |= 0x80;  // button4
-                                
-                                // Write predicted inputs to game memory
-                                uint32_t* p1_input_ptr = (uint32_t*)P1_INPUT_ADDR;
-                                uint32_t* p2_input_ptr = (uint32_t*)P2_INPUT_ADDR;
-                                if (p1_input_ptr && !IsBadWritePtr(p1_input_ptr, sizeof(uint32_t))) {
-                                    *p1_input_ptr = p1_fm2k;
-                                }
-                                if (p2_input_ptr && !IsBadWritePtr(p2_input_ptr, sizeof(uint32_t))) {
-                                    *p2_input_ptr = p2_fm2k;
-                                }
-                                
-                                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Applied predicted inputs - P1: 0x%02X->0x%08X, P2: 0x%02X->0x%08X", 
-                                            p1_predicted, p1_fm2k, p2_predicted, p2_fm2k);
-                            }
-                            break;
-                        }
+                    case SaveEvent: {
+                        // GekkoNet wants us to save the current state
+                        uint32_t save_frame = update->data.save.frame;
+                        uint32_t* checksum_ptr = update->data.save.checksum;
+                        uint32_t* state_len_ptr = update->data.save.state_len;
+                        uint8_t* state_ptr = update->data.save.state;
                         
-                        case SaveEvent: {
-                            // GekkoNet wants us to save the current state
-                            uint32_t save_frame = update->data.save.frame;
-                            uint32_t* checksum_ptr = update->data.save.checksum;
-                            uint32_t* state_len_ptr = update->data.save.state_len;
-                            uint8_t* state_ptr = update->data.save.state;
-                            
-                            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SaveEvent for frame %u", save_frame);
-                            
-                            if (state_manager_initialized && checksum_ptr && state_len_ptr && state_ptr) {
-                                // Save state to GekkoNet's buffer
-                                FM2K::State::GameState current_state;
-                                if (SaveCoreStateBasic(&current_state, save_frame)) {
-                                    // Calculate state size and checksum
-                                    *state_len_ptr = sizeof(FM2K::State::GameState);
-                                    *checksum_ptr = CalculateStateChecksum(&current_state);
-                                    
-                                    // Copy state data to GekkoNet buffer
-                                    memcpy(state_ptr, &current_state, sizeof(FM2K::State::GameState));
-                                    
-                                    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: State saved for frame %u (size: %u, checksum: 0x%08X)", 
-                                                save_frame, *state_len_ptr, *checksum_ptr);
-                                } else {
-                                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Failed to save state for frame %u", save_frame);
-                                }
-                            }
-                            break;
-                        }
+                        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SaveEvent for frame %u", save_frame);
                         
-                        case LoadEvent: {
-                            // Rollback to specific frame
-                            uint32_t target_frame = update->data.load.frame;
-                            uint32_t state_length = update->data.load.state_len;
-                            uint8_t* state_data = update->data.load.state;
-                            
-                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: LoadEvent (rollback) to frame %u (current: %u)", 
-                                       target_frame, g_frame_counter);
-                            
-                            if (state_manager_initialized && state_data && state_length == sizeof(FM2K::State::GameState)) {
-                                // Load state from GekkoNet buffer
-                                FM2K::State::GameState* loaded_state = reinterpret_cast<FM2K::State::GameState*>(state_data);
-                                if (RestoreStateFromStruct(loaded_state, target_frame)) {
-                                    g_frame_counter = target_frame;  // Update our frame counter
-                                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Successfully rolled back to frame %u", target_frame);
-                                } else {
-                                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Failed to load state for frame %u", target_frame);
-                                }
+                        if (state_manager_initialized && checksum_ptr && state_len_ptr && state_ptr) {
+                            // Save state to GekkoNet's buffer
+                            FM2K::State::GameState current_state;
+                            if (SaveCoreStateBasic(&current_state, save_frame)) {
+                                // Calculate state size and checksum
+                                *state_len_ptr = sizeof(FM2K::State::GameState);
+                                *checksum_ptr = CalculateStateChecksum(&current_state);
+                                
+                                // Copy state data to GekkoNet buffer
+                                memcpy(state_ptr, &current_state, sizeof(FM2K::State::GameState));
+                                
+                                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
+                                    "GekkoNet: State saved for frame %u (size: %u, checksum: 0x%08X)", 
+                                    save_frame, *state_len_ptr, *checksum_ptr);
                             } else {
-                                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Invalid rollback data for frame %u (state_len: %u)", 
-                                           target_frame, state_length);
+                                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Failed to save state for frame %u", save_frame);
                             }
-                            break;
                         }
-                        
-                        default:
-                            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Unknown event type: %d", update->type);
-                            break;
+                        break;
                     }
+                    
+                    case LoadEvent: {
+                        // Rollback to specific frame
+                        uint32_t target_frame = update->data.load.frame;
+                        uint32_t state_length = update->data.load.state_len;
+                        uint8_t* state_data = update->data.load.state;
+                        
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                            "GekkoNet: LoadEvent (rollback) to frame %u (current: %u)", target_frame, g_frame_counter);
+                        
+                        if (state_manager_initialized && state_data && state_length == sizeof(FM2K::State::GameState)) {
+                            // Load state from GekkoNet buffer
+                            FM2K::State::GameState* loaded_state = reinterpret_cast<FM2K::State::GameState*>(state_data);
+                            if (RestoreStateFromStruct(loaded_state, target_frame)) {
+                                g_frame_counter = target_frame;  // Update our frame counter
+                                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Successfully rolled back to frame %u", target_frame);
+                            } else {
+                                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Failed to load state for frame %u", target_frame);
+                            }
+                        } else {
+                            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, 
+                                "GekkoNet: Invalid rollback data for frame %u (state_len: %u)", target_frame, state_length);
+                        }
+                        break;
+                    }
+                    
+                    default:
+                        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Unknown event type: %d", update->type);
+                        break;
                 }
             }
             
-            // Log network statistics and input processing (like OnlineSession example lines 259-267)
+            // Log network statistics and frame timing (like OnlineSession example lines 259-267)
             if (g_frame_counter % 100 == 0) {
                 // Get network statistics for the remote player
                 GekkoNetworkStats stats = {};
-                int remote_player_handle = (p1_handle >= 0) ? p2_handle : p1_handle;  // Get remote player handle
+                int remote_player_handle = (p1_handle >= 0) ? p2_handle : p1_handle;
                 if (remote_player_handle >= 0) {
                     gekko_network_stats(gekko_session, remote_player_handle, &stats);
+                    last_network_stats = stats;
+                    last_stats_frame = g_frame_counter;
                 }
                 
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Frame %u - P1: 0x%08X->0x%02X (%s), P2: 0x%08X->0x%02X (%s), Updates: %d", 
-                         g_frame_counter, p1_input, p1_gekko, p1_input_valid ? "valid" : "invalid", 
-                         p2_input, p2_gekko, p2_input_valid ? "valid" : "invalid", update_count);
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                    "GekkoNet: Frame %u - P1: 0x%08X->0x%02X (%s), P2: 0x%08X->0x%02X (%s), Updates: %d", 
+                    g_frame_counter, p1_input, last_p1_input, p1_input_valid ? "valid" : "invalid", 
+                    p2_input, last_p2_input, p2_input_valid ? "valid" : "invalid", update_count);
                 
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Network stats - Ping: %u, Avg Ping: %u, Jitter: %u", 
-                         stats.last_ping, stats.avg_ping, stats.jitter);
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                    "GekkoNet: Network stats - Ping: %u, Avg Ping: %u, Jitter: %u, Frames ahead: %.2f, Frame time: %.4f", 
+                    stats.last_ping, stats.avg_ping, stats.jitter, frames_ahead, current_frame_time);
             }
-        } else {
-            // No valid inputs - still need to poll network and update GekkoNet
-            // Note: Network polling is essential even without inputs for connection management
             
-            // Process any pending GekkoNet updates (even without local inputs)
-            int update_count = 0;
-            auto updates = gekko_update_session(gekko_session, &update_count);
-            
-            if (g_frame_counter % 300 == 0) {  // Log every 5 seconds
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: No valid inputs at frame %u (updates: %d)", g_frame_counter, update_count);
+            // Auto-save to slot 0 if enabled
+            if (shared_memory_data && state_manager_initialized) {
+                SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data);
+                if (shared_data->auto_save_enabled) {
+                    if ((g_frame_counter - last_auto_save_frame) >= shared_data->auto_save_interval_frames) {
+                        SaveStateToSlot(0, g_frame_counter);
+                        last_auto_save_frame = g_frame_counter;
+                    }
+                }
             }
+            
+            // Frame done - subtract frame time from accumulator
+            frame_accumulator -= current_frame_time;
         }
     } else {
         // GekkoNet not initialized - log occasionally

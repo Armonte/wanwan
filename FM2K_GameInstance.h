@@ -23,6 +23,8 @@ public:
         return exit_code == STILL_ACTIVE;
     }
     
+    DWORD GetProcessId() const { return process_id_; }
+    
     // Memory access
     template<typename T>
     inline bool ReadMemory(DWORD address, T* value) {
@@ -97,6 +99,10 @@ public:
         COMPLETE = 2    // ~850KB - Everything (current implementation)
     };
     bool SetSaveStateProfile(SaveStateProfile profile);
+    
+    // GekkoNet session coordination
+    bool ConfigureGekkoSession(void* gekko_session_ptr, uint8_t player_index, bool is_host);
+    bool EnableGekkoCoordination(bool enabled);
     
     // Slot status information
     struct SlotStatus {

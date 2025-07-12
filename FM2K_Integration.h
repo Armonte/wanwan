@@ -270,6 +270,10 @@ private:
     std::unique_ptr<LauncherUI> ui_;
     std::unique_ptr<FM2KGameInstance> game_instance_;
     std::vector<FM2K::FM2KGameInfo> discovered_games_;
+    
+    // Multi-client testing instances
+    std::unique_ptr<FM2KGameInstance> client1_instance_;
+    std::unique_ptr<FM2KGameInstance> client2_instance_;
     FM2K::FM2KGameInfo selected_game_;
     NetworkConfig network_config_;
     LauncherState current_state_;
@@ -286,9 +290,20 @@ private:
     bool LaunchLocalClient(const std::string& game_path, bool is_host, int port);
     bool TerminateAllClients();
     
+    // GekkoNet session management
+    bool InitializeGekkoSession();
+    void ShutdownGekkoSession();
+    bool StartLocalSession();
+    void StopLocalSession();
+    
     // Multi-client testing
     uint32_t client1_process_id_;
     uint32_t client2_process_id_;
+    
+    // GekkoNet session management
+    GekkoSession* gekko_session_;
+    GekkoConfig gekko_config_;
+    bool gekko_initialized_;
     
     // Games directory (root where FM2K games are located)
     std::string games_root_path_;

@@ -66,6 +66,13 @@ struct SharedInputData {
         uint32_t avg_load_time_us;
         uint32_t memory_usage_mb;
     } perf_stats;
+    
+    // GekkoNet session coordination
+    bool gekko_session_active;       // True when GekkoNet session is running
+    uint32_t gekko_session_ptr;      // Shared session pointer (cast from GekkoSession*)
+    uint8_t player_index;            // 0 for Player 1, 1 for Player 2
+    uint8_t session_role;            // 0 = Host, 1 = Guest
+    bool gekko_coordination_enabled; // Enable GekkoNet coordination mode
 };
 
 namespace {
@@ -709,5 +716,37 @@ bool FM2KGameInstance::SetSaveStateProfile(SaveStateProfile profile) {
     
     const char* profile_names[] = { "MINIMAL", "STANDARD", "COMPLETE" };
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Save state profile set to %s", profile_names[(int)profile]);
+    return true;
+}
+
+// GekkoNet session coordination
+bool FM2KGameInstance::ConfigureGekkoSession(void* gekko_session_ptr, uint8_t player_index, bool is_host) {
+    if (!shared_memory_data_) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not available for GekkoNet configuration");
+        return false;
+    }
+    
+    SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
+    shared_data->gekko_session_active = (gekko_session_ptr != nullptr);
+    shared_data->gekko_session_ptr = reinterpret_cast<uint32_t>(gekko_session_ptr);
+    shared_data->player_index = player_index;
+    shared_data->session_role = is_host ? 0 : 1;
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet session configured: Player %u, Role: %s, Session: %p", 
+                player_index, is_host ? "Host" : "Guest", gekko_session_ptr);
+    
+    return true;
+}
+
+bool FM2KGameInstance::EnableGekkoCoordination(bool enabled) {
+    if (!shared_memory_data_) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not available for GekkoNet coordination toggle");
+        return false;
+    }
+    
+    SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
+    shared_data->gekko_coordination_enabled = enabled;
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet coordination %s", enabled ? "enabled" : "disabled");
     return true;
 } 

@@ -121,6 +121,13 @@ struct SharedInputData {
         uint32_t avg_load_time_us;
         uint32_t memory_usage_mb;
     } perf_stats;
+    
+    // GekkoNet session coordination
+    bool gekko_session_active;       // True when GekkoNet session is running
+    uint32_t gekko_session_ptr;      // Shared session pointer (cast from GekkoSession*)
+    uint8_t player_index;            // 0 for Player 1, 1 for Player 2
+    uint8_t session_role;            // 0 = Host, 1 = Guest
+    bool gekko_coordination_enabled; // Enable GekkoNet coordination mode
 };
 
 // Simple hook function types (matching FM2K patterns)

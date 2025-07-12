@@ -512,6 +512,11 @@ FM2KLauncher::FM2KLauncher()
     // Initialize multi-client testing
     client1_process_id_ = 0;
     client2_process_id_ = 0;
+    
+    // Initialize GekkoNet session management
+    gekko_session_ = nullptr;
+    gekko_initialized_ = false;
+    
     // Load saved games directory (if any) so it can be used before Initialize() completes.
     games_root_path_ = Utils::LoadGamesRootPath();
 }
@@ -661,6 +666,11 @@ bool FM2KLauncher::Initialize() {
     
     // Connect multi-client testing callbacks
     ui_->on_launch_local_client1 = [this](const std::string& game_path) -> bool {
+        // Start GekkoNet session if this is the first client
+        if (!gekko_initialized_ && !StartLocalSession()) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to start GekkoNet session");
+            return false;
+        }
         return LaunchLocalClient(game_path, true, 7000);  // Host on port 7000
     };
     
@@ -669,12 +679,14 @@ bool FM2KLauncher::Initialize() {
     };
     
     ui_->on_terminate_all_clients = [this]() -> bool {
-        return TerminateAllClients();
+        bool success = TerminateAllClients();
+        StopLocalSession();  // Stop GekkoNet session when terminating clients
+        return success;
     };
     
     ui_->on_get_client_status = [this](uint32_t& client1_pid, uint32_t& client2_pid) -> bool {
-        client1_pid = client1_process_id_;
-        client2_pid = client2_process_id_;
+        client1_pid = (client1_instance_ && client1_instance_->IsRunning()) ? client1_instance_->GetProcessId() : 0;
+        client2_pid = (client2_instance_ && client2_instance_->IsRunning()) ? client2_instance_->GetProcessId() : 0;
         return true;
     };
     
@@ -943,6 +955,9 @@ bool FM2KLauncher::InitializeSDL() {
 void FM2KLauncher::Shutdown() {
     // Terminate any running test clients
     TerminateAllClients();
+    
+    // Shutdown GekkoNet session
+    ShutdownGekkoSession();
     
     // Stop network and game first
     // DLL handles GekkoNet directly - no launcher-side session needed
@@ -1242,58 +1257,52 @@ bool FM2KLauncher::LaunchLocalClient(const std::string& game_path, bool is_host,
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launching local client: %s (Host: %s, Port: %d)", 
                 game_path.c_str(), is_host ? "Yes" : "No", port);
     
-    // Check if process is already running
+    // Check if game instance is already running
+    std::unique_ptr<FM2KGameInstance>* target_instance = is_host ? &client1_instance_ : &client2_instance_;
+    if (*target_instance && (*target_instance)->IsRunning()) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Client %d already running", is_host ? 1 : 2);
+        return false;
+    }
+    
+    // Create new game instance
+    *target_instance = std::make_unique<FM2KGameInstance>();
+    
+    // Configure GekkoNet session coordination for this client
+    uint8_t player_index = is_host ? 0 : 1;  // Host = Player 1, Guest = Player 2
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launching FM2K game: %s", game_path.c_str());
+    
+    // Launch the actual FM2K game process with hook injection
+    if (!(*target_instance)->Launch(game_path)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to launch FM2K game: %s", game_path.c_str());
+        target_instance->reset();
+        return false;
+    }
+    
+    // Wait a moment and check if process is still running
+    SDL_Delay(100);
+    if (!(*target_instance)->IsRunning()) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K game process terminated immediately after launch!");
+        target_instance->reset();
+        return false;
+    }
+    
+    // Configure GekkoNet session for the launched game
+    if (gekko_session_) {
+        if (!(*target_instance)->ConfigureGekkoSession(gekko_session_, player_index, is_host)) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Failed to configure GekkoNet session for client %d", is_host ? 1 : 2);
+        }
+        
+        if (!(*target_instance)->EnableGekkoCoordination(true)) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Failed to enable GekkoNet coordination for client %d", is_host ? 1 : 2);
+        }
+    }
+    
+    // Store process ID for status tracking
     uint32_t* target_pid = is_host ? &client1_process_id_ : &client2_process_id_;
-    if (*target_pid != 0) {
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Client %d already running (PID: %u)", 
-                    is_host ? 1 : 2, *target_pid);
-        return false;
-    }
+    *target_pid = (*target_instance)->GetProcessId();
     
-    // Build command line arguments for rollback launcher
-    std::string launcher_path = SDL_GetBasePath();
-    launcher_path += "FM2K_RollbackLauncher.exe";
-    
-    // Build command: FM2K_RollbackLauncher.exe --auto-connect --host/--guest --port=7000/7001 --game="path"
-    std::string command = "\"" + launcher_path + "\"";
-    command += " --auto-connect";
-    command += is_host ? " --host" : " --guest"; 
-    command += " --port=" + std::to_string(port);
-    command += " --game=\"" + game_path + "\"";
-    
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Executing: %s", command.c_str());
-    
-    // Use Windows CreateProcess for better process management
-    STARTUPINFOA si = {0};
-    PROCESS_INFORMATION pi = {0};
-    si.cb = sizeof(si);
-    
-    // Create the process
-    BOOL success = CreateProcessA(
-        nullptr,                    // Application name
-        const_cast<char*>(command.c_str()), // Command line
-        nullptr,                    // Process security attributes
-        nullptr,                    // Thread security attributes
-        FALSE,                      // Inherit handles
-        0,                          // Creation flags
-        nullptr,                    // Environment
-        nullptr,                    // Current directory
-        &si,                        // Startup info
-        &pi                         // Process information
-    );
-    
-    if (!success) {
-        DWORD error = GetLastError();
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create process (Error: %lu)", error);
-        return false;
-    }
-    
-    // Store process ID and close handles
-    *target_pid = pi.dwProcessId;
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-    
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Client %d launched successfully (PID: %u)", 
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Client %d (FM2K game) launched successfully (PID: %u)", 
                 is_host ? 1 : 2, *target_pid);
     
     return true;
@@ -1305,39 +1314,100 @@ bool FM2KLauncher::TerminateAllClients() {
     bool success = true;
     
     // Terminate client 1
-    if (client1_process_id_ != 0) {
-        HANDLE process = OpenProcess(PROCESS_TERMINATE, FALSE, client1_process_id_);
-        if (process) {
-            if (TerminateProcess(process, 0)) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Client 1 terminated (PID: %u)", client1_process_id_);
-            } else {
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to terminate Client 1 (PID: %u)", client1_process_id_);
-                success = false;
-            }
-            CloseHandle(process);
-        } else {
-            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Could not open Client 1 process (PID: %u)", client1_process_id_);
-        }
+    if (client1_instance_) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Terminating Client 1 (PID: %u)", client1_instance_->GetProcessId());
+        client1_instance_->Terminate();
+        client1_instance_.reset();
         client1_process_id_ = 0;
     }
     
     // Terminate client 2
-    if (client2_process_id_ != 0) {
-        HANDLE process = OpenProcess(PROCESS_TERMINATE, FALSE, client2_process_id_);
-        if (process) {
-            if (TerminateProcess(process, 0)) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Client 2 terminated (PID: %u)", client2_process_id_);
-            } else {
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to terminate Client 2 (PID: %u)", client2_process_id_);
-                success = false;
-            }
-            CloseHandle(process);
-        } else {
-            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Could not open Client 2 process (PID: %u)", client2_process_id_);
-        }
+    if (client2_instance_) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Terminating Client 2 (PID: %u)", client2_instance_->GetProcessId());
+        client2_instance_->Terminate();
+        client2_instance_.reset();
         client2_process_id_ = 0;
     }
     
     return success;
+}
+
+// GekkoNet session management implementation
+bool FM2KLauncher::InitializeGekkoSession() {
+    if (gekko_initialized_) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet session already initialized");
+        return true;
+    }
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Initializing GekkoNet session for local multi-client testing");
+    
+    // Create GekkoNet session
+    if (!gekko_create(&gekko_session_)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create GekkoNet session!");
+        return false;
+    }
+    
+    // Configure session for FM2K dual-client testing
+    gekko_config_.num_players = 2;
+    gekko_config_.max_spectators = 0;
+    gekko_config_.input_prediction_window = 3;  // 30ms prediction at 100 FPS
+    gekko_config_.spectator_delay = 0;
+    gekko_config_.input_size = sizeof(uint16_t);  // FM2K 11-bit input mask
+    gekko_config_.state_size = 50 * 1024;  // Start with MINIMAL profile size
+    gekko_config_.limited_saving = false;
+    gekko_config_.post_sync_joining = false;
+    gekko_config_.desync_detection = true;
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet session configured: 2 players, %u byte states, 3-frame prediction", 
+                gekko_config_.state_size);
+    
+    gekko_initialized_ = true;
+    return true;
+}
+
+void FM2KLauncher::ShutdownGekkoSession() {
+    if (!gekko_initialized_) return;
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Shutting down GekkoNet session");
+    
+    if (gekko_session_) {
+        gekko_destroy(gekko_session_);
+        gekko_session_ = nullptr;
+    }
+    
+    gekko_initialized_ = false;
+}
+
+bool FM2KLauncher::StartLocalSession() {
+    if (!gekko_initialized_) {
+        if (!InitializeGekkoSession()) {
+            return false;
+        }
+    }
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Starting GekkoNet local session");
+    
+    // Start the session
+    gekko_start(gekko_session_, &gekko_config_);
+    
+    // Add two local players
+    // For local testing, both players are LocalPlayer type
+    int player1_handle = gekko_add_actor(gekko_session_, LocalPlayer, nullptr);
+    int player2_handle = gekko_add_actor(gekko_session_, LocalPlayer, nullptr);
+    
+    if (player1_handle < 0 || player2_handle < 0) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to add local players to GekkoNet session");
+        return false;
+    }
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet local session started with players %d and %d", 
+                player1_handle, player2_handle);
+    
+    return true;
+}
+
+void FM2KLauncher::StopLocalSession() {
+    // TODO: Implement session stopping when GekkoNet provides the API
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Stopping GekkoNet local session");
 } 
 

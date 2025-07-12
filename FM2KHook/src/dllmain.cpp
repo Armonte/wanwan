@@ -1612,7 +1612,7 @@ bool AllPlayersValid() {
         for (int i = 0; i < session_event_count; i++) {
             auto event = session_events[i];
             
-            // Only log important events, not every frame
+            // Log ALL events during handshake for debugging
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Session Event: %d", event->type);
             
             // Handle all event types like BSNES
@@ -1625,6 +1625,19 @@ bool AllPlayersValid() {
             } else if (event->type == PlayerDisconnected) {
                 auto disco = event->data.disconnected;
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Player disconnected: %d", disco.handle);
+            } else if (event->type == PlayerConnected) {
+                auto connected = event->data.connected;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Player connected: %d", connected.handle);
+            }
+        }
+        
+        // Debug: Log handshake status even if no events
+        if (session_event_count == 0) {
+            static int no_events_counter = 0;
+            if (++no_events_counter % 300 == 0) { // Every 5 seconds at 60fps
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: No session events received yet - still waiting for network handshake... (attempt %d)", no_events_counter);
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Debug - gekko_session_started=%s, gekko_session=%p", 
+                           gekko_session_started ? "true" : "false", gekko_session);
             }
         }
         
@@ -1651,15 +1664,10 @@ int __cdecl Hook_ProcessGameInputs() {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Hook called! Frame %u", g_frame_counter);
     }
     
-    // BSNES PATTERN: Initialize GekkoNet lazily on frame 10 (after FM2K is fully stable)
-    if (!gekko_initialized && g_frame_counter == 10) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Initializing GekkoNet lazily (BSNES pattern) - frame %u", g_frame_counter);
-        bool gekko_result = InitializeGekkoNet();
-        if (gekko_result) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: ✓ GekkoNet initialized successfully after FM2K stabilization!");
-        } else {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: ✗ GekkoNet lazy initialization failed!");
-        }
+    // GekkoNet should already be initialized by run_game_loop hook
+    if (!gekko_initialized) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: ERROR - GekkoNet not initialized! run_game_loop hook may have failed!");
+        // Don't try to initialize here - this should have been done in run_game_loop hook
     }
     
     // Read the actual frame counter from game memory (with basic validation)
@@ -1726,8 +1734,8 @@ int __cdecl Hook_ProcessGameInputs() {
         // CRITICAL: Call gekko_network_poll EVERY frame (like OnlineSession line 255)
         gekko_network_poll(gekko_session);
         
-        // Only process inputs if we have valid data
-        if (p1_input_valid || p2_input_valid) {
+        // CRITICAL: Always process inputs for GekkoNet handshake (even with zero inputs)
+        {
             // Convert 16-bit FM2K inputs to 8-bit GekkoNet format
             uint8_t p1_gekko = 0;
             uint8_t p2_gekko = 0;
@@ -1751,11 +1759,11 @@ int __cdecl Hook_ProcessGameInputs() {
             if (p2_input & 0x40) p2_gekko |= 0x40;  // button3
             if (p2_input & 0x80) p2_gekko |= 0x80;  // button4
             
-            // Add inputs to GekkoNet session based on valid player handles and input data
-            if (p1_handle >= 0 && p1_input_valid) {
+            // Add inputs to GekkoNet session (always add for local player to enable handshake)
+            if (p1_handle >= 0) {
                 gekko_add_local_input(gekko_session, p1_handle, &p1_gekko);
             }
-            if (p2_handle >= 0 && p2_input_valid) {
+            if (p2_handle >= 0) {
                 gekko_add_local_input(gekko_session, p2_handle, &p2_gekko);
             }
             
@@ -1778,18 +1786,31 @@ int __cdecl Hook_ProcessGameInputs() {
                 }
             }
             
-            // BSNES PATTERN: Implement AllPlayersValid() logic (gekko.cpp lines 523-544)
+            // BSNES PATTERN: Check AllPlayersValid() but don't freeze the window
             if (!AllPlayersValid()) {
-                // Network handshake in progress - block game advancement like BSNES netplayRun()
-                if (g_frame_counter % 60 == 0) {  // Log every 0.6 seconds
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "BSNES PATTERN: Blocking gameplay until session handshake completes (frame %u)", g_frame_counter);
+                // Network handshake in progress - allow Windows message processing
+                if (g_frame_counter % 60 == 0) {  // Log every 60 frames (~1 second)
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "BSNES PATTERN: Handshake in progress, frame %u - allowing message processing", g_frame_counter);
                 }
                 
-                // CRITICAL: Still process GekkoNet networking during blocking to allow handshake completion
+                // CRITICAL: Process Windows messages to keep window responsive
+                MSG msg;
+                while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&msg);
+                    DispatchMessage(&msg);
+                }
+                
+                // CRITICAL: Continue polling GekkoNet for network handshake
                 gekko_network_poll(gekko_session);
                 
-                // CRITICAL: Call original function early to let FM2K run its basic systems
-                // but don't advance game logic that could cause desync
+                // CRITICAL: Also need to call update_session during handshake (like OnlineSession)
+                int handshake_update_count = 0;
+                auto handshake_updates = gekko_update_session(gekko_session, &handshake_update_count);
+                if (handshake_update_count > 0 && g_frame_counter % 60 == 0) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Handshake - received %d updates", handshake_update_count);
+                }
+                
+                // Let FM2K continue running basic systems but block game logic advancement
                 return original_process_inputs ? original_process_inputs() : 0;
             }
             
@@ -2018,18 +2039,7 @@ int __cdecl Hook_ProcessGameInputs() {
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Network stats - Ping: %u, Avg Ping: %u, Jitter: %u", 
                          stats.last_ping, stats.avg_ping, stats.jitter);
             }
-        } else {
-            // No valid inputs - still need to poll network and update GekkoNet
-            // Note: Network polling is essential even without inputs for connection management
-            
-            // Process any pending GekkoNet updates (even without local inputs)
-            int update_count = 0;
-            auto updates = gekko_update_session(gekko_session, &update_count);
-            
-            if (g_frame_counter % 300 == 0) {  // Log every 5 seconds
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: No valid inputs at frame %u (updates: %d)", g_frame_counter, update_count);
-            }
-        }
+        }  // End of input processing block
     } else {
         // GekkoNet not initialized - log occasionally
         if (g_frame_counter % 300 == 0) {
@@ -2065,7 +2075,33 @@ int __cdecl Hook_UpdateGameState() {
     return result;
 }
 
-// BSNES PATTERN: No initialization hooks - let FM2K start naturally, then initialize GekkoNet lazily
+// BSNES PATTERN: Hook run_game_loop for main control and blocking
+BOOL __cdecl Hook_RunGameLoop() {
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** RUN_GAME_LOOP INTERCEPTED - BSNES-LEVEL CONTROL! ***");
+    
+    // STEP 1: Initialize GekkoNet immediately (after all FM2K systems ready)
+    if (!gekko_initialized) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Initializing GekkoNet at BSNES level!");
+        bool gekko_result = InitializeGekkoNet();
+        if (gekko_result) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: ✓ GekkoNet initialized at main loop level!");
+        } else {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: ✗ GekkoNet initialization failed!");
+            // Continue without netplay
+            return original_run_game_loop ? original_run_game_loop() : FALSE;
+        }
+    }
+    
+    // STEP 2: Set up for blocking in game loop (not here - don't freeze main thread!)
+    if (gekko_initialized && gekko_session) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet ready - synchronization will happen in game loop to preserve message handling");
+        gekko_session_started = false; // Ensure we start in blocking mode
+    }
+    
+    // STEP 3: Both clients ready (or timeout) - start FM2K main loop
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Calling original run_game_loop...");
+    return original_run_game_loop ? original_run_game_loop() : FALSE;
+}
 
 // Simple initialization function
 bool InitializeHooks() {
@@ -2079,7 +2115,7 @@ bool InitializeHooks() {
     }
     
     // Validate target addresses before hooking
-    if (IsBadCodePtr((FARPROC)PROCESS_INPUTS_ADDR) || IsBadCodePtr((FARPROC)UPDATE_GAME_ADDR)) {
+    if (IsBadCodePtr((FARPROC)PROCESS_INPUTS_ADDR) || IsBadCodePtr((FARPROC)UPDATE_GAME_ADDR) || IsBadCodePtr((FARPROC)RUN_GAME_LOOP_ADDR)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ERROR FM2K HOOK: Target addresses are invalid or not yet mapped");
         return false;
     }
@@ -2116,12 +2152,27 @@ bool InitializeHooks() {
         return false;
     }
     
-    // BSNES PATTERN: Don't hook initialization - initialize GekkoNet lazily on first gameplay frame
+    // Install hook for run_game_loop function (BSNES-level control)
+    void* runGameLoopFuncAddr = (void*)RUN_GAME_LOOP_ADDR;
+    MH_STATUS status3 = MH_CreateHook(runGameLoopFuncAddr, (void*)Hook_RunGameLoop, (void**)&original_run_game_loop);
+    if (status3 != MH_OK) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ERROR FM2K HOOK: Failed to create run_game_loop hook: %d", status3);
+        MH_Uninitialize();
+        return false;
+    }
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SUCCESS FM2K HOOK: Core gameplay hooks installed successfully!");
+    MH_STATUS enable3 = MH_EnableHook(runGameLoopFuncAddr);
+    if (enable3 != MH_OK) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ERROR FM2K HOOK: Failed to enable run_game_loop hook: %d", enable3);
+        MH_Uninitialize();
+        return false;
+    }
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SUCCESS FM2K HOOK: BSNES-level architecture installed successfully!");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "   - run_game_loop hook at 0x%08X (BSNES main control + blocking)", RUN_GAME_LOOP_ADDR);
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "   - Input processing hook at 0x%08X", PROCESS_INPUTS_ADDR);
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "   - Game state update hook at 0x%08X", UPDATE_GAME_ADDR);
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "   - GekkoNet will initialize lazily on first gameplay frame (BSNES pattern)");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "   - GekkoNet will initialize at main loop level with proper blocking");
     return true;
 }
 

@@ -1644,6 +1644,9 @@ int __cdecl Hook_ProcessGameInputs() {
     
     // Forward inputs directly to GekkoNet (with enhanced error handling)
     if (gekko_initialized && gekko_session) {
+        // Critical: Poll network for incoming packets (like OnlineSession example line 255)
+        gekko_network_poll(gekko_session);
+        
         // Only process inputs if we have valid data
         if (p1_input_valid || p2_input_valid) {
             // Convert 16-bit FM2K inputs to 8-bit GekkoNet format
@@ -1826,16 +1829,32 @@ int __cdecl Hook_ProcessGameInputs() {
                 }
             }
             
-            // Log successful input processing occasionally
+            // Log network statistics and input processing (like OnlineSession example lines 259-267)
             if (g_frame_counter % 100 == 0) {
+                // Get network statistics for the remote player
+                GekkoNetworkStats stats = {};
+                int remote_player_handle = (p1_handle >= 0) ? p2_handle : p1_handle;  // Get remote player handle
+                if (remote_player_handle >= 0) {
+                    gekko_network_stats(gekko_session, remote_player_handle, &stats);
+                }
+                
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Frame %u - P1: 0x%08X->0x%02X (%s), P2: 0x%08X->0x%02X (%s), Updates: %d", 
                          g_frame_counter, p1_input, p1_gekko, p1_input_valid ? "valid" : "invalid", 
                          p2_input, p2_gekko, p2_input_valid ? "valid" : "invalid", update_count);
+                
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Network stats - Ping: %u, Avg Ping: %u, Jitter: %u", 
+                         stats.last_ping, stats.avg_ping, stats.jitter);
             }
         } else {
-            // No valid inputs - still need to update GekkoNet
+            // No valid inputs - still need to poll network and update GekkoNet
+            // Note: Network polling is essential even without inputs for connection management
+            
+            // Process any pending GekkoNet updates (even without local inputs)
+            int update_count = 0;
+            auto updates = gekko_update_session(gekko_session, &update_count);
+            
             if (g_frame_counter % 300 == 0) {  // Log every 5 seconds
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: No valid inputs at frame %u", g_frame_counter);
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: No valid inputs at frame %u (updates: %d)", g_frame_counter, update_count);
             }
         }
     } else {

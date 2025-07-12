@@ -616,6 +616,19 @@ bool FM2KLauncher::Initialize() {
         return false;
     };
     
+    // Connect auto-save config reading callback
+    ui_->on_get_auto_save_config = [this](LauncherUI::AutoSaveConfig& config) -> bool {
+        if (game_instance_) {
+            FM2KGameInstance::AutoSaveConfig game_config;
+            if (game_instance_->GetAutoSaveConfig(game_config)) {
+                config.enabled = game_config.enabled;
+                config.interval_frames = game_config.interval_frames;
+                return true;
+            }
+        }
+        return false;
+    };
+    
     // Connect slot status callback
     ui_->on_get_slot_status = [this](uint32_t slot, LauncherUI::SlotStatusInfo& status) -> bool {
         if (game_instance_) {
@@ -625,6 +638,9 @@ bool FM2KLauncher::Initialize() {
                 status.frame_number = game_status.frame_number;
                 status.timestamp_ms = game_status.timestamp_ms;
                 status.checksum = game_status.checksum;
+                status.state_size_kb = game_status.state_size_kb;
+                status.save_time_us = game_status.save_time_us;
+                status.load_time_us = game_status.load_time_us;
                 return true;
             }
         }

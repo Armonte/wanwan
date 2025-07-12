@@ -324,8 +324,18 @@ public:
         uint32_t frame_number;
         uint64_t timestamp_ms;
         uint32_t checksum;
+        uint32_t state_size_kb;
+        uint32_t save_time_us;
+        uint32_t load_time_us;
     };
     std::function<bool(uint32_t, SlotStatusInfo&)> on_get_slot_status;  // (slot, status_out)
+    
+    // Auto-save configuration callbacks
+    struct AutoSaveConfig {
+        bool enabled;
+        uint32_t interval_frames;
+    };
+    std::function<bool(AutoSaveConfig&)> on_get_auto_save_config;  // Get current auto-save settings
     
     // Data binding
     void SetGames(const std::vector<FM2K::FM2KGameInfo>& games);

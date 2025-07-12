@@ -45,7 +45,19 @@ struct SharedInputData {
         uint32_t frame_number;
         uint64_t timestamp_ms;
         uint32_t checksum;
+        uint32_t state_size_kb;  // Size in KB for analysis
+        uint32_t save_time_us;   // Save time in microseconds
+        uint32_t load_time_us;   // Load time in microseconds
     } slot_status[8];
+    
+    // Performance statistics
+    struct PerformanceStats {
+        uint32_t total_saves;
+        uint32_t total_loads;
+        uint32_t avg_save_time_us;
+        uint32_t avg_load_time_us;
+        uint32_t memory_usage_mb;
+    } perf_stats;
 };
 
 namespace {
@@ -646,6 +658,19 @@ bool FM2KGameInstance::SetAutoSaveInterval(uint32_t frames) {
     return true;
 }
 
+bool FM2KGameInstance::GetAutoSaveConfig(AutoSaveConfig& config) {
+    if (!shared_memory_data_) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not available for auto-save config read");
+        return false;
+    }
+    
+    SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
+    config.enabled = shared_data->auto_save_enabled;
+    config.interval_frames = shared_data->auto_save_interval_frames;
+    
+    return true;
+}
+
 // Get slot status information
 bool FM2KGameInstance::GetSlotStatus(uint32_t slot, SlotStatus& status) {
     if (!shared_memory_data_ || slot >= 8) {
@@ -657,6 +682,9 @@ bool FM2KGameInstance::GetSlotStatus(uint32_t slot, SlotStatus& status) {
     status.frame_number = shared_data->slot_status[slot].frame_number;
     status.timestamp_ms = shared_data->slot_status[slot].timestamp_ms;
     status.checksum = shared_data->slot_status[slot].checksum;
+    status.state_size_kb = shared_data->slot_status[slot].state_size_kb;
+    status.save_time_us = shared_data->slot_status[slot].save_time_us;
+    status.load_time_us = shared_data->slot_status[slot].load_time_us;
     
     return true;
 } 

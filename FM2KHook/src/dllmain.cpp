@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <iostream>
 #include <memory>
+#include <chrono>
 #include <SDL3/SDL.h>
 // Direct GekkoNet integration
 #include "gekkonet.h"
@@ -39,6 +40,18 @@ static std::unique_ptr<uint8_t[]> slot_object_pool_buffers[8];
 static std::unique_ptr<uint8_t[]> rollback_player_data_buffer;
 static std::unique_ptr<uint8_t[]> rollback_object_pool_buffer;
 static bool large_buffers_allocated = false;
+
+// Performance tracking
+static uint32_t total_saves = 0;
+static uint32_t total_loads = 0;
+static uint64_t total_save_time_us = 0;
+static uint64_t total_load_time_us = 0;
+
+// High-resolution timing helper
+static inline uint64_t get_microseconds() {
+    auto now = std::chrono::high_resolution_clock::now();
+    return std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
+}
 
 // State change debugging
 static FM2K::State::GameState last_core_state = {};
@@ -81,7 +94,19 @@ struct SharedInputData {
         uint32_t frame_number;
         uint64_t timestamp_ms;
         uint32_t checksum;
+        uint32_t state_size_kb;  // Size in KB for analysis
+        uint32_t save_time_us;   // Save time in microseconds
+        uint32_t load_time_us;   // Load time in microseconds
     } slot_status[8];
+    
+    // Performance statistics
+    struct PerformanceStats {
+        uint32_t total_saves;
+        uint32_t total_loads;
+        uint32_t avg_save_time_us;
+        uint32_t avg_load_time_us;
+        uint32_t memory_usage_mb;
+    } perf_stats;
 };
 
 // Simple hook function types (matching FM2K patterns)
@@ -220,7 +245,17 @@ bool InitializeSharedMemory() {
         shared_data->slot_status[i].frame_number = 0;
         shared_data->slot_status[i].timestamp_ms = 0;
         shared_data->slot_status[i].checksum = 0;
+        shared_data->slot_status[i].state_size_kb = 0;
+        shared_data->slot_status[i].save_time_us = 0;
+        shared_data->slot_status[i].load_time_us = 0;
     }
+    
+    // Initialize performance stats
+    shared_data->perf_stats.total_saves = 0;
+    shared_data->perf_stats.total_loads = 0;
+    shared_data->perf_stats.avg_save_time_us = 0;
+    shared_data->perf_stats.avg_load_time_us = 0;
+    shared_data->perf_stats.memory_usage_mb = ((PLAYER_DATA_SLOTS_SIZE + GAME_OBJECT_POOL_SIZE) * 9) / (1024 * 1024); // 8 slots + rollback
     
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Shared memory initialized successfully");
     return true;
@@ -383,31 +418,31 @@ bool SaveGameStateDirect(FM2K::State::GameState* state, uint32_t frame_number) {
     // Combine checksums for comprehensive state validation
     state->checksum = core_checksum ^ player_checksum ^ object_checksum;
     
-    // Debug what's changing between frames
-    if (last_core_state_valid && frame_number % 30 == 0) {  // Log changes every 30 frames to avoid spam
+    // Debug what's changing between frames (reduced frequency to minimize spam)
+    if (last_core_state_valid && frame_number % 300 == 0) {  // Log changes every 300 frames (3 seconds) to reduce spam
         bool core_changed = memcmp(&state->core, &last_core_state.core, sizeof(FM2K::State::CoreGameState)) != 0;
         if (core_changed) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Core state changes detected:");
+            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Core state changes detected:");
             if (state->core.input_buffer_index != last_core_state.core.input_buffer_index) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  Input buffer index: %u → %u", last_core_state.core.input_buffer_index, state->core.input_buffer_index);
+                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "  Input buffer index: %u → %u", last_core_state.core.input_buffer_index, state->core.input_buffer_index);
             }
             if (state->core.p1_input_current != last_core_state.core.p1_input_current) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  P1 input: 0x%08X → 0x%08X", last_core_state.core.p1_input_current, state->core.p1_input_current);
+                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "  P1 input: 0x%08X → 0x%08X", last_core_state.core.p1_input_current, state->core.p1_input_current);
             }
             if (state->core.p2_input_current != last_core_state.core.p2_input_current) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  P2 input: 0x%08X → 0x%08X", last_core_state.core.p2_input_current, state->core.p2_input_current);
+                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "  P2 input: 0x%08X → 0x%08X", last_core_state.core.p2_input_current, state->core.p2_input_current);
             }
             if (state->core.round_timer != last_core_state.core.round_timer) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  Round timer: %u → %u", last_core_state.core.round_timer, state->core.round_timer);
+                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "  Round timer: %u → %u", last_core_state.core.round_timer, state->core.round_timer);
             }
             if (state->core.game_timer != last_core_state.core.game_timer) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  Game timer: %u → %u", last_core_state.core.game_timer, state->core.game_timer);
+                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "  Game timer: %u → %u", last_core_state.core.game_timer, state->core.game_timer);
             }
             if (state->core.random_seed != last_core_state.core.random_seed) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  RNG seed: 0x%08X → 0x%08X", last_core_state.core.random_seed, state->core.random_seed);
+                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "  RNG seed: 0x%08X → 0x%08X", last_core_state.core.random_seed, state->core.random_seed);
             }
         }
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Checksums - Core: 0x%08X, Player: 0x%08X, Objects: 0x%08X", core_checksum, player_checksum, object_checksum);
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Checksums - Core: 0x%08X, Player: 0x%08X, Objects: 0x%08X", core_checksum, player_checksum, object_checksum);
     }
     
     // Store current state for next comparison
@@ -561,6 +596,7 @@ bool SaveStateToSlot(uint32_t slot, uint32_t frame_number) {
         return false;
     }
     
+    uint64_t start_time = get_microseconds();
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Saving state to slot %u at frame %u", slot, frame_number);
     
     // Save core state
@@ -588,7 +624,13 @@ bool SaveStateToSlot(uint32_t slot, uint32_t frame_number) {
     }
     
     if (player_saved && objects_saved) {
+        uint64_t end_time = get_microseconds();
+        uint32_t save_time_us = (uint32_t)(end_time - start_time);
+        uint32_t state_size_kb = (PLAYER_DATA_SLOTS_SIZE + GAME_OBJECT_POOL_SIZE + sizeof(FM2K::State::GameState)) / 1024;
+        
         slot_occupied[slot] = true;
+        total_saves++;
+        total_save_time_us += save_time_us;
         
         // Update shared memory status for UI
         if (shared_memory_data) {
@@ -597,10 +639,16 @@ bool SaveStateToSlot(uint32_t slot, uint32_t frame_number) {
             shared_data->slot_status[slot].frame_number = frame_number;
             shared_data->slot_status[slot].timestamp_ms = save_slots[slot].timestamp_ms;
             shared_data->slot_status[slot].checksum = save_slots[slot].checksum;
+            shared_data->slot_status[slot].state_size_kb = state_size_kb;
+            shared_data->slot_status[slot].save_time_us = save_time_us;
+            
+            // Update performance stats
+            shared_data->perf_stats.total_saves = total_saves;
+            shared_data->perf_stats.avg_save_time_us = (uint32_t)(total_save_time_us / total_saves);
         }
         
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "State saved to slot %u (frame %u, checksum: 0x%08X)", 
-                    slot, frame_number, save_slots[slot].checksum);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "State saved to slot %u (frame %u, %uKB, %uμs, checksum: 0x%08X)", 
+                    slot, frame_number, state_size_kb, save_time_us, save_slots[slot].checksum);
         return true;
     }
     
@@ -620,6 +668,7 @@ bool LoadStateFromSlot(uint32_t slot) {
         return false;
     }
     
+    uint64_t start_time = get_microseconds();
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Loading state from slot %u (frame %u)", slot, save_slots[slot].frame_number);
     
     // Load core state
@@ -647,8 +696,22 @@ bool LoadStateFromSlot(uint32_t slot) {
     }
     
     if (player_restored && objects_restored) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "State loaded from slot %u (frame %u, checksum: 0x%08X)", 
-                    slot, save_slots[slot].frame_number, save_slots[slot].checksum);
+        uint64_t end_time = get_microseconds();
+        uint32_t load_time_us = (uint32_t)(end_time - start_time);
+        
+        total_loads++;
+        total_load_time_us += load_time_us;
+        
+        // Update shared memory performance stats
+        if (shared_memory_data) {
+            SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data);
+            shared_data->slot_status[slot].load_time_us = load_time_us;
+            shared_data->perf_stats.total_loads = total_loads;
+            shared_data->perf_stats.avg_load_time_us = (uint32_t)(total_load_time_us / total_loads);
+        }
+        
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "State loaded from slot %u (frame %u, %uμs, checksum: 0x%08X)", 
+                    slot, save_slots[slot].frame_number, load_time_us, save_slots[slot].checksum);
         return true;
     }
     
@@ -934,25 +997,13 @@ int __cdecl Hook_ProcessGameInputs() {
     // Process debug commands from launcher
     ProcessDebugCommands();
     
-    // Log more frequently to debug input capture
-    if (g_frame_counter % 1 == 0) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Frame %u - Game frame: %u - P1: 0x%08X (addr valid: %s), P2: 0x%08X (addr valid: %s)", 
+    // Log occasionally to debug input capture (reduced frequency to avoid spam)
+    if (g_frame_counter % 600 == 0) {  // Log every 600 frames (6 seconds) instead of every frame
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Frame %u - Game frame: %u - P1: 0x%08X (addr valid: %s), P2: 0x%08X (addr valid: %s)", 
                  g_frame_counter, game_frame, p1_input, 
                  (!IsBadReadPtr(p1_input_ptr, sizeof(uint32_t))) ? "YES" : "NO",
                  p2_input,
                  (!IsBadReadPtr(p2_input_ptr, sizeof(uint32_t))) ? "YES" : "NO");
-        
-        // Write to log file for verification
-        FILE* log = fopen("C:\\Games\\fm2k_hook_log.txt", "a");
-        if (log) {
-            fprintf(log, "FM2K HOOK: Frame %u - Game frame: %u - P1: 0x%08X (addr valid: %s), P2: 0x%08X (addr valid: %s)\n", 
-                    g_frame_counter, game_frame, p1_input, 
-                    (!IsBadReadPtr(p1_input_ptr, sizeof(uint32_t))) ? "YES" : "NO",
-                    p2_input,
-                    (!IsBadReadPtr(p2_input_ptr, sizeof(uint32_t))) ? "YES" : "NO");
-            fflush(log);
-            fclose(log);
-        }
     }
     
     // Forward inputs directly to GekkoNet (with enhanced error handling)
@@ -995,13 +1046,22 @@ int __cdecl Hook_ProcessGameInputs() {
                 SaveStateToBuffer(g_frame_counter);
             }
             
-            // Auto-save to slot 0 if enabled
+            // Auto-save to slot 0 if enabled (with proper enable/disable logic)
             if (shared_memory_data && state_manager_initialized) {
                 SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data);
-                if (shared_data->auto_save_enabled && 
-                    (g_frame_counter - last_auto_save_frame) >= shared_data->auto_save_interval_frames) {
-                    SaveStateToSlot(0, g_frame_counter);  // Auto-save always goes to slot 0
-                    last_auto_save_frame = g_frame_counter;
+                if (shared_data->auto_save_enabled) {
+                    // Only auto-save if enough frames have passed since last auto-save
+                    if ((g_frame_counter - last_auto_save_frame) >= shared_data->auto_save_interval_frames) {
+                        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Auto-save triggered at frame %u (interval: %u)", 
+                                    g_frame_counter, shared_data->auto_save_interval_frames);
+                        SaveStateToSlot(0, g_frame_counter);  // Auto-save always goes to slot 0
+                        last_auto_save_frame = g_frame_counter;
+                    }
+                } else {
+                    // Auto-save is disabled - log occasionally for debugging
+                    if (g_frame_counter % 3000 == 0) {  // Log every 30 seconds when disabled
+                        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Auto-save disabled at frame %u", g_frame_counter);
+                    }
                 }
             }
             

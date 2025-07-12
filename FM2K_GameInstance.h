@@ -84,12 +84,21 @@ public:
     bool SetAutoSaveEnabled(bool enabled);
     bool SetAutoSaveInterval(uint32_t frames);
     
+    struct AutoSaveConfig {
+        bool enabled;
+        uint32_t interval_frames;
+    };
+    bool GetAutoSaveConfig(AutoSaveConfig& config);
+    
     // Slot status information
     struct SlotStatus {
         bool occupied;
         uint32_t frame_number;
         uint64_t timestamp_ms;
         uint32_t checksum;
+        uint32_t state_size_kb;
+        uint32_t save_time_us;
+        uint32_t load_time_us;
     };
     bool GetSlotStatus(uint32_t slot, SlotStatus& status);
 

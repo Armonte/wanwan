@@ -64,11 +64,12 @@ The following globals are also part of the player slot structure, but their exac
 This section covers global variables that track the overall state of the match, independent of individual player data. These are primarily managed by the `game_state_manager` function at `0x406FC0`.
 
 ### Timers
-| Global Name | Address | Description |
-| :--- | :--- | :--- |
-| `g_game_timer` | `0x470044` | The main round timer that counts down during a match. |
-| `g_round_timer` | `0x470060` | Initialized with the round duration from the game's config files. |
-| `g_round_timer_counter` | `0x424F00` | A secondary timer or counter used for specific game state transitions. |
+| Global Name | Address | Captured | Description |
+| :--- | :--- | :--- | :--- |
+| `g_game_timer` | `0x470044` | ✅ | The main round timer that counts down during a match. |
+| `g_round_timer` | `0x470060` | ✅ | Initialized with the round duration from the game's config files. |
+| `g_round_timer_counter` | `0x424F00` | ❌ | A secondary timer or counter used for specific game state transitions. |
+| **Missing: In-game timer** | `TBD` | ❌ | **The visible countdown timer displayed during matches - address needs identification** |
 
 ### Match State
 | Global Name | Address | Description |
@@ -119,10 +120,38 @@ Each object in the pool is **382 bytes** long. The exact layout of these objects
 ### Additional Timers
 The `update_game_state` function also decrements two global timers:
 
-| Global Name | Address | Description |
-| :--- | :--- | :--- |
-| `g_timer_countdown1` | `0x4456E4` | A general-purpose countdown timer. |
-| `g_timer_countdown2` | `0x447D91` | A second general-purpose countdown timer. |
-| `unk_4DFDA7` | `0x4DFDA7` (P1) | A per-player timer or cooldown, decremented each frame. Offset from player slot is `+0xE027`. |
+| Global Name | Address | Captured | Description |
+| :--- | :--- | :--- | :--- |
+| `g_timer_countdown1` | `0x4456E4` | ❌ | A general-purpose countdown timer. |
+| `g_timer_countdown2` | `0x447D91` | ❌ | A second general-purpose countdown timer. |
+| `unk_4DFDA7` | `0x4DFDA7` (P1) | ❌ | A per-player timer or cooldown, decremented each frame. Offset from player slot is `+0xE027`. |
+
+---
+
+## Current Save State Implementation Status
+
+### ✅ **Implemented (December 2024)**
+- **Configurable Profiles**: MINIMAL (~50KB), STANDARD (~200KB), COMPLETE (~850KB)
+- **Core State Capture**: Input buffers, HP, basic timers, RNG seed
+- **Player Data Slots**: Full 459KB capture (COMPLETE profile)
+- **Game Object Pool**: Full 391KB capture with active object detection framework
+- **UI Integration**: Profile selection with real-time switching
+- **Performance Measurement**: Save/load timing and memory usage tracking
+
+### ✅ **Recently Added (December 2024)**
+- **Object list management**: `g_object_list_heads` (0x430240), `g_object_list_tails` (0x430244) 
+- **Additional timers**: `g_timer_countdown1` (0x4456E4), `g_timer_countdown2` (0x447D91)
+- **Round timer counter**: `g_round_timer_counter` (0x424F00) - *candidate for in-game timer*
+- **Debug logging**: Timer value monitoring to identify in-game timer
+
+### ❌ **Still Missing Critical Data**
+- **Player action states**: Animation/action state beyond basic HP
+- **Effect system states**: Visual effects and animations
+
+### 🔄 **Next Optimization Priorities**
+1. **Analyze timer debug output**: Monitor timer values during gameplay to identify in-game timer
+2. **Smart object detection**: Only save active objects in MINIMAL profile  
+3. **Player data analysis**: Separate static vs dynamic data
+4. **Effect system capture**: Add visual effects and animation states
 
 --- 

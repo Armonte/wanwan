@@ -39,6 +39,7 @@ LauncherUI::LauncherUI()
     on_debug_auto_save_config = nullptr;
     on_get_slot_status = nullptr;
     on_get_auto_save_config = nullptr;
+    on_set_save_profile = nullptr;
 
     log_buffer_mutex_ = SDL_CreateMutex();
 }
@@ -692,6 +693,43 @@ void LauncherUI::RenderDebugTools() {
             ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f), "✓ Auto-save active every %.1fs", auto_save_interval / 100.0f);
         } else if (!auto_save_enabled && settings_available) {
             ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "○ Auto-save disabled");
+        }
+        
+        // Save State Profile Selection
+        ImGui::Separator();
+        ImGui::Text("Save State Profile");
+        
+        static int profile_selection = 1;  // Default to STANDARD (index 1)
+        const char* profile_items[] = { 
+            "MINIMAL (~50KB)", 
+            "STANDARD (~200KB)", 
+            "COMPLETE (~850KB)" 
+        };
+        
+        if (ImGui::Combo("Profile", &profile_selection, profile_items, IM_ARRAYSIZE(profile_items))) {
+            // Update save profile in shared memory
+            if (on_set_save_profile) {
+                SaveStateProfile new_profile = static_cast<SaveStateProfile>(profile_selection);
+                bool success = on_set_save_profile(new_profile);
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Save profile changed to: %s (%s)", 
+                           profile_items[profile_selection], success ? "success" : "failed");
+            }
+        }
+        
+        // Profile descriptions
+        switch (profile_selection) {
+            case 0: // MINIMAL
+                ImGui::TextColored(ImVec4(0.8f, 1.0f, 0.8f, 1.0f), "⚡ Fastest - Core state + active objects only");
+                ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "   Good for: High-frequency auto-saves, rollback netcode");
+                break;
+            case 1: // STANDARD  
+                ImGui::TextColored(ImVec4(0.8f, 1.0f, 0.8f, 1.0f), "⚖ Balanced - Essential runtime state");
+                ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "   Good for: Manual saves, most use cases");
+                break;
+            case 2: // COMPLETE
+                ImGui::TextColored(ImVec4(0.8f, 1.0f, 0.8f, 1.0f), "🔒 Complete - Everything for perfect restoration");
+                ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "   Good for: Analysis, debugging, archival");
+                break;
         }
     }
     

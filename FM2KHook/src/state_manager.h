@@ -68,6 +68,13 @@ struct CoreGameState {
     uint32_t effect_timers[8];        // Effect timer array
     uint32_t effect_colors[8][3];     // Effect colors (RGB)
     uint32_t effect_targets[8];       // Effect target IDs
+    
+    // Additional critical timers and state
+    uint32_t timer_countdown1;        // General-purpose countdown timer
+    uint32_t timer_countdown2;        // Second general-purpose countdown timer
+    uint32_t round_timer_counter;     // Secondary timer/counter (potential in-game timer)
+    uint32_t object_list_heads;       // Object pool list management
+    uint32_t object_list_tails;       // Object pool list management
 };
 
 // Enhanced game state structure

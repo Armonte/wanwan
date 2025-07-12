@@ -629,6 +629,15 @@ bool FM2KLauncher::Initialize() {
         return false;
     };
     
+    // Connect save profile callback
+    ui_->on_set_save_profile = [this](LauncherUI::SaveStateProfile profile) -> bool {
+        if (game_instance_) {
+            FM2KGameInstance::SaveStateProfile game_profile = static_cast<FM2KGameInstance::SaveStateProfile>(profile);
+            return game_instance_->SetSaveStateProfile(game_profile);
+        }
+        return false;
+    };
+    
     // Connect slot status callback
     ui_->on_get_slot_status = [this](uint32_t slot, LauncherUI::SlotStatusInfo& status) -> bool {
         if (game_instance_) {

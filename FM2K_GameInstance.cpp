@@ -8,6 +8,13 @@
 #include <codecvt>
 #include <windows.h>
 
+// Save state profile enumeration (matching DLL)
+enum class SharedSaveStateProfile : uint32_t {
+    MINIMAL = 0,    // ~50KB - Core state + active objects only
+    STANDARD = 1,   // ~200KB - Essential runtime state  
+    COMPLETE = 2    // ~850KB - Everything (current implementation)
+};
+
 // Shared memory structure matching the DLL
 struct SharedInputData {
     uint32_t frame_number;
@@ -38,6 +45,7 @@ struct SharedInputData {
     // Auto-save configuration
     bool auto_save_enabled;
     uint32_t auto_save_interval_frames;  // How often to auto-save
+    SharedSaveStateProfile save_profile;       // Which save state profile to use
     
     // Slot status feedback to UI
     struct SlotInfo {
@@ -686,5 +694,20 @@ bool FM2KGameInstance::GetSlotStatus(uint32_t slot, SlotStatus& status) {
     status.save_time_us = shared_data->slot_status[slot].save_time_us;
     status.load_time_us = shared_data->slot_status[slot].load_time_us;
     
+    return true;
+}
+
+// Set save state profile
+bool FM2KGameInstance::SetSaveStateProfile(SaveStateProfile profile) {
+    if (!shared_memory_data_) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not available for save profile config");
+        return false;
+    }
+    
+    SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
+    shared_data->save_profile = static_cast<SharedSaveStateProfile>(profile);
+    
+    const char* profile_names[] = { "MINIMAL", "STANDARD", "COMPLETE" };
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Save state profile set to %s", profile_names[(int)profile]);
     return true;
 } 

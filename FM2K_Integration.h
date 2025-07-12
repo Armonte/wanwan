@@ -337,6 +337,14 @@ public:
     };
     std::function<bool(AutoSaveConfig&)> on_get_auto_save_config;  // Get current auto-save settings
     
+    // Save state profile callback
+    enum class SaveStateProfile : uint32_t {
+        MINIMAL = 0,    // ~50KB - Core state + active objects only
+        STANDARD = 1,   // ~200KB - Essential runtime state  
+        COMPLETE = 2    // ~850KB - Everything (current implementation)
+    };
+    std::function<bool(SaveStateProfile)> on_set_save_profile;  // Set save state profile
+    
     // Data binding
     void SetGames(const std::vector<FM2K::FM2KGameInfo>& games);
     void SetNetworkConfig(const NetworkConfig& config);

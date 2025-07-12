@@ -90,6 +90,14 @@ public:
     };
     bool GetAutoSaveConfig(AutoSaveConfig& config);
     
+    // Save state profile configuration
+    enum class SaveStateProfile : uint32_t {
+        MINIMAL = 0,    // ~50KB - Core state + active objects only
+        STANDARD = 1,   // ~200KB - Essential runtime state  
+        COMPLETE = 2    // ~850KB - Everything (current implementation)
+    };
+    bool SetSaveStateProfile(SaveStateProfile profile);
+    
     // Slot status information
     struct SlotStatus {
         bool occupied;

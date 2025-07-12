@@ -17,7 +17,7 @@ uint32_t GetFrameNumber() {
 bool FM2KGameInstance::InstallHooks() {
     // Initialize MinHook
     if (MH_Initialize() != MH_OK) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize MinHook!!!!!!!!!!!!!!!!!");
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to initialize MinHook");
         return false;
     }
 
@@ -31,19 +31,19 @@ bool FM2KGameInstance::InstallHooks() {
         MH_CreateHook(reinterpret_cast<LPVOID>(0x417A22),  // game_rand
                       reinterpret_cast<LPVOID>(Hook_GameRand),
                       reinterpret_cast<LPVOID*>(&original_rand_func)) != MH_OK) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create hooks!!!!!!!!!!!!!!!!!!!!!!");
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create hooks");
         MH_Uninitialize();
         return false;
     }
 
     // Enable all hooks
     if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to enable hooks!!!!!!!!!!!!!!!!!!!");
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to enable hooks");
         MH_Uninitialize();
         return false;
     }
 
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Successfully installed hooks!!!!!!!!!!!!!!!!!!!");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Successfully installed hooks");
     return true;
 }
 ```
@@ -129,7 +129,32 @@ bool VisualStateChanged() {
 }
 ```
 
-
+### 7. IPC Event Processing (Important)
+```cpp
+// In FM2K_GameInstance.cpp
+void FM2KGameInstance::ProcessIPCEvents() {
+    FM2K::IPC::Event event;
+    while (FM2K::IPC::PollEvent(&event)) {
+        switch (event.type) {
+            case FM2K::IPC::EventType::FRAME_ADVANCED:
+                OnFrameAdvanced(event);
+                break;
+            case FM2K::IPC::EventType::STATE_SAVED:
+                OnStateSaved(event);
+                break;
+            case FM2K::IPC::EventType::STATE_LOADED:
+                OnStateLoaded(event);
+                break;
+            case FM2K::IPC::EventType::VISUAL_STATE_CHANGED:
+                OnVisualStateChanged(event);
+                break;
+            case FM2K::IPC::EventType::ERROR:
+                OnHookError(event);
+                break;
+        }
+    }
+}
+```
 
 ## Implementation Order
 
@@ -141,7 +166,7 @@ bool VisualStateChanged() {
 
 2. Second Pass (State Management):
    - ShouldSaveState()
-
+   - ProcessIPCEvents()
    - Visual state tracking
 
 ## Critical Memory Addresses (from FM2K_Rollback_Research.md)
@@ -172,6 +197,6 @@ bool VisualStateChanged() {
 2. Test each hook with logging before adding full functionality
 3. Verify game stays running after hook installation
 4. Add state saving once basic hooks are stable
-
+5. Implement IPC events after core stability is achieved
 
 Remember: The goal is to keep the game running first, then add functionality incrementally. 

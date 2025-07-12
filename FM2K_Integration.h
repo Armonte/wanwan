@@ -308,6 +308,25 @@ public:
     std::function<void()> on_exit;
     std::function<void(const std::string&)> on_games_folder_set;
     
+    // Debug state callbacks
+    std::function<bool()> on_debug_save_state;
+    std::function<bool()> on_debug_load_state;
+    std::function<bool(uint32_t)> on_debug_force_rollback;
+    
+    // Slot-based save/load callbacks
+    std::function<bool(uint32_t)> on_debug_save_to_slot;
+    std::function<bool(uint32_t)> on_debug_load_from_slot;
+    std::function<bool(bool, uint32_t)> on_debug_auto_save_config;  // (enabled, interval_frames)
+    
+    // Slot status callback
+    struct SlotStatusInfo {
+        bool occupied;
+        uint32_t frame_number;
+        uint64_t timestamp_ms;
+        uint32_t checksum;
+    };
+    std::function<bool(uint32_t, SlotStatusInfo&)> on_get_slot_status;  // (slot, status_out)
+    
     // Data binding
     void SetGames(const std::vector<FM2K::FM2KGameInfo>& games);
     void SetNetworkConfig(const NetworkConfig& config);

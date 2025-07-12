@@ -31,6 +31,13 @@ LauncherUI::LauncherUI()
     on_session_stop = nullptr;
     on_exit = nullptr;
     on_games_folder_set = nullptr;
+    on_debug_save_state = nullptr;
+    on_debug_load_state = nullptr;
+    on_debug_force_rollback = nullptr;
+    on_debug_save_to_slot = nullptr;
+    on_debug_load_from_slot = nullptr;
+    on_debug_auto_save_config = nullptr;
+    on_get_slot_status = nullptr;
 
     log_buffer_mutex_ = SDL_CreateMutex();
 }
@@ -604,23 +611,143 @@ void LauncherUI::RenderSessionControls() {
 }
 
 void LauncherUI::RenderDebugTools() {
-    ImGui::Text("Rollback & State");
+    ImGui::Text("Rollback & State Management");
     ImGui::Separator();
-
-    if (ImGui::Button("Manual Save State")) {
-        // TODO: Hook up to GekkoNet/Session Manager
+    
+    // Auto-save controls
+    if (ImGui::CollapsingHeader("Auto-Save", ImGuiTreeNodeFlags_DefaultOpen)) {
+        static bool auto_save_enabled = true;
+        static int auto_save_interval = 120;  // frames
+        
+        if (ImGui::Checkbox("Enable Auto-Save", &auto_save_enabled)) {
+            if (on_debug_auto_save_config) {
+                on_debug_auto_save_config(auto_save_enabled, auto_save_interval);
+            }
+        }
+        
+        ImGui::SetNextItemWidth(150);
+        if (ImGui::SliderInt("Interval (frames)", &auto_save_interval, 30, 600)) {
+            if (on_debug_auto_save_config) {
+                on_debug_auto_save_config(auto_save_enabled, auto_save_interval);
+            }
+        }
+        ImGui::SameLine();
+        ImGui::Text("(%.1fs)", auto_save_interval / 100.0f);
+        
+        ImGui::TextDisabled("Auto-save uses Slot 0");
+    }
+    
+    ImGui::Separator();
+    
+    // Save Slots
+    if (ImGui::CollapsingHeader("Save Slots", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Columns(4, "SaveSlots", true);
+        ImGui::Text("Slot");
+        ImGui::NextColumn();
+        ImGui::Text("Status");
+        ImGui::NextColumn();
+        ImGui::Text("Save");
+        ImGui::NextColumn();
+        ImGui::Text("Load");
+        ImGui::NextColumn();
+        ImGui::Separator();
+        
+        for (int slot = 0; slot < 8; slot++) {
+            ImGui::PushID(slot);
+            
+            // Slot number
+            if (slot == 0) {
+                ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f), "%d", slot);
+                ImGui::SetItemTooltip("Auto-save slot");
+            } else {
+                ImGui::Text("%d", slot);
+            }
+            ImGui::NextColumn();
+            
+            // Status - get real status from hook DLL
+            if (on_get_slot_status) {
+                SlotStatusInfo status;
+                if (on_get_slot_status(slot, status)) {
+                    if (status.occupied) {
+                        // Calculate time ago
+                        uint64_t current_time = SDL_GetTicks();
+                        uint64_t time_diff = current_time - status.timestamp_ms;
+                        
+                        if (time_diff < 1000) {
+                            ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f), "F%u (now)", status.frame_number);
+                        } else if (time_diff < 60000) {
+                            ImGui::TextColored(ImVec4(0.8f, 1.0f, 0.8f, 1.0f), "F%u (%.1fs ago)", status.frame_number, time_diff / 1000.0f);
+                        } else {
+                            ImGui::TextColored(ImVec4(0.6f, 0.8f, 0.6f, 1.0f), "F%u (%llus ago)", status.frame_number, time_diff / 1000);
+                        }
+                        
+                        ImGui::SetItemTooltip("Frame %u\nChecksum: 0x%08X\nSaved %.1f seconds ago", 
+                                             status.frame_number, status.checksum, time_diff / 1000.0f);
+                    } else {
+                        ImGui::TextDisabled("Empty");
+                    }
+                } else {
+                    ImGui::TextDisabled("Error");
+                }
+            } else {
+                ImGui::TextDisabled("Unknown");
+            }
+            ImGui::NextColumn();
+            
+            // Save button
+            if (ImGui::Button("Save")) {
+                if (on_debug_save_to_slot) {
+                    bool success = on_debug_save_to_slot(slot);
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Save to slot %d %s", slot, success ? "triggered" : "failed");
+                }
+            }
+            ImGui::NextColumn();
+            
+            // Load button
+            if (ImGui::Button("Load")) {
+                if (on_debug_load_from_slot) {
+                    bool success = on_debug_load_from_slot(slot);
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Load from slot %d %s", slot, success ? "triggered" : "failed");
+                }
+            }
+            ImGui::NextColumn();
+            
+            ImGui::PopID();
+        }
+        
+        ImGui::Columns(1);
+    }
+    
+    ImGui::Separator();
+    
+    // Quick save/load (legacy)
+    ImGui::Text("Quick Actions");
+    if (ImGui::Button("Quick Save")) {
+        if (on_debug_save_state) {
+            bool success = on_debug_save_state();
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Quick save %s", success ? "triggered" : "failed");
+        }
     }
     ImGui::SameLine();
-    if (ImGui::Button("Manual Load State")) {
-        // TODO: Hook up to GekkoNet/Session Manager
+    if (ImGui::Button("Quick Load")) {
+        if (on_debug_load_state) {
+            bool success = on_debug_load_state();
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Quick load %s", success ? "triggered" : "failed");
+        }
     }
 
-    static int rollback_frames = 0;
+    static int rollback_frames = 3;  // Default to 3 frames
     ImGui::SetNextItemWidth(100);
     ImGui::InputInt("Force Rollback Frames", &rollback_frames);
+    if (rollback_frames < 0) rollback_frames = 0;
+    if (rollback_frames > 60) rollback_frames = 60;  // Reasonable limit
+    
     ImGui::SameLine();
     if (ImGui::Button("Force")) {
-        // TODO: Hook up to GekkoNet/Session Manager
+        if (on_debug_force_rollback && rollback_frames > 0) {
+            bool success = on_debug_force_rollback(static_cast<uint32_t>(rollback_frames));
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Force rollback of %d frames %s", rollback_frames, success ? "triggered" : "failed");
+        }
     }
     
     ImGui::Separator();

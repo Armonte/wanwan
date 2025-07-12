@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <iostream>
+#include <memory>
 #include <SDL3/SDL.h>
 // Direct GekkoNet integration
 #include "gekkonet.h"
@@ -20,10 +21,24 @@ static bool is_host = false;
 static HANDLE shared_memory_handle = nullptr;
 static void* shared_memory_data = nullptr;
 
-// State management
-static FM2K::State::GameState saved_states[8];  // Ring buffer for 8 frames
+// Enhanced state management with comprehensive memory capture
+static FM2K::State::GameState saved_states[8];  // Ring buffer for 8 frames (rollback buffer)
 static uint32_t current_state_index = 0;
 static bool state_manager_initialized = false;
+
+// Named save slots for manual save/load
+static FM2K::State::GameState save_slots[8];     // 8 manual save slots
+static bool slot_occupied[8] = {false};          // Track which slots have saves
+static uint32_t last_auto_save_frame = 0;
+
+// Buffers for large memory regions
+static std::unique_ptr<uint8_t[]> player_data_buffer;
+static std::unique_ptr<uint8_t[]> object_pool_buffer;
+static bool large_buffers_allocated = false;
+
+// State change debugging
+static FM2K::State::GameState last_core_state = {};
+static bool last_core_state_valid = false;
 
 // Shared memory structure matching the launcher
 struct SharedInputData {
@@ -39,6 +54,30 @@ struct SharedInputData {
     uint16_t port;
     uint8_t input_delay;
     bool config_updated;
+    
+    // Debug commands from launcher
+    bool debug_save_state_requested;
+    bool debug_load_state_requested;
+    uint32_t debug_rollback_frames;
+    bool debug_rollback_requested;
+    uint32_t debug_command_id;  // Incremented for each command to ensure processing
+    
+    // Slot-based save/load system
+    bool debug_save_to_slot_requested;
+    bool debug_load_from_slot_requested;
+    uint32_t debug_target_slot;  // Which slot to save to / load from (0-7)
+    
+    // Auto-save configuration
+    bool auto_save_enabled;
+    uint32_t auto_save_interval_frames;  // How often to auto-save
+    
+    // Slot status feedback to UI
+    struct SlotInfo {
+        bool occupied;
+        uint32_t frame_number;
+        uint64_t timestamp_ms;
+        uint32_t checksum;
+    } slot_status[8];
 };
 
 // Simple hook function types (matching FM2K patterns)
@@ -61,12 +100,30 @@ static constexpr uintptr_t FRAME_COUNTER_ADDR = 0x447EE0;
 static constexpr uintptr_t P1_INPUT_ADDR = 0x4259C0;  // g_p1_input[0]
 static constexpr uintptr_t P2_INPUT_ADDR = 0x4259C4;  // g_p2_input
 
-// State memory addresses (from state_manager.h)
+// Enhanced state memory addresses (from save state documentation)
 static constexpr uintptr_t P1_HP_ADDR = 0x47010C;
 static constexpr uintptr_t P2_HP_ADDR = 0x47030C;
 static constexpr uintptr_t ROUND_TIMER_ADDR = 0x470060;
 static constexpr uintptr_t GAME_TIMER_ADDR = 0x470044;
 static constexpr uintptr_t RANDOM_SEED_ADDR = 0x41FB1C;
+
+// Major memory regions for comprehensive state capture
+static constexpr uintptr_t PLAYER_DATA_SLOTS_ADDR = 0x4D1D80;  // g_player_data_slots
+static constexpr size_t PLAYER_DATA_SLOTS_SIZE = 0x701F8;      // 459,256 bytes
+static constexpr uintptr_t GAME_OBJECT_POOL_ADDR = 0x4701E0;   // g_game_object_pool  
+static constexpr size_t GAME_OBJECT_POOL_SIZE = 0x5F800;       // 391,168 bytes (1024 * 382)
+
+// Additional game state variables from documentation
+static constexpr uintptr_t GAME_MODE_ADDR = 0x470054;          // g_game_mode
+static constexpr uintptr_t ROUND_SETTING_ADDR = 0x470068;      // g_round_setting
+static constexpr uintptr_t P1_ROUND_COUNT_ADDR = 0x4700EC;     // g_p1_round_count
+static constexpr uintptr_t P1_ROUND_STATE_ADDR = 0x4700F0;     // g_p1_round_state
+static constexpr uintptr_t P1_ACTION_STATE_ADDR = 0x47019C;    // g_p1_action_state
+static constexpr uintptr_t P2_ACTION_STATE_ADDR = 0x4701A0;    // g_p2_action_state (estimated)
+static constexpr uintptr_t CAMERA_X_ADDR = 0x447F2C;          // g_camera_x
+static constexpr uintptr_t CAMERA_Y_ADDR = 0x447F30;          // g_camera_y
+static constexpr uintptr_t TIMER_COUNTDOWN1_ADDR = 0x4456E4;   // g_timer_countdown1
+static constexpr uintptr_t TIMER_COUNTDOWN2_ADDR = 0x447D91;   // g_timer_countdown2
 
 // Simple Fletcher32 implementation for checksums
 namespace FM2K {
@@ -142,6 +199,24 @@ bool InitializeSharedMemory() {
     SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data);
     memset(shared_data, 0, sizeof(SharedInputData));
     shared_data->config_updated = false;
+    shared_data->debug_save_state_requested = false;
+    shared_data->debug_load_state_requested = false;
+    shared_data->debug_rollback_requested = false;
+    shared_data->debug_rollback_frames = 0;
+    shared_data->debug_command_id = 0;
+    shared_data->debug_save_to_slot_requested = false;
+    shared_data->debug_load_from_slot_requested = false;
+    shared_data->debug_target_slot = 0;
+    shared_data->auto_save_enabled = true;  // Enable auto-save by default
+    shared_data->auto_save_interval_frames = 120;  // Auto-save every 120 frames (1.2 seconds at 100 FPS)
+    
+    // Initialize slot status
+    for (int i = 0; i < 8; i++) {
+        shared_data->slot_status[i].occupied = false;
+        shared_data->slot_status[i].frame_number = 0;
+        shared_data->slot_status[i].timestamp_ms = 0;
+        shared_data->slot_status[i].checksum = 0;
+    }
     
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Shared memory initialized successfully");
     return true;
@@ -163,6 +238,9 @@ bool CheckConfigurationUpdates() {
         // Clear the update flag
         shared_data->config_updated = false;
         
+        // Update auto-save settings
+        // (Auto-save configuration can be changed from launcher later)
+        
         // Reconfigure GekkoNet session if needed
         if (gekko_session && gekko_initialized) {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Reconfiguring GekkoNet session...");
@@ -180,17 +258,35 @@ bool InitializeStateManager() {
     // Clear state buffer
     memset(saved_states, 0, sizeof(saved_states));
     current_state_index = 0;
-    state_manager_initialized = true;
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: State manager initialized");
+    // Allocate buffers for large memory regions
+    try {
+        player_data_buffer = std::make_unique<uint8_t[]>(PLAYER_DATA_SLOTS_SIZE);
+        object_pool_buffer = std::make_unique<uint8_t[]>(GAME_OBJECT_POOL_SIZE);
+        large_buffers_allocated = true;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Allocated %zu KB for player data, %zu KB for object pool", 
+                    PLAYER_DATA_SLOTS_SIZE / 1024, GAME_OBJECT_POOL_SIZE / 1024);
+    } catch (const std::bad_alloc& e) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Failed to allocate state buffers: %s", e.what());
+        large_buffers_allocated = false;
+        return false;
+    }
+    
+    state_manager_initialized = true;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Enhanced state manager initialized with comprehensive memory capture");
     return true;
 }
 
-// Save game state directly (in-process)
+// Enhanced save game state with comprehensive memory capture
 bool SaveGameStateDirect(FM2K::State::GameState* state, uint32_t frame_number) {
-    if (!state) return false;
+    if (!state || !large_buffers_allocated) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Invalid state buffer or large buffers not allocated");
+        return false;
+    }
     
-    // Read game state directly from memory (no ReadProcessMemory needed)
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Capturing comprehensive game state for frame %u", frame_number);
+    
+    // Read basic game state directly from memory (no ReadProcessMemory needed)
     uint32_t* frame_ptr = (uint32_t*)FRAME_COUNTER_ADDR;
     uint16_t* p1_input_ptr = (uint16_t*)P1_INPUT_ADDR;
     uint16_t* p2_input_ptr = (uint16_t*)P2_INPUT_ADDR;
@@ -200,7 +296,19 @@ bool SaveGameStateDirect(FM2K::State::GameState* state, uint32_t frame_number) {
     uint32_t* game_timer_ptr = (uint32_t*)GAME_TIMER_ADDR;
     uint32_t* random_seed_ptr = (uint32_t*)RANDOM_SEED_ADDR;
     
-    // Validate pointers and read state
+    // Extended game state pointers
+    uint32_t* game_mode_ptr = (uint32_t*)GAME_MODE_ADDR;
+    uint32_t* round_setting_ptr = (uint32_t*)ROUND_SETTING_ADDR;
+    uint32_t* p1_round_count_ptr = (uint32_t*)P1_ROUND_COUNT_ADDR;
+    uint32_t* p1_round_state_ptr = (uint32_t*)P1_ROUND_STATE_ADDR;
+    uint32_t* p1_action_state_ptr = (uint32_t*)P1_ACTION_STATE_ADDR;
+    uint32_t* p2_action_state_ptr = (uint32_t*)P2_ACTION_STATE_ADDR;
+    uint32_t* camera_x_ptr = (uint32_t*)CAMERA_X_ADDR;
+    uint32_t* camera_y_ptr = (uint32_t*)CAMERA_Y_ADDR;
+    uint32_t* timer1_ptr = (uint32_t*)TIMER_COUNTDOWN1_ADDR;
+    uint32_t* timer2_ptr = (uint32_t*)TIMER_COUNTDOWN2_ADDR;
+    
+    // Validate basic pointers and read core state
     if (!IsBadReadPtr(frame_ptr, sizeof(uint32_t))) {
         state->core.input_buffer_index = *frame_ptr;
     }
@@ -226,21 +334,93 @@ bool SaveGameStateDirect(FM2K::State::GameState* state, uint32_t frame_number) {
         state->core.random_seed = *random_seed_ptr;
     }
     
+    // Capture major memory regions for comprehensive state
+    bool player_data_captured = false;
+    bool object_pool_captured = false;
+    
+    // 1. Player Data Slots (459KB) - most critical for rollback
+    uint8_t* player_data_ptr = (uint8_t*)PLAYER_DATA_SLOTS_ADDR;
+    if (!IsBadReadPtr(player_data_ptr, PLAYER_DATA_SLOTS_SIZE)) {
+        memcpy(player_data_buffer.get(), player_data_ptr, PLAYER_DATA_SLOTS_SIZE);
+        player_data_captured = true;
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Captured player data slots (%zu KB)", PLAYER_DATA_SLOTS_SIZE / 1024);
+    } else {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Failed to capture player data slots - invalid memory");
+    }
+    
+    // 2. Game Object Pool (391KB) - all game entities
+    uint8_t* object_pool_ptr = (uint8_t*)GAME_OBJECT_POOL_ADDR;
+    if (!IsBadReadPtr(object_pool_ptr, GAME_OBJECT_POOL_SIZE)) {
+        memcpy(object_pool_buffer.get(), object_pool_ptr, GAME_OBJECT_POOL_SIZE);
+        object_pool_captured = true;
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Captured game object pool (%zu KB)", GAME_OBJECT_POOL_SIZE / 1024);
+    } else {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Failed to capture game object pool - invalid memory");
+    }
+    
     // Set metadata
     state->frame_number = frame_number;
     state->timestamp_ms = SDL_GetTicks();
     
-    // Calculate checksum using Fletcher32
-    state->checksum = FM2K::State::Fletcher32(reinterpret_cast<const uint8_t*>(&state->core), sizeof(FM2K::State::CoreGameState));
+    // Calculate comprehensive checksum including large memory regions
+    uint32_t core_checksum = FM2K::State::Fletcher32(reinterpret_cast<const uint8_t*>(&state->core), sizeof(FM2K::State::CoreGameState));
+    uint32_t player_checksum = player_data_captured ? FM2K::State::Fletcher32(player_data_buffer.get(), PLAYER_DATA_SLOTS_SIZE) : 0;
+    uint32_t object_checksum = object_pool_captured ? FM2K::State::Fletcher32(object_pool_buffer.get(), GAME_OBJECT_POOL_SIZE) : 0;
     
-    return true;
+    // Combine checksums for comprehensive state validation
+    state->checksum = core_checksum ^ player_checksum ^ object_checksum;
+    
+    // Debug what's changing between frames
+    if (last_core_state_valid && frame_number % 30 == 0) {  // Log changes every 30 frames to avoid spam
+        bool core_changed = memcmp(&state->core, &last_core_state.core, sizeof(FM2K::State::CoreGameState)) != 0;
+        if (core_changed) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Core state changes detected:");
+            if (state->core.input_buffer_index != last_core_state.core.input_buffer_index) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  Input buffer index: %u → %u", last_core_state.core.input_buffer_index, state->core.input_buffer_index);
+            }
+            if (state->core.p1_input_current != last_core_state.core.p1_input_current) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  P1 input: 0x%08X → 0x%08X", last_core_state.core.p1_input_current, state->core.p1_input_current);
+            }
+            if (state->core.p2_input_current != last_core_state.core.p2_input_current) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  P2 input: 0x%08X → 0x%08X", last_core_state.core.p2_input_current, state->core.p2_input_current);
+            }
+            if (state->core.round_timer != last_core_state.core.round_timer) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  Round timer: %u → %u", last_core_state.core.round_timer, state->core.round_timer);
+            }
+            if (state->core.game_timer != last_core_state.core.game_timer) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  Game timer: %u → %u", last_core_state.core.game_timer, state->core.game_timer);
+            }
+            if (state->core.random_seed != last_core_state.core.random_seed) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  RNG seed: 0x%08X → 0x%08X", last_core_state.core.random_seed, state->core.random_seed);
+            }
+        }
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Checksums - Core: 0x%08X, Player: 0x%08X, Objects: 0x%08X", core_checksum, player_checksum, object_checksum);
+    }
+    
+    // Store current state for next comparison
+    last_core_state = *state;
+    last_core_state_valid = true;
+    
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Frame %u state captured - Core: %s, Player Data: %s, Objects: %s (checksum: 0x%08X)",
+                frame_number,
+                "OK",
+                player_data_captured ? "OK" : "FAILED",
+                object_pool_captured ? "OK" : "FAILED",
+                state->checksum);
+    
+    return player_data_captured && object_pool_captured;  // Require both major regions for valid state
 }
 
-// Load game state directly (in-process)
+// Enhanced load game state with comprehensive memory restoration
 bool LoadGameStateDirect(const FM2K::State::GameState* state) {
-    if (!state) return false;
+    if (!state || !large_buffers_allocated) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Invalid state or large buffers not allocated");
+        return false;
+    }
     
-    // Write game state directly to memory (no WriteProcessMemory needed)
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Restoring comprehensive game state for frame %u", state->frame_number);
+    
+    // Write basic game state directly to memory (no WriteProcessMemory needed)
     uint32_t* frame_ptr = (uint32_t*)FRAME_COUNTER_ADDR;
     uint16_t* p1_input_ptr = (uint16_t*)P1_INPUT_ADDR;
     uint16_t* p2_input_ptr = (uint16_t*)P2_INPUT_ADDR;
@@ -250,7 +430,19 @@ bool LoadGameStateDirect(const FM2K::State::GameState* state) {
     uint32_t* game_timer_ptr = (uint32_t*)GAME_TIMER_ADDR;
     uint32_t* random_seed_ptr = (uint32_t*)RANDOM_SEED_ADDR;
     
-    // Validate pointers and write state
+    // Extended game state pointers
+    uint32_t* game_mode_ptr = (uint32_t*)GAME_MODE_ADDR;
+    uint32_t* round_setting_ptr = (uint32_t*)ROUND_SETTING_ADDR;
+    uint32_t* p1_round_count_ptr = (uint32_t*)P1_ROUND_COUNT_ADDR;
+    uint32_t* p1_round_state_ptr = (uint32_t*)P1_ROUND_STATE_ADDR;
+    uint32_t* p1_action_state_ptr = (uint32_t*)P1_ACTION_STATE_ADDR;
+    uint32_t* p2_action_state_ptr = (uint32_t*)P2_ACTION_STATE_ADDR;
+    uint32_t* camera_x_ptr = (uint32_t*)CAMERA_X_ADDR;
+    uint32_t* camera_y_ptr = (uint32_t*)CAMERA_Y_ADDR;
+    uint32_t* timer1_ptr = (uint32_t*)TIMER_COUNTDOWN1_ADDR;
+    uint32_t* timer2_ptr = (uint32_t*)TIMER_COUNTDOWN2_ADDR;
+    
+    // Validate basic pointers and restore core state
     if (!IsBadWritePtr(frame_ptr, sizeof(uint32_t))) {
         *frame_ptr = state->core.input_buffer_index;
     }
@@ -276,8 +468,38 @@ bool LoadGameStateDirect(const FM2K::State::GameState* state) {
         *random_seed_ptr = state->core.random_seed;
     }
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: State loaded for frame %u", state->frame_number);
-    return true;
+    // Restore major memory regions for comprehensive rollback
+    bool player_data_restored = false;
+    bool object_pool_restored = false;
+    
+    // 1. Player Data Slots (459KB) - critical for character state
+    uint8_t* player_data_ptr = (uint8_t*)PLAYER_DATA_SLOTS_ADDR;
+    if (!IsBadWritePtr(player_data_ptr, PLAYER_DATA_SLOTS_SIZE)) {
+        memcpy(player_data_ptr, player_data_buffer.get(), PLAYER_DATA_SLOTS_SIZE);
+        player_data_restored = true;
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Restored player data slots (%zu KB)", PLAYER_DATA_SLOTS_SIZE / 1024);
+    } else {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to restore player data slots - invalid memory");
+    }
+    
+    // 2. Game Object Pool (391KB) - all game entities
+    uint8_t* object_pool_ptr = (uint8_t*)GAME_OBJECT_POOL_ADDR;
+    if (!IsBadWritePtr(object_pool_ptr, GAME_OBJECT_POOL_SIZE)) {
+        memcpy(object_pool_ptr, object_pool_buffer.get(), GAME_OBJECT_POOL_SIZE);
+        object_pool_restored = true;
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Restored game object pool (%zu KB)", GAME_OBJECT_POOL_SIZE / 1024);
+    } else {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to restore game object pool - invalid memory");
+    }
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Frame %u state restored - Core: %s, Player Data: %s, Objects: %s (checksum: 0x%08X)",
+                state->frame_number,
+                "OK",
+                player_data_restored ? "OK" : "FAILED",
+                object_pool_restored ? "OK" : "FAILED",
+                state->checksum);
+    
+    return player_data_restored && object_pool_restored;  // Require both major regions for successful restore
 }
 
 // Save state to ring buffer
@@ -294,6 +516,169 @@ bool LoadStateFromBuffer(uint32_t frame_number) {
     
     uint32_t index = frame_number % 8;
     return LoadGameStateDirect(&saved_states[index]);
+}
+
+// Save state to specific slot
+bool SaveStateToSlot(uint32_t slot, uint32_t frame_number) {
+    if (!state_manager_initialized || slot >= 8) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Invalid slot %u or state manager not initialized", slot);
+        return false;
+    }
+    
+    if (SaveGameStateDirect(&save_slots[slot], frame_number)) {
+        slot_occupied[slot] = true;
+        
+        // Update shared memory status for UI
+        if (shared_memory_data) {
+            SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data);
+            shared_data->slot_status[slot].occupied = true;
+            shared_data->slot_status[slot].frame_number = frame_number;
+            shared_data->slot_status[slot].timestamp_ms = save_slots[slot].timestamp_ms;
+            shared_data->slot_status[slot].checksum = save_slots[slot].checksum;
+        }
+        
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "State saved to slot %u (frame %u, checksum: 0x%08X)", 
+                    slot, frame_number, save_slots[slot].checksum);
+        return true;
+    }
+    
+    return false;
+}
+
+// Load state from specific slot
+bool LoadStateFromSlot(uint32_t slot) {
+    if (!state_manager_initialized || slot >= 8) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Invalid slot %u or state manager not initialized", slot);
+        return false;
+    }
+    
+    if (!slot_occupied[slot]) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Slot %u is empty", slot);
+        return false;
+    }
+    
+    if (LoadGameStateDirect(&save_slots[slot])) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "State loaded from slot %u (frame %u, checksum: 0x%08X)", 
+                    slot, save_slots[slot].frame_number, save_slots[slot].checksum);
+        return true;
+    }
+    
+    return false;
+}
+
+// Process debug commands from launcher UI
+void ProcessDebugCommands() {
+    if (!shared_memory_data) return;
+    
+    SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data);
+    static uint32_t last_processed_command_id = 0;
+    
+    // Only process new commands
+    if (shared_data->debug_command_id == last_processed_command_id) {
+        return;
+    }
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Processing debug command ID %u", shared_data->debug_command_id);
+    
+    // Manual save state
+    if (shared_data->debug_save_state_requested) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Manual save state requested");
+        if (state_manager_initialized) {
+            uint32_t current_frame = g_frame_counter;
+            if (SaveStateToBuffer(current_frame)) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: State saved successfully for frame %u", current_frame);
+            } else {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Failed to save state for frame %u", current_frame);
+            }
+        } else {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: State manager not initialized");
+        }
+        shared_data->debug_save_state_requested = false;
+    }
+    
+    // Manual load state
+    if (shared_data->debug_load_state_requested) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Manual load state requested");
+        if (state_manager_initialized) {
+            uint32_t current_frame = g_frame_counter;
+            // Load from previous frame (simple test)
+            uint32_t load_frame = current_frame > 0 ? current_frame - 1 : current_frame;
+            if (LoadStateFromBuffer(load_frame)) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: State loaded successfully from frame %u", load_frame);
+            } else {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Failed to load state from frame %u", load_frame);
+            }
+        } else {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: State manager not initialized");
+        }
+        shared_data->debug_load_state_requested = false;
+    }
+    
+    // Force rollback
+    if (shared_data->debug_rollback_requested) {
+        uint32_t rollback_frames = shared_data->debug_rollback_frames;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Force rollback requested - %u frames", rollback_frames);
+        
+        if (state_manager_initialized && rollback_frames > 0) {
+            uint32_t current_frame = g_frame_counter;
+            uint32_t target_frame = current_frame > rollback_frames ? current_frame - rollback_frames : 0;
+            
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Rolling back from frame %u to frame %u", current_frame, target_frame);
+            
+            if (LoadStateFromBuffer(target_frame)) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Rollback successful - restored frame %u", target_frame);
+                // Update frame counter to reflect rollback
+                g_frame_counter = target_frame;
+            } else {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Rollback failed - could not load frame %u", target_frame);
+            }
+        } else {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Invalid rollback parameters - frames: %u, initialized: %s", 
+                         rollback_frames, state_manager_initialized ? "YES" : "NO");
+        }
+        
+        shared_data->debug_rollback_requested = false;
+        shared_data->debug_rollback_frames = 0;
+    }
+    
+    // Save to specific slot
+    if (shared_data->debug_save_to_slot_requested) {
+        uint32_t slot = shared_data->debug_target_slot;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Save to slot %u requested", slot);
+        
+        if (state_manager_initialized && slot < 8) {
+            uint32_t current_frame = g_frame_counter;
+            if (SaveStateToSlot(slot, current_frame)) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: State saved to slot %u successfully", slot);
+            } else {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Failed to save state to slot %u", slot);
+            }
+        } else {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Invalid slot %u or state manager not initialized", slot);
+        }
+        
+        shared_data->debug_save_to_slot_requested = false;
+    }
+    
+    // Load from specific slot
+    if (shared_data->debug_load_from_slot_requested) {
+        uint32_t slot = shared_data->debug_target_slot;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Load from slot %u requested", slot);
+        
+        if (state_manager_initialized && slot < 8) {
+            if (LoadStateFromSlot(slot)) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: State loaded from slot %u successfully", slot);
+            } else {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Failed to load state from slot %u", slot);
+            }
+        } else {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Invalid slot %u or state manager not initialized", slot);
+        }
+        
+        shared_data->debug_load_from_slot_requested = false;
+    }
+    
+    last_processed_command_id = shared_data->debug_command_id;
 }
 
 // Configure network session based on mode
@@ -486,9 +871,19 @@ int __cdecl Hook_ProcessGameInputs() {
                 gekko_add_local_input(gekko_session, p2_handle, &p2_gekko);
             }
             
-            // Save current state before processing GekkoNet updates
-            if (state_manager_initialized && (g_frame_counter % 1) == 0) {  // Save every frame
+            // Save current state before processing GekkoNet updates (reduced frequency for performance)
+            if (state_manager_initialized && (g_frame_counter % 8) == 0) {  // Save every 8 frames for rollback buffer
                 SaveStateToBuffer(g_frame_counter);
+            }
+            
+            // Auto-save to slot 0 if enabled
+            if (shared_memory_data && state_manager_initialized) {
+                SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data);
+                if (shared_data->auto_save_enabled && 
+                    (g_frame_counter - last_auto_save_frame) >= shared_data->auto_save_interval_frames) {
+                    SaveStateToSlot(0, g_frame_counter);  // Auto-save always goes to slot 0
+                    last_auto_save_frame = g_frame_counter;
+                }
             }
             
             // Process GekkoNet updates after adding inputs

@@ -22,6 +22,30 @@ struct SharedInputData {
     uint16_t port;
     uint8_t input_delay;
     bool config_updated;
+    
+    // Debug commands from launcher
+    bool debug_save_state_requested;
+    bool debug_load_state_requested;
+    uint32_t debug_rollback_frames;
+    bool debug_rollback_requested;
+    uint32_t debug_command_id;  // Incremented for each command to ensure processing
+    
+    // Slot-based save/load system
+    bool debug_save_to_slot_requested;
+    bool debug_load_from_slot_requested;
+    uint32_t debug_target_slot;  // Which slot to save to / load from (0-7)
+    
+    // Auto-save configuration
+    bool auto_save_enabled;
+    uint32_t auto_save_interval_frames;  // How often to auto-save
+    
+    // Slot status feedback to UI
+    struct SlotInfo {
+        bool occupied;
+        uint32_t frame_number;
+        uint64_t timestamp_ms;
+        uint32_t checksum;
+    } slot_status[8];
 };
 
 namespace {
@@ -494,4 +518,141 @@ void FM2KGameInstance::CleanupSharedMemory() {
 void FM2KGameInstance::PollInputs() {
     // DLL handles input polling and GekkoNet directly
     // No need for shared memory polling from launcher
+}
+
+// Debug state management functions
+bool FM2KGameInstance::TriggerManualSaveState() {
+    if (!shared_memory_data_) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not available for debug command");
+        return false;
+    }
+    
+    SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
+    shared_data->debug_save_state_requested = true;
+    shared_data->debug_command_id++;
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Triggered manual save state (command ID: %u)", shared_data->debug_command_id);
+    return true;
+}
+
+bool FM2KGameInstance::TriggerManualLoadState() {
+    if (!shared_memory_data_) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not available for debug command");
+        return false;
+    }
+    
+    SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
+    shared_data->debug_load_state_requested = true;
+    shared_data->debug_command_id++;
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Triggered manual load state (command ID: %u)", shared_data->debug_command_id);
+    return true;
+}
+
+bool FM2KGameInstance::TriggerForceRollback(uint32_t frames) {
+    if (!shared_memory_data_) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not available for debug command");
+        return false;
+    }
+    
+    if (frames == 0) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Invalid rollback frame count: %u", frames);
+        return false;
+    }
+    
+    SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
+    shared_data->debug_rollback_frames = frames;
+    shared_data->debug_rollback_requested = true;
+    shared_data->debug_command_id++;
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Triggered force rollback of %u frames (command ID: %u)", frames, shared_data->debug_command_id);
+    return true;
+}
+
+// Slot-based save/load functions
+bool FM2KGameInstance::TriggerSaveToSlot(uint32_t slot) {
+    if (!shared_memory_data_) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not available for save to slot command");
+        return false;
+    }
+    
+    if (slot >= 8) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Invalid slot number: %u (must be 0-7)", slot);
+        return false;
+    }
+    
+    SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
+    shared_data->debug_target_slot = slot;
+    shared_data->debug_save_to_slot_requested = true;
+    shared_data->debug_command_id++;
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Triggered save to slot %u (command ID: %u)", slot, shared_data->debug_command_id);
+    return true;
+}
+
+bool FM2KGameInstance::TriggerLoadFromSlot(uint32_t slot) {
+    if (!shared_memory_data_) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not available for load from slot command");
+        return false;
+    }
+    
+    if (slot >= 8) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Invalid slot number: %u (must be 0-7)", slot);
+        return false;
+    }
+    
+    SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
+    shared_data->debug_target_slot = slot;
+    shared_data->debug_load_from_slot_requested = true;
+    shared_data->debug_command_id++;
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Triggered load from slot %u (command ID: %u)", slot, shared_data->debug_command_id);
+    return true;
+}
+
+// Auto-save configuration
+bool FM2KGameInstance::SetAutoSaveEnabled(bool enabled) {
+    if (!shared_memory_data_) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not available for auto-save config");
+        return false;
+    }
+    
+    SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
+    shared_data->auto_save_enabled = enabled;
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Auto-save %s", enabled ? "enabled" : "disabled");
+    return true;
+}
+
+bool FM2KGameInstance::SetAutoSaveInterval(uint32_t frames) {
+    if (!shared_memory_data_) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not available for auto-save config");
+        return false;
+    }
+    
+    if (frames < 30 || frames > 6000) {  // Reasonable bounds: 0.3 to 60 seconds at 100 FPS
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Invalid auto-save interval: %u frames (must be 30-6000)", frames);
+        return false;
+    }
+    
+    SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
+    shared_data->auto_save_interval_frames = frames;
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Auto-save interval set to %u frames (%.1f seconds)", frames, frames / 100.0f);
+    return true;
+}
+
+// Get slot status information
+bool FM2KGameInstance::GetSlotStatus(uint32_t slot, SlotStatus& status) {
+    if (!shared_memory_data_ || slot >= 8) {
+        return false;
+    }
+    
+    SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
+    status.occupied = shared_data->slot_status[slot].occupied;
+    status.frame_number = shared_data->slot_status[slot].frame_number;
+    status.timestamp_ms = shared_data->slot_status[slot].timestamp_ms;
+    status.checksum = shared_data->slot_status[slot].checksum;
+    
+    return true;
 } 

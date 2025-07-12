@@ -565,6 +565,57 @@ bool FM2KLauncher::Initialize() {
         SetGamesRootPath(folder);
     };
     
+    // Connect debug state callbacks
+    ui_->on_debug_save_state = [this]() -> bool {
+        if (game_instance_) {
+            return game_instance_->TriggerManualSaveState();
+        }
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "No active game instance for debug save state");
+        return false;
+    };
+    
+    ui_->on_debug_load_state = [this]() -> bool {
+        if (game_instance_) {
+            return game_instance_->TriggerManualLoadState();
+        }
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "No active game instance for debug load state");
+        return false;
+    };
+    
+    ui_->on_debug_force_rollback = [this](uint32_t frames) -> bool {
+        if (game_instance_) {
+            return game_instance_->TriggerForceRollback(frames);
+        }
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "No active game instance for debug rollback");
+        return false;
+    };
+    
+    // Connect slot-based save/load callbacks
+    ui_->on_debug_save_to_slot = [this](uint32_t slot) -> bool {
+        if (game_instance_) {
+            return game_instance_->TriggerSaveToSlot(slot);
+        }
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "No active game instance for save to slot");
+        return false;
+    };
+    
+    ui_->on_debug_load_from_slot = [this](uint32_t slot) -> bool {
+        if (game_instance_) {
+            return game_instance_->TriggerLoadFromSlot(slot);
+        }
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "No active game instance for load from slot");
+        return false;
+    };
+    
+    ui_->on_debug_auto_save_config = [this](bool enabled, uint32_t interval_frames) -> bool {
+        if (game_instance_) {
+            game_instance_->SetAutoSaveEnabled(enabled);
+            return game_instance_->SetAutoSaveInterval(interval_frames);
+        }
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "No active game instance for auto-save config");
+        return false;
+    };
+    
     // If no games directory stored, default to <base>/games before first discovery
     if (games_root_path_.empty()) {
         std::string base_path;

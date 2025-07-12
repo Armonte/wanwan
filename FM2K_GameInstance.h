@@ -69,6 +69,29 @@ protected:
     bool LoadGameExecutable(const std::filesystem::path& exe_path);
     void HandleDLLEvent(const SDL_Event& event);
     bool ExecuteRemoteFunction(HANDLE process, uintptr_t function_address);
+    
+public:
+    // Debug state management functions
+    bool TriggerManualSaveState();
+    bool TriggerManualLoadState();
+    bool TriggerForceRollback(uint32_t frames);
+    
+    // Slot-based save/load functions
+    bool TriggerSaveToSlot(uint32_t slot);
+    bool TriggerLoadFromSlot(uint32_t slot);
+    
+    // Auto-save configuration
+    bool SetAutoSaveEnabled(bool enabled);
+    bool SetAutoSaveInterval(uint32_t frames);
+    
+    // Slot status information
+    struct SlotStatus {
+        bool occupied;
+        uint32_t frame_number;
+        uint64_t timestamp_ms;
+        uint32_t checksum;
+    };
+    bool GetSlotStatus(uint32_t slot, SlotStatus& status);
 
 private:
     HANDLE process_handle_;

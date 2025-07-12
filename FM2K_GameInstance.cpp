@@ -160,55 +160,12 @@ bool FM2KGameInstance::Launch(const std::string& exe_path) {
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Creating process: %s", exe_path_win.c_str());
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Working directory: %s", working_dir.c_str());
 
-    // Create environment block with custom variables (Windows format)
-    LPVOID env_block = nullptr;
-    if (!environment_variables_.empty()) {
-        // Get parent environment
-        LPVOID parent_env = GetEnvironmentStringsW();
-        
-        // Build new environment string
-        std::wstring env_string;
-        
-        // Add custom variables first
-        for (const auto& [name, value] : environment_variables_) {
-            std::wstring wide_name = UTF8ToWide(name);
-            std::wstring wide_value = UTF8ToWide(value);
-            env_string += wide_name + L"=" + wide_value + L'\0';
-        }
-        
-        // Add parent environment (skip duplicates)
-        if (parent_env) {
-            LPWSTR parent_str = static_cast<LPWSTR>(parent_env);
-            while (*parent_str) {
-                std::wstring entry(parent_str);
-                size_t eq_pos = entry.find(L'=');
-                if (eq_pos != std::wstring::npos) {
-                    std::wstring env_name = entry.substr(0, eq_pos);
-                    // Only add if not already in our custom variables
-                    bool already_set = false;
-                    for (const auto& [custom_name, custom_value] : environment_variables_) {
-                        if (UTF8ToWide(custom_name) == env_name) {
-                            already_set = true;
-                            break;
-                        }
-                    }
-                    if (!already_set) {
-                        env_string += entry + L'\0';
-                    }
-                }
-                parent_str += entry.length() + 1;
-            }
-            FreeEnvironmentStringsW(static_cast<LPWSTR>(parent_env));
-        }
-        
-        // Add final null terminator
-        env_string += L'\0';
-        
-        // Allocate environment block
-        size_t env_size = env_string.length() * sizeof(wchar_t);
-        env_block = HeapAlloc(GetProcessHeap(), 0, env_size);
-        if (env_block) {
-            memcpy(env_block, env_string.c_str(), env_size);
+    // Set environment variables in current process (child will inherit them)
+    for (const auto& [name, value] : environment_variables_) {
+        if (!::SetEnvironmentVariableA(name.c_str(), value.c_str())) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Failed to set environment variable %s", name.c_str());
+        } else {
+            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Set environment variable %s=%s", name.c_str(), value.c_str());
         }
     }
 
@@ -219,7 +176,7 @@ bool FM2KGameInstance::Launch(const std::string& exe_path) {
         nullptr,                   // Thread handle not inheritable
         FALSE,                     // Set handle inheritance to FALSE
         CREATE_SUSPENDED,          // Create suspended for DLL injection
-        env_block, // Environment block
+        nullptr, // Use parent's environment block
         wide_working_dir.c_str(), // Use game's directory as starting directory
         &si,                       // Pointer to STARTUPINFO structure
         &pi                        // Pointer to PROCESS_INFORMATION structure
@@ -228,22 +185,17 @@ bool FM2KGameInstance::Launch(const std::string& exe_path) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, 
             "CreateProcess failed for %s with error: %lu", 
             exe_path.c_str(), error);
-        
-        // Cleanup environment block
-        if (env_block) {
-            HeapFree(GetProcessHeap(), 0, env_block);
-        }
         return false;
-    }
-    
-    // Cleanup environment block
-    if (env_block) {
-        HeapFree(GetProcessHeap(), 0, env_block);
     }
 
     process_info_ = pi;
     process_handle_ = pi.hProcess;
     process_id_ = pi.dwProcessId;
+    
+    // Clean up environment variables to avoid conflicts with next client
+    for (const auto& [name, value] : environment_variables_) {
+        ::SetEnvironmentVariableA(name.c_str(), nullptr);  // Remove the variable
+    }
 
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Process created with ID: %lu", process_id_);
 

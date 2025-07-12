@@ -10,6 +10,13 @@
 #include "gekkonet.h"
 #include "state_manager.h"
 
+// Save state profile enumeration
+enum class SaveStateProfile : uint32_t {
+    MINIMAL = 0,    // ~50KB - Core state + active objects only
+    STANDARD = 1,   // ~200KB - Essential runtime state  
+    COMPLETE = 2    // ~850KB - Everything (current implementation)
+};
+
 // Forward declarations
 bool SaveCoreStateBasic(FM2K::State::GameState* state, uint32_t frame_number);
 bool SaveGameStateDirect(FM2K::State::GameState* state, uint32_t frame_number);
@@ -34,6 +41,8 @@ static bool state_manager_initialized = false;
 // Named save slots for manual save/load
 static FM2K::State::GameState save_slots[8];     // 8 manual save slots
 static bool slot_occupied[8] = {false};          // Track which slots have saves
+static SaveStateProfile slot_profiles[8];        // Track which profile was used for each slot
+static uint32_t slot_active_object_counts[8];    // Track how many active objects were saved per slot
 static uint32_t last_auto_save_frame = 0;
 
 // Per-slot buffers for large memory regions (each slot gets its own buffers)
@@ -60,13 +69,6 @@ static inline uint64_t get_microseconds() {
 // State change debugging
 static FM2K::State::GameState last_core_state = {};
 static bool last_core_state_valid = false;
-
-// Save state profile enumeration
-enum class SaveStateProfile : uint32_t {
-    MINIMAL = 0,    // ~50KB - Core state + active objects only
-    STANDARD = 1,   // ~200KB - Essential runtime state  
-    COMPLETE = 2    // ~850KB - Everything (current implementation)
-};
 
 // Shared memory structure matching the launcher
 struct SharedInputData {
@@ -211,8 +213,15 @@ uint32_t Fletcher32(const uint8_t* data, size_t len) {
 } // namespace State
 } // namespace FM2K
 
-// Helper function to count active objects in the object pool
-uint32_t CountActiveObjects() {
+// Enhanced object analysis and selective saving
+struct ActiveObjectInfo {
+    uint32_t index;
+    uint32_t type_or_id;
+    bool is_active;
+};
+
+// Helper function to analyze and count active objects in the object pool
+uint32_t AnalyzeActiveObjects(ActiveObjectInfo* active_objects = nullptr, uint32_t max_objects = 0) {
     uint32_t active_count = 0;
     uint8_t* object_pool_ptr = (uint8_t*)GAME_OBJECT_POOL_ADDR;
     
@@ -220,15 +229,130 @@ uint32_t CountActiveObjects() {
         return 0;
     }
     
-    // Each object is 382 bytes, check first 4 bytes for active flag (typical pattern)
+    // Each object is 382 bytes, analyze each slot
     for (int i = 0; i < 1024; i++) {
         uint32_t* object_ptr = (uint32_t*)(object_pool_ptr + (i * 382));
-        if (!IsBadReadPtr(object_ptr, sizeof(uint32_t)) && *object_ptr != 0) {
-            active_count++;
+        if (!IsBadReadPtr(object_ptr, sizeof(uint32_t))) {
+            uint32_t object_header = *object_ptr;
+            
+            // Check multiple patterns to determine if object is active:
+            // 1. Non-zero first 4 bytes (type/ID)
+            // 2. Check second DWORD for additional validation
+            uint32_t* second_dword = object_ptr + 1;
+            uint32_t second_value = (!IsBadReadPtr(second_dword, sizeof(uint32_t))) ? *second_dword : 0;
+            
+            bool is_active = (object_header != 0) && (object_header != 0xFFFFFFFF) && 
+                           (second_value != 0xCCCCCCCC); // Common uninitialized pattern
+            
+            if (is_active) {
+                if (active_objects && active_count < max_objects) {
+                    active_objects[active_count].index = i;
+                    active_objects[active_count].type_or_id = object_header;
+                    active_objects[active_count].is_active = true;
+                }
+                active_count++;
+            }
         }
     }
     
     return active_count;
+}
+
+// Helper function for backward compatibility
+uint32_t CountActiveObjects() {
+    return AnalyzeActiveObjects();
+}
+
+// Save only active objects to buffer (for MINIMAL profile)
+bool SaveActiveObjectsOnly(uint8_t* destination_buffer, size_t buffer_size, uint32_t* objects_saved = nullptr) {
+    if (!destination_buffer || buffer_size == 0) {
+        return false;
+    }
+    
+    // Get list of active objects
+    ActiveObjectInfo active_objects[1024];
+    uint32_t active_count = AnalyzeActiveObjects(active_objects, 1024);
+    
+    if (active_count == 0) {
+        if (objects_saved) *objects_saved = 0;
+        return true; // No objects to save is valid
+    }
+    
+    // Calculate required buffer size (each object is 382 bytes + 4 bytes for index)
+    size_t required_size = active_count * (382 + sizeof(uint32_t));
+    if (required_size > buffer_size) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Buffer too small for active objects: need %zu, have %zu", 
+                   required_size, buffer_size);
+        return false;
+    }
+    
+    uint8_t* object_pool_ptr = (uint8_t*)GAME_OBJECT_POOL_ADDR;
+    uint8_t* dest_ptr = destination_buffer;
+    uint32_t saved_count = 0;
+    
+    // Save each active object with its index
+    for (uint32_t i = 0; i < active_count; i++) {
+        uint32_t obj_index = active_objects[i].index;
+        
+        // Write object index first (4 bytes)
+        *(uint32_t*)dest_ptr = obj_index;
+        dest_ptr += sizeof(uint32_t);
+        
+        // Write object data (382 bytes)
+        uint8_t* source_obj = object_pool_ptr + (obj_index * 382);
+        if (!IsBadReadPtr(source_obj, 382)) {
+            memcpy(dest_ptr, source_obj, 382);
+            dest_ptr += 382;
+            saved_count++;
+        }
+    }
+    
+    if (objects_saved) *objects_saved = saved_count;
+    
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Saved %u active objects (%.1fKB vs %.1fKB full pool)", 
+                saved_count, (saved_count * 382) / 1024.0f, GAME_OBJECT_POOL_SIZE / 1024.0f);
+    
+    return true;
+}
+
+// Restore active objects from buffer
+bool RestoreActiveObjectsOnly(const uint8_t* source_buffer, size_t buffer_size, uint32_t objects_to_restore) {
+    if (!source_buffer || buffer_size == 0 || objects_to_restore == 0) {
+        return true; // Nothing to restore is valid
+    }
+    
+    uint8_t* object_pool_ptr = (uint8_t*)GAME_OBJECT_POOL_ADDR;
+    const uint8_t* src_ptr = source_buffer;
+    uint32_t restored_count = 0;
+    
+    // First, clear the entire object pool (assuming inactive objects should be zeroed)
+    if (!IsBadWritePtr(object_pool_ptr, GAME_OBJECT_POOL_SIZE)) {
+        memset(object_pool_ptr, 0, GAME_OBJECT_POOL_SIZE);
+    }
+    
+    // Restore each saved object to its original position
+    for (uint32_t i = 0; i < objects_to_restore; i++) {
+        // Read object index (4 bytes)
+        uint32_t obj_index = *(const uint32_t*)src_ptr;
+        src_ptr += sizeof(uint32_t);
+        
+        if (obj_index >= 1024) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Invalid object index: %u", obj_index);
+            break;
+        }
+        
+        // Restore object data (382 bytes)
+        uint8_t* dest_obj = object_pool_ptr + (obj_index * 382);
+        if (!IsBadWritePtr(dest_obj, 382)) {
+            memcpy(dest_obj, src_ptr, 382);
+            restored_count++;
+        }
+        src_ptr += 382;
+    }
+    
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Restored %u active objects to object pool", restored_count);
+    
+    return restored_count == objects_to_restore;
 }
 
 // Profile-specific save functions
@@ -242,18 +366,27 @@ bool SaveStateMinimal(FM2K::State::GameState* state, uint32_t frame_number) {
     // 1. Save core state only (8KB)
     SaveCoreStateBasic(state, frame_number);
     
-    // 2. Count and save only active objects (estimated ~40KB)
-    uint32_t active_objects = CountActiveObjects();
+    // 2. Save only active objects using smart detection (~10-50KB typical vs 391KB full pool)
+    uint32_t objects_saved = 0;
+    bool active_objects_saved = SaveActiveObjectsOnly(rollback_object_pool_buffer.get(), GAME_OBJECT_POOL_SIZE, &objects_saved);
     
     // Set metadata
     state->frame_number = frame_number;
     state->timestamp_ms = SDL_GetTicks();
     
-    // Calculate basic checksum (core state only)
-    state->checksum = FM2K::State::Fletcher32(reinterpret_cast<const uint8_t*>(&state->core), sizeof(FM2K::State::CoreGameState));
+    // Calculate checksum including active objects if saved successfully
+    uint32_t core_checksum = FM2K::State::Fletcher32(reinterpret_cast<const uint8_t*>(&state->core), sizeof(FM2K::State::CoreGameState));
+    if (active_objects_saved && objects_saved > 0) {
+        // Calculate checksum for active objects data
+        size_t active_objects_data_size = objects_saved * (sizeof(uint32_t) + 382); // index + object data
+        uint32_t objects_checksum = FM2K::State::Fletcher32(rollback_object_pool_buffer.get(), active_objects_data_size);
+        state->checksum = core_checksum ^ objects_checksum;
+    } else {
+        state->checksum = core_checksum;
+    }
     
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "MINIMAL state saved - Frame %u, Active objects: %u, Core checksum: 0x%08X", 
-                frame_number, active_objects, state->checksum);
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "MINIMAL state saved - Frame %u, Active objects: %u/%s, Core+Objects checksum: 0x%08X", 
+                frame_number, objects_saved, active_objects_saved ? "saved" : "failed", state->checksum);
     return true;
 }
 
@@ -502,6 +635,12 @@ bool InitializeStateManager() {
         // Allocate rollback buffers
         rollback_player_data_buffer = std::make_unique<uint8_t[]>(PLAYER_DATA_SLOTS_SIZE);
         rollback_object_pool_buffer = std::make_unique<uint8_t[]>(GAME_OBJECT_POOL_SIZE);
+        
+        // Initialize slot metadata
+        for (int i = 0; i < 8; i++) {
+            slot_profiles[i] = SaveStateProfile::STANDARD;  // Default profile
+            slot_active_object_counts[i] = 0;
+        }
         
         large_buffers_allocated = true;
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Allocated %zu KB per slot x8 + rollback (%zu KB total)", 
@@ -878,7 +1017,7 @@ bool SaveStateToSlot(uint32_t slot, uint32_t frame_number) {
         case SaveStateProfile::MINIMAL:
             // MINIMAL: Save minimal player data and active objects only
             player_data_size = 8 * 1024;  // 8KB essential player data
-            object_pool_size = GAME_OBJECT_POOL_SIZE;  // Full object pool (will optimize later)
+            object_pool_size = GAME_OBJECT_POOL_SIZE;  // Use full buffer size for active object storage
             break;
         case SaveStateProfile::STANDARD:
             // STANDARD: Save partial player data and full objects
@@ -898,10 +1037,21 @@ bool SaveStateToSlot(uint32_t slot, uint32_t frame_number) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Slot %u: Player data saved (%zu KB)", slot, player_data_size / 1024);
     }
     
-    if (!IsBadReadPtr(object_pool_ptr, object_pool_size)) {
-        memcpy(slot_object_pool_buffers[slot].get(), object_pool_ptr, object_pool_size);
-        objects_saved = true;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Slot %u: Object pool saved (%zu KB)", slot, object_pool_size / 1024);
+    // Save objects based on profile
+    if (current_profile == SaveStateProfile::MINIMAL) {
+        // For MINIMAL profile, save only active objects
+        uint32_t objects_saved_count = 0;
+        objects_saved = SaveActiveObjectsOnly(slot_object_pool_buffers[slot].get(), object_pool_size, &objects_saved_count);
+        if (objects_saved) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Slot %u: %u active objects saved using MINIMAL profile", slot, objects_saved_count);
+        }
+    } else {
+        // For STANDARD and COMPLETE profiles, save full object pool
+        if (!IsBadReadPtr(object_pool_ptr, object_pool_size)) {
+            memcpy(slot_object_pool_buffers[slot].get(), object_pool_ptr, object_pool_size);
+            objects_saved = true;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Slot %u: Object pool saved (%zu KB)", slot, object_pool_size / 1024);
+        }
     }
     
     if (player_saved && objects_saved) {
@@ -910,6 +1060,15 @@ bool SaveStateToSlot(uint32_t slot, uint32_t frame_number) {
         uint32_t state_size_kb = (player_data_size + object_pool_size + sizeof(FM2K::State::GameState)) / 1024;
         
         slot_occupied[slot] = true;
+        slot_profiles[slot] = current_profile;  // Store which profile was used
+        
+        // For MINIMAL profile, store active object count for proper restoration
+        if (current_profile == SaveStateProfile::MINIMAL) {
+            slot_active_object_counts[slot] = CountActiveObjects();
+        } else {
+            slot_active_object_counts[slot] = 0;  // Not relevant for other profiles
+        }
+        
         total_saves++;
         total_save_time_us += save_time_us;
         
@@ -958,16 +1117,12 @@ bool LoadStateFromSlot(uint32_t slot) {
         return false;
     }
     
-    // Get current save profile for restoration sizing
-    SaveStateProfile current_profile = SaveStateProfile::STANDARD;  // Default fallback
-    if (shared_memory_data) {
-        SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data);
-        current_profile = shared_data->save_profile;
-    }
+    // Use the profile that was actually used when saving this slot
+    SaveStateProfile saved_profile = slot_profiles[slot];  // Use stored profile from save time
     
     // Determine restoration sizes based on profile used when saving
     size_t player_data_size = 0, object_pool_size = 0;
-    switch (current_profile) {
+    switch (saved_profile) {
         case SaveStateProfile::MINIMAL:
             player_data_size = 8 * 1024;
             object_pool_size = GAME_OBJECT_POOL_SIZE;
@@ -994,10 +1149,28 @@ bool LoadStateFromSlot(uint32_t slot) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Slot %u: Player data restored (%zu KB)", slot, player_data_size / 1024);
     }
     
-    if (!IsBadWritePtr(object_pool_ptr, object_pool_size)) {
-        memcpy(object_pool_ptr, slot_object_pool_buffers[slot].get(), object_pool_size);
-        objects_restored = true;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Slot %u: Object pool restored (%zu KB)", slot, object_pool_size / 1024);
+    // Restore objects based on save profile
+    if (saved_profile == SaveStateProfile::MINIMAL) {
+        // For MINIMAL profile, use smart active object restoration
+        uint32_t active_object_count = slot_active_object_counts[slot];
+        if (active_object_count > 0) {
+            objects_restored = RestoreActiveObjectsOnly(slot_object_pool_buffers[slot].get(), object_pool_size, active_object_count);
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Slot %u: %u active objects restored using MINIMAL profile", slot, active_object_count);
+        } else {
+            // Clear object pool if no active objects were saved
+            if (!IsBadWritePtr(object_pool_ptr, object_pool_size)) {
+                memset(object_pool_ptr, 0, object_pool_size);
+                objects_restored = true;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Slot %u: Object pool cleared (no active objects)", slot);
+            }
+        }
+    } else {
+        // For STANDARD and COMPLETE profiles, restore normally
+        if (!IsBadWritePtr(object_pool_ptr, object_pool_size)) {
+            memcpy(object_pool_ptr, slot_object_pool_buffers[slot].get(), object_pool_size);
+            objects_restored = true;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Slot %u: Object pool restored (%zu KB)", slot, object_pool_size / 1024);
+        }
     }
     
     if (player_restored && objects_restored) {

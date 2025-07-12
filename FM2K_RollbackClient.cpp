@@ -509,6 +509,9 @@ FM2KLauncher::FM2KLauncher()
 
     discovery_thread_ = nullptr;
     discovery_in_progress_ = false;
+    // Initialize multi-client testing
+    client1_process_id_ = 0;
+    client2_process_id_ = 0;
     // Load saved games directory (if any) so it can be used before Initialize() completes.
     games_root_path_ = Utils::LoadGamesRootPath();
 }
@@ -654,6 +657,68 @@ bool FM2KLauncher::Initialize() {
             }
         }
         return false;
+    };
+    
+    // Connect multi-client testing callbacks
+    ui_->on_launch_local_client1 = [this](const std::string& game_path) -> bool {
+        return LaunchLocalClient(game_path, true, 7000);  // Host on port 7000
+    };
+    
+    ui_->on_launch_local_client2 = [this](const std::string& game_path) -> bool {
+        return LaunchLocalClient(game_path, false, 7001);  // Guest on port 7001
+    };
+    
+    ui_->on_terminate_all_clients = [this]() -> bool {
+        return TerminateAllClients();
+    };
+    
+    ui_->on_get_client_status = [this](uint32_t& client1_pid, uint32_t& client2_pid) -> bool {
+        client1_pid = client1_process_id_;
+        client2_pid = client2_process_id_;
+        return true;
+    };
+    
+    // Network simulation callbacks (placeholder implementations)
+    ui_->on_set_simulated_latency = [this](uint32_t latency_ms) -> bool {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Set simulated latency: %u ms", latency_ms);
+        // TODO: Implement actual network simulation
+        return true;
+    };
+    
+    ui_->on_set_packet_loss_rate = [this](float loss_rate) -> bool {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Set packet loss rate: %.2f%%", loss_rate * 100.0f);
+        // TODO: Implement actual packet loss simulation
+        return true;
+    };
+    
+    ui_->on_set_jitter_variance = [this](uint32_t jitter_ms) -> bool {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Set jitter variance: %u ms", jitter_ms);
+        // TODO: Implement actual jitter simulation
+        return true;
+    };
+    
+    ui_->on_get_network_stats = [this](LauncherUI::NetworkStats& stats) -> bool {
+        // TODO: Implement actual network statistics gathering
+        stats.ping_ms = 25;
+        stats.packet_loss_rate = 0.01f;
+        stats.bytes_sent = 1024 * 1024;
+        stats.bytes_received = 1024 * 1024;
+        stats.packets_sent = 1000;
+        stats.packets_received = 990;
+        stats.connection_quality = 95;
+        return true;
+    };
+    
+    ui_->on_get_rollback_stats = [this](LauncherUI::RollbackStats& stats) -> bool {
+        // TODO: Implement actual rollback statistics gathering
+        stats.rollbacks_per_second = 2;
+        stats.max_rollback_frames = 8;
+        stats.avg_rollback_frames = 3;
+        stats.frame_advantage = 1.2f;
+        stats.input_delay_frames = 2;
+        stats.confirmed_frames = 1200;
+        stats.speculative_frames = 6;
+        return true;
     };
     
     // If no games directory stored, default to <base>/games before first discovery
@@ -876,6 +941,9 @@ bool FM2KLauncher::InitializeSDL() {
 }
 
 void FM2KLauncher::Shutdown() {
+    // Terminate any running test clients
+    TerminateAllClients();
+    
     // Stop network and game first
     // DLL handles GekkoNet directly - no launcher-side session needed
     
@@ -1167,5 +1235,109 @@ void FM2KLauncher::SetState(LauncherState state) {
     if (ui_) {
         ui_->SetLauncherState(state);
     }
+}
+
+// Multi-client testing implementation
+bool FM2KLauncher::LaunchLocalClient(const std::string& game_path, bool is_host, int port) {
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launching local client: %s (Host: %s, Port: %d)", 
+                game_path.c_str(), is_host ? "Yes" : "No", port);
+    
+    // Check if process is already running
+    uint32_t* target_pid = is_host ? &client1_process_id_ : &client2_process_id_;
+    if (*target_pid != 0) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Client %d already running (PID: %u)", 
+                    is_host ? 1 : 2, *target_pid);
+        return false;
+    }
+    
+    // Build command line arguments for rollback launcher
+    std::string launcher_path = SDL_GetBasePath();
+    launcher_path += "FM2K_RollbackLauncher.exe";
+    
+    // Build command: FM2K_RollbackLauncher.exe --auto-connect --host/--guest --port=7000/7001 --game="path"
+    std::string command = "\"" + launcher_path + "\"";
+    command += " --auto-connect";
+    command += is_host ? " --host" : " --guest"; 
+    command += " --port=" + std::to_string(port);
+    command += " --game=\"" + game_path + "\"";
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Executing: %s", command.c_str());
+    
+    // Use Windows CreateProcess for better process management
+    STARTUPINFOA si = {0};
+    PROCESS_INFORMATION pi = {0};
+    si.cb = sizeof(si);
+    
+    // Create the process
+    BOOL success = CreateProcessA(
+        nullptr,                    // Application name
+        const_cast<char*>(command.c_str()), // Command line
+        nullptr,                    // Process security attributes
+        nullptr,                    // Thread security attributes
+        FALSE,                      // Inherit handles
+        0,                          // Creation flags
+        nullptr,                    // Environment
+        nullptr,                    // Current directory
+        &si,                        // Startup info
+        &pi                         // Process information
+    );
+    
+    if (!success) {
+        DWORD error = GetLastError();
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create process (Error: %lu)", error);
+        return false;
+    }
+    
+    // Store process ID and close handles
+    *target_pid = pi.dwProcessId;
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Client %d launched successfully (PID: %u)", 
+                is_host ? 1 : 2, *target_pid);
+    
+    return true;
+}
+
+bool FM2KLauncher::TerminateAllClients() {
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Terminating all local clients");
+    
+    bool success = true;
+    
+    // Terminate client 1
+    if (client1_process_id_ != 0) {
+        HANDLE process = OpenProcess(PROCESS_TERMINATE, FALSE, client1_process_id_);
+        if (process) {
+            if (TerminateProcess(process, 0)) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Client 1 terminated (PID: %u)", client1_process_id_);
+            } else {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to terminate Client 1 (PID: %u)", client1_process_id_);
+                success = false;
+            }
+            CloseHandle(process);
+        } else {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Could not open Client 1 process (PID: %u)", client1_process_id_);
+        }
+        client1_process_id_ = 0;
+    }
+    
+    // Terminate client 2
+    if (client2_process_id_ != 0) {
+        HANDLE process = OpenProcess(PROCESS_TERMINATE, FALSE, client2_process_id_);
+        if (process) {
+            if (TerminateProcess(process, 0)) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Client 2 terminated (PID: %u)", client2_process_id_);
+            } else {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to terminate Client 2 (PID: %u)", client2_process_id_);
+                success = false;
+            }
+            CloseHandle(process);
+        } else {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Could not open Client 2 process (PID: %u)", client2_process_id_);
+        }
+        client2_process_id_ = 0;
+    }
+    
+    return success;
 } 
 

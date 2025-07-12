@@ -10,6 +10,24 @@ This is a rollback netcode implementation for Fighter Maker 2nd (FM2K) games. Th
 2. **FM2KHook** - DLL that gets injected into FM2K games to provide rollback functionality
 3. **Comprehensive research documentation** - Detailed reverse engineering of FM2K's internals
 
+## Current Development Status
+
+**Phase**: Debug/Testing → Production Transition (December 2024)
+
+### ✅ Completed: Debug Save State Framework
+- **Configurable save state profiles** (MINIMAL/STANDARD/COMPLETE) with smart object detection
+- **Comprehensive state analysis** and memory optimization (850KB → 50KB possible)
+- **Debug UI integration** with real-time performance monitoring
+- **Research validation** of rollback state requirements and FM2K memory layout
+
+### 🔄 Current Focus: Production Rollback Implementation
+- **Transition to GekkoNet**: Move from debug save states to production rollback netcode
+- **Launcher testing infrastructure**: Multi-client local testing with automated setup
+- **Network session management**: Real-time rollback synchronization and performance
+- **Production optimization**: Frame-perfect rollback at 100 FPS with minimal overhead
+
+The current save state system serves as a **debug and research foundation** for the production rollback implementation.
+
 ## Build System
 
 ### Prerequisites

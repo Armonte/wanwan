@@ -980,15 +980,14 @@ void LauncherUI::RenderMultiClientTools() {
                 
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launching dual clients for: %s", selected_game.exe_path.c_str());
                 
-                // Launch client 1 (host)
+                // Launch both clients quickly (OnlineSession style)
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Starting client 1 (Host)...");
                 bool success1 = on_launch_local_client1(selected_game.exe_path);
+                
                 if (success1) {
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Client 1 (Host) launched successfully");
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Client 1 launched, starting client 2...");
                     
-                    // Small delay before launching client 2
-                    SDL_Delay(1000);
-                    
-                    // Launch client 2 (guest)
+                    // Launch client 2 immediately (no delay)
                     bool success2 = on_launch_local_client2(selected_game.exe_path);
                     if (success2) {
                         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Client 2 (Guest) launched successfully");

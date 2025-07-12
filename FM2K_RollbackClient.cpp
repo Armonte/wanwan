@@ -1268,9 +1268,14 @@ bool FM2KLauncher::LaunchLocalClient(const std::string& game_path, bool is_host,
     *target_instance = std::make_unique<FM2KGameInstance>();
     
     // Configure GekkoNet session coordination for this client
-    uint8_t player_index = is_host ? 0 : 1;  // Host = Player 1, Guest = Player 2
+    uint8_t player_index = is_host ? 0 : 1;  // Host = Player 0, Guest = Player 1
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launching FM2K game: %s", game_path.c_str());
+    // Set environment variables BEFORE launching process (OnlineSession style)
+    (*target_instance)->SetEnvironmentVariable("FM2K_PLAYER_INDEX", std::to_string(player_index));
+    (*target_instance)->SetEnvironmentVariable("FM2K_LOCAL_PORT", std::to_string(port));
+    (*target_instance)->SetEnvironmentVariable("FM2K_REMOTE_ADDR", "127.0.0.1:" + std::to_string(is_host ? 7001 : 7000));
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launching FM2K game with OnlineSession-style config: %s", game_path.c_str());
     
     // Launch the actual FM2K game process with hook injection
     if (!(*target_instance)->Launch(game_path)) {
@@ -1279,10 +1284,7 @@ bool FM2KLauncher::LaunchLocalClient(const std::string& game_path, bool is_host,
         return false;
     }
     
-    // IMMEDIATELY configure client role for LocalNetworkAdapter (before hook initializes GekkoNet)
-    (*target_instance)->SetClientRole(player_index, is_host);
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Client role configured immediately: Player %u, Host: %s", 
-                player_index, is_host ? "Yes" : "No");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Client launched successfully - Player %u, Port %d", player_index, port);
     
     // Wait a moment and check if process is still running
     SDL_Delay(100);

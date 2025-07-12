@@ -9,7 +9,6 @@
 // Direct GekkoNet integration
 #include "gekkonet.h"
 #include "state_manager.h"
-#include "../../LocalNetworkAdapter.h"
 
 // Save state profile enumeration
 enum class SaveStateProfile : uint32_t {
@@ -24,9 +23,8 @@ bool SaveGameStateDirect(FM2K::State::GameState* state, uint32_t frame_number);
 uint32_t CalculateStateChecksum(const FM2K::State::GameState* state);
 bool RestoreStateFromStruct(const FM2K::State::GameState* state, uint32_t target_frame);
 
-// Direct GekkoNet session (no shared memory needed)
+// Direct GekkoNet session with real UDP networking
 static GekkoSession* gekko_session = nullptr;
-static LocalNetworkAdapter* local_adapter = nullptr;
 static int p1_handle = -1;
 static int p2_handle = -1;
 static bool gekko_initialized = false;
@@ -642,6 +640,10 @@ bool RestoreStateFromStruct(const FM2K::State::GameState* state, uint32_t target
 
 // Initialize shared memory for configuration
 bool InitializeSharedMemory() {
+    // Create unique shared memory name using process ID
+    DWORD process_id = GetCurrentProcessId();
+    std::string shared_memory_name = "FM2K_InputSharedMemory_" + std::to_string(process_id);
+    
     // Create shared memory for communication with launcher
     shared_memory_handle = CreateFileMappingA(
         INVALID_HANDLE_VALUE,
@@ -649,7 +651,7 @@ bool InitializeSharedMemory() {
         PAGE_READWRITE,
         0,
         sizeof(SharedInputData),
-        "FM2K_InputSharedMemory"
+        shared_memory_name.c_str()
     );
     
     if (shared_memory_handle == nullptr) {
@@ -1473,78 +1475,91 @@ bool ConfigureNetworkMode(bool online_mode, bool host_mode) {
 
 // Initialize GekkoNet session for rollback netcode using LocalNetworkAdapter
 bool InitializeGekkoNet() {
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** INSIDE InitializeGekkoNet FUNCTION (NEW INDEPENDENT SESSION APPROACH) ***");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** INITIALIZING GEKKONET WITH REAL UDP NETWORKING (OnlineSession Style) ***");
     
-    // Determine our role from shared memory (HOST or GUEST)
-    LocalNetworkAdapter::Role adapter_role = LocalNetworkAdapter::HOST;
-    uint8_t player_index = 0;
+    // Get networking configuration from environment variables (like OnlineSession example)
+    uint16_t local_port = 7000;      // Default to host port
+    std::string remote_address = "127.0.0.1:7001";  // Default to guest address
+    uint8_t player_index = 0;        // Default to player 0
     
-    if (shared_memory_data) {
-        SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data);
-        uint8_t session_role = shared_data->session_role;
-        player_index = shared_data->player_index;
-        
-        adapter_role = (session_role == 0) ? LocalNetworkAdapter::HOST : LocalNetworkAdapter::GUEST;
-        
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Creating independent session as %s (Player %u)", 
-                    adapter_role == LocalNetworkAdapter::HOST ? "HOST" : "GUEST", player_index);
-    } else {
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: No shared memory available yet - defaulting to HOST role");
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Role will be updated when launcher sets configuration");
+    // Read from environment variables
+    char* env_player = getenv("FM2K_PLAYER_INDEX");
+    char* env_port = getenv("FM2K_LOCAL_PORT");
+    char* env_remote = getenv("FM2K_REMOTE_ADDR");
+    
+    if (env_player) {
+        player_index = static_cast<uint8_t>(atoi(env_player));
     }
     
-    // Create LocalNetworkAdapter with our role
-    local_adapter = new LocalNetworkAdapter(adapter_role);
-    if (!local_adapter->Initialize()) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Failed to initialize LocalNetworkAdapter!");
-        delete local_adapter;
-        local_adapter = nullptr;
-        return false;
+    if (env_port) {
+        local_port = static_cast<uint16_t>(atoi(env_port));
     }
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: LocalNetworkAdapter initialized successfully as %s", 
-                adapter_role == LocalNetworkAdapter::HOST ? "HOST" : "GUEST");
+    if (env_remote) {
+        remote_address = std::string(env_remote);
+    }
     
-    // Create independent GekkoNet session
+    // Log the configuration (like OnlineSession example)
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Network config - Player: %u, Local port: %u, Remote: %s", 
+                player_index, local_port, remote_address.c_str());
+    
+    // Create GekkoNet session
     if (!gekko_create(&gekko_session)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Failed to create GekkoNet session!");
-        delete local_adapter;
-        local_adapter = nullptr;
         return false;
     }
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Independent GekkoNet session created successfully");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet session created successfully");
     
-    // Set the LocalNetworkAdapter on the session
-    gekko_net_adapter_set(gekko_session, local_adapter->GetAdapter());
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: LocalNetworkAdapter set on GekkoNet session");
-    
-    // Configure GekkoNet session
+    // Configure GekkoNet session (based on OnlineSession example)
     GekkoConfig config;
     config.num_players = 2;
     config.max_spectators = 0;
-    config.input_prediction_window = 3;  // 3-frame window for smooth gameplay
+    config.input_prediction_window = 10;  // Higher window like the example
     config.spectator_delay = 0;
-    config.input_size = 2;              // 2 bytes per input frame (P1 + P2)
-    config.state_size = 65536;          // 64KB state size for FM2K
+    config.input_size = sizeof(char);     // 1 byte per input (like example)
+    config.state_size = sizeof(FM2K::State::GameState);  // Use our state size
     config.limited_saving = false;
     config.post_sync_joining = false;
-    config.desync_detection = true;     // Enable desync detection
+    config.desync_detection = true;
     
     gekko_start(gekko_session, &config);
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet session configured and started");
     
-    // Add players to the session
-    if (adapter_role == LocalNetworkAdapter::HOST) {
-        // Host: Add local player as P1, remote player as P2
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Adding players - HOST mode");
-        p1_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
-        p2_handle = gekko_add_actor(gekko_session, RemotePlayer, nullptr);
+    // Set real UDP network adapter
+    gekko_net_adapter_set(gekko_session, gekko_default_adapter(local_port));
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Real UDP adapter set on port %u", local_port);
+    
+    // Add players following OnlineSession example EXACTLY
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Adding players - Player index: %u", player_index);
+    
+    int local_player_handle = -1;
+    
+    // this is order dependant so we have to keep that in mind (from OnlineSession comment)
+    if (player_index == 0) {
+        // add local player
+        local_player_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
+        // add remote player
+        auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), (unsigned int)remote_address.size() };
+        gekko_add_actor(gekko_session, RemotePlayer, &remote);
+        
+        p1_handle = local_player_handle;  // Player 0's local handle
+        p2_handle = 1;  // Remote player handle (typically 1)
+        
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Player 0 - Added LOCAL (%d) then REMOTE to %s", 
+                    local_player_handle, remote_address.c_str());
     } else {
-        // Guest: Add remote player as P1, local player as P2
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Adding players - GUEST mode");
-        p1_handle = gekko_add_actor(gekko_session, RemotePlayer, nullptr);
-        p2_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
+        // add remote player
+        auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), (unsigned int)remote_address.size() };
+        gekko_add_actor(gekko_session, RemotePlayer, &remote);
+        // add local player
+        local_player_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
+        
+        p1_handle = 0;  // Remote player handle (typically 0)
+        p2_handle = local_player_handle;  // Player 1's local handle
+        
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Player 1 - Added REMOTE to %s then LOCAL (%d)", 
+                    remote_address.c_str(), local_player_handle);
     }
     
     // Validate player handles
@@ -1552,22 +1567,16 @@ bool InitializeGekkoNet() {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Failed to add players! P1: %d, P2: %d", p1_handle, p2_handle);
         gekko_destroy(gekko_session);
         gekko_session = nullptr;
-        delete local_adapter;
-        local_adapter = nullptr;
         return false;
     }
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Players added successfully - P1: %d, P2: %d", p1_handle, p2_handle);
+    // Set input delay for local player (like OnlineSession example)
+    gekko_set_local_delay(gekko_session, local_player_handle, 1);  // 1 frame delay like example
     
-    // Set input delay (2 frames for stable rollback)
-    if (adapter_role == LocalNetworkAdapter::HOST) {
-        gekko_set_local_delay(gekko_session, p1_handle, 2);  // Local player (P1)
-    } else {
-        gekko_set_local_delay(gekko_session, p2_handle, 2);  // Local player (P2)
-    }
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Set input delay for local player handle %d", local_player_handle);
     
     gekko_initialized = true;
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet initialization complete with LocalNetworkAdapter!");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet initialization complete with real UDP networking!");
     return true;
 }
 
@@ -1973,9 +1982,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             // Default to local mode (offline) - can be changed later via configuration
             ConfigureNetworkMode(false, false);
             
-            // Wait a moment for launcher to set client role configuration
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Waiting for launcher to set client role...");
-            Sleep(200);  // Give launcher time to set role
+            // Quick initialization - no waiting
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Ready to initialize GekkoNet immediately...");
             
             // Initialize GekkoNet session directly in DLL
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: About to initialize GekkoNet...");
@@ -2026,13 +2034,6 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet session closed");
         }
         
-        // Cleanup LocalNetworkAdapter
-        if (local_adapter) {
-            local_adapter->Shutdown();
-            delete local_adapter;
-            local_adapter = nullptr;
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: LocalNetworkAdapter cleaned up");
-        }
         
         // Cleanup shared memory
         if (shared_memory_data) {

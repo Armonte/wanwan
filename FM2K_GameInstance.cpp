@@ -160,6 +160,58 @@ bool FM2KGameInstance::Launch(const std::string& exe_path) {
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Creating process: %s", exe_path_win.c_str());
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Working directory: %s", working_dir.c_str());
 
+    // Create environment block with custom variables (Windows format)
+    LPVOID env_block = nullptr;
+    if (!environment_variables_.empty()) {
+        // Get parent environment
+        LPVOID parent_env = GetEnvironmentStringsW();
+        
+        // Build new environment string
+        std::wstring env_string;
+        
+        // Add custom variables first
+        for (const auto& [name, value] : environment_variables_) {
+            std::wstring wide_name = UTF8ToWide(name);
+            std::wstring wide_value = UTF8ToWide(value);
+            env_string += wide_name + L"=" + wide_value + L'\0';
+        }
+        
+        // Add parent environment (skip duplicates)
+        if (parent_env) {
+            LPWSTR parent_str = static_cast<LPWSTR>(parent_env);
+            while (*parent_str) {
+                std::wstring entry(parent_str);
+                size_t eq_pos = entry.find(L'=');
+                if (eq_pos != std::wstring::npos) {
+                    std::wstring env_name = entry.substr(0, eq_pos);
+                    // Only add if not already in our custom variables
+                    bool already_set = false;
+                    for (const auto& [custom_name, custom_value] : environment_variables_) {
+                        if (UTF8ToWide(custom_name) == env_name) {
+                            already_set = true;
+                            break;
+                        }
+                    }
+                    if (!already_set) {
+                        env_string += entry + L'\0';
+                    }
+                }
+                parent_str += entry.length() + 1;
+            }
+            FreeEnvironmentStringsW(static_cast<LPWSTR>(parent_env));
+        }
+        
+        // Add final null terminator
+        env_string += L'\0';
+        
+        // Allocate environment block
+        size_t env_size = env_string.length() * sizeof(wchar_t);
+        env_block = HeapAlloc(GetProcessHeap(), 0, env_size);
+        if (env_block) {
+            memcpy(env_block, env_string.c_str(), env_size);
+        }
+    }
+
     if (!CreateProcessW(
         wide_exe_path.c_str(),    // Application name
         const_cast<LPWSTR>(wide_cmd_line.c_str()), // Command line
@@ -167,15 +219,26 @@ bool FM2KGameInstance::Launch(const std::string& exe_path) {
         nullptr,                   // Thread handle not inheritable
         FALSE,                     // Set handle inheritance to FALSE
         CREATE_SUSPENDED,          // Create suspended for DLL injection
-        nullptr,                   // Use parent's environment block
+        env_block, // Environment block
         wide_working_dir.c_str(), // Use game's directory as starting directory
         &si,                       // Pointer to STARTUPINFO structure
         &pi                        // Pointer to PROCESS_INFORMATION structure
     )) {
+        DWORD error = GetLastError();
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, 
             "CreateProcess failed for %s with error: %lu", 
-            exe_path.c_str(), GetLastError());
+            exe_path.c_str(), error);
+        
+        // Cleanup environment block
+        if (env_block) {
+            HeapFree(GetProcessHeap(), 0, env_block);
+        }
         return false;
+    }
+    
+    // Cleanup environment block
+    if (env_block) {
+        HeapFree(GetProcessHeap(), 0, env_block);
     }
 
     process_info_ = pi;
@@ -197,16 +260,16 @@ bool FM2KGameInstance::Launch(const std::string& exe_path) {
         return false;
     }
 
-    // Resume the game process
-    ResumeThread(process_info_.hThread);
-
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Game process launched successfully");
     
     // Simple DLL injection complete - no IPC needed
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Hook DLL injected successfully");
     
-    // Initialize shared memory for configuration passing
+    // Initialize shared memory for configuration passing BEFORE resuming thread
     InitializeSharedMemory();
+    
+    // Resume the game process (hook DLL will start running now)
+    ResumeThread(process_info_.hThread);
     
     return true;
 }
@@ -504,31 +567,42 @@ void FM2KGameInstance::InitializeSharedMemory() {
     // Create unique shared memory name using process ID
     std::string shared_memory_name = "FM2K_InputSharedMemory_" + std::to_string(process_id_);
     
-    // Open the shared memory created by the DLL
-    shared_memory_handle_ = OpenFileMappingA(
-        FILE_MAP_ALL_ACCESS,
-        FALSE,
-        shared_memory_name.c_str()
-    );
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Waiting for hook DLL to create shared memory: %s", shared_memory_name.c_str());
     
-    if (shared_memory_handle_ != nullptr) {
-        shared_memory_data_ = MapViewOfFile(
-            shared_memory_handle_,
+    // Retry opening shared memory for up to 2 seconds (hook DLL needs time to initialize)
+    for (int attempt = 0; attempt < 40; attempt++) {
+        shared_memory_handle_ = OpenFileMappingA(
             FILE_MAP_ALL_ACCESS,
-            0,
-            0,
-            sizeof(SharedInputData)
+            FALSE,
+            shared_memory_name.c_str()
         );
         
-        if (shared_memory_data_) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Shared memory opened successfully");
-            last_processed_frame_ = 0;
-        } else {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to map shared memory view");
+        if (shared_memory_handle_ != nullptr) {
+            shared_memory_data_ = MapViewOfFile(
+                shared_memory_handle_,
+                FILE_MAP_ALL_ACCESS,
+                0,
+                0,
+                sizeof(SharedInputData)
+            );
+            
+            if (shared_memory_data_) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Shared memory opened successfully on attempt %d", attempt + 1);
+                last_processed_frame_ = 0;
+                return;
+            } else {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to map shared memory view");
+                CloseHandle(shared_memory_handle_);
+                shared_memory_handle_ = nullptr;
+                return;
+            }
         }
-    } else {
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Failed to open shared memory (DLL might not be ready yet)");
+        
+        // Wait 50ms before next attempt
+        SDL_Delay(50);
     }
+    
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open shared memory after 40 attempts (2 seconds)");
 }
 
 void FM2KGameInstance::CleanupSharedMemory() {
@@ -734,5 +808,11 @@ bool FM2KGameInstance::SetClientRole(uint8_t player_index, bool is_host) {
                 player_index, is_host ? "Host" : "Guest");
     
     return true;
+}
+
+// Environment variable configuration for OnlineSession-style networking
+void FM2KGameInstance::SetEnvironmentVariable(const std::string& name, const std::string& value) {
+    environment_variables_[name] = value;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Set environment variable: %s=%s", name.c_str(), value.c_str());
 }
 

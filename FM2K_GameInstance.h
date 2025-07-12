@@ -4,6 +4,7 @@
 #include <string>
 #include <memory>
 #include <filesystem>
+#include <map>
 #include <windows.h>
 
 
@@ -103,6 +104,9 @@ public:
     // GekkoNet client role configuration
     bool SetClientRole(uint8_t player_index, bool is_host);
     
+    // Environment variable configuration for OnlineSession-style networking
+    void SetEnvironmentVariable(const std::string& name, const std::string& value);
+    
     // Slot status information
     struct SlotStatus {
         bool occupied;
@@ -126,4 +130,7 @@ private:
     HANDLE shared_memory_handle_;
     void* shared_memory_data_;
     uint32_t last_processed_frame_;
+    
+    // Environment variables for process creation
+    std::map<std::string, std::string> environment_variables_;
 };

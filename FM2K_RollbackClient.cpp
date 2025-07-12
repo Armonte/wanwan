@@ -616,6 +616,21 @@ bool FM2KLauncher::Initialize() {
         return false;
     };
     
+    // Connect slot status callback
+    ui_->on_get_slot_status = [this](uint32_t slot, LauncherUI::SlotStatusInfo& status) -> bool {
+        if (game_instance_) {
+            FM2KGameInstance::SlotStatus game_status;
+            if (game_instance_->GetSlotStatus(slot, game_status)) {
+                status.occupied = game_status.occupied;
+                status.frame_number = game_status.frame_number;
+                status.timestamp_ms = game_status.timestamp_ms;
+                status.checksum = game_status.checksum;
+                return true;
+            }
+        }
+        return false;
+    };
+    
     // If no games directory stored, default to <base>/games before first discovery
     if (games_root_path_.empty()) {
         std::string base_path;

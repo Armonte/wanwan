@@ -571,13 +571,15 @@ bool FM2KGameInstance::TriggerForceRollback(uint32_t frames) {
 
 // Slot-based save/load functions
 bool FM2KGameInstance::TriggerSaveToSlot(uint32_t slot) {
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GAME_INSTANCE: TriggerSaveToSlot called for slot %u", slot);
+    
     if (!shared_memory_data_) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not available for save to slot command");
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GAME_INSTANCE: Shared memory not available for save to slot command");
         return false;
     }
     
     if (slot >= 8) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Invalid slot number: %u (must be 0-7)", slot);
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GAME_INSTANCE: Invalid slot number: %u (must be 0-7)", slot);
         return false;
     }
     
@@ -586,18 +588,20 @@ bool FM2KGameInstance::TriggerSaveToSlot(uint32_t slot) {
     shared_data->debug_save_to_slot_requested = true;
     shared_data->debug_command_id++;
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Triggered save to slot %u (command ID: %u)", slot, shared_data->debug_command_id);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GAME_INSTANCE: Triggered save to slot %u (command ID: %u)", slot, shared_data->debug_command_id);
     return true;
 }
 
 bool FM2KGameInstance::TriggerLoadFromSlot(uint32_t slot) {
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GAME_INSTANCE: TriggerLoadFromSlot called for slot %u", slot);
+    
     if (!shared_memory_data_) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not available for load from slot command");
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GAME_INSTANCE: Shared memory not available for load from slot command");
         return false;
     }
     
     if (slot >= 8) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Invalid slot number: %u (must be 0-7)", slot);
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GAME_INSTANCE: Invalid slot number: %u (must be 0-7)", slot);
         return false;
     }
     
@@ -606,7 +610,7 @@ bool FM2KGameInstance::TriggerLoadFromSlot(uint32_t slot) {
     shared_data->debug_load_from_slot_requested = true;
     shared_data->debug_command_id++;
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Triggered load from slot %u (command ID: %u)", slot, shared_data->debug_command_id);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GAME_INSTANCE: Triggered load from slot %u (command ID: %u)", slot, shared_data->debug_command_id);
     return true;
 }
 

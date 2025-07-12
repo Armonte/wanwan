@@ -696,18 +696,24 @@ void LauncherUI::RenderDebugTools() {
             
             // Save button
             if (ImGui::Button("Save")) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "UI: Save button clicked for slot %d", slot);
                 if (on_debug_save_to_slot) {
                     bool success = on_debug_save_to_slot(slot);
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Save to slot %d %s", slot, success ? "triggered" : "failed");
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "UI: Save to slot %d %s", slot, success ? "triggered" : "failed");
+                } else {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "UI: on_debug_save_to_slot callback is null!");
                 }
             }
             ImGui::NextColumn();
             
             // Load button
             if (ImGui::Button("Load")) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "UI: Load button clicked for slot %d", slot);
                 if (on_debug_load_from_slot) {
                     bool success = on_debug_load_from_slot(slot);
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Load from slot %d %s", slot, success ? "triggered" : "failed");
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "UI: Load from slot %d %s", slot, success ? "triggered" : "failed");
+                } else {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "UI: on_debug_load_from_slot callback is null!");
                 }
             }
             ImGui::NextColumn();

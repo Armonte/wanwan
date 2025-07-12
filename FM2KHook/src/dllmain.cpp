@@ -31,9 +31,13 @@ static FM2K::State::GameState save_slots[8];     // 8 manual save slots
 static bool slot_occupied[8] = {false};          // Track which slots have saves
 static uint32_t last_auto_save_frame = 0;
 
-// Buffers for large memory regions
-static std::unique_ptr<uint8_t[]> player_data_buffer;
-static std::unique_ptr<uint8_t[]> object_pool_buffer;
+// Per-slot buffers for large memory regions (each slot gets its own buffers)
+static std::unique_ptr<uint8_t[]> slot_player_data_buffers[8];
+static std::unique_ptr<uint8_t[]> slot_object_pool_buffers[8];
+
+// Temporary buffers for rollback (shared)
+static std::unique_ptr<uint8_t[]> rollback_player_data_buffer;
+static std::unique_ptr<uint8_t[]> rollback_object_pool_buffer;
 static bool large_buffers_allocated = false;
 
 // State change debugging
@@ -259,13 +263,22 @@ bool InitializeStateManager() {
     memset(saved_states, 0, sizeof(saved_states));
     current_state_index = 0;
     
-    // Allocate buffers for large memory regions
+    // Allocate buffers for large memory regions - per-slot + rollback buffers
     try {
-        player_data_buffer = std::make_unique<uint8_t[]>(PLAYER_DATA_SLOTS_SIZE);
-        object_pool_buffer = std::make_unique<uint8_t[]>(GAME_OBJECT_POOL_SIZE);
+        // Allocate per-slot buffers
+        for (int i = 0; i < 8; i++) {
+            slot_player_data_buffers[i] = std::make_unique<uint8_t[]>(PLAYER_DATA_SLOTS_SIZE);
+            slot_object_pool_buffers[i] = std::make_unique<uint8_t[]>(GAME_OBJECT_POOL_SIZE);
+        }
+        
+        // Allocate rollback buffers
+        rollback_player_data_buffer = std::make_unique<uint8_t[]>(PLAYER_DATA_SLOTS_SIZE);
+        rollback_object_pool_buffer = std::make_unique<uint8_t[]>(GAME_OBJECT_POOL_SIZE);
+        
         large_buffers_allocated = true;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Allocated %zu KB for player data, %zu KB for object pool", 
-                    PLAYER_DATA_SLOTS_SIZE / 1024, GAME_OBJECT_POOL_SIZE / 1024);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Allocated %zu KB per slot x8 + rollback (%zu KB total)", 
+                    (PLAYER_DATA_SLOTS_SIZE + GAME_OBJECT_POOL_SIZE) / 1024, 
+                    ((PLAYER_DATA_SLOTS_SIZE + GAME_OBJECT_POOL_SIZE) * 9) / 1024);
     } catch (const std::bad_alloc& e) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Failed to allocate state buffers: %s", e.what());
         large_buffers_allocated = false;
@@ -341,7 +354,7 @@ bool SaveGameStateDirect(FM2K::State::GameState* state, uint32_t frame_number) {
     // 1. Player Data Slots (459KB) - most critical for rollback
     uint8_t* player_data_ptr = (uint8_t*)PLAYER_DATA_SLOTS_ADDR;
     if (!IsBadReadPtr(player_data_ptr, PLAYER_DATA_SLOTS_SIZE)) {
-        memcpy(player_data_buffer.get(), player_data_ptr, PLAYER_DATA_SLOTS_SIZE);
+        memcpy(rollback_player_data_buffer.get(), player_data_ptr, PLAYER_DATA_SLOTS_SIZE);
         player_data_captured = true;
         SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Captured player data slots (%zu KB)", PLAYER_DATA_SLOTS_SIZE / 1024);
     } else {
@@ -351,7 +364,7 @@ bool SaveGameStateDirect(FM2K::State::GameState* state, uint32_t frame_number) {
     // 2. Game Object Pool (391KB) - all game entities
     uint8_t* object_pool_ptr = (uint8_t*)GAME_OBJECT_POOL_ADDR;
     if (!IsBadReadPtr(object_pool_ptr, GAME_OBJECT_POOL_SIZE)) {
-        memcpy(object_pool_buffer.get(), object_pool_ptr, GAME_OBJECT_POOL_SIZE);
+        memcpy(rollback_object_pool_buffer.get(), object_pool_ptr, GAME_OBJECT_POOL_SIZE);
         object_pool_captured = true;
         SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Captured game object pool (%zu KB)", GAME_OBJECT_POOL_SIZE / 1024);
     } else {
@@ -364,8 +377,8 @@ bool SaveGameStateDirect(FM2K::State::GameState* state, uint32_t frame_number) {
     
     // Calculate comprehensive checksum including large memory regions
     uint32_t core_checksum = FM2K::State::Fletcher32(reinterpret_cast<const uint8_t*>(&state->core), sizeof(FM2K::State::CoreGameState));
-    uint32_t player_checksum = player_data_captured ? FM2K::State::Fletcher32(player_data_buffer.get(), PLAYER_DATA_SLOTS_SIZE) : 0;
-    uint32_t object_checksum = object_pool_captured ? FM2K::State::Fletcher32(object_pool_buffer.get(), GAME_OBJECT_POOL_SIZE) : 0;
+    uint32_t player_checksum = player_data_captured ? FM2K::State::Fletcher32(rollback_player_data_buffer.get(), PLAYER_DATA_SLOTS_SIZE) : 0;
+    uint32_t object_checksum = object_pool_captured ? FM2K::State::Fletcher32(rollback_object_pool_buffer.get(), GAME_OBJECT_POOL_SIZE) : 0;
     
     // Combine checksums for comprehensive state validation
     state->checksum = core_checksum ^ player_checksum ^ object_checksum;
@@ -442,24 +455,47 @@ bool LoadGameStateDirect(const FM2K::State::GameState* state) {
     uint32_t* timer1_ptr = (uint32_t*)TIMER_COUNTDOWN1_ADDR;
     uint32_t* timer2_ptr = (uint32_t*)TIMER_COUNTDOWN2_ADDR;
     
+    // Read current values before writing for comparison
+    uint32_t before_frame = 0, before_p1_hp = 0, before_p2_hp = 0, before_round_timer = 0;
+    uint16_t before_p1_input = 0, before_p2_input = 0;
+    
+    if (!IsBadReadPtr(frame_ptr, sizeof(uint32_t))) before_frame = *frame_ptr;
+    if (!IsBadReadPtr(p1_input_ptr, sizeof(uint16_t))) before_p1_input = *p1_input_ptr;
+    if (!IsBadReadPtr(p2_input_ptr, sizeof(uint16_t))) before_p2_input = *p2_input_ptr;
+    if (!IsBadReadPtr(p1_hp_ptr, sizeof(uint32_t))) before_p1_hp = *p1_hp_ptr;
+    if (!IsBadReadPtr(p2_hp_ptr, sizeof(uint32_t))) before_p2_hp = *p2_hp_ptr;
+    if (!IsBadReadPtr(round_timer_ptr, sizeof(uint32_t))) before_round_timer = *round_timer_ptr;
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RESTORE: Before - Frame: %u, P1HP: %u, P2HP: %u, RoundTimer: %u, P1Input: 0x%04X, P2Input: 0x%04X",
+                before_frame, before_p1_hp, before_p2_hp, before_round_timer, before_p1_input, before_p2_input);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RESTORE: Target - Frame: %u, P1HP: %u, P2HP: %u, RoundTimer: %u, P1Input: 0x%08X, P2Input: 0x%08X",
+                state->core.input_buffer_index, state->core.p1_hp, state->core.p2_hp, state->core.round_timer, 
+                state->core.p1_input_current, state->core.p2_input_current);
+    
     // Validate basic pointers and restore core state
     if (!IsBadWritePtr(frame_ptr, sizeof(uint32_t))) {
         *frame_ptr = state->core.input_buffer_index;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RESTORE: Frame counter written: %u → %u", before_frame, *frame_ptr);
     }
     if (!IsBadWritePtr(p1_input_ptr, sizeof(uint16_t))) {
         *p1_input_ptr = (uint16_t)state->core.p1_input_current;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RESTORE: P1 input written: 0x%04X → 0x%04X", before_p1_input, *p1_input_ptr);
     }
     if (!IsBadWritePtr(p2_input_ptr, sizeof(uint16_t))) {
         *p2_input_ptr = (uint16_t)state->core.p2_input_current;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RESTORE: P2 input written: 0x%04X → 0x%04X", before_p2_input, *p2_input_ptr);
     }
     if (!IsBadWritePtr(p1_hp_ptr, sizeof(uint32_t))) {
         *p1_hp_ptr = state->core.p1_hp;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RESTORE: P1 HP written: %u → %u", before_p1_hp, *p1_hp_ptr);
     }
     if (!IsBadWritePtr(p2_hp_ptr, sizeof(uint32_t))) {
         *p2_hp_ptr = state->core.p2_hp;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RESTORE: P2 HP written: %u → %u", before_p2_hp, *p2_hp_ptr);
     }
     if (!IsBadWritePtr(round_timer_ptr, sizeof(uint32_t))) {
         *round_timer_ptr = state->core.round_timer;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RESTORE: Round timer written: %u → %u", before_round_timer, *round_timer_ptr);
     }
     if (!IsBadWritePtr(game_timer_ptr, sizeof(uint32_t))) {
         *game_timer_ptr = state->core.game_timer;
@@ -475,7 +511,7 @@ bool LoadGameStateDirect(const FM2K::State::GameState* state) {
     // 1. Player Data Slots (459KB) - critical for character state
     uint8_t* player_data_ptr = (uint8_t*)PLAYER_DATA_SLOTS_ADDR;
     if (!IsBadWritePtr(player_data_ptr, PLAYER_DATA_SLOTS_SIZE)) {
-        memcpy(player_data_ptr, player_data_buffer.get(), PLAYER_DATA_SLOTS_SIZE);
+        memcpy(player_data_ptr, rollback_player_data_buffer.get(), PLAYER_DATA_SLOTS_SIZE);
         player_data_restored = true;
         SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Restored player data slots (%zu KB)", PLAYER_DATA_SLOTS_SIZE / 1024);
     } else {
@@ -485,7 +521,7 @@ bool LoadGameStateDirect(const FM2K::State::GameState* state) {
     // 2. Game Object Pool (391KB) - all game entities
     uint8_t* object_pool_ptr = (uint8_t*)GAME_OBJECT_POOL_ADDR;
     if (!IsBadWritePtr(object_pool_ptr, GAME_OBJECT_POOL_SIZE)) {
-        memcpy(object_pool_ptr, object_pool_buffer.get(), GAME_OBJECT_POOL_SIZE);
+        memcpy(object_pool_ptr, rollback_object_pool_buffer.get(), GAME_OBJECT_POOL_SIZE);
         object_pool_restored = true;
         SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Restored game object pool (%zu KB)", GAME_OBJECT_POOL_SIZE / 1024);
     } else {
@@ -518,14 +554,40 @@ bool LoadStateFromBuffer(uint32_t frame_number) {
     return LoadGameStateDirect(&saved_states[index]);
 }
 
-// Save state to specific slot
+// Save state to specific slot (with dedicated buffers)
 bool SaveStateToSlot(uint32_t slot, uint32_t frame_number) {
     if (!state_manager_initialized || slot >= 8) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Invalid slot %u or state manager not initialized", slot);
         return false;
     }
     
-    if (SaveGameStateDirect(&save_slots[slot], frame_number)) {
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Saving state to slot %u at frame %u", slot, frame_number);
+    
+    // Save core state
+    if (!SaveGameStateDirect(&save_slots[slot], frame_number)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to save core state to slot %u", slot);
+        return false;
+    }
+    
+    // Copy current memory to slot-specific buffers
+    uint8_t* player_data_ptr = (uint8_t*)PLAYER_DATA_SLOTS_ADDR;
+    uint8_t* object_pool_ptr = (uint8_t*)GAME_OBJECT_POOL_ADDR;
+    
+    bool player_saved = false, objects_saved = false;
+    
+    if (!IsBadReadPtr(player_data_ptr, PLAYER_DATA_SLOTS_SIZE)) {
+        memcpy(slot_player_data_buffers[slot].get(), player_data_ptr, PLAYER_DATA_SLOTS_SIZE);
+        player_saved = true;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Slot %u: Player data saved (%zu KB)", slot, PLAYER_DATA_SLOTS_SIZE / 1024);
+    }
+    
+    if (!IsBadReadPtr(object_pool_ptr, GAME_OBJECT_POOL_SIZE)) {
+        memcpy(slot_object_pool_buffers[slot].get(), object_pool_ptr, GAME_OBJECT_POOL_SIZE);
+        objects_saved = true;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Slot %u: Object pool saved (%zu KB)", slot, GAME_OBJECT_POOL_SIZE / 1024);
+    }
+    
+    if (player_saved && objects_saved) {
         slot_occupied[slot] = true;
         
         // Update shared memory status for UI
@@ -542,10 +604,11 @@ bool SaveStateToSlot(uint32_t slot, uint32_t frame_number) {
         return true;
     }
     
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to save memory regions to slot %u", slot);
     return false;
 }
 
-// Load state from specific slot
+// Load state from specific slot (with dedicated buffers)
 bool LoadStateFromSlot(uint32_t slot) {
     if (!state_manager_initialized || slot >= 8) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Invalid slot %u or state manager not initialized", slot);
@@ -557,18 +620,52 @@ bool LoadStateFromSlot(uint32_t slot) {
         return false;
     }
     
-    if (LoadGameStateDirect(&save_slots[slot])) {
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Loading state from slot %u (frame %u)", slot, save_slots[slot].frame_number);
+    
+    // Load core state
+    if (!LoadGameStateDirect(&save_slots[slot])) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to load core state from slot %u", slot);
+        return false;
+    }
+    
+    // Restore memory from slot-specific buffers
+    uint8_t* player_data_ptr = (uint8_t*)PLAYER_DATA_SLOTS_ADDR;
+    uint8_t* object_pool_ptr = (uint8_t*)GAME_OBJECT_POOL_ADDR;
+    
+    bool player_restored = false, objects_restored = false;
+    
+    if (!IsBadWritePtr(player_data_ptr, PLAYER_DATA_SLOTS_SIZE)) {
+        memcpy(player_data_ptr, slot_player_data_buffers[slot].get(), PLAYER_DATA_SLOTS_SIZE);
+        player_restored = true;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Slot %u: Player data restored (%zu KB)", slot, PLAYER_DATA_SLOTS_SIZE / 1024);
+    }
+    
+    if (!IsBadWritePtr(object_pool_ptr, GAME_OBJECT_POOL_SIZE)) {
+        memcpy(object_pool_ptr, slot_object_pool_buffers[slot].get(), GAME_OBJECT_POOL_SIZE);
+        objects_restored = true;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Slot %u: Object pool restored (%zu KB)", slot, GAME_OBJECT_POOL_SIZE / 1024);
+    }
+    
+    if (player_restored && objects_restored) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "State loaded from slot %u (frame %u, checksum: 0x%08X)", 
                     slot, save_slots[slot].frame_number, save_slots[slot].checksum);
         return true;
     }
     
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to restore memory regions from slot %u", slot);
     return false;
 }
 
 // Process debug commands from launcher UI
 void ProcessDebugCommands() {
-    if (!shared_memory_data) return;
+    if (!shared_memory_data) {
+        // Only log this occasionally to avoid spam
+        static uint32_t no_shared_memory_log_counter = 0;
+        if ((no_shared_memory_log_counter++ % 1000) == 0) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "HOOK: ProcessDebugCommands - no shared memory");
+        }
+        return;
+    }
     
     SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data);
     static uint32_t last_processed_command_id = 0;
@@ -578,7 +675,24 @@ void ProcessDebugCommands() {
         return;
     }
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Processing debug command ID %u", shared_data->debug_command_id);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "HOOK: Processing debug command ID %u (last: %u)", shared_data->debug_command_id, last_processed_command_id);
+    
+    // Log what commands are pending
+    if (shared_data->debug_save_to_slot_requested) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "HOOK: -> debug_save_to_slot_requested = TRUE for slot %u", shared_data->debug_target_slot);
+    }
+    if (shared_data->debug_load_from_slot_requested) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "HOOK: -> debug_load_from_slot_requested = TRUE for slot %u", shared_data->debug_target_slot);
+    }
+    if (shared_data->debug_save_state_requested) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "HOOK: -> debug_save_state_requested = TRUE");
+    }
+    if (shared_data->debug_load_state_requested) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "HOOK: -> debug_load_state_requested = TRUE");
+    }
+    if (shared_data->debug_rollback_requested) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "HOOK: -> debug_rollback_requested = TRUE for %u frames", shared_data->debug_rollback_frames);
+    }
     
     // Manual save state
     if (shared_data->debug_save_state_requested) {
@@ -644,17 +758,18 @@ void ProcessDebugCommands() {
     // Save to specific slot
     if (shared_data->debug_save_to_slot_requested) {
         uint32_t slot = shared_data->debug_target_slot;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Save to slot %u requested", slot);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "HOOK: Save to slot %u requested", slot);
         
         if (state_manager_initialized && slot < 8) {
             uint32_t current_frame = g_frame_counter;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "HOOK: Attempting to save frame %u to slot %u", current_frame, slot);
             if (SaveStateToSlot(slot, current_frame)) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: State saved to slot %u successfully", slot);
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "HOOK: State saved to slot %u successfully", slot);
             } else {
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Failed to save state to slot %u", slot);
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "HOOK: Failed to save state to slot %u", slot);
             }
         } else {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Invalid slot %u or state manager not initialized", slot);
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "HOOK: Invalid slot %u or state manager not initialized (initialized: %s)", slot, state_manager_initialized ? "YES" : "NO");
         }
         
         shared_data->debug_save_to_slot_requested = false;
@@ -663,16 +778,17 @@ void ProcessDebugCommands() {
     // Load from specific slot
     if (shared_data->debug_load_from_slot_requested) {
         uint32_t slot = shared_data->debug_target_slot;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Load from slot %u requested", slot);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "HOOK: Load from slot %u requested", slot);
         
         if (state_manager_initialized && slot < 8) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "HOOK: Attempting to load from slot %u (occupied: %s)", slot, slot_occupied[slot] ? "YES" : "NO");
             if (LoadStateFromSlot(slot)) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: State loaded from slot %u successfully", slot);
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "HOOK: State loaded from slot %u successfully", slot);
             } else {
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Failed to load state from slot %u", slot);
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "HOOK: Failed to load state from slot %u", slot);
             }
         } else {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DEBUG: Invalid slot %u or state manager not initialized", slot);
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "HOOK: Invalid slot %u or state manager not initialized (initialized: %s)", slot, state_manager_initialized ? "YES" : "NO");
         }
         
         shared_data->debug_load_from_slot_requested = false;
@@ -814,6 +930,9 @@ int __cdecl Hook_ProcessGameInputs() {
     
     // Check for configuration updates from launcher
     CheckConfigurationUpdates();
+    
+    // Process debug commands from launcher
+    ProcessDebugCommands();
     
     // Log more frequently to debug input capture
     if (g_frame_counter % 1 == 0) {

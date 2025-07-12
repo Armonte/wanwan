@@ -13,6 +13,7 @@ set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g")
 # Create simple DLL target
 add_library(FM2KHook SHARED
     src/dllmain.cpp
+    ../LocalNetworkAdapter.cpp
 )
 
 # Export symbols for DLL

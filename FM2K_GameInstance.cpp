@@ -67,12 +67,9 @@ struct SharedInputData {
         uint32_t memory_usage_mb;
     } perf_stats;
     
-    // GekkoNet session coordination
-    bool gekko_session_active;       // True when GekkoNet session is running
-    uint32_t gekko_session_ptr;      // Shared session pointer (cast from GekkoSession*)
+    // GekkoNet client role coordination (simplified)
     uint8_t player_index;            // 0 for Player 1, 1 for Player 2
     uint8_t session_role;            // 0 = Host, 1 = Guest
-    bool gekko_coordination_enabled; // Enable GekkoNet coordination mode
 };
 
 namespace {
@@ -504,11 +501,14 @@ bool FM2KGameInstance::ExecuteRemoteFunction(HANDLE process, uintptr_t function_
 
 
 void FM2KGameInstance::InitializeSharedMemory() {
+    // Create unique shared memory name using process ID
+    std::string shared_memory_name = "FM2K_InputSharedMemory_" + std::to_string(process_id_);
+    
     // Open the shared memory created by the DLL
     shared_memory_handle_ = OpenFileMappingA(
         FILE_MAP_ALL_ACCESS,
         FALSE,
-        "FM2K_InputSharedMemory"
+        shared_memory_name.c_str()
     );
     
     if (shared_memory_handle_ != nullptr) {
@@ -719,34 +719,20 @@ bool FM2KGameInstance::SetSaveStateProfile(SaveStateProfile profile) {
     return true;
 }
 
-// GekkoNet session coordination
-bool FM2KGameInstance::ConfigureGekkoSession(void* gekko_session_ptr, uint8_t player_index, bool is_host) {
+// Set client role for LocalNetworkAdapter (HOST = 0, GUEST = 1)
+bool FM2KGameInstance::SetClientRole(uint8_t player_index, bool is_host) {
     if (!shared_memory_data_) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not available for GekkoNet configuration");
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not available for client role configuration");
         return false;
     }
     
     SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
-    shared_data->gekko_session_active = (gekko_session_ptr != nullptr);
-    shared_data->gekko_session_ptr = reinterpret_cast<uint32_t>(gekko_session_ptr);
     shared_data->player_index = player_index;
     shared_data->session_role = is_host ? 0 : 1;
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet session configured: Player %u, Role: %s, Session: %p", 
-                player_index, is_host ? "Host" : "Guest", gekko_session_ptr);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Client role configured: Player %u, Role: %s", 
+                player_index, is_host ? "Host" : "Guest");
     
     return true;
 }
 
-bool FM2KGameInstance::EnableGekkoCoordination(bool enabled) {
-    if (!shared_memory_data_) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not available for GekkoNet coordination toggle");
-        return false;
-    }
-    
-    SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
-    shared_data->gekko_coordination_enabled = enabled;
-    
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet coordination %s", enabled ? "enabled" : "disabled");
-    return true;
-} 

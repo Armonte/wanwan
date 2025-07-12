@@ -100,9 +100,8 @@ public:
     };
     bool SetSaveStateProfile(SaveStateProfile profile);
     
-    // GekkoNet session coordination
-    bool ConfigureGekkoSession(void* gekko_session_ptr, uint8_t player_index, bool is_host);
-    bool EnableGekkoCoordination(bool enabled);
+    // GekkoNet client role configuration
+    bool SetClientRole(uint8_t player_index, bool is_host);
     
     // Slot status information
     struct SlotStatus {

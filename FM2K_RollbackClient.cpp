@@ -1279,6 +1279,11 @@ bool FM2KLauncher::LaunchLocalClient(const std::string& game_path, bool is_host,
         return false;
     }
     
+    // IMMEDIATELY configure client role for LocalNetworkAdapter (before hook initializes GekkoNet)
+    (*target_instance)->SetClientRole(player_index, is_host);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Client role configured immediately: Player %u, Host: %s", 
+                player_index, is_host ? "Yes" : "No");
+    
     // Wait a moment and check if process is still running
     SDL_Delay(100);
     if (!(*target_instance)->IsRunning()) {
@@ -1287,16 +1292,7 @@ bool FM2KLauncher::LaunchLocalClient(const std::string& game_path, bool is_host,
         return false;
     }
     
-    // Configure GekkoNet session for the launched game
-    if (gekko_session_) {
-        if (!(*target_instance)->ConfigureGekkoSession(gekko_session_, player_index, is_host)) {
-            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Failed to configure GekkoNet session for client %d", is_host ? 1 : 2);
-        }
-        
-        if (!(*target_instance)->EnableGekkoCoordination(true)) {
-            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Failed to enable GekkoNet coordination for client %d", is_host ? 1 : 2);
-        }
-    }
+
     
     // Store process ID for status tracking
     uint32_t* target_pid = is_host ? &client1_process_id_ : &client2_process_id_;

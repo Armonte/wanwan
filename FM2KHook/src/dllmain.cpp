@@ -9,6 +9,7 @@
 // Direct GekkoNet integration
 #include "gekkonet.h"
 #include "state_manager.h"
+#include "../../LocalNetworkAdapter.h"
 
 // Save state profile enumeration
 enum class SaveStateProfile : uint32_t {
@@ -20,9 +21,12 @@ enum class SaveStateProfile : uint32_t {
 // Forward declarations
 bool SaveCoreStateBasic(FM2K::State::GameState* state, uint32_t frame_number);
 bool SaveGameStateDirect(FM2K::State::GameState* state, uint32_t frame_number);
+uint32_t CalculateStateChecksum(const FM2K::State::GameState* state);
+bool RestoreStateFromStruct(const FM2K::State::GameState* state, uint32_t target_frame);
 
 // Direct GekkoNet session (no shared memory needed)
 static GekkoSession* gekko_session = nullptr;
+static LocalNetworkAdapter* local_adapter = nullptr;
 static int p1_handle = -1;
 static int p2_handle = -1;
 static bool gekko_initialized = false;
@@ -122,13 +126,30 @@ struct SharedInputData {
         uint32_t memory_usage_mb;
     } perf_stats;
     
-    // GekkoNet session coordination
-    bool gekko_session_active;       // True when GekkoNet session is running
-    uint32_t gekko_session_ptr;      // Shared session pointer (cast from GekkoSession*)
+    // GekkoNet client role coordination (simplified)
     uint8_t player_index;            // 0 for Player 1, 1 for Player 2
     uint8_t session_role;            // 0 = Host, 1 = Guest
-    bool gekko_coordination_enabled; // Enable GekkoNet coordination mode
 };
+
+// Generate unique log file path based on player index
+static std::string GetLogFilePath() {
+    // Use process ID to create unique log files per client
+    DWORD process_id = GetCurrentProcessId();
+    
+    // Check if we have shared data to determine client role
+    if (shared_memory_data) {
+        SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data);
+        uint8_t player_index = shared_data->player_index;
+        uint8_t session_role = shared_data->session_role;
+        
+        // Create descriptive log file names
+        const char* role_name = (session_role == 0) ? "host" : "client";
+        return "C:\\Games\\fm2k_hook_" + std::string(role_name) + ".txt";
+    }
+    
+    // Fallback using process ID if no shared memory yet
+    return "C:\\Games\\fm2k_hook_pid" + std::to_string(process_id) + ".txt";
+}
 
 // Simple hook function types (matching FM2K patterns)
 typedef int (__cdecl *ProcessGameInputsFn)();
@@ -521,6 +542,101 @@ bool SaveCoreStateBasic(FM2K::State::GameState* state, uint32_t frame_number) {
         state->core.object_list_tails = 0;
     }
     
+    return true;
+}
+
+// Calculate simple checksum for state data (Fletcher32 algorithm)
+uint32_t CalculateStateChecksum(const FM2K::State::GameState* state) {
+    if (!state) return 0;
+    
+    const uint16_t* data = reinterpret_cast<const uint16_t*>(state);
+    size_t length = sizeof(FM2K::State::GameState) / sizeof(uint16_t);
+    
+    uint32_t sum1 = 0xFFFF, sum2 = 0xFFFF;
+    
+    while (length) {
+        size_t tlen = length > 360 ? 360 : length;
+        length -= tlen;
+        do {
+            sum1 += *data++;
+            sum2 += sum1;
+        } while (--tlen);
+        sum1 = (sum1 & 0xFFFF) + (sum1 >> 16);
+        sum2 = (sum2 & 0xFFFF) + (sum2 >> 16);
+    }
+    
+    sum1 = (sum1 & 0xFFFF) + (sum1 >> 16);
+    sum2 = (sum2 & 0xFFFF) + (sum2 >> 16);
+    
+    return (sum2 << 16) | sum1;
+}
+
+// Restore game state from GekkoNet state structure
+bool RestoreStateFromStruct(const FM2K::State::GameState* state, uint32_t target_frame) {
+    if (!state) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "RestoreStateFromStruct: Null state pointer");
+        return false;
+    }
+    
+    // Restore core game state to memory
+    uint32_t* frame_ptr = (uint32_t*)FRAME_COUNTER_ADDR;
+    uint16_t* p1_input_ptr = (uint16_t*)P1_INPUT_ADDR;
+    uint16_t* p2_input_ptr = (uint16_t*)P2_INPUT_ADDR;
+    uint32_t* p1_hp_ptr = (uint32_t*)P1_HP_ADDR;
+    uint32_t* p2_hp_ptr = (uint32_t*)P2_HP_ADDR;
+    uint32_t* round_timer_ptr = (uint32_t*)ROUND_TIMER_ADDR;
+    uint32_t* game_timer_ptr = (uint32_t*)GAME_TIMER_ADDR;
+    uint32_t* random_seed_ptr = (uint32_t*)RANDOM_SEED_ADDR;
+    
+    // Additional critical timers
+    uint32_t* timer_countdown1_ptr = (uint32_t*)TIMER_COUNTDOWN1_ADDR;
+    uint32_t* timer_countdown2_ptr = (uint32_t*)TIMER_COUNTDOWN2_ADDR;
+    uint32_t* round_timer_counter_ptr = (uint32_t*)ROUND_TIMER_COUNTER_ADDR;
+    uint32_t* object_list_heads_ptr = (uint32_t*)OBJECT_LIST_HEADS_ADDR;
+    uint32_t* object_list_tails_ptr = (uint32_t*)OBJECT_LIST_TAILS_ADDR;
+    
+    // Write state back to game memory with validation
+    if (!IsBadWritePtr(frame_ptr, sizeof(uint32_t))) {
+        *frame_ptr = state->core.input_buffer_index;
+    }
+    if (!IsBadWritePtr(p1_input_ptr, sizeof(uint16_t))) {
+        *p1_input_ptr = state->core.p1_input_current;
+    }
+    if (!IsBadWritePtr(p2_input_ptr, sizeof(uint16_t))) {
+        *p2_input_ptr = state->core.p2_input_current;
+    }
+    if (!IsBadWritePtr(p1_hp_ptr, sizeof(uint32_t))) {
+        *p1_hp_ptr = state->core.p1_hp;
+    }
+    if (!IsBadWritePtr(p2_hp_ptr, sizeof(uint32_t))) {
+        *p2_hp_ptr = state->core.p2_hp;
+    }
+    if (!IsBadWritePtr(round_timer_ptr, sizeof(uint32_t))) {
+        *round_timer_ptr = state->core.round_timer;
+    }
+    if (!IsBadWritePtr(game_timer_ptr, sizeof(uint32_t))) {
+        *game_timer_ptr = state->core.game_timer;
+    }
+    if (!IsBadWritePtr(random_seed_ptr, sizeof(uint32_t))) {
+        *random_seed_ptr = state->core.random_seed;
+    }
+    if (!IsBadWritePtr(timer_countdown1_ptr, sizeof(uint32_t))) {
+        *timer_countdown1_ptr = state->core.timer_countdown1;
+    }
+    if (!IsBadWritePtr(timer_countdown2_ptr, sizeof(uint32_t))) {
+        *timer_countdown2_ptr = state->core.timer_countdown2;
+    }
+    if (!IsBadWritePtr(round_timer_counter_ptr, sizeof(uint32_t))) {
+        *round_timer_counter_ptr = state->core.round_timer_counter;
+    }
+    if (!IsBadWritePtr(object_list_heads_ptr, sizeof(uint32_t))) {
+        *object_list_heads_ptr = state->core.object_list_heads;
+    }
+    if (!IsBadWritePtr(object_list_tails_ptr, sizeof(uint32_t))) {
+        *object_list_tails_ptr = state->core.object_list_tails;
+    }
+    
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "RestoreStateFromStruct: Restored state for frame %u", target_frame);
     return true;
 }
 
@@ -1355,77 +1471,103 @@ bool ConfigureNetworkMode(bool online_mode, bool host_mode) {
     return true;
 }
 
-// Initialize GekkoNet session for rollback netcode
+// Initialize GekkoNet session for rollback netcode using LocalNetworkAdapter
 bool InitializeGekkoNet() {
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** INSIDE InitializeGekkoNet FUNCTION ***");
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Creating GekkoNet session...");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** INSIDE InitializeGekkoNet FUNCTION (NEW INDEPENDENT SESSION APPROACH) ***");
     
-    // Create GekkoNet session
-    if (!gekko_create(&gekko_session)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Failed to create GekkoNet session!");
+    // Determine our role from shared memory (HOST or GUEST)
+    LocalNetworkAdapter::Role adapter_role = LocalNetworkAdapter::HOST;
+    uint8_t player_index = 0;
+    
+    if (shared_memory_data) {
+        SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data);
+        uint8_t session_role = shared_data->session_role;
+        player_index = shared_data->player_index;
+        
+        adapter_role = (session_role == 0) ? LocalNetworkAdapter::HOST : LocalNetworkAdapter::GUEST;
+        
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Creating independent session as %s (Player %u)", 
+                    adapter_role == LocalNetworkAdapter::HOST ? "HOST" : "GUEST", player_index);
+    } else {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: No shared memory available yet - defaulting to HOST role");
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Role will be updated when launcher sets configuration");
+    }
+    
+    // Create LocalNetworkAdapter with our role
+    local_adapter = new LocalNetworkAdapter(adapter_role);
+    if (!local_adapter->Initialize()) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Failed to initialize LocalNetworkAdapter!");
+        delete local_adapter;
+        local_adapter = nullptr;
         return false;
     }
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet session created successfully");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: LocalNetworkAdapter initialized successfully as %s", 
+                adapter_role == LocalNetworkAdapter::HOST ? "HOST" : "GUEST");
     
-    // Configure session for 2-player fighting game
+    // Create independent GekkoNet session
+    if (!gekko_create(&gekko_session)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Failed to create GekkoNet session!");
+        delete local_adapter;
+        local_adapter = nullptr;
+        return false;
+    }
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Independent GekkoNet session created successfully");
+    
+    // Set the LocalNetworkAdapter on the session
+    gekko_net_adapter_set(gekko_session, local_adapter->GetAdapter());
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: LocalNetworkAdapter set on GekkoNet session");
+    
+    // Configure GekkoNet session
     GekkoConfig config;
     config.num_players = 2;
     config.max_spectators = 0;
-    config.input_prediction_window = 8;
+    config.input_prediction_window = 3;  // 3-frame window for smooth gameplay
     config.spectator_delay = 0;
-    config.input_size = 1;  // 1 byte per player (8-bit input)
-    config.state_size = 1024;  // Starting with 1KB state size
+    config.input_size = 2;              // 2 bytes per input frame (P1 + P2)
+    config.state_size = 65536;          // 64KB state size for FM2K
     config.limited_saving = false;
     config.post_sync_joining = false;
-    config.desync_detection = true;
+    config.desync_detection = true;     // Enable desync detection
     
     gekko_start(gekko_session, &config);
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet session configured for 2 players");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet session configured and started");
     
-    // Add players based on session mode
-    if (is_online_mode) {
-        // Online mode: Add local player and wait for remote player
-        if (is_host) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Adding local player (host)");
-            p1_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
-            // P2 will be added when remote player connects
-            p2_handle = -1;
-        } else {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Adding local player (client)");
-            p2_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
-            // P1 will be added when we connect to host
-            p1_handle = -1;
-        }
-    } else {
-        // Offline mode: Add both players as local
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Adding both players as local (offline mode)");
+    // Add players to the session
+    if (adapter_role == LocalNetworkAdapter::HOST) {
+        // Host: Add local player as P1, remote player as P2
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Adding players - HOST mode");
         p1_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
+        p2_handle = gekko_add_actor(gekko_session, RemotePlayer, nullptr);
+    } else {
+        // Guest: Add remote player as P1, local player as P2
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Adding players - GUEST mode");
+        p1_handle = gekko_add_actor(gekko_session, RemotePlayer, nullptr);
         p2_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
     }
     
     // Validate player handles
-    if ((!is_online_mode && (p1_handle < 0 || p2_handle < 0)) ||
-        (is_online_mode && is_host && p1_handle < 0) ||
-        (is_online_mode && !is_host && p2_handle < 0)) {
+    if (p1_handle < 0 || p2_handle < 0) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Failed to add players! P1: %d, P2: %d", p1_handle, p2_handle);
         gekko_destroy(gekko_session);
         gekko_session = nullptr;
+        delete local_adapter;
+        local_adapter = nullptr;
         return false;
     }
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Players added - P1 handle: %d, P2 handle: %d", p1_handle, p2_handle);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Players added successfully - P1: %d, P2: %d", p1_handle, p2_handle);
     
-    // Set input delay (can be configured later)
-    if (p1_handle >= 0) {
-        gekko_set_local_delay(gekko_session, p1_handle, 2);
-    }
-    if (p2_handle >= 0) {
-        gekko_set_local_delay(gekko_session, p2_handle, 2);
+    // Set input delay (2 frames for stable rollback)
+    if (adapter_role == LocalNetworkAdapter::HOST) {
+        gekko_set_local_delay(gekko_session, p1_handle, 2);  // Local player (P1)
+    } else {
+        gekko_set_local_delay(gekko_session, p2_handle, 2);  // Local player (P2)
     }
     
     gekko_initialized = true;
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet initialization complete!");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet initialization complete with LocalNetworkAdapter!");
     return true;
 }
 
@@ -1554,7 +1696,7 @@ int __cdecl Hook_ProcessGameInputs() {
             int update_count = 0;
             auto updates = gekko_update_session(gekko_session, &update_count);
             
-            // Handle GekkoNet rollback events with validation
+            // Handle GekkoNet events (AdvanceEvent, SaveEvent, LoadEvent)
             if (updates && update_count > 0) {
                 for (int i = 0; i < update_count; i++) {
                     auto* update = updates[i];
@@ -1563,18 +1705,114 @@ int __cdecl Hook_ProcessGameInputs() {
                         continue;
                     }
                     
-                    if (update->type == LoadEvent) {
-                        // Rollback to specific frame
-                        uint32_t target_frame = update->data.load.frame;
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Rollback to frame %u (current: %u)", target_frame, g_frame_counter);
-                        
-                        if (state_manager_initialized && target_frame <= g_frame_counter) {
-                            if (!LoadStateFromBuffer(target_frame)) {
-                                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Failed to load state for frame %u", target_frame);
+                    switch (update->type) {
+                        case AdvanceEvent: {
+                            // Game should advance one frame with predicted inputs
+                            uint32_t target_frame = update->data.adv.frame;
+                            uint32_t input_length = update->data.adv.input_len;
+                            uint8_t* inputs = update->data.adv.inputs;
+                            
+                            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent to frame %u (inputs: %u bytes)", 
+                                        target_frame, input_length);
+                            
+                            // Apply predicted inputs to game memory if available
+                            if (inputs && input_length >= 2) {
+                                uint8_t p1_predicted = inputs[0];
+                                uint8_t p2_predicted = inputs[1];
+                                
+                                // Convert back to FM2K format and apply to game memory
+                                uint32_t p1_fm2k = 0, p2_fm2k = 0;
+                                if (p1_predicted & 0x01) p1_fm2k |= 0x01;  // left
+                                if (p1_predicted & 0x02) p1_fm2k |= 0x02;  // right
+                                if (p1_predicted & 0x04) p1_fm2k |= 0x04;  // up
+                                if (p1_predicted & 0x08) p1_fm2k |= 0x08;  // down
+                                if (p1_predicted & 0x10) p1_fm2k |= 0x10;  // button1
+                                if (p1_predicted & 0x20) p1_fm2k |= 0x20;  // button2
+                                if (p1_predicted & 0x40) p1_fm2k |= 0x40;  // button3
+                                if (p1_predicted & 0x80) p1_fm2k |= 0x80;  // button4
+                                
+                                if (p2_predicted & 0x01) p2_fm2k |= 0x01;  // left
+                                if (p2_predicted & 0x02) p2_fm2k |= 0x02;  // right
+                                if (p2_predicted & 0x04) p2_fm2k |= 0x04;  // up
+                                if (p2_predicted & 0x08) p2_fm2k |= 0x08;  // down
+                                if (p2_predicted & 0x10) p2_fm2k |= 0x10;  // button1
+                                if (p2_predicted & 0x20) p2_fm2k |= 0x20;  // button2
+                                if (p2_predicted & 0x40) p2_fm2k |= 0x40;  // button3
+                                if (p2_predicted & 0x80) p2_fm2k |= 0x80;  // button4
+                                
+                                // Write predicted inputs to game memory
+                                uint32_t* p1_input_ptr = (uint32_t*)P1_INPUT_ADDR;
+                                uint32_t* p2_input_ptr = (uint32_t*)P2_INPUT_ADDR;
+                                if (p1_input_ptr && !IsBadWritePtr(p1_input_ptr, sizeof(uint32_t))) {
+                                    *p1_input_ptr = p1_fm2k;
+                                }
+                                if (p2_input_ptr && !IsBadWritePtr(p2_input_ptr, sizeof(uint32_t))) {
+                                    *p2_input_ptr = p2_fm2k;
+                                }
+                                
+                                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Applied predicted inputs - P1: 0x%02X->0x%08X, P2: 0x%02X->0x%08X", 
+                                            p1_predicted, p1_fm2k, p2_predicted, p2_fm2k);
                             }
-                        } else {
-                            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Invalid rollback target frame %u", target_frame);
+                            break;
                         }
+                        
+                        case SaveEvent: {
+                            // GekkoNet wants us to save the current state
+                            uint32_t save_frame = update->data.save.frame;
+                            uint32_t* checksum_ptr = update->data.save.checksum;
+                            uint32_t* state_len_ptr = update->data.save.state_len;
+                            uint8_t* state_ptr = update->data.save.state;
+                            
+                            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SaveEvent for frame %u", save_frame);
+                            
+                            if (state_manager_initialized && checksum_ptr && state_len_ptr && state_ptr) {
+                                // Save state to GekkoNet's buffer
+                                FM2K::State::GameState current_state;
+                                if (SaveCoreStateBasic(&current_state, save_frame)) {
+                                    // Calculate state size and checksum
+                                    *state_len_ptr = sizeof(FM2K::State::GameState);
+                                    *checksum_ptr = CalculateStateChecksum(&current_state);
+                                    
+                                    // Copy state data to GekkoNet buffer
+                                    memcpy(state_ptr, &current_state, sizeof(FM2K::State::GameState));
+                                    
+                                    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: State saved for frame %u (size: %u, checksum: 0x%08X)", 
+                                                save_frame, *state_len_ptr, *checksum_ptr);
+                                } else {
+                                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Failed to save state for frame %u", save_frame);
+                                }
+                            }
+                            break;
+                        }
+                        
+                        case LoadEvent: {
+                            // Rollback to specific frame
+                            uint32_t target_frame = update->data.load.frame;
+                            uint32_t state_length = update->data.load.state_len;
+                            uint8_t* state_data = update->data.load.state;
+                            
+                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: LoadEvent (rollback) to frame %u (current: %u)", 
+                                       target_frame, g_frame_counter);
+                            
+                            if (state_manager_initialized && state_data && state_length == sizeof(FM2K::State::GameState)) {
+                                // Load state from GekkoNet buffer
+                                FM2K::State::GameState* loaded_state = reinterpret_cast<FM2K::State::GameState*>(state_data);
+                                if (RestoreStateFromStruct(loaded_state, target_frame)) {
+                                    g_frame_counter = target_frame;  // Update our frame counter
+                                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Successfully rolled back to frame %u", target_frame);
+                                } else {
+                                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Failed to load state for frame %u", target_frame);
+                                }
+                            } else {
+                                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Invalid rollback data for frame %u (state_len: %u)", 
+                                           target_frame, state_length);
+                            }
+                            break;
+                        }
+                        
+                        default:
+                            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Unknown event type: %d", update->type);
+                            break;
                     }
                 }
             }
@@ -1711,7 +1949,8 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: DLL attached to process!");
             
             // Write initial log entry first
-            FILE* log = fopen("C:\\Games\\fm2k_hook_log.txt", "w");
+            std::string log_path = GetLogFilePath();
+            FILE* log = fopen(log_path.c_str(), "w");
             if (log) {
                 fprintf(log, "FM2K HOOK: DLL attached to process at %lu\n", GetTickCount());
                 fprintf(log, "FM2K HOOK: About to initialize GekkoNet...\n");
@@ -1731,19 +1970,22 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Failed to initialize state manager");
             }
             
-            // Initialize GekkoNet session directly in DLL
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: About to initialize GekkoNet...");
-            
             // Default to local mode (offline) - can be changed later via configuration
             ConfigureNetworkMode(false, false);
             
+            // Wait a moment for launcher to set client role configuration
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Waiting for launcher to set client role...");
+            Sleep(200);  // Give launcher time to set role
+            
+            // Initialize GekkoNet session directly in DLL
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: About to initialize GekkoNet...");
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Calling InitializeGekkoNet() now...");
             bool gekko_result = InitializeGekkoNet();
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: InitializeGekkoNet returned");
             
             if (!gekko_result) {
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ERROR FM2K HOOK: Failed to initialize GekkoNet!");
-                FILE* error_log = fopen("C:\\Games\\fm2k_hook_log.txt", "a");
+                FILE* error_log = fopen(GetLogFilePath().c_str(), "a");
                 if (error_log) {
                     fprintf(error_log, "ERROR FM2K HOOK: Failed to initialize GekkoNet!\n");
                     fflush(error_log);
@@ -1752,7 +1994,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                 // Continue anyway - we can still hook without rollback
             } else {
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet initialized successfully!");
-                FILE* success_log = fopen("C:\\Games\\fm2k_hook_log.txt", "a");
+                FILE* success_log = fopen(GetLogFilePath().c_str(), "a");
                 if (success_log) {
                     fprintf(success_log, "FM2K HOOK: GekkoNet initialized successfully!\n");
                     fflush(success_log);
@@ -1782,6 +2024,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             gekko_session = nullptr;
             gekko_initialized = false;
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet session closed");
+        }
+        
+        // Cleanup LocalNetworkAdapter
+        if (local_adapter) {
+            local_adapter->Shutdown();
+            delete local_adapter;
+            local_adapter = nullptr;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: LocalNetworkAdapter cleaned up");
         }
         
         // Cleanup shared memory

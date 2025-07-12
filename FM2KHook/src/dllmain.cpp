@@ -31,6 +31,7 @@ static bool gekko_initialized = false;
 static bool gekko_session_started = false;      // Track if GekkoNet session has started (like BSNES AllPlayersValid)
 static bool is_online_mode = false;
 static bool is_host = false;
+static uint8_t player_index = 0;               // 0 = Player 1, 1 = Player 2 (set during GekkoNet init)
 
 // Shared memory for configuration
 static HANDLE shared_memory_handle = nullptr;
@@ -1759,12 +1760,21 @@ int __cdecl Hook_ProcessGameInputs() {
             if (p2_input & 0x40) p2_gekko |= 0x40;  // button3
             if (p2_input & 0x80) p2_gekko |= 0x80;  // button4
             
-            // Add inputs to GekkoNet session (always add for local player to enable handshake)
-            if (p1_handle >= 0) {
+            // CRITICAL DEBUG: Log what we're about to send
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT DEBUG: player_index=%u, p1_handle=%d, p2_handle=%d", 
+                       player_index, p1_handle, p2_handle);
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT DEBUG: p1_gekko=0x%02X, p2_gekko=0x%02X", p1_gekko, p2_gekko);
+            
+            // BSNES PATTERN: Each client sends ONLY their local player's input
+            // Player 0 sends P1 input, Player 1 sends P2 input
+            if (player_index == 0 && p1_handle >= 0) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Player 0 calling gekko_add_local_input(handle=%d, input=0x%02X)", p1_handle, p1_gekko);
                 gekko_add_local_input(gekko_session, p1_handle, &p1_gekko);
-            }
-            if (p2_handle >= 0) {
+            } else if (player_index == 1 && p2_handle >= 0) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Player 1 calling gekko_add_local_input(handle=%d, input=0x%02X)", p2_handle, p2_gekko);
                 gekko_add_local_input(gekko_session, p2_handle, &p2_gekko);
+            } else {
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "INPUT DEBUG: No matching player/handle combination for input sending!");
             }
             
             // Save current state before processing GekkoNet updates (reduced frequency for performance)
@@ -1844,6 +1854,10 @@ int __cdecl Hook_ProcessGameInputs() {
                             if (inputs && input_length >= 2) {
                                 uint8_t p1_predicted = inputs[0];
                                 uint8_t p2_predicted = inputs[1];
+                                
+                                // CRITICAL DEBUG: Log what we received from network
+                                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "NETWORK DEBUG: AdvanceEvent received P1=0x%02X, P2=0x%02X", 
+                                           p1_predicted, p2_predicted);
                                 
                                 // Convert back to FM2K format and apply to game memory
                                 uint32_t p1_fm2k = 0, p2_fm2k = 0;

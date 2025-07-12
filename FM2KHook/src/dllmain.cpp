@@ -1704,7 +1704,27 @@ int __cdecl Hook_ProcessGameInputs() {
                 }
             }
             
-            // Process GekkoNet updates after adding inputs
+            // Process GekkoNet session events first (connection events like OnlineSession example lines 275-291)
+            int session_event_count = 0;
+            auto session_events = gekko_session_events(gekko_session, &session_event_count);
+            for (int i = 0; i < session_event_count; i++) {
+                auto event = session_events[i];
+                
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Session Event: %d", event->type);
+                
+                if (event->type == DesyncDetected) {
+                    auto desync = event->data.desynced;
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Desync detected! Frame: %d, Remote handle: %d, Local checksum: 0x%08X, Remote checksum: 0x%08X", 
+                                desync.frame, desync.remote_handle, desync.local_checksum, desync.remote_checksum);
+                }
+                
+                if (event->type == PlayerDisconnected) {
+                    auto disco = event->data.disconnected;
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Player disconnected: %d", disco.handle);
+                }
+            }
+            
+            // Process GekkoNet updates after adding inputs (like OnlineSession example lines 293-320)
             int update_count = 0;
             auto updates = gekko_update_session(gekko_session, &update_count);
             
@@ -1724,7 +1744,7 @@ int __cdecl Hook_ProcessGameInputs() {
                             uint32_t input_length = update->data.adv.input_len;
                             uint8_t* inputs = update->data.adv.inputs;
                             
-                            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent to frame %u (inputs: %u bytes)", 
+                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent to frame %u (inputs: %u bytes)", 
                                         target_frame, input_length);
                             
                             // Apply predicted inputs to game memory if available
@@ -1762,6 +1782,10 @@ int __cdecl Hook_ProcessGameInputs() {
                                     *p2_input_ptr = p2_fm2k;
                                 }
                                 
+                                // Log like OnlineSession example: "F:%d, P1:%d P2:%d"
+                                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: F:%u, P1:%u P2:%u (applied to game memory)", 
+                                           target_frame, p1_predicted, p2_predicted);
+                                
                                 SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Applied predicted inputs - P1: 0x%02X->0x%08X, P2: 0x%02X->0x%08X", 
                                             p1_predicted, p1_fm2k, p2_predicted, p2_fm2k);
                             }
@@ -1775,7 +1799,7 @@ int __cdecl Hook_ProcessGameInputs() {
                             uint32_t* state_len_ptr = update->data.save.state_len;
                             uint8_t* state_ptr = update->data.save.state;
                             
-                            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SaveEvent for frame %u", save_frame);
+                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SaveEvent for frame %u", save_frame);
                             
                             if (state_manager_initialized && checksum_ptr && state_len_ptr && state_ptr) {
                                 // Save state to GekkoNet's buffer
@@ -1788,7 +1812,7 @@ int __cdecl Hook_ProcessGameInputs() {
                                     // Copy state data to GekkoNet buffer
                                     memcpy(state_ptr, &current_state, sizeof(FM2K::State::GameState));
                                     
-                                    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: State saved for frame %u (size: %u, checksum: 0x%08X)", 
+                                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: State saved for frame %u (size: %u, checksum: 0x%08X)", 
                                                 save_frame, *state_len_ptr, *checksum_ptr);
                                 } else {
                                     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Failed to save state for frame %u", save_frame);

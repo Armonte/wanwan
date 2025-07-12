@@ -1,6 +1,10 @@
 #include "FM2K_Integration.h"
 #include <iostream>
 #include <algorithm>
+#include <fstream>
+#include <sstream>
+#include <vector>
+#include <filesystem>
 #include "vendored/imgui/imgui.h"
 #include "imgui_internal.h"
 #include "vendored/GekkoNet/GekkoLib/include/gekkonet.h"
@@ -980,15 +984,36 @@ void LauncherUI::RenderMultiClientTools() {
                 
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launching dual clients for: %s", selected_game.exe_path.c_str());
                 
+                // Create client 2 path by replacing directory name with "2" suffix
+                std::filesystem::path original_path(selected_game.exe_path);
+                std::filesystem::path original_dir = original_path.parent_path();
+                std::filesystem::path exe_name = original_path.filename();
+                
+                // Create new directory path: wanwan -> wanwan2
+                std::string new_dir_name = original_dir.filename().string() + "2";
+                std::filesystem::path parent_dir = original_dir.parent_path();
+                std::filesystem::path client2_dir = parent_dir / new_dir_name;
+                std::filesystem::path client2_path = client2_dir / exe_name;
+                
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Client 1 path: %s", selected_game.exe_path.c_str());
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Client 2 path: %s", client2_path.string().c_str());
+                
+                // Verify client 2 path exists
+                if (!std::filesystem::exists(client2_path)) {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Client 2 executable not found: %s", client2_path.string().c_str());
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Please manually create %s directory with game files", client2_dir.string().c_str());
+                    return;
+                }
+                
                 // Launch both clients quickly (OnlineSession style)
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Starting client 1 (Host)...");
-                bool success1 = on_launch_local_client1(selected_game.exe_path);
+                bool success1 = on_launch_local_client1(selected_game.exe_path);  // wanwan/game.exe
                 
                 if (success1) {
                     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Client 1 launched, starting client 2...");
                     
-                    // Launch client 2 immediately (no delay)
-                    bool success2 = on_launch_local_client2(selected_game.exe_path);
+                    // Launch client 2 from the "2" directory
+                    bool success2 = on_launch_local_client2(client2_path.string());  // wanwan2/game.exe
                     if (success2) {
                         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Client 2 (Guest) launched successfully");
                     } else {
@@ -1056,6 +1081,155 @@ void LauncherUI::RenderMultiClientTools() {
             }
         } else {
             ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "⚠ Client status unavailable");
+        }
+    }
+    
+    ImGui::Separator();
+    
+    // Client Debug Logs
+    if (ImGui::CollapsingHeader("Client Debug Logs", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("Real-time debug output from each client:");
+        ImGui::Separator();
+        
+        // Client 1 Log Section
+        ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f), "● Client 1 Log (Host)");
+        ImGui::SameLine();
+        if (ImGui::Button("Copy Client 1 Log")) {
+            // Read Client 1 log file and copy to clipboard
+            std::ifstream log_file("FM2K_Client1_Debug.log");
+            if (log_file.is_open()) {
+                std::stringstream buffer;
+                buffer << log_file.rdbuf();
+                log_file.close();
+                
+                std::string log_content = buffer.str();
+                if (!log_content.empty()) {
+                    SDL_SetClipboardText(log_content.c_str());
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Client 1 log copied to clipboard (%zu characters)", log_content.length());
+                } else {
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Client 1 log file is empty");
+                }
+            } else {
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Client 1 log file not found");
+            }
+        }
+        
+        // Display last few lines of Client 1 log
+        {
+            std::ifstream log_file("FM2K_Client1_Debug.log");
+            if (log_file.is_open()) {
+                std::vector<std::string> lines;
+                std::string line;
+                while (std::getline(log_file, line)) {
+                    lines.push_back(line);
+                }
+                log_file.close();
+                
+                // Show last 10 lines
+                size_t start_idx = lines.size() > 10 ? lines.size() - 10 : 0;
+                
+                ImGui::BeginChild("Client1Log", ImVec2(0, 120), true, ImGuiWindowFlags_HorizontalScrollbar);
+                for (size_t i = start_idx; i < lines.size(); ++i) {
+                    // Color-code different log levels
+                    if (lines[i].find("ERROR") != std::string::npos) {
+                        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", lines[i].c_str());
+                    } else if (lines[i].find("WARN") != std::string::npos) {
+                        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "%s", lines[i].c_str());
+                    } else if (lines[i].find("INPUT") != std::string::npos) {
+                        ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.8f, 1.0f), "%s", lines[i].c_str());
+                    } else {
+                        ImGui::Text("%s", lines[i].c_str());
+                    }
+                }
+                
+                // Auto-scroll to bottom
+                if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
+                    ImGui::SetScrollHereY(1.0f);
+                }
+                ImGui::EndChild();
+            } else {
+                ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "No log file available (client not started)");
+            }
+        }
+        
+        ImGui::Separator();
+        
+        // Client 2 Log Section
+        ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "● Client 2 Log (Guest)");
+        ImGui::SameLine();
+        if (ImGui::Button("Copy Client 2 Log")) {
+            // Read Client 2 log file and copy to clipboard
+            std::ifstream log_file("FM2K_Client2_Debug.log");
+            if (log_file.is_open()) {
+                std::stringstream buffer;
+                buffer << log_file.rdbuf();
+                log_file.close();
+                
+                std::string log_content = buffer.str();
+                if (!log_content.empty()) {
+                    SDL_SetClipboardText(log_content.c_str());
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Client 2 log copied to clipboard (%zu characters)", log_content.length());
+                } else {
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Client 2 log file is empty");
+                }
+            } else {
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Client 2 log file not found");
+            }
+        }
+        
+        // Display last few lines of Client 2 log
+        {
+            std::ifstream log_file("FM2K_Client2_Debug.log");
+            if (log_file.is_open()) {
+                std::vector<std::string> lines;
+                std::string line;
+                while (std::getline(log_file, line)) {
+                    lines.push_back(line);
+                }
+                log_file.close();
+                
+                // Show last 10 lines
+                size_t start_idx = lines.size() > 10 ? lines.size() - 10 : 0;
+                
+                ImGui::BeginChild("Client2Log", ImVec2(0, 120), true, ImGuiWindowFlags_HorizontalScrollbar);
+                for (size_t i = start_idx; i < lines.size(); ++i) {
+                    // Color-code different log levels
+                    if (lines[i].find("ERROR") != std::string::npos) {
+                        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", lines[i].c_str());
+                    } else if (lines[i].find("WARN") != std::string::npos) {
+                        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "%s", lines[i].c_str());
+                    } else if (lines[i].find("INPUT") != std::string::npos) {
+                        ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.8f, 1.0f), "%s", lines[i].c_str());
+                    } else {
+                        ImGui::Text("%s", lines[i].c_str());
+                    }
+                }
+                
+                // Auto-scroll to bottom
+                if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
+                    ImGui::SetScrollHereY(1.0f);
+                }
+                ImGui::EndChild();
+            } else {
+                ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "No log file available (client not started)");
+            }
+        }
+        
+        ImGui::Separator();
+        
+        // Log Management
+        ImGui::Text("Log Management:");
+        if (ImGui::Button("Clear All Logs")) {
+            // Clear both log files
+            std::ofstream("FM2K_Client1_Debug.log", std::ios::trunc).close();
+            std::ofstream("FM2K_Client2_Debug.log", std::ios::trunc).close();
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "All debug logs cleared");
+        }
+        
+        ImGui::SameLine();
+        if (ImGui::Button("Open Log Directory")) {
+            // Open the current directory in file explorer
+            system("explorer .");
         }
     }
     

@@ -1264,6 +1264,9 @@ bool FM2KLauncher::LaunchLocalClient(const std::string& game_path, bool is_host,
         return false;
     }
     
+    // Use the provided game path directly (user has manually set up wanwan2 if needed)
+    std::string actual_game_path = game_path;
+    
     // Create new game instance
     *target_instance = std::make_unique<FM2KGameInstance>();
     
@@ -1275,11 +1278,11 @@ bool FM2KLauncher::LaunchLocalClient(const std::string& game_path, bool is_host,
     (*target_instance)->SetEnvironmentVariable("FM2K_LOCAL_PORT", std::to_string(port));
     (*target_instance)->SetEnvironmentVariable("FM2K_REMOTE_ADDR", "127.0.0.1:" + std::to_string(is_host ? 7001 : 7000));
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launching FM2K game with OnlineSession-style config: %s", game_path.c_str());
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launching FM2K game with OnlineSession-style config: %s", actual_game_path.c_str());
     
     // Launch the actual FM2K game process with hook injection
-    if (!(*target_instance)->Launch(game_path)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to launch FM2K game: %s", game_path.c_str());
+    if (!(*target_instance)->Launch(actual_game_path)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to launch FM2K game: %s", actual_game_path.c_str());
         target_instance->reset();
         return false;
     }

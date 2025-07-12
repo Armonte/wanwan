@@ -5,6 +5,8 @@
 #include <iostream>
 #include <memory>
 #include <chrono>
+#include <fstream>
+#include <mutex>
 #include <SDL3/SDL.h>
 // Direct GekkoNet integration
 #include "gekkonet.h"
@@ -33,6 +35,92 @@ static bool is_online_mode = false;
 static bool is_host = false;
 static uint8_t player_index = 0;               // 0 = Player 1, 1 = Player 2 (set during GekkoNet init)
 static int local_player_handle = -1;           // Our local player handle for gekko_add_local_input
+
+// File logging system for debug output
+static std::ofstream log_file;
+static std::mutex log_mutex;
+static bool file_logging_enabled = false;
+
+// Custom SDL log output function that writes to both console and file
+static void CustomLogOutput(void* userdata, int category, SDL_LogPriority priority, const char* message) {
+    std::lock_guard<std::mutex> lock(log_mutex);
+    
+    // Get timestamp
+    auto now = std::chrono::system_clock::now();
+    auto time_t = std::chrono::system_clock::to_time_t(now);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()) % 1000;
+    
+    struct tm* tm_info = localtime(&time_t);
+    char timestamp[32];
+    strftime(timestamp, sizeof(timestamp), "%H:%M:%S", tm_info);
+    
+    // Format: [HH:MM:SS.mmm] [Player X] message
+    char formatted_message[2048];
+    snprintf(formatted_message, sizeof(formatted_message), "[%s.%03d] [Player %d] %s\n", 
+             timestamp, (int)ms.count(), player_index + 1, message);
+    
+    // Write to console (original SDL behavior)
+    printf("%s", formatted_message);
+    
+    // Write to file if enabled
+    if (file_logging_enabled && log_file.is_open()) {
+        log_file << formatted_message;
+        log_file.flush();  // Ensure immediate write for debugging
+    }
+}
+
+// Initialize file logging based on player index
+static void InitializeFileLogging() {
+    std::lock_guard<std::mutex> lock(log_mutex);
+    
+    if (file_logging_enabled) return;  // Already initialized
+    
+    // Create log filename based on player index
+    char log_filename[128];
+    snprintf(log_filename, sizeof(log_filename), "FM2K_Client%d_Debug.log", player_index + 1);
+    
+    // Open log file for writing (truncate existing)
+    log_file.open(log_filename, std::ios::out | std::ios::trunc);
+    if (log_file.is_open()) {
+        file_logging_enabled = true;
+        
+        // Set custom SDL log output function
+        SDL_SetLogOutputFunction(CustomLogOutput, nullptr);
+        
+        // Write initial header
+        auto now = std::chrono::system_clock::now();
+        auto time_t = std::chrono::system_clock::to_time_t(now);
+        struct tm* tm_info = localtime(&time_t);
+        char timestamp[64];
+        strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", tm_info);
+        
+        log_file << "=== FM2K Hook Debug Log - Client " << (player_index + 1) << " ===" << std::endl;
+        log_file << "Session started: " << timestamp << std::endl;
+        log_file << "Player Index: " << (int)player_index << std::endl;
+        log_file << "Is Host: " << (is_host ? "Yes" : "No") << std::endl;
+        log_file << "===============================================" << std::endl;
+        log_file.flush();
+        
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "File logging initialized: %s", log_filename);
+    } else {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Failed to open log file: %s", log_filename);
+    }
+}
+
+// Cleanup file logging
+static void CleanupFileLogging() {
+    std::lock_guard<std::mutex> lock(log_mutex);
+    
+    if (file_logging_enabled && log_file.is_open()) {
+        log_file << "=== Session ended ===" << std::endl;
+        log_file.close();
+        file_logging_enabled = false;
+        
+        // Restore default SDL log output
+        SDL_SetLogOutputFunction(nullptr, nullptr);
+    }
+}
 
 // Shared memory for configuration
 static HANDLE shared_memory_handle = nullptr;
@@ -1506,6 +1594,11 @@ bool InitializeGekkoNet() {
         player_index = static_cast<uint8_t>(atoi(env_player));
     }
     
+    // Initialize file logging after player_index is set
+    ::player_index = player_index;  // Set global player_index for logging
+    ::is_host = (player_index == 0); // Set global is_host for logging
+    InitializeFileLogging();
+    
     if (env_port) {
         local_port = static_cast<uint16_t>(atoi(env_port));
     }
@@ -2364,6 +2457,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             gekko_initialized = false;
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet session closed");
         }
+        
+        // Cleanup file logging
+        CleanupFileLogging();
         
         
         // Cleanup shared memory

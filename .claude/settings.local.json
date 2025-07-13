@@ -21,7 +21,10 @@
       "mcp__github_com_mrexodia_ida-pro-mcp__get_metadata",
       "mcp__github_com_mrexodia_ida-pro-mcp__list_functions",
       "Bash(python3:*)",
-      "mcp__github_com_mrexodia_ida-pro-mcp__get_function_by_name"
+      "mcp__github_com_mrexodia_ida-pro-mcp__get_function_by_name",
+      "mcp__github_com_mrexodia_ida-pro-mcp__read_memory_bytes",
+      "mcp__github_com_mrexodia_ida-pro-mcp__convert_number",
+      "mcp__github_com_mrexodia_ida-pro-mcp__data_read_byte"
     ],
     "deny": []
   }

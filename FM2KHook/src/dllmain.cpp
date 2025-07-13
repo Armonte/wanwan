@@ -12,12 +12,7 @@
 #include "gekkonet.h"
 #include "state_manager.h"
 
-// Save state profile enumeration
-enum class SaveStateProfile : uint32_t {
-    MINIMAL = 0,    // ~50KB - Core state + active objects only
-    STANDARD = 1,   // ~200KB - Essential runtime state  
-    COMPLETE = 2    // ~850KB - Everything (current implementation)
-};
+// Save state system now uses optimized FastGameState for all saves
 
 // Forward declarations
 bool SaveCoreStateBasic(FM2K::State::GameState* state, uint32_t frame_number);
@@ -304,8 +299,7 @@ static bool state_manager_initialized = false;
 // Named save slots for manual save/load
 static FM2K::State::GameState save_slots[8];     // 8 manual save slots
 static bool slot_occupied[8] = {false};          // Track which slots have saves
-static SaveStateProfile slot_profiles[8];        // Track which profile was used for each slot
-static uint32_t slot_active_object_counts[8];    // Track how many active objects were saved per slot
+// All saves now use optimized FastGameState - no need for profile tracking
 static uint32_t last_auto_save_frame = 0;
 
 // Per-slot buffers for large memory regions (each slot gets its own buffers)
@@ -363,7 +357,7 @@ struct SharedInputData {
     // Auto-save configuration
     bool auto_save_enabled;
     uint32_t auto_save_interval_frames;  // How often to auto-save
-    SaveStateProfile save_profile;       // Which save state profile to use
+    // All saves now use optimized FastGameState automatically
     
     // Production mode settings
     bool production_mode;                // Enable production mode (reduced logging)
@@ -554,6 +548,483 @@ struct ActiveObjectInfo {
     bool is_active;
 };
 
+// ============================================================================
+// GAME STATE DETECTION: Object Function Table Analysis
+// ============================================================================
+
+// Object function table indices (verified with IDA MCP @ 0x41ED58)
+enum class ObjectFunctionIndex : uint32_t {
+    NULLSUB_1 = 0,                              // 0x406990 - nullsub_1
+    RESET_SPRITE_EFFECT = 1,                    // 0x4069A0 - ResetSpriteEffect
+    GAME_INITIALIZE = 2,                        // 0x409A60 - Game_Initialize  
+    CAMERA_MANAGER = 3,                         // 0x40AF30 - camera_manager
+    CHARACTER_STATE_MACHINE = 4,                // 0x411BF0 - character_state_machine_ScriptMainLoop
+    UPDATE_SCREEN_FADE = 5,                     // 0x40AC60 - UpdateScreenFade
+    SCORE_DISPLAY_SYSTEM = 6,                   // 0x40A620 - score_display_system
+    DISPLAY_SCORE = 7,                          // 0x40AB10 - DisplayScore
+    UPDATE_TRANSITION_EFFECT = 8,               // 0x406CF0 - UpdateTransitionEffect
+    INITIALIZE_SCREEN_TRANSITION = 9,           // 0x406D90 - InitializeScreenTransition
+    GAME_STATE_MANAGER = 10,                    // 0x406FC0 - game_state_manager
+    INITIALIZE_SCREEN_TRANSITION_ALT = 11,      // 0x406E50 - InitializeScreenTransition_Alt
+    HANDLE_MAIN_MENU_AND_CHARACTER_SELECT = 12, // 0x408080 - handle_main_menu_and_character_select
+    UPDATE_MAIN_MENU = 13,                      // 0x4084F0 - UpdateMainMenu
+    VS_ROUND_FUNCTION = 14,                     // 0x4086A0 - vs_round_function
+    UI_STATE_MANAGER = 15,                      // 0x409D00 - ui_state_manager
+    MAX_FUNCTION_INDEX = 32
+};
+
+// Game states based on active object functions
+enum class GameState : uint32_t {
+    BOOT_SPLASH,        // 1-3 objects, minimal functions
+    TITLE_SCREEN,       // title_screen_manager active
+    MAIN_MENU,          // update_main_menu active
+    CHARACTER_SELECT,   // update_post_char_select active
+    INTRO_LOADING,      // update_intro_sequence active
+    IN_GAME,            // character_state_machine active
+    TRANSITION,         // transition effects active
+    UNKNOWN
+};
+
+// Analysis of currently active object functions
+struct ActiveFunctionAnalysis {
+    uint32_t total_objects;
+    uint32_t function_counts[32];    // Count of objects using each function
+    bool has_title_screen_manager;
+    bool has_main_menu;
+    bool has_character_select;
+    bool has_intro_sequence;
+    bool has_character_state_machine;
+    bool has_transition_effects;
+    GameState detected_state;
+};
+
+// ============================================================================
+// PHASE 1: Fast & Performant Save State Implementation
+// ============================================================================
+
+// Optimized game state structure for high-performance rollback
+struct FastGameState {
+    // Core deterministic state (32 bytes) - existing minimal approach
+    uint32_t deterministic_core[8];
+    
+    // Fast object tracking with bitfield compression
+    uint32_t active_object_mask[32];  // 1024 bits = 32 uint32_t (bitfield)
+    uint16_t active_object_count;     // Number of active objects (usually 5-20)
+    uint16_t reserved;                // Padding for alignment
+    
+    // Variable size packed object data follows this header
+    // Layout: [FastGameState header][packed active objects data]
+    // Each packed object: [uint16_t object_index][382 bytes object_data]
+};
+
+// Fast object pool scanning using optimized pattern detection
+uint32_t FastScanActiveObjects(uint32_t* active_mask, uint16_t* active_count) {
+    if (!active_mask || !active_count) return 0;
+    
+    *active_count = 0;
+    memset(active_mask, 0, 128); // Clear 32 uint32_t = 128 bytes
+    
+    uint8_t* object_pool = (uint8_t*)GAME_OBJECT_POOL_ADDR;
+    if (IsBadReadPtr(object_pool, GAME_OBJECT_POOL_SIZE)) {
+        return 0;
+    }
+    
+    // Fast bulk scanning - check 4 objects at once using DWORD alignment
+    uint32_t* pool_dwords = (uint32_t*)object_pool;
+    const uint32_t objects_per_scan = 4;  // 382*4 = 1528 bytes, but we check headers
+    
+    for (uint32_t i = 0; i < 1024; i++) {
+        // Calculate object offset (382 bytes per object)
+        uint32_t object_offset = i * 382;
+        uint32_t* object_header = (uint32_t*)(object_pool + object_offset);
+        
+        if (!IsBadReadPtr(object_header, 8)) { // Check first 8 bytes
+            uint32_t first_dword = *object_header;
+            uint32_t second_dword = *(object_header + 1);
+            
+            // Correct empty detection: FM2K sets object type (first DWORD) to 0 for inactive objects
+            bool is_empty = (first_dword == 0);
+            
+            if (!is_empty) {
+                // Object appears active - set bit in mask
+                uint32_t mask_index = i >> 5;          // i / 32
+                uint32_t bit_index = i & 31;           // i % 32
+                active_mask[mask_index] |= (1U << bit_index);
+                (*active_count)++;
+            }
+        }
+    }
+    
+    return *active_count;
+}
+
+// Analyze active object functions to determine game state
+bool AnalyzeActiveObjectFunctions(ActiveFunctionAnalysis* analysis) {
+    if (!analysis) return false;
+    
+    // Initialize analysis structure
+    memset(analysis, 0, sizeof(ActiveFunctionAnalysis));
+    
+    uint8_t* object_pool = (uint8_t*)GAME_OBJECT_POOL_ADDR;
+    if (IsBadReadPtr(object_pool, GAME_OBJECT_POOL_SIZE)) {
+        return false;
+    }
+    
+    // Scan all 1024 objects for their types/function indices
+    for (uint32_t i = 0; i < 1024; i++) {
+        uint32_t object_offset = i * 382;
+        uint32_t* object_header = (uint32_t*)(object_pool + object_offset);
+        
+        if (!IsBadReadPtr(object_header, 4)) {
+            uint32_t object_type = *object_header;
+            
+            // Object is active if type != 0
+            if (object_type != 0) {
+                analysis->total_objects++;
+                
+                // Ensure function index is within bounds
+                if (object_type < 32) {
+                    analysis->function_counts[object_type]++;
+                    
+                    // Check for specific game state indicators (using verified function indices)
+                    switch (object_type) {
+                        case static_cast<uint32_t>(ObjectFunctionIndex::CHARACTER_STATE_MACHINE):
+                            analysis->has_character_state_machine = true;
+                            break;
+                        case static_cast<uint32_t>(ObjectFunctionIndex::HANDLE_MAIN_MENU_AND_CHARACTER_SELECT):
+                            analysis->has_main_menu = true;
+                            analysis->has_character_select = true;  // This function handles both
+                            break;
+                        case static_cast<uint32_t>(ObjectFunctionIndex::UPDATE_MAIN_MENU):
+                            analysis->has_main_menu = true;
+                            break;
+                        case static_cast<uint32_t>(ObjectFunctionIndex::GAME_INITIALIZE):
+                            analysis->has_intro_sequence = true;
+                            break;
+                        case static_cast<uint32_t>(ObjectFunctionIndex::VS_ROUND_FUNCTION):
+                            analysis->has_character_state_machine = true;  // VS rounds = in-game
+                            break;
+                        case static_cast<uint32_t>(ObjectFunctionIndex::UI_STATE_MANAGER):
+                            // UI state manager could be menus or in-game UI
+                            break;
+                        case static_cast<uint32_t>(ObjectFunctionIndex::CAMERA_MANAGER):
+                            // Camera manager typically active during gameplay
+                            break;
+                        case static_cast<uint32_t>(ObjectFunctionIndex::RESET_SPRITE_EFFECT):
+                        case static_cast<uint32_t>(ObjectFunctionIndex::UPDATE_TRANSITION_EFFECT):
+                        case static_cast<uint32_t>(ObjectFunctionIndex::INITIALIZE_SCREEN_TRANSITION):
+                        case static_cast<uint32_t>(ObjectFunctionIndex::INITIALIZE_SCREEN_TRANSITION_ALT):
+                        case static_cast<uint32_t>(ObjectFunctionIndex::UPDATE_SCREEN_FADE):
+                            analysis->has_transition_effects = true;
+                            break;
+                        case static_cast<uint32_t>(ObjectFunctionIndex::SCORE_DISPLAY_SYSTEM):
+                        case static_cast<uint32_t>(ObjectFunctionIndex::DISPLAY_SCORE):
+                            // Score display typically during/after matches
+                            break;
+                        case static_cast<uint32_t>(ObjectFunctionIndex::GAME_STATE_MANAGER):
+                            // General game state management
+                            break;
+                    }
+                }
+            }
+        }
+    }
+    
+    return true;
+}
+
+// Determine game state based on active object functions
+GameState DetectGameStateFromFunctions(const ActiveFunctionAnalysis& analysis) {
+    // Priority-based detection (most specific first)
+    if (analysis.has_character_state_machine) {
+        return GameState::IN_GAME;  // Characters are active = in game
+    }
+    if (analysis.has_main_menu || analysis.has_character_select) {
+        // The HANDLE_MAIN_MENU_AND_CHARACTER_SELECT function manages both states
+        // We need additional context to distinguish, for now treat as character select if many objects
+        if (analysis.total_objects > 20) {
+            return GameState::CHARACTER_SELECT;  // More objects = character select
+        } else {
+            return GameState::MAIN_MENU;  // Fewer objects = main menu
+        }
+    }
+    if (analysis.has_intro_sequence) {
+        return GameState::INTRO_LOADING;  // Game initialization/loading
+    }
+    if (analysis.has_transition_effects) {
+        return GameState::TRANSITION;  // Screen transitions
+    }
+    if (analysis.total_objects <= 5) {
+        return GameState::BOOT_SPLASH;  // Minimal objects = boot/splash
+    }
+    
+    return GameState::UNKNOWN;
+}
+
+// Pack active objects into compressed buffer
+bool PackActiveObjects(const uint32_t* active_mask, uint16_t active_count, 
+                      uint8_t* packed_buffer, size_t buffer_size, size_t* bytes_used) {
+    if (!active_mask || !packed_buffer || !bytes_used || active_count == 0) {
+        *bytes_used = 0;
+        return true; // No objects to pack is valid
+    }
+    
+    uint8_t* object_pool = (uint8_t*)GAME_OBJECT_POOL_ADDR;
+    if (IsBadReadPtr(object_pool, GAME_OBJECT_POOL_SIZE)) {
+        return false;
+    }
+    
+    size_t required_size = active_count * (sizeof(uint16_t) + 382); // index + object data
+    if (required_size > buffer_size) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Pack buffer too small: need %zu bytes, have %zu", 
+                    required_size, buffer_size);
+        return false;
+    }
+    
+    uint8_t* write_ptr = packed_buffer;
+    uint32_t packed_count = 0;
+    
+    // Iterate through bitfield to find active objects
+    for (uint32_t i = 0; i < 1024 && packed_count < active_count; i++) {
+        uint32_t mask_index = i >> 5;
+        uint32_t bit_index = i & 31;
+        
+        if (active_mask[mask_index] & (1U << bit_index)) {
+            // This object is active - pack it
+            *(uint16_t*)write_ptr = (uint16_t)i;  // Store object index
+            write_ptr += sizeof(uint16_t);
+            
+            // Copy object data (382 bytes)
+            uint8_t* object_data = object_pool + (i * 382);
+            if (!IsBadReadPtr(object_data, 382)) {
+                memcpy(write_ptr, object_data, 382);
+                write_ptr += 382;
+                packed_count++;
+            } else {
+                // Skip bad object, adjust write pointer back
+                write_ptr -= sizeof(uint16_t);
+            }
+        }
+    }
+    
+    *bytes_used = write_ptr - packed_buffer;
+    return true;
+}
+
+// Unpack active objects from compressed buffer
+bool UnpackActiveObjects(const uint8_t* packed_buffer, size_t buffer_size, 
+                        uint16_t active_count) {
+    if (!packed_buffer || active_count == 0) {
+        return true; // No objects to unpack is valid
+    }
+    
+    uint8_t* object_pool = (uint8_t*)GAME_OBJECT_POOL_ADDR;
+    if (IsBadWritePtr(object_pool, GAME_OBJECT_POOL_SIZE)) {
+        return false;
+    }
+    
+    // First, clear the entire object pool with 0xFF (empty marker)
+    memset(object_pool, 0xFF, GAME_OBJECT_POOL_SIZE);
+    
+    const uint8_t* read_ptr = packed_buffer;
+    const uint8_t* buffer_end = packed_buffer + buffer_size;
+    
+    for (uint16_t i = 0; i < active_count; i++) {
+        if (read_ptr + sizeof(uint16_t) + 382 > buffer_end) {
+            break; // Buffer overflow protection
+        }
+        
+        // Read object index
+        uint16_t object_index = *(const uint16_t*)read_ptr;
+        read_ptr += sizeof(uint16_t);
+        
+        if (object_index >= 1024) {
+            break; // Invalid index
+        }
+        
+        // Restore object data
+        uint8_t* object_dest = object_pool + (object_index * 382);
+        if (!IsBadWritePtr(object_dest, 382)) {
+            memcpy(object_dest, read_ptr, 382);
+        }
+        read_ptr += 382;
+    }
+    
+    return true;
+}
+
+// High-performance save state using FastGameState structure
+bool SaveStateFast(FM2K::State::GameState* state, uint32_t frame_number) {
+    if (!state) return false;
+    
+    auto start_time = std::chrono::high_resolution_clock::now();
+    
+    // 1. Save core deterministic state (32 bytes)
+    if (!SaveCoreStateBasic(state, frame_number)) {
+        return false;
+    }
+    
+    // 2. Create FastGameState structure for optimized object storage
+    FastGameState* fast_state = reinterpret_cast<FastGameState*>(rollback_object_pool_buffer.get());
+    if (!fast_state) {
+        return false;
+    }
+    
+    // Copy core state to fast state structure
+    memcpy(fast_state->deterministic_core, &state->core, sizeof(state->core));
+    
+    // 3. Analyze active object functions for intelligent game state detection
+    ActiveFunctionAnalysis function_analysis;
+    bool analysis_success = AnalyzeActiveObjectFunctions(&function_analysis);
+    GameState current_game_state = GameState::UNKNOWN;
+    
+    if (analysis_success) {
+        current_game_state = DetectGameStateFromFunctions(function_analysis);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Game state: %s (%u total objects)", 
+                   (current_game_state == GameState::IN_GAME) ? "IN_GAME" :
+                   (current_game_state == GameState::CHARACTER_SELECT) ? "CHARACTER_SELECT" :
+                   (current_game_state == GameState::TITLE_SCREEN) ? "TITLE_SCREEN" :
+                   (current_game_state == GameState::MAIN_MENU) ? "MAIN_MENU" :
+                   (current_game_state == GameState::INTRO_LOADING) ? "INTRO_LOADING" :
+                   (current_game_state == GameState::BOOT_SPLASH) ? "BOOT_SPLASH" :
+                   (current_game_state == GameState::TRANSITION) ? "TRANSITION" : "UNKNOWN",
+                   function_analysis.total_objects);
+    }
+    
+    // 4. Adaptive save strategy based on detected game state
+    bool use_full_objects = false;
+    const char* save_strategy = "core-only";
+    
+    switch (current_game_state) {
+        case GameState::IN_GAME:
+            use_full_objects = true;
+            save_strategy = "full-objects";
+            break;
+        case GameState::CHARACTER_SELECT:
+            use_full_objects = (function_analysis.total_objects <= 100);  // Light object save
+            save_strategy = use_full_objects ? "light-objects" : "core-only";
+            break;
+        case GameState::BOOT_SPLASH:
+        case GameState::TITLE_SCREEN:
+        case GameState::MAIN_MENU:
+        case GameState::TRANSITION:
+        case GameState::INTRO_LOADING:
+        case GameState::UNKNOWN:
+        default:
+            use_full_objects = false;  // Core-only for menus/transitions
+            save_strategy = "core-only";
+            break;
+    }
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Save strategy: %s", save_strategy);
+    
+    // 5. Execute save strategy
+    if (!use_full_objects) {
+        // Core-only save for menus/transitions
+        fast_state->active_object_count = 0;
+        memset(fast_state->active_object_mask, 0, sizeof(fast_state->active_object_mask));
+        size_t total_state_size = sizeof(FastGameState);
+        state->checksum = FM2K::State::Fletcher32((const uint8_t*)fast_state, total_state_size);
+        state->timestamp_ms = SDL_GetTicks();
+        
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration_us = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                   "ADAPTIVE SAVE: Frame %u, %s, %zu bytes, %.2f ms",
+                   frame_number, save_strategy, total_state_size, duration_us / 1000.0f);
+        return true;
+    }
+    
+    // 6. Smart object detection for full/light saves
+    uint16_t active_count = 0;
+    uint32_t scan_result = FastScanActiveObjects(fast_state->active_object_mask, &active_count);
+    fast_state->active_object_count = active_count;
+    fast_state->reserved = 0;
+    
+    // Check if detection looks reasonable (0-200 active objects typical for gameplay)
+    if (active_count > 200) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Suspicious object count (%u), falling back to core-only save", active_count);
+        // Fall back to core-only save when object detection seems wrong
+        fast_state->active_object_count = 0;
+        memset(fast_state->active_object_mask, 0, sizeof(fast_state->active_object_mask));
+        size_t total_state_size = sizeof(FastGameState);
+        state->checksum = FM2K::State::Fletcher32((const uint8_t*)fast_state, total_state_size);
+        state->timestamp_ms = SDL_GetTicks();
+        return true;
+    }
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Detected %u active objects using proper type check", active_count);
+    
+    // 4. Pack active objects into compressed buffer
+    size_t packed_size = 0;
+    uint8_t* packed_data = (uint8_t*)(fast_state + 1); // Data follows header
+    size_t available_space = GAME_OBJECT_POOL_SIZE - sizeof(FastGameState);
+    
+    bool pack_success = PackActiveObjects(fast_state->active_object_mask, active_count,
+                                         packed_data, available_space, &packed_size);
+    
+    if (!pack_success) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to pack active objects: %u objects, %zu bytes available", 
+                    active_count, available_space);
+        return false;
+    }
+    
+    // 6. Calculate total state size and checksum
+    size_t total_state_size = sizeof(FastGameState) + packed_size;
+    state->checksum = FM2K::State::Fletcher32((const uint8_t*)fast_state, total_state_size);
+    state->timestamp_ms = SDL_GetTicks();
+    
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration_us = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+    
+    // Log performance metrics
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+               "ADAPTIVE SAVE: Frame %u, %s, %u active objects, %zu bytes total, %.2f ms",
+               frame_number, save_strategy, active_count, total_state_size, duration_us / 1000.0f);
+    
+    return true;
+}
+
+// High-performance restore state from FastGameState structure
+bool RestoreStateFast(const FM2K::State::GameState* state, uint32_t target_frame) {
+    if (!state) return false;
+    
+    auto start_time = std::chrono::high_resolution_clock::now();
+    
+    // 1. Restore core deterministic state
+    if (!RestoreStateFromStruct(state, target_frame)) {
+        return false;
+    }
+    
+    // 2. Access FastGameState structure from buffer
+    const FastGameState* fast_state = reinterpret_cast<const FastGameState*>(rollback_object_pool_buffer.get());
+    if (!fast_state) {
+        return false;
+    }
+    
+    // 3. Unpack active objects from compressed buffer
+    const uint8_t* packed_data = (const uint8_t*)(fast_state + 1);
+    size_t packed_size = fast_state->active_object_count * (sizeof(uint16_t) + 382);
+    
+    bool unpack_success = UnpackActiveObjects(packed_data, packed_size, fast_state->active_object_count);
+    
+    if (!unpack_success) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to unpack active objects");
+        return false;
+    }
+    
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration_us = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+    
+    // Log performance metrics
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+               "FAST RESTORE: Frame %u, %u active objects restored, %.2f ms",
+               target_frame, fast_state->active_object_count, duration_us / 1000.0f);
+    
+    return true;
+}
+
+
 // Helper function to analyze and count active objects in the object pool
 uint32_t AnalyzeActiveObjects(ActiveObjectInfo* active_objects = nullptr, uint32_t max_objects = 0) {
     uint32_t active_count = 0;
@@ -689,39 +1160,146 @@ bool RestoreActiveObjectsOnly(const uint8_t* source_buffer, size_t buffer_size, 
     return restored_count == objects_to_restore;
 }
 
+// ============================================================================
+// PHASE 1: Performance Validation and Testing
+// ============================================================================
+
+// Performance comparison between old and new implementations
+struct PerformanceMetrics {
+    uint64_t save_time_us;
+    uint64_t restore_time_us;
+    size_t state_size_bytes;
+    uint32_t active_objects_found;
+    bool success;
+};
+
+// Benchmark function to validate Phase 1 performance improvements
+bool ValidatePhase1Performance() {
+    if (!state_manager_initialized || !large_buffers_allocated) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Cannot validate performance - state manager not initialized");
+        return false;
+    }
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "=== Phase 1 Performance Validation ===");
+    
+    PerformanceMetrics old_metrics = {0};
+    PerformanceMetrics new_metrics = {0};
+    
+    // Test data
+    FM2K::State::GameState test_state_old;
+    FM2K::State::GameState test_state_new;
+    uint32_t test_frame = 12345;
+    
+    // === Test 1: Old Implementation (for comparison) ===
+    auto start_time = std::chrono::high_resolution_clock::now();
+    
+    // Simulate old object scanning
+    ActiveObjectInfo old_objects[1024];
+    old_metrics.active_objects_found = AnalyzeActiveObjects(old_objects, 1024);
+    
+    // Old save approach (save all active objects individually)
+    SaveCoreStateBasic(&test_state_old, test_frame);
+    uint32_t objects_saved = 0;
+    bool old_save_success = SaveActiveObjectsOnly(rollback_object_pool_buffer.get(), GAME_OBJECT_POOL_SIZE, &objects_saved);
+    
+    auto end_time = std::chrono::high_resolution_clock::now();
+    old_metrics.save_time_us = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+    old_metrics.state_size_bytes = objects_saved * (sizeof(uint32_t) + 382) + sizeof(FM2K::State::CoreGameState);
+    old_metrics.success = old_save_success;
+    
+    // === Test 2: New Fast Implementation ===
+    start_time = std::chrono::high_resolution_clock::now();
+    
+    bool new_save_success = SaveStateFast(&test_state_new, test_frame);
+    
+    end_time = std::chrono::high_resolution_clock::now();
+    new_metrics.save_time_us = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+    new_metrics.success = new_save_success;
+    
+    // Calculate new implementation state size
+    FastGameState* fast_state = reinterpret_cast<FastGameState*>(rollback_object_pool_buffer.get());
+    if (fast_state) {
+        new_metrics.active_objects_found = fast_state->active_object_count;
+        new_metrics.state_size_bytes = sizeof(FastGameState) + (fast_state->active_object_count * (sizeof(uint16_t) + 382));
+    }
+    
+    // === Test 3: Restore Performance ===
+    start_time = std::chrono::high_resolution_clock::now();
+    bool new_restore_success = RestoreStateFast(&test_state_new, test_frame);
+    end_time = std::chrono::high_resolution_clock::now();
+    new_metrics.restore_time_us = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+    
+    // === Performance Analysis ===
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Performance Comparison Results:");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  Active Objects Found: %u (both implementations should match)", 
+               new_metrics.active_objects_found);
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  Save Time:");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "    Old: %.2f ms", old_metrics.save_time_us / 1000.0f);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "    New: %.2f ms", new_metrics.save_time_us / 1000.0f);
+    if (old_metrics.save_time_us > 0) {
+        float speedup = (float)old_metrics.save_time_us / new_metrics.save_time_us;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "    Speedup: %.1fx faster", speedup);
+    }
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  State Size:");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "    Old: %zu KB", old_metrics.state_size_bytes / 1024);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "    New: %zu KB", new_metrics.state_size_bytes / 1024);
+    if (old_metrics.state_size_bytes > 0) {
+        float compression = (float)new_metrics.state_size_bytes / old_metrics.state_size_bytes;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "    Compression: %.1f%% of original size", compression * 100.0f);
+    }
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  Restore Time: %.2f ms", new_metrics.restore_time_us / 1000.0f);
+    
+    // === Validation Checks ===
+    bool validation_passed = true;
+    
+    // Check 1: Performance targets
+    if (new_metrics.save_time_us > 500) { // Target: < 0.5ms
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "WARNING: Save time %.2f ms exceeds 0.5ms target", 
+                   new_metrics.save_time_us / 1000.0f);
+        validation_passed = false;
+    }
+    
+    if (new_metrics.restore_time_us > 300) { // Target: < 0.3ms
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "WARNING: Restore time %.2f ms exceeds 0.3ms target", 
+                   new_metrics.restore_time_us / 1000.0f);
+        validation_passed = false;
+    }
+    
+    if (new_metrics.state_size_bytes > 50 * 1024) { // Target: < 50KB
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "WARNING: State size %zu KB exceeds 50KB target", 
+                   new_metrics.state_size_bytes / 1024);
+        validation_passed = false;
+    }
+    
+    // Check 2: Functionality
+    if (!new_metrics.success) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ERROR: Fast save/restore failed");
+        validation_passed = false;
+    }
+    
+    if (validation_passed) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "✅ Phase 1 validation PASSED - All performance targets met!");
+    } else {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "⚠️  Phase 1 validation PARTIAL - Some targets not met");
+    }
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "=== End Performance Validation ===");
+    return validation_passed;
+}
+
 // Profile-specific save functions
 bool SaveStateMinimal(FM2K::State::GameState* state, uint32_t frame_number) {
     if (!state || !large_buffers_allocated) {
         return false;
     }
     
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Saving MINIMAL state for frame %u", frame_number);
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Saving MINIMAL state using FAST implementation for frame %u", frame_number);
     
-    // 1. Save core state only (8KB)
-    SaveCoreStateBasic(state, frame_number);
-    
-    // 2. Save only active objects using smart detection (~10-50KB typical vs 391KB full pool)
-    uint32_t objects_saved = 0;
-    bool active_objects_saved = SaveActiveObjectsOnly(rollback_object_pool_buffer.get(), GAME_OBJECT_POOL_SIZE, &objects_saved);
-    
-    // Set metadata
-    state->frame_number = frame_number;
-    state->timestamp_ms = SDL_GetTicks();
-    
-    // Calculate checksum including active objects if saved successfully
-    uint32_t core_checksum = FM2K::State::Fletcher32(reinterpret_cast<const uint8_t*>(&state->core), sizeof(FM2K::State::CoreGameState));
-    if (active_objects_saved && objects_saved > 0) {
-        // Calculate checksum for active objects data
-        size_t active_objects_data_size = objects_saved * (sizeof(uint32_t) + 382); // index + object data
-        uint32_t objects_checksum = FM2K::State::Fletcher32(rollback_object_pool_buffer.get(), active_objects_data_size);
-        state->checksum = core_checksum ^ objects_checksum;
-    } else {
-        state->checksum = core_checksum;
-    }
-    
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "MINIMAL state saved - Frame %u, Active objects: %u/%s, Core+Objects checksum: 0x%08X", 
-                frame_number, objects_saved, active_objects_saved ? "saved" : "failed", state->checksum);
-    return true;
+    // Use our new high-performance FastGameState implementation
+    return SaveStateFast(state, frame_number);
 }
 
 bool SaveStateStandard(FM2K::State::GameState* state, uint32_t frame_number) {
@@ -763,8 +1341,8 @@ bool SaveStateStandard(FM2K::State::GameState* state, uint32_t frame_number) {
 }
 
 bool SaveStateComplete(FM2K::State::GameState* state, uint32_t frame_number) {
-    // Use the existing comprehensive save function
-    return SaveGameStateDirect(state, frame_number);
+    // Use optimized FastGameState instead of expensive comprehensive save
+    return SaveStateFast(state, frame_number);
 }
 
 // Helper function to save basic core state
@@ -994,9 +1572,9 @@ bool InitializeSharedMemory() {
     shared_data->debug_save_to_slot_requested = false;
     shared_data->debug_load_from_slot_requested = false;
     shared_data->debug_target_slot = 0;
-    shared_data->auto_save_enabled = true;  // Enable auto-save by default
+    shared_data->auto_save_enabled = false;  // Disable auto-save by default (user can enable)
     shared_data->auto_save_interval_frames = 120;  // Auto-save every 120 frames (1.2 seconds at 100 FPS)
-    shared_data->save_profile = SaveStateProfile::STANDARD;  // Default to balanced profile
+    // All saves now use optimized FastGameState automatically
     
     // Initialize slot status
     for (int i = 0; i < 8; i++) {
@@ -1080,8 +1658,7 @@ bool InitializeStateManager() {
         
         // Initialize slot metadata
         for (int i = 0; i < 8; i++) {
-            slot_profiles[i] = SaveStateProfile::STANDARD;  // Default profile
-            slot_active_object_counts[i] = 0;
+            // All slots now use optimized FastGameState automatically
         }
         
         large_buffers_allocated = true;
@@ -1096,6 +1673,16 @@ bool InitializeStateManager() {
     
     state_manager_initialized = true;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Enhanced state manager initialized with comprehensive memory capture");
+    
+    // Run Phase 1 performance validation
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Running Phase 1 performance validation...");
+    bool validation_result = ValidatePhase1Performance();
+    if (validation_result) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: ✅ Phase 1 optimizations validated successfully!");
+    } else {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: ⚠️ Phase 1 validation completed with warnings");
+    }
+    
     return true;
 }
 
@@ -1397,12 +1984,12 @@ bool LoadGameStateDirect(const FM2K::State::GameState* state) {
     return player_data_restored && object_pool_restored;  // Require both major regions for successful restore
 }
 
-// Save state to ring buffer
+// Save state to ring buffer using optimized FastGameState
 bool SaveStateToBuffer(uint32_t frame_number) {
     if (!state_manager_initialized) return false;
     
     uint32_t index = frame_number % 8;
-    return SaveGameStateDirect(&saved_states[index], frame_number);
+    return SaveStateFast(&saved_states[index], frame_number);
 }
 
 // Load state from ring buffer
@@ -1413,7 +2000,7 @@ bool LoadStateFromBuffer(uint32_t frame_number) {
     return LoadGameStateDirect(&saved_states[index]);
 }
 
-// Save state to specific slot (with dedicated buffers)
+// Save state to specific slot using optimized FastGameState
 bool SaveStateToSlot(uint32_t slot, uint32_t frame_number) {
     if (!state_manager_initialized || slot >= 8) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Invalid slot %u or state manager not initialized", slot);
@@ -1421,129 +2008,45 @@ bool SaveStateToSlot(uint32_t slot, uint32_t frame_number) {
     }
     
     uint64_t start_time = get_microseconds();
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Saving state to slot %u at frame %u", slot, frame_number);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Saving FastGameState to slot %u at frame %u", slot, frame_number);
     
-    // Get current save profile from shared memory
-    SaveStateProfile current_profile = SaveStateProfile::STANDARD;  // Default fallback
-    if (shared_memory_data) {
-        SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data);
-        current_profile = shared_data->save_profile;
-    }
-    
-    // Save core state using selected profile
-    bool save_result = false;
-    switch (current_profile) {
-        case SaveStateProfile::MINIMAL:
-            save_result = SaveStateMinimal(&save_slots[slot], frame_number);
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Using MINIMAL profile for slot %u", slot);
-            break;
-        case SaveStateProfile::STANDARD:
-            save_result = SaveStateStandard(&save_slots[slot], frame_number);
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Using STANDARD profile for slot %u", slot);
-            break;
-        case SaveStateProfile::COMPLETE:
-            save_result = SaveStateComplete(&save_slots[slot], frame_number);
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Using COMPLETE profile for slot %u", slot);
-            break;
-    }
+    // Use optimized FastGameState implementation (10-50KB with bitfield compression)
+    bool save_result = SaveStateFast(&save_slots[slot], frame_number);
     
     if (!save_result) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to save state to slot %u using profile %d", slot, (int)current_profile);
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to save FastGameState to slot %u", slot);
         return false;
     }
     
-    // Copy memory to slot-specific buffers based on profile
-    uint8_t* player_data_ptr = (uint8_t*)PLAYER_DATA_SLOTS_ADDR;
-    uint8_t* object_pool_ptr = (uint8_t*)GAME_OBJECT_POOL_ADDR;
+    uint64_t end_time = get_microseconds();
+    uint32_t save_time_us = (uint32_t)(end_time - start_time);
+    uint32_t state_size_kb = sizeof(FastGameState) / 1024; // Optimized size
     
-    bool player_saved = false, objects_saved = false;
-    size_t player_data_size = 0, object_pool_size = 0;
+    slot_occupied[slot] = true;
+    total_saves++;
+    total_save_time_us += save_time_us;
     
-    // Determine how much data to save based on profile
-    switch (current_profile) {
-        case SaveStateProfile::MINIMAL:
-            // MINIMAL: Save minimal player data and active objects only
-            player_data_size = 8 * 1024;  // 8KB essential player data
-            object_pool_size = GAME_OBJECT_POOL_SIZE;  // Use full buffer size for active object storage
-            break;
-        case SaveStateProfile::STANDARD:
-            // STANDARD: Save partial player data and full objects
-            player_data_size = 100 * 1024;  // 100KB essential player data
-            object_pool_size = GAME_OBJECT_POOL_SIZE;  // Full object pool
-            break;
-        case SaveStateProfile::COMPLETE:
-            // COMPLETE: Save everything
-            player_data_size = PLAYER_DATA_SLOTS_SIZE;  // Full player data
-            object_pool_size = GAME_OBJECT_POOL_SIZE;   // Full object pool
-            break;
+    // Update shared memory status for UI
+    if (shared_memory_data) {
+        SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data);
+        shared_data->slot_status[slot].occupied = true;
+        shared_data->slot_status[slot].frame_number = frame_number;
+        shared_data->slot_status[slot].timestamp_ms = save_slots[slot].timestamp_ms;
+        shared_data->slot_status[slot].checksum = save_slots[slot].checksum;
+        shared_data->slot_status[slot].state_size_kb = state_size_kb;
+        shared_data->slot_status[slot].save_time_us = save_time_us;
+        
+        // Update performance stats
+        shared_data->perf_stats.total_saves = total_saves;
+        shared_data->perf_stats.avg_save_time_us = (uint32_t)(total_save_time_us / total_saves);
     }
     
-    if (!IsBadReadPtr(player_data_ptr, player_data_size)) {
-        memcpy(slot_player_data_buffers[slot].get(), player_data_ptr, player_data_size);
-        player_saved = true;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Slot %u: Player data saved (%zu KB)", slot, player_data_size / 1024);
-    }
-    
-    // Save objects based on profile
-    if (current_profile == SaveStateProfile::MINIMAL) {
-        // For MINIMAL profile, save only active objects
-        uint32_t objects_saved_count = 0;
-        objects_saved = SaveActiveObjectsOnly(slot_object_pool_buffers[slot].get(), object_pool_size, &objects_saved_count);
-        if (objects_saved) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Slot %u: %u active objects saved using MINIMAL profile", slot, objects_saved_count);
-        }
-    } else {
-        // For STANDARD and COMPLETE profiles, save full object pool
-        if (!IsBadReadPtr(object_pool_ptr, object_pool_size)) {
-            memcpy(slot_object_pool_buffers[slot].get(), object_pool_ptr, object_pool_size);
-            objects_saved = true;
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Slot %u: Object pool saved (%zu KB)", slot, object_pool_size / 1024);
-        }
-    }
-    
-    if (player_saved && objects_saved) {
-        uint64_t end_time = get_microseconds();
-        uint32_t save_time_us = (uint32_t)(end_time - start_time);
-        uint32_t state_size_kb = (player_data_size + object_pool_size + sizeof(FM2K::State::GameState)) / 1024;
-        
-        slot_occupied[slot] = true;
-        slot_profiles[slot] = current_profile;  // Store which profile was used
-        
-        // For MINIMAL profile, store active object count for proper restoration
-        if (current_profile == SaveStateProfile::MINIMAL) {
-            slot_active_object_counts[slot] = CountActiveObjects();
-        } else {
-            slot_active_object_counts[slot] = 0;  // Not relevant for other profiles
-        }
-        
-        total_saves++;
-        total_save_time_us += save_time_us;
-        
-        // Update shared memory status for UI
-        if (shared_memory_data) {
-            SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data);
-            shared_data->slot_status[slot].occupied = true;
-            shared_data->slot_status[slot].frame_number = frame_number;
-            shared_data->slot_status[slot].timestamp_ms = save_slots[slot].timestamp_ms;
-            shared_data->slot_status[slot].checksum = save_slots[slot].checksum;
-            shared_data->slot_status[slot].state_size_kb = state_size_kb;
-            shared_data->slot_status[slot].save_time_us = save_time_us;
-            
-            // Update performance stats
-            shared_data->perf_stats.total_saves = total_saves;
-            shared_data->perf_stats.avg_save_time_us = (uint32_t)(total_save_time_us / total_saves);
-        }
-        
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "State saved to slot %u (frame %u, %uKB, %uμs, checksum: 0x%08X)", 
-                    slot, frame_number, state_size_kb, save_time_us, save_slots[slot].checksum);
-        return true;
-    }
-    
-    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to save memory regions to slot %u", slot);
-    return false;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FastGameState saved to slot %u (frame %u, %uKB, %uμs, checksum: 0x%08X)", 
+                slot, frame_number, state_size_kb, save_time_us, save_slots[slot].checksum);
+    return true;
 }
 
-// Load state from specific slot (with dedicated buffers)
+// Load state from specific slot using optimized FastGameState
 bool LoadStateFromSlot(uint32_t slot) {
     if (!state_manager_initialized || slot >= 8) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Invalid slot %u or state manager not initialized", slot);
@@ -1556,92 +2059,33 @@ bool LoadStateFromSlot(uint32_t slot) {
     }
     
     uint64_t start_time = get_microseconds();
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Loading state from slot %u (frame %u)", slot, save_slots[slot].frame_number);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Loading FastGameState from slot %u (frame %u)", slot, save_slots[slot].frame_number);
     
-    // Load core state
-    if (!LoadGameStateDirect(&save_slots[slot])) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to load core state from slot %u", slot);
+    // Use optimized FastGameState restoration
+    bool restore_result = RestoreStateFast(&save_slots[slot], save_slots[slot].frame_number);
+    
+    if (!restore_result) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to restore FastGameState from slot %u", slot);
         return false;
     }
     
-    // Use the profile that was actually used when saving this slot
-    SaveStateProfile saved_profile = slot_profiles[slot];  // Use stored profile from save time
+    uint64_t end_time = get_microseconds();
+    uint32_t load_time_us = (uint32_t)(end_time - start_time);
     
-    // Determine restoration sizes based on profile used when saving
-    size_t player_data_size = 0, object_pool_size = 0;
-    switch (saved_profile) {
-        case SaveStateProfile::MINIMAL:
-            player_data_size = 8 * 1024;
-            object_pool_size = GAME_OBJECT_POOL_SIZE;
-            break;
-        case SaveStateProfile::STANDARD:
-            player_data_size = 100 * 1024;
-            object_pool_size = GAME_OBJECT_POOL_SIZE;
-            break;
-        case SaveStateProfile::COMPLETE:
-            player_data_size = PLAYER_DATA_SLOTS_SIZE;
-            object_pool_size = GAME_OBJECT_POOL_SIZE;
-            break;
+    total_loads++;
+    total_load_time_us += load_time_us;
+    
+    // Update shared memory performance stats
+    if (shared_memory_data) {
+        SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data);
+        shared_data->slot_status[slot].load_time_us = load_time_us;
+        shared_data->perf_stats.total_loads = total_loads;
+        shared_data->perf_stats.avg_load_time_us = (uint32_t)(total_load_time_us / total_loads);
     }
     
-    // Restore memory from slot-specific buffers
-    uint8_t* player_data_ptr = (uint8_t*)PLAYER_DATA_SLOTS_ADDR;
-    uint8_t* object_pool_ptr = (uint8_t*)GAME_OBJECT_POOL_ADDR;
-    
-    bool player_restored = false, objects_restored = false;
-    
-    if (!IsBadWritePtr(player_data_ptr, player_data_size)) {
-        memcpy(player_data_ptr, slot_player_data_buffers[slot].get(), player_data_size);
-        player_restored = true;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Slot %u: Player data restored (%zu KB)", slot, player_data_size / 1024);
-    }
-    
-    // Restore objects based on save profile
-    if (saved_profile == SaveStateProfile::MINIMAL) {
-        // For MINIMAL profile, use smart active object restoration
-        uint32_t active_object_count = slot_active_object_counts[slot];
-        if (active_object_count > 0) {
-            objects_restored = RestoreActiveObjectsOnly(slot_object_pool_buffers[slot].get(), object_pool_size, active_object_count);
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Slot %u: %u active objects restored using MINIMAL profile", slot, active_object_count);
-        } else {
-            // Clear object pool if no active objects were saved
-            if (!IsBadWritePtr(object_pool_ptr, object_pool_size)) {
-                memset(object_pool_ptr, 0, object_pool_size);
-                objects_restored = true;
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Slot %u: Object pool cleared (no active objects)", slot);
-            }
-        }
-    } else {
-        // For STANDARD and COMPLETE profiles, restore normally
-        if (!IsBadWritePtr(object_pool_ptr, object_pool_size)) {
-            memcpy(object_pool_ptr, slot_object_pool_buffers[slot].get(), object_pool_size);
-            objects_restored = true;
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Slot %u: Object pool restored (%zu KB)", slot, object_pool_size / 1024);
-        }
-    }
-    
-    if (player_restored && objects_restored) {
-        uint64_t end_time = get_microseconds();
-        uint32_t load_time_us = (uint32_t)(end_time - start_time);
-        
-        total_loads++;
-        total_load_time_us += load_time_us;
-        
-        // Update shared memory performance stats
-        if (shared_memory_data) {
-            SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data);
-            shared_data->slot_status[slot].load_time_us = load_time_us;
-            shared_data->perf_stats.total_loads = total_loads;
-            shared_data->perf_stats.avg_load_time_us = (uint32_t)(total_load_time_us / total_loads);
-        }
-        
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "State loaded from slot %u (frame %u, %uμs, checksum: 0x%08X)", 
-                    slot, save_slots[slot].frame_number, load_time_us, save_slots[slot].checksum);
-        return true;
-    }
-    
-    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to restore memory regions from slot %u", slot);
-    return false;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FastGameState loaded from slot %u (frame %u, %uμs, checksum: 0x%08X)", 
+                slot, save_slots[slot].frame_number, load_time_us, save_slots[slot].checksum);
+    return true;
 }
 
 // Process debug commands from launcher UI

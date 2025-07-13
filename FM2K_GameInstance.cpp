@@ -8,12 +8,7 @@
 #include <codecvt>
 #include <windows.h>
 
-// Save state profile enumeration (matching DLL)
-enum class SharedSaveStateProfile : uint32_t {
-    MINIMAL = 0,    // ~50KB - Core state + active objects only
-    STANDARD = 1,   // ~200KB - Essential runtime state  
-    COMPLETE = 2    // ~850KB - Everything (current implementation)
-};
+// Save state profile removed - now using optimized FastGameState system
 
 // Shared memory structure matching the DLL
 struct SharedInputData {
@@ -45,7 +40,7 @@ struct SharedInputData {
     // Auto-save configuration
     bool auto_save_enabled;
     uint32_t auto_save_interval_frames;  // How often to auto-save
-    SharedSaveStateProfile save_profile;       // Which save state profile to use
+    // save_profile removed - now using optimized FastGameState system
     
     // Slot status feedback to UI
     struct SlotInfo {
@@ -730,20 +725,7 @@ bool FM2KGameInstance::GetSlotStatus(uint32_t slot, SlotStatus& status) {
     return true;
 }
 
-// Set save state profile
-bool FM2KGameInstance::SetSaveStateProfile(SaveStateProfile profile) {
-    if (!shared_memory_data_) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not available for save profile config");
-        return false;
-    }
-    
-    SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
-    shared_data->save_profile = static_cast<SharedSaveStateProfile>(profile);
-    
-    const char* profile_names[] = { "MINIMAL", "STANDARD", "COMPLETE" };
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Save state profile set to %s", profile_names[(int)profile]);
-    return true;
-}
+// SetSaveStateProfile method removed - now using optimized FastGameState system
 
 // Set client role for LocalNetworkAdapter (HOST = 0, GUEST = 1)
 bool FM2KGameInstance::SetClientRole(uint8_t player_index, bool is_host) {

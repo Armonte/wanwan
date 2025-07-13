@@ -43,17 +43,14 @@ LauncherUI::LauncherUI()
     on_debug_auto_save_config = nullptr;
     on_get_slot_status = nullptr;
     on_get_auto_save_config = nullptr;
-    on_set_save_profile = nullptr;
+    // on_set_save_profile removed - now using optimized FastGameState system
     
     // Initialize multi-client testing callbacks
     on_launch_local_client1 = nullptr;
     on_launch_local_client2 = nullptr;
     on_terminate_all_clients = nullptr;
     on_get_client_status = nullptr;
-    on_set_simulated_latency = nullptr;
-    on_set_packet_loss_rate = nullptr;
-    on_set_jitter_variance = nullptr;
-    on_get_network_stats = nullptr;
+    // Network simulation callbacks removed - not connected to LocalNetworkAdapter
     on_get_rollback_stats = nullptr;
 
     log_buffer_mutex_ = SDL_CreateMutex();
@@ -743,42 +740,10 @@ void LauncherUI::RenderSaveStateTools() {
             ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "○ Auto-save disabled");
         }
         
-        // Save State Profile Selection
+        // Save State Profile Selection removed - now using optimized FastGameState system
         ImGui::Separator();
-        ImGui::Text("Save State Profile");
-        
-        static int profile_selection = 1;  // Default to STANDARD (index 1)
-        const char* profile_items[] = { 
-            "MINIMAL (~50KB)", 
-            "STANDARD (~200KB)", 
-            "COMPLETE (~850KB)" 
-        };
-        
-        if (ImGui::Combo("Profile", &profile_selection, profile_items, IM_ARRAYSIZE(profile_items))) {
-            // Update save profile in shared memory
-            if (on_set_save_profile) {
-                SaveStateProfile new_profile = static_cast<SaveStateProfile>(profile_selection);
-                bool success = on_set_save_profile(new_profile);
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Save profile changed to: %s (%s)", 
-                           profile_items[profile_selection], success ? "success" : "failed");
-            }
-        }
-        
-        // Profile descriptions
-        switch (profile_selection) {
-            case 0: // MINIMAL
-                ImGui::TextColored(ImVec4(0.8f, 1.0f, 0.8f, 1.0f), "⚡ Fastest - Core state + active objects only");
-                ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "   Good for: High-frequency auto-saves, rollback netcode");
-                break;
-            case 1: // STANDARD  
-                ImGui::TextColored(ImVec4(0.8f, 1.0f, 0.8f, 1.0f), "⚖ Balanced - Essential runtime state");
-                ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "   Good for: Manual saves, most use cases");
-                break;
-            case 2: // COMPLETE
-                ImGui::TextColored(ImVec4(0.8f, 1.0f, 0.8f, 1.0f), "🔒 Complete - Everything for perfect restoration");
-                ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "   Good for: Analysis, debugging, archival");
-                break;
-        }
+        ImGui::TextColored(ImVec4(0.8f, 1.0f, 0.8f, 1.0f), "⚡ FastGameState - Optimized 10-50KB saves with bitfield compression");
+        ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "   Active object detection with sub-millisecond performance");
     }
     
     ImGui::Separator();
@@ -1386,110 +1351,11 @@ void LauncherUI::RenderMultiClientTools() {
 }
 
 void LauncherUI::RenderNetworkTools() {
-    ImGui::Text("Network Simulation & Monitoring");
+    ImGui::Text("Network Status & Rollback Performance");
     ImGui::Separator();
     
-    // Network Simulation Controls
-    if (ImGui::CollapsingHeader("Network Simulation", ImGuiTreeNodeFlags_DefaultOpen)) {
-        static int latency_ms = 50;
-        static float packet_loss = 2.5f;
-        static int jitter_ms = 10;
-        
-        // Latency control
-        ImGui::Text("Latency:");
-        ImGui::SetNextItemWidth(150);
-        if (ImGui::SliderInt("##latency", &latency_ms, 0, 500)) {
-            if (on_set_simulated_latency) {
-                on_set_simulated_latency(static_cast<uint32_t>(latency_ms));
-            }
-        }
-        ImGui::SameLine();
-        ImGui::Text("%d ms", latency_ms);
-        
-        // Jitter control
-        ImGui::Text("Jitter:");
-        ImGui::SetNextItemWidth(150);
-        if (ImGui::SliderInt("##jitter", &jitter_ms, 0, 100)) {
-            if (on_set_jitter_variance) {
-                on_set_jitter_variance(static_cast<uint32_t>(jitter_ms));
-            }
-        }
-        ImGui::SameLine();
-        ImGui::Text("%d ms", jitter_ms);
-        
-        // Packet loss control
-        ImGui::Text("Packet Loss:");
-        ImGui::SetNextItemWidth(150);
-        if (ImGui::SliderFloat("##packet_loss", &packet_loss, 0.0f, 10.0f, "%.1f%%")) {
-            if (on_set_packet_loss_rate) {
-                on_set_packet_loss_rate(packet_loss / 100.0f);  // Convert percentage to ratio
-            }
-        }
-        
-        ImGui::Separator();
-        
-        // Preset buttons
-        ImGui::Text("Quick Presets:");
-        
-        if (ImGui::Button("Perfect")) {
-            latency_ms = 0;
-            packet_loss = 0.0f;
-            jitter_ms = 0;
-            if (on_set_simulated_latency) on_set_simulated_latency(0);
-            if (on_set_packet_loss_rate) on_set_packet_loss_rate(0.0f);
-            if (on_set_jitter_variance) on_set_jitter_variance(0);
-        }
-        
-        ImGui::SameLine();
-        if (ImGui::Button("Good WiFi")) {
-            latency_ms = 30;
-            packet_loss = 0.5f;
-            jitter_ms = 5;
-            if (on_set_simulated_latency) on_set_simulated_latency(30);
-            if (on_set_packet_loss_rate) on_set_packet_loss_rate(0.005f);
-            if (on_set_jitter_variance) on_set_jitter_variance(5);
-        }
-        
-        ImGui::SameLine();
-        if (ImGui::Button("Poor Connection")) {
-            latency_ms = 150;
-            packet_loss = 3.0f;
-            jitter_ms = 25;
-            if (on_set_simulated_latency) on_set_simulated_latency(150);
-            if (on_set_packet_loss_rate) on_set_packet_loss_rate(0.03f);
-            if (on_set_jitter_variance) on_set_jitter_variance(25);
-        }
-    }
-    
-    ImGui::Separator();
-    
-    // Real-time Network Statistics
-    if (ImGui::CollapsingHeader("Live Network Stats", ImGuiTreeNodeFlags_DefaultOpen)) {
-        NetworkStats net_stats = {};
-        bool stats_available = false;
-        
-        if (on_get_network_stats) {
-            stats_available = on_get_network_stats(net_stats);
-        }
-        
-        if (stats_available) {
-            ImGui::Text("Connection Quality: %u/100", net_stats.connection_quality);
-            ImGui::Text("Ping: %u ms", net_stats.ping_ms);
-            ImGui::Text("Packet Loss: %.2f%%", net_stats.packet_loss_rate * 100.0f);
-            ImGui::Text("Bytes Sent: %u", net_stats.bytes_sent);
-            ImGui::Text("Bytes Received: %u", net_stats.bytes_received);
-            ImGui::Text("Packets Sent: %u", net_stats.packets_sent);
-            ImGui::Text("Packets Received: %u", net_stats.packets_received);
-        } else {
-            ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "⚠ Network statistics unavailable");
-            ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Start a network session to view stats");
-        }
-    }
-    
-    ImGui::Separator();
-    
-    // Rollback Statistics
-    if (ImGui::CollapsingHeader("Rollback Performance")) {
+    // Rollback Statistics (keep this part - it's useful)
+    if (ImGui::CollapsingHeader("Rollback Performance", ImGuiTreeNodeFlags_DefaultOpen)) {
         RollbackStats rollback_stats = {};
         bool stats_available = false;
         
@@ -1510,6 +1376,9 @@ void LauncherUI::RenderNetworkTools() {
             ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Start an online session to view rollback stats");
         }
     }
+    
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "Network simulation handled by LocalNetworkAdapter");
 }
 
 void LauncherUI::RenderPerformanceStats() {

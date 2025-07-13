@@ -4,12 +4,7 @@
 
 // Shared memory structures for communication between FM2K Hook DLL and Launcher
 
-// Save state profile enumeration (shared between hook and launcher)
-enum class SaveStateProfile : uint32_t {
-    MINIMAL = 0,    // ~50KB - Core state + active objects only
-    STANDARD = 1,   // ~200KB - Essential runtime state  
-    COMPLETE = 2    // ~850KB - Everything (current implementation)
-};
+// Save state profile removed - now using optimized FastGameState system
 
 // Shared performance statistics structure
 struct SharedPerformanceStats {
@@ -70,7 +65,7 @@ struct SharedInputData {
     // Auto-save configuration
     bool auto_save_enabled;
     uint32_t auto_save_interval_frames;  // How often to auto-save
-    SaveStateProfile save_profile;       // Which save state profile to use
+    // save_profile removed - now using optimized FastGameState system
     
     // Production mode settings
     bool production_mode;                // Enable production mode (reduced logging)

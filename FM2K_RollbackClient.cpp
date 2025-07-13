@@ -638,14 +638,7 @@ bool FM2KLauncher::Initialize() {
         return false;
     };
     
-    // Connect save profile callback
-    ui_->on_set_save_profile = [this](LauncherUI::SaveStateProfile profile) -> bool {
-        if (game_instance_) {
-            FM2KGameInstance::SaveStateProfile game_profile = static_cast<FM2KGameInstance::SaveStateProfile>(profile);
-            return game_instance_->SetSaveStateProfile(game_profile);
-        }
-        return false;
-    };
+    // Save profile callback removed - now using optimized FastGameState system
     
     // Connect slot status callback
     ui_->on_get_slot_status = [this](uint32_t slot, LauncherUI::SlotStatusInfo& status) -> bool {
@@ -691,36 +684,7 @@ bool FM2KLauncher::Initialize() {
         return true;
     };
     
-    // Network simulation callbacks (placeholder implementations)
-    ui_->on_set_simulated_latency = [this](uint32_t latency_ms) -> bool {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Set simulated latency: %u ms", latency_ms);
-        // TODO: Implement actual network simulation
-        return true;
-    };
-    
-    ui_->on_set_packet_loss_rate = [this](float loss_rate) -> bool {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Set packet loss rate: %.2f%%", loss_rate * 100.0f);
-        // TODO: Implement actual packet loss simulation
-        return true;
-    };
-    
-    ui_->on_set_jitter_variance = [this](uint32_t jitter_ms) -> bool {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Set jitter variance: %u ms", jitter_ms);
-        // TODO: Implement actual jitter simulation
-        return true;
-    };
-    
-    ui_->on_get_network_stats = [this](LauncherUI::NetworkStats& stats) -> bool {
-        // TODO: Implement actual network statistics gathering
-        stats.ping_ms = 25;
-        stats.packet_loss_rate = 0.01f;
-        stats.bytes_sent = 1024 * 1024;
-        stats.bytes_received = 1024 * 1024;
-        stats.packets_sent = 1000;
-        stats.packets_received = 990;
-        stats.connection_quality = 95;
-        return true;
-    };
+    // Network simulation callbacks removed - not connected to LocalNetworkAdapter
     
     ui_->on_get_rollback_stats = [this](RollbackStats& stats) -> bool {
         // Read real rollback statistics from hook DLL shared memory

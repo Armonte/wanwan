@@ -378,25 +378,11 @@ public:
     std::function<bool(AutoSaveConfig&)> on_get_auto_save_config;  // Get current auto-save settings
     
     // Multi-client testing data structures
-    struct NetworkStats {
-        uint32_t ping_ms;              // Current ping in milliseconds
-        float packet_loss_rate;        // Packet loss rate (0.0-1.0)
-        uint32_t bytes_sent;           // Total bytes sent
-        uint32_t bytes_received;       // Total bytes received
-        uint32_t packets_sent;         // Total packets sent
-        uint32_t packets_received;     // Total packets received
-        uint32_t connection_quality;   // Connection quality (0-100)
-    };
+    // NetworkStats struct removed - network stats handled by LocalNetworkAdapter
     
     // RollbackStats is now defined at global scope
     
-    // Save state profile callback
-    enum class SaveStateProfile : uint32_t {
-        MINIMAL = 0,    // ~50KB - Core state + active objects only
-        STANDARD = 1,   // ~200KB - Essential runtime state  
-        COMPLETE = 2    // ~850KB - Everything (current implementation)
-    };
-    std::function<bool(SaveStateProfile)> on_set_save_profile;  // Set save state profile
+    // Save state profile removed - now using optimized FastGameState system
     
     // ======= Multi-Client Testing Infrastructure =======
     
@@ -406,13 +392,9 @@ public:
     std::function<bool()> on_terminate_all_clients;                      // Kill all launched clients
     std::function<bool(uint32_t&, uint32_t&)> on_get_client_status;      // Get client process IDs (client1_pid, client2_pid)
     
-    // Network simulation and testing
-    std::function<bool(uint32_t)> on_set_simulated_latency;              // Set artificial latency in ms
-    std::function<bool(float)> on_set_packet_loss_rate;                  // Set packet loss percentage (0.0-1.0)
-    std::function<bool(uint32_t)> on_set_jitter_variance;                // Set latency jitter variance in ms
+    // Network simulation callbacks removed - not connected to LocalNetworkAdapter
     
-    // Network and rollback monitoring  
-    std::function<bool(NetworkStats&)> on_get_network_stats;             // Get real-time network statistics
+    // Rollback monitoring  
     std::function<bool(RollbackStats&)> on_get_rollback_stats;           // Get rollback performance data
     
     // Data binding

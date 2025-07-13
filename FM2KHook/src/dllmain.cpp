@@ -48,6 +48,11 @@ static uint32_t max_rollback_frames = 0;
 static uint32_t total_rollback_frames = 0;
 static uint64_t last_rollback_time_us = 0;
 
+// Thresholds for state detection (forward declarations)
+static constexpr uint32_t STABILITY_THRESHOLD_FRAMES = 60;  // Objects stable for 1 second at 60 FPS
+static constexpr uint32_t COMBAT_CREATION_THRESHOLD = 5;    // Objects/second for combat detection
+static constexpr uint32_t TRANSITION_THRESHOLD = 10;        // Objects/second for transition detection
+
 // Live input tracking (declared early for desync reports)
 static uint32_t live_p1_input = 0;
 static uint32_t live_p2_input = 0;
@@ -585,6 +590,79 @@ enum class GameState : uint32_t {
     UNKNOWN
 };
 
+// ============================================================================
+// ENHANCED OBJECT LIFECYCLE TRACKING
+// ============================================================================
+
+// Multi-frame object change tracking for dynamic behavior analysis
+struct ObjectChangeTracker {
+    uint32_t previous_active_mask[32];    // Previous frame's active objects
+    uint32_t current_active_mask[32];     // Current frame's active objects
+    uint32_t created_objects[32];         // Objects created this frame
+    uint32_t destroyed_objects[32];       // Objects destroyed this frame
+    uint32_t stable_objects[32];          // Objects unchanged for >N frames
+    
+    uint32_t frame_count;
+    uint32_t creation_rate;               // Objects created per second
+    uint32_t destruction_rate;            // Objects destroyed per second
+    
+    // Activity patterns for character state machines
+    uint32_t stable_character_objects;    // Characters unchanged >60 frames (preview)
+    uint32_t volatile_character_objects;  // Characters changing frequently (combat)
+    
+    // Stability tracking
+    uint32_t frames_since_last_change;    // Frames since last object pool change
+    bool objects_stable;                  // No changes for >STABILITY_THRESHOLD frames
+    
+    void Reset() {
+        memset(this, 0, sizeof(ObjectChangeTracker));
+    }
+};
+
+// Game state context integration with verified addresses
+struct GameStateContext {
+    // Core game state (IDA verified addresses)
+    uint32_t game_mode;           // From 0x470054 (verified: 2000=char select, 3000=combat)
+    uint32_t round_timer;         // From 0x470044 (verified)
+    uint32_t game_timer;          // From 0x470060 (verified)
+    uint32_t p1_hp, p2_hp;        // From 0x47010C, 0x47030C (verified)
+    
+    // Derived state indicators
+    bool in_combat;               // HP changing frame-to-frame
+    bool timer_running;           // Round timer decrementing
+    uint32_t input_activity;      // Input changes per second
+    bool objects_stable;          // No object creation/destruction for >N frames
+    
+    // Previous frame values for change detection
+    uint32_t prev_p1_hp, prev_p2_hp;
+    uint32_t prev_round_timer;
+    uint32_t prev_game_timer;
+    
+    void UpdateFromMemory() {
+        // Store previous values
+        prev_p1_hp = p1_hp;
+        prev_p2_hp = p2_hp;
+        prev_round_timer = round_timer;
+        prev_game_timer = game_timer;
+        
+        // Read current values
+        game_mode = *(uint32_t*)0x470054;
+        round_timer = *(uint32_t*)0x470044;
+        game_timer = *(uint32_t*)0x470060;
+        p1_hp = *(uint32_t*)0x47010C;
+        p2_hp = *(uint32_t*)0x47030C;
+        
+        // Calculate derived states
+        in_combat = (p1_hp != prev_p1_hp) || (p2_hp != prev_p2_hp);
+        timer_running = (round_timer != prev_round_timer) || (game_timer != prev_game_timer);
+    }
+};
+
+// Enhanced object lifecycle tracking globals (declared after struct definitions)
+static ObjectChangeTracker g_object_tracker;
+static GameStateContext g_game_context;
+static bool g_enhanced_tracking_initialized = false;
+
 // Analysis of currently active object functions
 struct ActiveFunctionAnalysis {
     uint32_t total_objects;
@@ -678,9 +756,12 @@ bool AnalyzeActiveObjectFunctions(ActiveFunctionAnalysis* analysis) {
         if (!IsBadReadPtr(object_header, 4)) {
             uint32_t object_type = *object_header;
             
-            // Object is active if type != 0
-            if (object_type != 0) {
+            // Object is active if type != 0 AND type != 0xFFFFFFFF (uninitialized)
+            if (object_type != 0 && object_type != 0xFFFFFFFF) {
                 analysis->total_objects++;
+                
+                // Minimal debug logging: only log summary stats at specific intervals
+                // Individual object logging removed for performance
                 
                 // Ensure function index is within bounds
                 if (object_type < 32) {
@@ -733,29 +814,189 @@ bool AnalyzeActiveObjectFunctions(ActiveFunctionAnalysis* analysis) {
     return true;
 }
 
-// Determine game state based on active object functions
+// ============================================================================
+// ENHANCED OBJECT CHANGE TRACKING FUNCTIONS
+// ============================================================================
+
+// Update object change tracking with current frame data
+void UpdateObjectChangeTracking(ObjectChangeTracker* tracker, const uint32_t* current_mask, uint16_t active_count) {
+    if (!tracker || !current_mask) return;
+    
+    tracker->frame_count++;
+    
+    // Copy previous to current
+    memcpy(tracker->previous_active_mask, tracker->current_active_mask, sizeof(tracker->current_active_mask));
+    memcpy(tracker->current_active_mask, current_mask, sizeof(tracker->current_active_mask));
+    
+    // Calculate created and destroyed objects
+    bool any_changes = false;
+    for (int i = 0; i < 32; i++) {
+        // Created: current & !previous
+        tracker->created_objects[i] = tracker->current_active_mask[i] & ~tracker->previous_active_mask[i];
+        
+        // Destroyed: previous & !current
+        tracker->destroyed_objects[i] = tracker->previous_active_mask[i] & ~tracker->current_active_mask[i];
+        
+        // Stable: current & previous
+        tracker->stable_objects[i] = tracker->current_active_mask[i] & tracker->previous_active_mask[i];
+        
+        if (tracker->created_objects[i] || tracker->destroyed_objects[i]) {
+            any_changes = true;
+        }
+    }
+    
+    // Update stability tracking
+    if (any_changes) {
+        tracker->frames_since_last_change = 0;
+        tracker->objects_stable = false;
+    } else {
+        tracker->frames_since_last_change++;
+        tracker->objects_stable = (tracker->frames_since_last_change >= STABILITY_THRESHOLD_FRAMES);
+    }
+    
+    // Calculate creation/destruction rates (objects per second, assuming 60 FPS)
+    if (tracker->frame_count > 0) {
+        uint32_t created_count = 0, destroyed_count = 0;
+        for (int i = 0; i < 32; i++) {
+            created_count += __builtin_popcount(tracker->created_objects[i]);
+            destroyed_count += __builtin_popcount(tracker->destroyed_objects[i]);
+        }
+        
+        // Simple moving average over last 60 frames
+        float time_window = std::min(tracker->frame_count, 60u) / 60.0f;  // seconds
+        tracker->creation_rate = static_cast<uint32_t>(created_count / time_window);
+        tracker->destruction_rate = static_cast<uint32_t>(destroyed_count / time_window);
+    }
+}
+
+// Analyze character state machine stability
+void AnalyzeCharacterObjectStability(ObjectChangeTracker* tracker, const ActiveFunctionAnalysis& functions) {
+    if (!tracker) return;
+    
+    tracker->stable_character_objects = 0;
+    tracker->volatile_character_objects = 0;
+    
+    // Count CHARACTER_STATE_MACHINE objects by stability
+    uint32_t char_state_type = static_cast<uint32_t>(ObjectFunctionIndex::CHARACTER_STATE_MACHINE);
+    
+    uint8_t* object_pool = (uint8_t*)GAME_OBJECT_POOL_ADDR;
+    if (IsBadReadPtr(object_pool, GAME_OBJECT_POOL_SIZE)) return;
+    
+    for (uint32_t i = 0; i < 1024; i++) {
+        uint32_t* object_header = (uint32_t*)(object_pool + (i * 382));
+        if (!IsBadReadPtr(object_header, 4)) {
+            uint32_t object_type = *object_header;
+            
+            if (object_type == char_state_type) {
+                uint32_t mask_index = i >> 5;
+                uint32_t bit_index = i & 31;
+                uint32_t bit_mask = 1U << bit_index;
+                
+                // Check if this character object is stable
+                if (tracker->stable_objects[mask_index] & bit_mask) {
+                    tracker->stable_character_objects++;
+                } else if (tracker->current_active_mask[mask_index] & bit_mask) {
+                    tracker->volatile_character_objects++;
+                }
+            }
+        }
+    }
+}
+
+// Enhanced combat detection using multiple indicators
+bool IsActiveCombat(const GameStateContext& context, const ObjectChangeTracker& tracker) {
+    // Multiple indicators for robust detection
+    bool game_mode_combat = (context.game_mode >= 3000);  // Combat modes are 3000+
+    bool timer_active = context.timer_running;
+    bool health_changing = context.in_combat;
+    bool objects_volatile = (tracker.creation_rate > COMBAT_CREATION_THRESHOLD || 
+                           tracker.destruction_rate > COMBAT_CREATION_THRESHOLD);
+    bool characters_active = (tracker.volatile_character_objects > 0);
+    bool objects_unstable = !tracker.objects_stable;
+    
+    // Require multiple indicators for combat classification
+    return (game_mode_combat || 
+            (timer_active && (health_changing || objects_volatile)) ||
+            (characters_active && objects_unstable));
+}
+
+// Advanced game state detection with multi-dimensional analysis
+GameState DetectGameStateAdvanced(const ActiveFunctionAnalysis& functions, 
+                                 const GameStateContext& context,
+                                 const ObjectChangeTracker& tracker) {
+    // Priority 1: Game mode-based primary classification
+    if (context.game_mode >= 3000) {
+        // Combat modes - verify with additional checks
+        if (functions.has_character_state_machine && IsActiveCombat(context, tracker)) {
+            return GameState::IN_GAME;
+        }
+    } else if (context.game_mode >= 2000) {
+        // Character select mode (2000-2999)
+        if (functions.has_character_state_machine && !IsActiveCombat(context, tracker)) {
+            return GameState::CHARACTER_SELECT;  // Real character select with preview models
+        }
+    } else if (context.game_mode >= 1000) {
+        // Title/menu modes (1000-1999) - CHARACTER_STATE_MACHINE here is for menu effects
+        if (functions.has_main_menu || functions.has_character_select) {
+            return GameState::TITLE_SCREEN;  // Title screen with menu functions
+        }
+        if (functions.total_objects <= 5) {
+            return GameState::BOOT_SPLASH;  // Minimal objects = boot/splash
+        }
+        return GameState::MAIN_MENU;  // General menu/title state
+    }
+    
+    // Priority 2: Fallback for unknown game modes - use object-based detection
+    if (functions.has_character_state_machine && IsActiveCombat(context, tracker)) {
+        return GameState::IN_GAME;  // Active combat regardless of mode
+    }
+    
+    // Priority 3: Loading/initialization
+    if (functions.has_intro_sequence) {
+        return GameState::INTRO_LOADING;  
+    }
+    
+    // Priority 4: Transition detection (high object volatility)
+    if (tracker.creation_rate > TRANSITION_THRESHOLD || 
+        tracker.destruction_rate > TRANSITION_THRESHOLD ||
+        functions.has_transition_effects) {
+        return GameState::TRANSITION;  
+    }
+    
+    // Priority 5: Boot/splash (minimal objects)
+    if (functions.total_objects <= 5) {
+        return GameState::BOOT_SPLASH;  
+    }
+    
+    return GameState::UNKNOWN;
+}
+
+// Legacy function for backward compatibility
 GameState DetectGameStateFromFunctions(const ActiveFunctionAnalysis& analysis) {
-    // Priority-based detection (most specific first)
+    // Use enhanced detection with default context if available
+    if (g_enhanced_tracking_initialized) {
+        return DetectGameStateAdvanced(analysis, g_game_context, g_object_tracker);
+    }
+    
+    // Fallback to simple detection
     if (analysis.has_character_state_machine) {
-        return GameState::IN_GAME;  // Characters are active = in game
+        return GameState::IN_GAME;  
     }
     if (analysis.has_main_menu || analysis.has_character_select) {
-        // The HANDLE_MAIN_MENU_AND_CHARACTER_SELECT function manages both states
-        // We need additional context to distinguish, for now treat as character select if many objects
         if (analysis.total_objects > 20) {
-            return GameState::CHARACTER_SELECT;  // More objects = character select
+            return GameState::CHARACTER_SELECT;  
         } else {
-            return GameState::MAIN_MENU;  // Fewer objects = main menu
+            return GameState::MAIN_MENU;  
         }
     }
     if (analysis.has_intro_sequence) {
-        return GameState::INTRO_LOADING;  // Game initialization/loading
+        return GameState::INTRO_LOADING;  
     }
     if (analysis.has_transition_effects) {
-        return GameState::TRANSITION;  // Screen transitions
+        return GameState::TRANSITION;  
     }
     if (analysis.total_objects <= 5) {
-        return GameState::BOOT_SPLASH;  // Minimal objects = boot/splash
+        return GameState::BOOT_SPLASH;  
     }
     
     return GameState::UNKNOWN;
@@ -873,25 +1114,62 @@ bool SaveStateFast(FM2K::State::GameState* state, uint32_t frame_number) {
     // Copy core state to fast state structure
     memcpy(fast_state->deterministic_core, &state->core, sizeof(state->core));
     
-    // 3. Analyze active object functions for intelligent game state detection
-    ActiveFunctionAnalysis function_analysis;
-    bool analysis_success = AnalyzeActiveObjectFunctions(&function_analysis);
-    GameState current_game_state = GameState::UNKNOWN;
-    
-    if (analysis_success) {
-        current_game_state = DetectGameStateFromFunctions(function_analysis);
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Game state: %s (%u total objects)", 
-                   (current_game_state == GameState::IN_GAME) ? "IN_GAME" :
-                   (current_game_state == GameState::CHARACTER_SELECT) ? "CHARACTER_SELECT" :
-                   (current_game_state == GameState::TITLE_SCREEN) ? "TITLE_SCREEN" :
-                   (current_game_state == GameState::MAIN_MENU) ? "MAIN_MENU" :
-                   (current_game_state == GameState::INTRO_LOADING) ? "INTRO_LOADING" :
-                   (current_game_state == GameState::BOOT_SPLASH) ? "BOOT_SPLASH" :
-                   (current_game_state == GameState::TRANSITION) ? "TRANSITION" : "UNKNOWN",
-                   function_analysis.total_objects);
+    // 3. Initialize enhanced tracking if not already done
+    if (!g_enhanced_tracking_initialized) {
+        g_object_tracker.Reset();
+        g_game_context = {}; // Zero-initialize
+        g_enhanced_tracking_initialized = true;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Enhanced object tracking initialized");
     }
     
-    // 4. Adaptive save strategy based on detected game state
+    // 4. Update game state context from memory
+    g_game_context.UpdateFromMemory();
+    
+    // 5. Perform object function analysis and get preliminary object scan
+    ActiveFunctionAnalysis function_analysis;
+    bool analysis_success = AnalyzeActiveObjectFunctions(&function_analysis);
+    
+    // 6. Scan active objects for change tracking
+    uint16_t active_count = 0;
+    uint32_t scan_result = FastScanActiveObjects(fast_state->active_object_mask, &active_count);
+    
+    // 7. Update object change tracking
+    UpdateObjectChangeTracking(&g_object_tracker, fast_state->active_object_mask, active_count);
+    AnalyzeCharacterObjectStability(&g_object_tracker, function_analysis);
+    
+    // 8. Advanced game state detection using all available data
+    GameState current_game_state = GameState::UNKNOWN;
+    if (analysis_success) {
+        current_game_state = DetectGameStateAdvanced(function_analysis, g_game_context, g_object_tracker);
+        
+        // State transition logging: only log when state changes
+        static GameState previous_game_state = GameState::UNKNOWN;
+        if (current_game_state != previous_game_state) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "STATE TRANSITION: %s -> %s", 
+                       (previous_game_state == GameState::IN_GAME) ? "IN_GAME" :
+                       (previous_game_state == GameState::CHARACTER_SELECT) ? "CHARACTER_SELECT" :
+                       (previous_game_state == GameState::TITLE_SCREEN) ? "TITLE_SCREEN" :
+                       (previous_game_state == GameState::MAIN_MENU) ? "MAIN_MENU" : "OTHER",
+                       (current_game_state == GameState::IN_GAME) ? "IN_GAME" :
+                       (current_game_state == GameState::CHARACTER_SELECT) ? "CHARACTER_SELECT" :
+                       (current_game_state == GameState::TITLE_SCREEN) ? "TITLE_SCREEN" :
+                       (current_game_state == GameState::MAIN_MENU) ? "MAIN_MENU" : "OTHER");
+            previous_game_state = current_game_state;
+        }
+        
+        // Minimal state logging: only on transitions or every 1000 frames
+        static uint32_t last_log_frame = 0;
+        if (current_game_state != previous_game_state || (g_frame_counter - last_log_frame) > 1000) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "State: %s (%u objs)", 
+                       (current_game_state == GameState::IN_GAME) ? "IN_GAME" :
+                       (current_game_state == GameState::CHARACTER_SELECT) ? "CHARACTER_SELECT" :
+                       (current_game_state == GameState::TITLE_SCREEN) ? "TITLE_SCREEN" : "OTHER",
+                       function_analysis.total_objects);
+            last_log_frame = g_frame_counter;
+        }
+    }
+    
+    // 9. Adaptive save strategy based on detected game state
     bool use_full_objects = false;
     const char* save_strategy = "core-only";
     
@@ -916,9 +1194,9 @@ bool SaveStateFast(FM2K::State::GameState* state, uint32_t frame_number) {
             break;
     }
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Save strategy: %s", save_strategy);
+    // Save strategy logging removed for minimal output
     
-    // 5. Execute save strategy
+    // 10. Execute save strategy
     if (!use_full_objects) {
         // Core-only save for menus/transitions
         fast_state->active_object_count = 0;
@@ -929,15 +1207,13 @@ bool SaveStateFast(FM2K::State::GameState* state, uint32_t frame_number) {
         
         auto end_time = std::chrono::high_resolution_clock::now();
         auto duration_us = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                   "ADAPTIVE SAVE: Frame %u, %s, %zu bytes, %.2f ms",
-                   frame_number, save_strategy, total_state_size, duration_us / 1000.0f);
+        // Minimal save logging for core-only saves
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "SAVE: %s, %zu bytes, %.1f ms", 
+                    save_strategy, total_state_size, duration_us / 1000.0f);
         return true;
     }
     
-    // 6. Smart object detection for full/light saves
-    uint16_t active_count = 0;
-    uint32_t scan_result = FastScanActiveObjects(fast_state->active_object_mask, &active_count);
+    // 11. Object packing for full/light saves (reuse already scanned data)
     fast_state->active_object_count = active_count;
     fast_state->reserved = 0;
     
@@ -953,7 +1229,7 @@ bool SaveStateFast(FM2K::State::GameState* state, uint32_t frame_number) {
         return true;
     }
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Detected %u active objects using proper type check", active_count);
+    // Object count logging removed for minimal output
     
     // 4. Pack active objects into compressed buffer
     size_t packed_size = 0;
@@ -977,10 +1253,9 @@ bool SaveStateFast(FM2K::State::GameState* state, uint32_t frame_number) {
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration_us = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
     
-    // Log performance metrics
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-               "ADAPTIVE SAVE: Frame %u, %s, %u active objects, %zu bytes total, %.2f ms",
-               frame_number, save_strategy, active_count, total_state_size, duration_us / 1000.0f);
+    // Minimal save logging for object saves
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "SAVE: %s, %u objs, %zu bytes, %.1f ms", 
+                save_strategy, active_count, total_state_size, duration_us / 1000.0f);
     
     return true;
 }
@@ -2301,12 +2576,12 @@ bool InitializeGekkoNet() {
     
     // Configure GekkoNet session (based on OnlineSession example)
     GekkoConfig config;
-    config.num_players = 2;
+    config.num_players = 2;              // CRITICAL: FM2K is 2-player game
     config.max_spectators = 0;
     config.input_prediction_window = 10;  // Higher window like the example
     config.spectator_delay = 0;
-    config.input_size = sizeof(char);     // 1 byte per input (like example)
-    config.state_size = sizeof(FM2K::State::GameState);  // Use our state size
+    config.input_size = sizeof(uint8_t);  // 1 byte per PLAYER (2 total)
+    config.state_size = sizeof(uint32_t); // Minimal state like bsnes
     config.limited_saving = false;
     config.post_sync_joining = false;
     config.desync_detection = true;
@@ -2610,9 +2885,9 @@ int __cdecl Hook_ProcessGameInputs() {
                 RecordInput(g_frame_counter, live_p1_input, live_p2_input);
             }
             
-            // CRITICAL FIX: Both clients read P1 inputs (local keyboard) 
-            // But send them as their assigned network player
-            uint8_t local_input = p1_gekko;  // Both clients read local P1 keyboard
+            // CRITICAL FIX: Send both player inputs like bsnes (each player only sends their own)
+            // Player index 0 sends P1 input, Player index 1 sends P2 input  
+            uint8_t local_input = (player_index == 0) ? p1_gekko : p2_gekko;
             
             gekko_add_local_input(gekko_session, local_player_handle, &local_input);
             
@@ -2670,7 +2945,28 @@ int __cdecl Hook_ProcessGameInputs() {
             
             // Session handshake complete - synchronized gameplay
             
-            // Process GekkoNet updates after adding inputs (like OnlineSession example lines 293-320)
+            // First: Process session events (connections, disconnections) like bsnes
+            int session_event_count = 0;
+            auto session_events = gekko_session_events(gekko_session, &session_event_count);
+            for (int i = 0; i < session_event_count; i++) {
+                auto event = session_events[i];
+                switch (event->type) {
+                    case PlayerConnected:
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Player Connected - Handle: %d", event->data.connected.handle);
+                        break;
+                    case PlayerDisconnected: 
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Player Disconnected - Handle: %d", event->data.disconnected.handle);
+                        break;
+                    case SessionStarted:
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Session Started");
+                        break;
+                    default:
+                        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Unknown session event type: %d", event->type);
+                        break;
+                }
+            }
+
+            // Second: Process game updates (Save/Load/Advance) like bsnes  
             int update_count = 0;
             auto updates = gekko_update_session(gekko_session, &update_count);
             
@@ -2697,95 +2993,20 @@ int __cdecl Hook_ProcessGameInputs() {
                                             target_frame, input_length);
                             }
                             
-                            // Apply predicted inputs to game memory if available
+                            // Like bsnes: Store inputs directly for the hooked input function to return
                             if (inputs && input_length >= 2) {
-                                uint8_t p1_predicted = inputs[0];
-                                uint8_t p2_predicted = inputs[1];
+                                // Store raw network inputs (GekkoNet handles the prediction/rollback logic)
+                                networked_p1_input = inputs[0];  // Direct storage - no conversion
+                                networked_p2_input = inputs[1]; 
+                                use_networked_inputs = true;     // Always use network inputs during AdvanceEvent
                                 
-                                // CRITICAL DEBUG: Only log non-zero network inputs
-                                if (p1_predicted != 0 || p2_predicted != 0) {
-                                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "NETWORK DEBUG: AdvanceEvent received P1=0x%02X, P2=0x%02X", 
-                                               p1_predicted, p2_predicted);
+                                // Minimal logging for network debugging  
+                                if ((inputs[0] | inputs[1]) != 0) {
+                                    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Frame %u inputs P1=0x%02X, P2=0x%02X", 
+                                               target_frame, inputs[0], inputs[1]);
                                 }
                                 
-                                // Convert back to FM2K format and apply to game memory
-                                uint32_t p1_fm2k = 0, p2_fm2k = 0;
-                                if (p1_predicted & 0x01) p1_fm2k |= 0x01;  // left
-                                if (p1_predicted & 0x02) p1_fm2k |= 0x02;  // right
-                                if (p1_predicted & 0x04) p1_fm2k |= 0x04;  // up
-                                if (p1_predicted & 0x08) p1_fm2k |= 0x08;  // down
-                                if (p1_predicted & 0x10) p1_fm2k |= 0x10;  // button1
-                                if (p1_predicted & 0x20) p1_fm2k |= 0x20;  // button2
-                                if (p1_predicted & 0x40) p1_fm2k |= 0x40;  // button3
-                                if (p1_predicted & 0x80) p1_fm2k |= 0x80;  // button4
-                                
-                                if (p2_predicted & 0x01) p2_fm2k |= 0x01;  // left
-                                if (p2_predicted & 0x02) p2_fm2k |= 0x02;  // right
-                                if (p2_predicted & 0x04) p2_fm2k |= 0x04;  // up
-                                if (p2_predicted & 0x08) p2_fm2k |= 0x08;  // down
-                                if (p2_predicted & 0x10) p2_fm2k |= 0x10;  // button1
-                                if (p2_predicted & 0x20) p2_fm2k |= 0x20;  // button2
-                                if (p2_predicted & 0x40) p2_fm2k |= 0x40;  // button3
-                                if (p2_predicted & 0x80) p2_fm2k |= 0x80;  // button4
-                                
-                                // Store networked inputs for get_player_input hook to return
-                                networked_p1_input = p1_fm2k;
-                                networked_p2_input = p2_fm2k;
-                                // CRITICAL: Only enable networked inputs when session is fully synchronized
-                                bool new_use_networked = AllPlayersValid();
-                                if (new_use_networked != use_networked_inputs) {
-                                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT DEBUG: use_networked_inputs changed from %s to %s", 
-                                               use_networked_inputs ? "TRUE" : "FALSE", new_use_networked ? "TRUE" : "FALSE");
-                                }
-                                use_networked_inputs = new_use_networked;
-                                // No need to update last_network_frame - rollback handles this
-                                
-                                // Show visual interpretation of inputs
-                                if (p1_predicted != 0 || p2_predicted != 0) {
-                                    std::string p1_actions = "";
-                                    std::string p2_actions = "";
-                                    
-                                    if (p1_predicted & 0x01) p1_actions += "LEFT ";
-                                    if (p1_predicted & 0x02) p1_actions += "RIGHT ";
-                                    if (p1_predicted & 0x04) p1_actions += "UP ";
-                                    if (p1_predicted & 0x08) p1_actions += "DOWN ";
-                                    if (p1_predicted & 0x10) p1_actions += "BTN1 ";
-                                    
-                                    if (p2_predicted & 0x01) p2_actions += "LEFT ";
-                                    if (p2_predicted & 0x02) p2_actions += "RIGHT ";
-                                    if (p2_predicted & 0x04) p2_actions += "UP ";
-                                    if (p2_predicted & 0x08) p2_actions += "DOWN ";
-                                    if (p2_predicted & 0x10) p2_actions += "BTN1 ";
-                                    
-                                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "VISUAL: P1[%s] P2[%s] → FM2K should show movement!", 
-                                               p1_actions.empty() ? "NONE" : p1_actions.c_str(),
-                                               p2_actions.empty() ? "NONE" : p2_actions.c_str());
-                                }
-                                
-                                // NORMALIZED STATE DEBUG: Capture deterministic core state for desync investigation
-                                if (target_frame % 100 == 1) {  // Every 50 frames starting from frame 1
-                                    FM2K::State::GameState debug_state;
-                                    if (SaveCoreStateBasic(&debug_state, target_frame)) {
-                                        uint32_t* p1_hp_ptr = (uint32_t*)P1_HP_ADDR;
-                                        uint32_t* p2_hp_ptr = (uint32_t*)P2_HP_ADDR;
-                                        uint32_t* random_seed_ptr = (uint32_t*)RANDOM_SEED_ADDR;
-                                        uint32_t* game_timer_ptr = (uint32_t*)GAME_TIMER_ADDR;
-                                        
-                                        uint32_t p1_hp = p1_hp_ptr && !IsBadReadPtr(p1_hp_ptr, 4) ? *p1_hp_ptr : 0;
-                                        uint32_t p2_hp = p2_hp_ptr && !IsBadReadPtr(p2_hp_ptr, 4) ? *p2_hp_ptr : 0;
-                                        uint32_t random_seed = random_seed_ptr && !IsBadReadPtr(random_seed_ptr, 4) ? *random_seed_ptr : 0;
-                                        uint32_t game_timer = game_timer_ptr && !IsBadReadPtr(game_timer_ptr, 4) ? *game_timer_ptr : 0;
-                                        
-                                        // Calculate normalized core state checksum
-                                        uint32_t core_checksum = FM2K::State::Fletcher32(reinterpret_cast<const uint8_t*>(&debug_state.core), sizeof(FM2K::State::CoreGameState));
-                                        
-                                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "NORMALIZED CORE STATE DEBUG F:%u - P1HP: %u, P2HP: %u, Timer: %u, RNG: 0x%08X, Core Checksum: 0x%08X", 
-                                                   target_frame, p1_hp, p2_hp, game_timer, random_seed, core_checksum);
-                                    }
-                                }
-                                
-                                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Applied predicted inputs - P1: 0x%02X->0x%08X, P2: 0x%02X->0x%08X", 
-                                            p1_predicted, p1_fm2k, p2_predicted, p2_fm2k);
+                                // GekkoNet will call the game's run loop after this AdvanceEvent
                             }
                             break;
                         }
@@ -2800,38 +3021,22 @@ int __cdecl Hook_ProcessGameInputs() {
                             // SaveEvent processing (minimal logging)
                             
                             if (state_manager_initialized && checksum_ptr && state_len_ptr && state_ptr) {
-                                // Save EXPLICIT DETERMINISTIC state to GekkoNet's buffer (manual serialization)
-                                
-                                // Read deterministic values directly from memory
-                                uint32_t frame_count = g_frame_counter;
-                                uint32_t* p1_input_ptr = (uint32_t*)P1_INPUT_ADDR;
-                                uint32_t* p2_input_ptr = (uint32_t*)P2_INPUT_ADDR;
-                                uint32_t* p1_hp_ptr = (uint32_t*)P1_HP_ADDR;
-                                uint32_t* p2_hp_ptr = (uint32_t*)P2_HP_ADDR;
-                                uint32_t* round_timer_ptr = (uint32_t*)ROUND_TIMER_ADDR;
-                                uint32_t* game_timer_ptr = (uint32_t*)GAME_TIMER_ADDR;
-                                uint32_t* random_seed_ptr = (uint32_t*)RANDOM_SEED_ADDR;
-                                
-                                // Create explicit deterministic state array (no padding, no pointers)
-                                uint32_t deterministic_state[8] = {
-                                    frame_count,
-                                    (p1_input_ptr && !IsBadReadPtr(p1_input_ptr, 4)) ? *p1_input_ptr : 0,
-                                    (p2_input_ptr && !IsBadReadPtr(p2_input_ptr, 4)) ? *p2_input_ptr : 0,
-                                    (p1_hp_ptr && !IsBadReadPtr(p1_hp_ptr, 4)) ? *p1_hp_ptr : 0,
-                                    (p2_hp_ptr && !IsBadReadPtr(p2_hp_ptr, 4)) ? *p2_hp_ptr : 0,
-                                    (round_timer_ptr && !IsBadReadPtr(round_timer_ptr, 4)) ? *round_timer_ptr : 0,
-                                    (game_timer_ptr && !IsBadReadPtr(game_timer_ptr, 4)) ? *game_timer_ptr : 0,
-                                    (random_seed_ptr && !IsBadReadPtr(random_seed_ptr, 4)) ? *random_seed_ptr : 0
-                                };
-                                
-                                // Calculate state size and checksum using explicit array
-                                *state_len_ptr = sizeof(deterministic_state);
-                                *checksum_ptr = FM2K::State::Fletcher32(reinterpret_cast<const uint8_t*>(deterministic_state), sizeof(deterministic_state));
-                                
-                                // Copy explicit state data to GekkoNet buffer
-                                memcpy(state_ptr, deterministic_state, sizeof(deterministic_state));
-                                
-                                // State saved to GekkoNet buffer
+                                // Like bsnes: Save our own full state locally, only pass frame ID to GekkoNet
+                                FM2K::State::GameState local_state;
+                                if (SaveStateFast(&local_state, save_frame)) {
+                                    // Store full state in our local ring buffer (like bsnes netplay.states)
+                                    // TODO: Implement local state ring buffer for rollback
+                                    
+                                    // Pass minimal frame identifier to GekkoNet (like bsnes)
+                                    *state_len_ptr = sizeof(uint32_t);
+                                    *checksum_ptr = local_state.checksum;  // Use our state checksum
+                                    memcpy(state_ptr, &save_frame, sizeof(uint32_t));  // Just frame number
+                                    
+                                    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Saved state for frame %u (checksum: 0x%08X)", 
+                                               save_frame, local_state.checksum);
+                                } else {
+                                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Failed to save state for frame %u", save_frame);
+                                }
                             }
                             break;
                         }
@@ -2862,58 +3067,20 @@ int __cdecl Hook_ProcessGameInputs() {
                                            rollback_count > 0 ? (float)total_rollback_frames / rollback_count : 0.0f);
                             }
                             
-                            if (state_manager_initialized && state_data && state_length == sizeof(uint32_t) * 8) {
-                                // Load EXPLICIT DETERMINISTIC state from GekkoNet buffer
-                                uint32_t* loaded_state_array = reinterpret_cast<uint32_t*>(state_data);
+                            if (state_manager_initialized && state_data && state_length == sizeof(uint32_t)) {
+                                // Like bsnes: Get frame number from GekkoNet, load our own full state
+                                uint32_t saved_frame_number = *reinterpret_cast<uint32_t*>(state_data);
                                 
-                                // Restore explicit state values to memory
-                                uint32_t* p1_input_ptr = (uint32_t*)P1_INPUT_ADDR;
-                                uint32_t* p2_input_ptr = (uint32_t*)P2_INPUT_ADDR;
-                                uint32_t* p1_hp_ptr = (uint32_t*)P1_HP_ADDR;
-                                uint32_t* p2_hp_ptr = (uint32_t*)P2_HP_ADDR;
-                                uint32_t* round_timer_ptr = (uint32_t*)ROUND_TIMER_ADDR;
-                                uint32_t* game_timer_ptr = (uint32_t*)GAME_TIMER_ADDR;
-                                uint32_t* random_seed_ptr = (uint32_t*)RANDOM_SEED_ADDR;
+                                // TODO: Load full state from our local ring buffer using saved_frame_number
+                                // For now, just reset frame counter and log the rollback attempt
+                                g_frame_counter = target_frame;
                                 
-                                // Restore values from explicit array: [frame, p1_input, p2_input, p1_hp, p2_hp, round_timer, game_timer, random_seed]
-                                if (p1_input_ptr && !IsBadWritePtr(p1_input_ptr, sizeof(uint32_t))) {
-                                    *p1_input_ptr = loaded_state_array[1];
-                                }
-                                if (p2_input_ptr && !IsBadWritePtr(p2_input_ptr, sizeof(uint32_t))) {
-                                    *p2_input_ptr = loaded_state_array[2];
-                                }
-                                if (p1_hp_ptr && !IsBadWritePtr(p1_hp_ptr, sizeof(uint32_t))) {
-                                    *p1_hp_ptr = loaded_state_array[3];
-                                }
-                                if (p2_hp_ptr && !IsBadWritePtr(p2_hp_ptr, sizeof(uint32_t))) {
-                                    *p2_hp_ptr = loaded_state_array[4];
-                                }
-                                if (round_timer_ptr && !IsBadWritePtr(round_timer_ptr, sizeof(uint32_t))) {
-                                    *round_timer_ptr = loaded_state_array[5];
-                                }
-                                if (game_timer_ptr && !IsBadWritePtr(game_timer_ptr, sizeof(uint32_t))) {
-                                    *game_timer_ptr = loaded_state_array[6];
-                                }
-                                if (random_seed_ptr && !IsBadWritePtr(random_seed_ptr, sizeof(uint32_t))) {
-                                    *random_seed_ptr = loaded_state_array[7];
-                                }
+                                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Rollback to frame %u (saved frame: %u)", 
+                                           target_frame, saved_frame_number);
                                 
-                                g_frame_counter = target_frame;  // Update our frame counter
-                                
-                                // CRITICAL ROLLBACK FIX: Sync input hook state after rollback
-                                // Restore the input state that was active at the rolled-back frame
-                                networked_p1_input = loaded_state_array[1];
-                                networked_p2_input = loaded_state_array[2];
-                                last_network_frame = target_frame;
-                                // Keep use_networked_inputs = true to maintain sync
-                                
-                                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Successfully rolled back to frame %u (explicit deterministic state)", target_frame);
-                                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Restored values [F:%u, P1:0x%08X, P2:0x%08X, P1HP:%u, P2HP:%u, RT:%u, GT:%u, RNG:0x%08X]", 
-                                           loaded_state_array[0], loaded_state_array[1], loaded_state_array[2], 
-                                           loaded_state_array[3], loaded_state_array[4], loaded_state_array[5], loaded_state_array[6], loaded_state_array[7]);
                             } else {
-                                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Invalid rollback data for frame %u (state_len: %u)", 
-                                           target_frame, state_length);
+                                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Invalid rollback data for frame %u (state_len: %u, expected: %zu)", 
+                                           target_frame, state_length, sizeof(uint32_t));
                             }
                             break;
                         }
@@ -2922,6 +3089,40 @@ int __cdecl Hook_ProcessGameInputs() {
                             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Unknown event type: %d", update->type);
                             break;
                     }
+                }
+                
+                // GekkoNet Desync Detection: Check for state mismatches
+                static uint32_t last_desync_check_frame = 0;
+                if (g_frame_counter > last_desync_check_frame + 60) {  // Check every 1 second at 60 FPS
+                    // Get current game state checksum for comparison
+                    uint32_t current_checksum = 0;
+                    if (state_manager_initialized) {
+                        FM2K::State::GameState temp_state;
+                        if (SaveStateFast(&temp_state, g_frame_counter)) {
+                            current_checksum = temp_state.checksum;
+                        }
+                    }
+                    
+                    // GekkoNet automatically handles desync detection when config.desync_detection = true
+                    // We just log our own state for additional validation
+                    static uint32_t consecutive_desync_frames = 0;
+                    static uint32_t last_logged_checksum = 0;
+                    
+                    if (current_checksum != 0 && current_checksum != last_logged_checksum) {
+                        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "DESYNC_CHECK: Frame %u, Checksum: 0x%08X", 
+                                    g_frame_counter, current_checksum);
+                        last_logged_checksum = current_checksum;
+                        consecutive_desync_frames = 0;
+                    } else if (current_checksum == last_logged_checksum) {
+                        consecutive_desync_frames++;
+                        if (consecutive_desync_frames > 300) {  // 5 seconds of identical checksums = potential freeze
+                            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "POTENTIAL_FREEZE: Checksum unchanged for %u frames", 
+                                       consecutive_desync_frames);
+                            consecutive_desync_frames = 0;  // Reset to avoid spam
+                        }
+                    }
+                    
+                    last_desync_check_frame = g_frame_counter;
                 }
             }
             

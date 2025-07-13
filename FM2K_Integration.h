@@ -217,6 +217,20 @@ struct NetworkConfig {
     }
 };
 
+// Rollback performance statistics (standalone, used by both launcher and UI)
+struct RollbackStats {
+    uint32_t rollbacks_per_second; // Current rollback frequency
+    uint32_t max_rollback_frames;  // Maximum rollback distance
+    uint32_t avg_rollback_frames;  // Average rollback distance
+    float frame_advantage;         // Current frame advantage
+    uint32_t input_delay_frames;   // Current input delay
+    uint32_t confirmed_frames;     // Number of confirmed frames
+    uint32_t speculative_frames;   // Number of speculative frames
+};
+
+// Forward declaration
+class LauncherUI;
+
 // Main launcher class
 class FM2KLauncher {
 public:
@@ -307,6 +321,9 @@ private:
     
     // Games directory (root where FM2K games are located)
     std::string games_root_path_;
+    
+    // Helper method to read rollback statistics from hook shared memory  
+    bool ReadRollbackStatsFromSharedMemory(RollbackStats& stats);
 };
 
 // Game instance management - see FM2K_GameInstance.h for full definition
@@ -371,15 +388,7 @@ public:
         uint32_t connection_quality;   // Connection quality (0-100)
     };
     
-    struct RollbackStats {
-        uint32_t rollbacks_per_second; // Current rollback frequency
-        uint32_t max_rollback_frames;  // Maximum rollback distance
-        uint32_t avg_rollback_frames;  // Average rollback distance
-        float frame_advantage;         // Current frame advantage
-        uint32_t input_delay_frames;   // Current input delay
-        uint32_t confirmed_frames;     // Number of confirmed frames
-        uint32_t speculative_frames;   // Number of speculative frames
-    };
+    // RollbackStats is now defined at global scope
     
     // Save state profile callback
     enum class SaveStateProfile : uint32_t {

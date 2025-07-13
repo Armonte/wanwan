@@ -8,6 +8,7 @@
 #include "MinHook.h"
 #include "FM2K_GameInstance.h"
 #include "FM2K_Integration.h"
+#include "FM2K_SharedMemory.h"
 #include "LocalSession.h"
 #include "OnlineSession.h"
 
@@ -721,16 +722,9 @@ bool FM2KLauncher::Initialize() {
         return true;
     };
     
-    ui_->on_get_rollback_stats = [this](LauncherUI::RollbackStats& stats) -> bool {
-        // TODO: Implement actual rollback statistics gathering
-        stats.rollbacks_per_second = 2;
-        stats.max_rollback_frames = 8;
-        stats.avg_rollback_frames = 3;
-        stats.frame_advantage = 1.2f;
-        stats.input_delay_frames = 2;
-        stats.confirmed_frames = 1200;
-        stats.speculative_frames = 6;
-        return true;
+    ui_->on_get_rollback_stats = [this](RollbackStats& stats) -> bool {
+        // Read real rollback statistics from hook DLL shared memory
+        return ReadRollbackStatsFromSharedMemory(stats);
     };
     
     // If no games directory stored, default to <base>/games before first discovery
@@ -1278,6 +1272,10 @@ bool FM2KLauncher::LaunchLocalClient(const std::string& game_path, bool is_host,
     (*target_instance)->SetEnvironmentVariable("FM2K_LOCAL_PORT", std::to_string(port));
     (*target_instance)->SetEnvironmentVariable("FM2K_REMOTE_ADDR", "127.0.0.1:" + std::to_string(is_host ? 7001 : 7000));
     
+    // Add production mode and input recording settings
+    (*target_instance)->SetEnvironmentVariable("FM2K_PRODUCTION_MODE", "0");  // Default to debug mode for now
+    (*target_instance)->SetEnvironmentVariable("FM2K_INPUT_RECORDING", "1");  // Enable input recording by default
+    
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launching FM2K game with OnlineSession-style config: %s", actual_game_path.c_str());
     
     // Launch the actual FM2K game process with hook injection
@@ -1410,5 +1408,68 @@ bool FM2KLauncher::StartLocalSession() {
 void FM2KLauncher::StopLocalSession() {
     // TODO: Implement session stopping when GekkoNet provides the API
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Stopping GekkoNet local session");
+}
+
+bool FM2KLauncher::ReadRollbackStatsFromSharedMemory(RollbackStats& stats) {
+    // Try to read from both client processes (prioritize the first active one)
+    bool stats_read = false;
+    
+    // Check Client 1 first
+    if (client1_process_id_ != 0) {
+        std::string shared_memory_name = "FM2K_InputSharedMemory_" + std::to_string(client1_process_id_);
+        HANDLE shared_memory_handle = OpenFileMappingA(FILE_MAP_READ, FALSE, shared_memory_name.c_str());
+        
+        if (shared_memory_handle != nullptr) {
+            SharedInputData* shared_data = static_cast<SharedInputData*>(
+                MapViewOfFile(shared_memory_handle, FILE_MAP_READ, 0, 0, sizeof(SharedInputData))
+            );
+            
+            if (shared_data != nullptr) {
+                // Read rollback statistics from shared memory
+                stats.rollbacks_per_second = shared_data->perf_stats.rollbacks_this_second;
+                stats.max_rollback_frames = shared_data->perf_stats.max_rollback_frames;
+                stats.avg_rollback_frames = shared_data->perf_stats.avg_rollback_frames;
+                stats.frame_advantage = 0.0f; // TODO: Calculate from timing data
+                stats.input_delay_frames = 2; // TODO: Read from GekkoNet config
+                stats.confirmed_frames = shared_data->frame_number; // Current frame as confirmed
+                stats.speculative_frames = shared_data->perf_stats.rollback_count; // Estimate
+                
+                stats_read = true;
+                
+                UnmapViewOfFile(shared_data);
+            }
+            CloseHandle(shared_memory_handle);
+        }
+    }
+    
+    // If Client 1 stats weren't available, try Client 2
+    if (!stats_read && client2_process_id_ != 0) {
+        std::string shared_memory_name = "FM2K_InputSharedMemory_" + std::to_string(client2_process_id_);
+        HANDLE shared_memory_handle = OpenFileMappingA(FILE_MAP_READ, FALSE, shared_memory_name.c_str());
+        
+        if (shared_memory_handle != nullptr) {
+            SharedInputData* shared_data = static_cast<SharedInputData*>(
+                MapViewOfFile(shared_memory_handle, FILE_MAP_READ, 0, 0, sizeof(SharedInputData))
+            );
+            
+            if (shared_data != nullptr) {
+                // Read rollback statistics from shared memory
+                stats.rollbacks_per_second = shared_data->perf_stats.rollbacks_this_second;
+                stats.max_rollback_frames = shared_data->perf_stats.max_rollback_frames;
+                stats.avg_rollback_frames = shared_data->perf_stats.avg_rollback_frames;
+                stats.frame_advantage = 0.0f; // TODO: Calculate from timing data
+                stats.input_delay_frames = 2; // TODO: Read from GekkoNet config
+                stats.confirmed_frames = shared_data->frame_number; // Current frame as confirmed
+                stats.speculative_frames = shared_data->perf_stats.rollback_count; // Estimate
+                
+                stats_read = true;
+                
+                UnmapViewOfFile(shared_data);
+            }
+            CloseHandle(shared_memory_handle);
+        }
+    }
+    
+    return stats_read;
 } 
 

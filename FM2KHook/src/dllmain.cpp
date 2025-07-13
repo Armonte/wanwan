@@ -40,10 +40,31 @@ static int local_player_handle = -1;           // Our local player handle for ge
 static std::ofstream log_file;
 static std::mutex log_mutex;
 static bool file_logging_enabled = false;
+static bool production_mode = false;  // Global production mode flag
+
+// Input recording system for testing
+static std::ofstream input_record_file;
+static std::mutex input_record_mutex;
+static bool input_recording_enabled = false;
+
+// Rollback performance tracking
+static uint32_t rollback_count = 0;
+static uint32_t max_rollback_frames = 0;
+static uint32_t total_rollback_frames = 0;
+static uint64_t last_rollback_time_us = 0;
+
+// Live input tracking (declared early for desync reports)
+static uint32_t live_p1_input = 0;
+static uint32_t live_p2_input = 0;
 
 // Custom SDL log output function that writes to both console and file
 static void CustomLogOutput(void* userdata, int category, SDL_LogPriority priority, const char* message) {
     std::lock_guard<std::mutex> lock(log_mutex);
+    
+    // Production mode filtering: only show ERROR and WARN levels
+    if (production_mode && priority > SDL_LOG_PRIORITY_WARN) {
+        return;  // Skip INFO and DEBUG messages in production mode
+    }
     
     // Get timestamp
     auto now = std::chrono::system_clock::now();
@@ -108,7 +129,71 @@ static void InitializeFileLogging() {
     }
 }
 
-// Cleanup file logging
+// Initialize input recording based on player index
+static void InitializeInputRecording() {
+    std::lock_guard<std::mutex> lock(input_record_mutex);
+    
+    if (input_recording_enabled) return;  // Already initialized
+    
+    // Create input recording filename based on player index
+    char record_filename[128];
+    snprintf(record_filename, sizeof(record_filename), "FM2K_InputRecord_Client%d.dat", player_index + 1);
+    
+    // Open input recording file for binary writing (truncate existing)
+    input_record_file.open(record_filename, std::ios::out | std::ios::binary | std::ios::trunc);
+    if (input_record_file.is_open()) {
+        input_recording_enabled = true;
+        
+        // Write file header
+        struct InputRecordHeader {
+            char magic[8] = "FM2KINP";
+            uint32_t version = 1;
+            uint32_t player_index;
+            uint64_t timestamp;
+        } header;
+        
+        header.player_index = player_index;
+        header.timestamp = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        
+        input_record_file.write(reinterpret_cast<const char*>(&header), sizeof(header));
+        input_record_file.flush();
+        
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Input recording initialized: %s", record_filename);
+    } else {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Failed to open input recording file: %s", record_filename);
+    }
+}
+
+// Record input to file
+static void RecordInput(uint32_t frame, uint32_t p1_input, uint32_t p2_input) {
+    if (!input_recording_enabled || !input_record_file.is_open()) return;
+    
+    std::lock_guard<std::mutex> lock(input_record_mutex);
+    
+    struct InputRecordEntry {
+        uint32_t frame_number;
+        uint32_t p1_input;
+        uint32_t p2_input;
+        uint64_t timestamp_us;
+    } entry;
+    
+    entry.frame_number = frame;
+    entry.p1_input = p1_input;
+    entry.p2_input = p2_input;
+    entry.timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+    
+    input_record_file.write(reinterpret_cast<const char*>(&entry), sizeof(entry));
+    
+    // Flush periodically for crash safety
+    static uint32_t flush_counter = 0;
+    if (++flush_counter % 100 == 0) {
+        input_record_file.flush();
+    }
+}
+
+// Cleanup file logging and input recording
 static void CleanupFileLogging() {
     std::lock_guard<std::mutex> lock(log_mutex);
     
@@ -120,6 +205,91 @@ static void CleanupFileLogging() {
         // Restore default SDL log output
         SDL_SetLogOutputFunction(nullptr, nullptr);
     }
+}
+
+static void CleanupInputRecording() {
+    std::lock_guard<std::mutex> lock(input_record_mutex);
+    
+    if (input_recording_enabled && input_record_file.is_open()) {
+        input_record_file.close();
+        input_recording_enabled = false;
+    }
+}
+
+// Generate detailed desync report
+static void GenerateDesyncReport(uint32_t desync_frame, uint32_t local_checksum, uint32_t remote_checksum) {
+    char report_filename[128];
+    snprintf(report_filename, sizeof(report_filename), "FM2K_DesyncReport_Client%d_Frame%u.txt", player_index + 1, desync_frame);
+    
+    std::ofstream report_file(report_filename);
+    if (!report_file.is_open()) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create desync report: %s", report_filename);
+        return;
+    }
+    
+    auto now = std::chrono::system_clock::now();
+    auto time_t = std::chrono::system_clock::to_time_t(now);
+    struct tm* tm_info = localtime(&time_t);
+    char timestamp[64];
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", tm_info);
+    
+    report_file << "=== FM2K DESYNC REPORT ===" << std::endl;
+    report_file << "Timestamp: " << timestamp << std::endl;
+    report_file << "Player Index: " << (int)player_index << std::endl;
+    report_file << "Is Host: " << (is_host ? "Yes" : "No") << std::endl;
+    report_file << "Desync Frame: " << desync_frame << std::endl;
+    report_file << "Local Checksum: 0x" << std::hex << local_checksum << std::endl;
+    report_file << "Remote Checksum: 0x" << std::hex << remote_checksum << std::endl;
+    report_file << std::dec;
+    report_file << std::endl;
+    
+    // Game state at time of desync
+    report_file << "=== GAME STATE AT DESYNC ===" << std::endl;
+    
+    uint32_t* p1_hp_ptr = (uint32_t*)FM2K::State::Memory::P1_HP_ADDR;
+    uint32_t* p2_hp_ptr = (uint32_t*)FM2K::State::Memory::P2_HP_ADDR;
+    uint32_t* frame_ptr = (uint32_t*)FM2K::State::Memory::FRAME_NUMBER_ADDR;
+    uint32_t* p1_input_ptr = (uint32_t*)FM2K::State::Memory::P1_INPUT_ADDR;
+    uint32_t* p2_input_ptr = (uint32_t*)FM2K::State::Memory::P2_INPUT_ADDR;
+    
+    if (p1_hp_ptr && !IsBadReadPtr(p1_hp_ptr, 4)) {
+        report_file << "P1 HP: " << *p1_hp_ptr << std::endl;
+    }
+    if (p2_hp_ptr && !IsBadReadPtr(p2_hp_ptr, 4)) {
+        report_file << "P2 HP: " << *p2_hp_ptr << std::endl;
+    }
+    if (frame_ptr && !IsBadReadPtr(frame_ptr, 4)) {
+        report_file << "Game Frame: " << *frame_ptr << std::endl;
+    }
+    if (p1_input_ptr && !IsBadReadPtr(p1_input_ptr, 4)) {
+        report_file << "P1 Memory Input: 0x" << std::hex << *p1_input_ptr << std::dec << std::endl;
+    }
+    if (p2_input_ptr && !IsBadReadPtr(p2_input_ptr, 4)) {
+        report_file << "P2 Memory Input: 0x" << std::hex << *p2_input_ptr << std::dec << std::endl;
+    }
+    
+    report_file << "P1 Live Input: 0x" << std::hex << live_p1_input << std::dec << std::endl;
+    report_file << "P2 Live Input: 0x" << std::hex << live_p2_input << std::dec << std::endl;
+    report_file << std::endl;
+    
+    // Rollback statistics
+    report_file << "=== ROLLBACK STATISTICS ===" << std::endl;
+    report_file << "Total Rollbacks: " << rollback_count << std::endl;
+    report_file << "Max Rollback Frames: " << max_rollback_frames << std::endl;
+    if (rollback_count > 0) {
+        report_file << "Average Rollback Frames: " << ((float)total_rollback_frames / rollback_count) << std::endl;
+    }
+    report_file << std::endl;
+    
+    report_file << "=== INSTRUCTIONS ===" << std::endl;
+    report_file << "1. Compare this report with the other client's report" << std::endl;
+    report_file << "2. Check input recording files: FM2K_InputRecord_Client1.dat, FM2K_InputRecord_Client2.dat" << std::endl;
+    report_file << "3. Look for differences in HP, inputs, or frame counts" << std::endl;
+    report_file << "4. Review recent rollback activity that may have caused divergence" << std::endl;
+    
+    report_file.close();
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desync report generated: %s", report_filename);
 }
 
 // Shared memory for configuration
@@ -195,6 +365,10 @@ struct SharedInputData {
     uint32_t auto_save_interval_frames;  // How often to auto-save
     SaveStateProfile save_profile;       // Which save state profile to use
     
+    // Production mode settings
+    bool production_mode;                // Enable production mode (reduced logging)
+    bool enable_input_recording;         // Record inputs to file for testing
+    
     // Slot status feedback to UI
     struct SlotInfo {
         bool occupied;
@@ -213,6 +387,15 @@ struct SharedInputData {
         uint32_t avg_save_time_us;
         uint32_t avg_load_time_us;
         uint32_t memory_usage_mb;
+        
+        // Rollback performance counters
+        uint32_t rollback_count;          // Total rollbacks since session start
+        uint32_t max_rollback_frames;     // Maximum rollback distance ever seen
+        uint32_t total_rollback_frames;   // Total frames rolled back
+        uint32_t avg_rollback_frames;     // Average rollback distance
+        uint64_t last_rollback_time_us;   // Last rollback timestamp (microseconds)
+        uint32_t rollbacks_this_second;   // Current second rollback count
+        uint64_t current_second_start;    // Start time of current second window
     } perf_stats;
     
     // GekkoNet client role coordination (simplified)
@@ -238,6 +421,34 @@ static std::string GetLogFilePath() {
     
     // Fallback using process ID if no shared memory yet
     return "C:\\Games\\fm2k_hook_pid" + std::to_string(process_id) + ".txt";
+}
+
+// Update rollback performance statistics in shared memory
+static void UpdateRollbackStats(uint32_t frames_rolled_back) {
+    if (!shared_memory_data) return;
+    
+    SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data);
+    uint64_t current_time_us = get_microseconds();
+    
+    // Update basic rollback counters
+    shared_data->perf_stats.rollback_count = rollback_count;
+    shared_data->perf_stats.max_rollback_frames = max_rollback_frames;
+    shared_data->perf_stats.total_rollback_frames = total_rollback_frames;
+    shared_data->perf_stats.avg_rollback_frames = rollback_count > 0 ? (total_rollback_frames / rollback_count) : 0;
+    shared_data->perf_stats.last_rollback_time_us = current_time_us;
+    
+    // Track rollbacks per second (sliding window)
+    uint64_t current_second = current_time_us / 1000000;  // Convert to seconds
+    uint64_t shared_second = shared_data->perf_stats.current_second_start / 1000000;
+    
+    if (current_second != shared_second) {
+        // New second - reset counter
+        shared_data->perf_stats.rollbacks_this_second = 1;
+        shared_data->perf_stats.current_second_start = current_time_us;
+    } else {
+        // Same second - increment counter
+        shared_data->perf_stats.rollbacks_this_second++;
+    }
 }
 
 // Simple hook function types (matching FM2K patterns)
@@ -803,7 +1014,16 @@ bool InitializeSharedMemory() {
     shared_data->perf_stats.total_loads = 0;
     shared_data->perf_stats.avg_save_time_us = 0;
     shared_data->perf_stats.avg_load_time_us = 0;
-    shared_data->perf_stats.memory_usage_mb = ((PLAYER_DATA_SLOTS_SIZE + GAME_OBJECT_POOL_SIZE) * 9) / (1024 * 1024); // 8 slots + rollback
+    shared_data->perf_stats.memory_usage_mb = 0;
+    
+    // Initialize rollback performance counters
+    shared_data->perf_stats.rollback_count = 0;
+    shared_data->perf_stats.max_rollback_frames = 0;
+    shared_data->perf_stats.total_rollback_frames = 0;
+    shared_data->perf_stats.avg_rollback_frames = 0;
+    shared_data->perf_stats.last_rollback_time_us = 0;
+    shared_data->perf_stats.rollbacks_this_second = 0;
+    shared_data->perf_stats.current_second_start = get_microseconds();
     
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Shared memory initialized successfully");
     return true;
@@ -886,7 +1106,10 @@ bool SaveGameStateDirect(FM2K::State::GameState* state, uint32_t frame_number) {
         return false;
     }
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Capturing comprehensive game state for frame %u", frame_number);
+    // Reduce logging frequency in production mode
+    if (!production_mode || (frame_number % 100 == 0)) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Capturing comprehensive game state for frame %u", frame_number);
+    }
     
     // Read basic game state directly from memory (no ReadProcessMemory needed)
     uint32_t* frame_ptr = (uint32_t*)FRAME_COUNTER_ADDR;
@@ -1599,6 +1822,19 @@ bool InitializeGekkoNet() {
     ::is_host = (player_index == 0); // Set global is_host for logging
     InitializeFileLogging();
     
+    // Initialize input recording if requested
+    char* env_input_recording = getenv("FM2K_INPUT_RECORDING");
+    if (env_input_recording && strcmp(env_input_recording, "1") == 0) {
+        InitializeInputRecording();
+    }
+    
+    // Set production mode if requested
+    char* env_production_mode = getenv("FM2K_PRODUCTION_MODE");
+    if (env_production_mode && strcmp(env_production_mode, "1") == 0) {
+        ::production_mode = true;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Production mode enabled - reduced logging");
+    }
+    
     if (env_port) {
         local_port = static_cast<uint16_t>(atoi(env_port));
     }
@@ -1709,8 +1945,40 @@ bool AllPlayersValid() {
                 session_started_event_found = true;
             } else if (event->type == DesyncDetected) {
                 auto desync = event->data.desynced;
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Desync detected! Frame: %d, Remote handle: %d, Local checksum: 0x%08X, Remote checksum: 0x%08X", 
-                            desync.frame, desync.remote_handle, desync.local_checksum, desync.remote_checksum);
+                
+                // Enhanced desync reporting with state dumps
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "=== DESYNC DETECTED ===");
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Frame: %d, Remote handle: %d", desync.frame, desync.remote_handle);
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Local checksum: 0x%08X, Remote checksum: 0x%08X", desync.local_checksum, desync.remote_checksum);
+                
+                // Dump current game state for analysis
+                uint32_t* p1_hp_ptr = (uint32_t*)P1_HP_ADDR;
+                uint32_t* p2_hp_ptr = (uint32_t*)P2_HP_ADDR;
+                uint32_t* frame_ptr = (uint32_t*)FRAME_COUNTER_ADDR;
+                uint32_t* p1_input_ptr = (uint32_t*)P1_INPUT_ADDR;
+                uint32_t* p2_input_ptr = (uint32_t*)P2_INPUT_ADDR;
+                
+                if (p1_hp_ptr && !IsBadReadPtr(p1_hp_ptr, 4)) {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "P1 HP: %u", *p1_hp_ptr);
+                }
+                if (p2_hp_ptr && !IsBadReadPtr(p2_hp_ptr, 4)) {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "P2 HP: %u", *p2_hp_ptr);
+                }
+                if (frame_ptr && !IsBadReadPtr(frame_ptr, 4)) {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Game Frame: %u", *frame_ptr);
+                }
+                if (p1_input_ptr && !IsBadReadPtr(p1_input_ptr, 4)) {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "P1 Last Input: 0x%08X", *p1_input_ptr);
+                }
+                if (p2_input_ptr && !IsBadReadPtr(p2_input_ptr, 4)) {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "P2 Last Input: 0x%08X", *p2_input_ptr);
+                }
+                
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Live P1 Input: 0x%08X, Live P2 Input: 0x%08X", live_p1_input, live_p2_input);
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "========================");
+                
+                // Generate detailed desync report file
+                GenerateDesyncReport(desync.frame, desync.local_checksum, desync.remote_checksum);
             } else if (event->type == PlayerDisconnected) {
                 auto disco = event->data.disconnected;
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Player disconnected: %d", disco.handle);
@@ -1750,9 +2018,7 @@ static uint32_t networked_p2_input = 0;
 static bool use_networked_inputs = false;
 static uint32_t last_network_frame = 0;
 
-// Global variables to capture live inputs for network transmission
-static uint32_t live_p1_input = 0;
-static uint32_t live_p2_input = 0;
+// live_p1_input and live_p2_input moved to top of file for desync reports
 
 // Hook for get_player_input function - intercepts input reading at the source
 int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
@@ -1895,6 +2161,11 @@ int __cdecl Hook_ProcessGameInputs() {
             p1_gekko = (uint8_t)(live_p1_input & 0xFF);  // Use live P1 input from hook
             p2_gekko = (uint8_t)(live_p2_input & 0xFF);  // Use live P2 input from hook
             
+            // Record inputs for testing/debugging if enabled
+            if (input_recording_enabled) {
+                RecordInput(g_frame_counter, live_p1_input, live_p2_input);
+            }
+            
             // CRITICAL FIX: Both clients read P1 inputs (local keyboard) 
             // But send them as their assigned network player
             uint8_t local_input = p1_gekko;  // Both clients read local P1 keyboard
@@ -1910,8 +2181,9 @@ int __cdecl Hook_ProcessGameInputs() {
                            (uint8_t)(p1_input & 0xFF), (uint8_t)(p2_input & 0xFF));
             }
             
-            // Save current state before processing GekkoNet updates (reduced frequency for performance)
-            if (state_manager_initialized && (g_frame_counter % 8) == 0) {  // Save every 8 frames for rollback buffer
+            // Save current state before processing GekkoNet updates (production mode: less frequent)
+            uint32_t save_interval = production_mode ? 32 : 8;  // Production: every 32 frames, Debug: every 8 frames
+            if (state_manager_initialized && (g_frame_counter % save_interval) == 0) {
                 SaveStateToBuffer(g_frame_counter);
             }
             
@@ -2126,8 +2398,25 @@ int __cdecl Hook_ProcessGameInputs() {
                             uint32_t state_length = update->data.load.state_len;
                             uint8_t* state_data = update->data.load.state;
                             
-                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: LoadEvent (rollback) to frame %u (current: %u)", 
-                                       target_frame, g_frame_counter);
+                            // Track rollback performance metrics
+                            uint32_t frames_rolled_back = (g_frame_counter > target_frame) ? (g_frame_counter - target_frame) : 0;
+                            rollback_count++;
+                            total_rollback_frames += frames_rolled_back;
+                            if (frames_rolled_back > max_rollback_frames) {
+                                max_rollback_frames = frames_rolled_back;
+                            }
+                            last_rollback_time_us = get_microseconds();
+                            
+                            // Update shared memory statistics for launcher UI
+                            UpdateRollbackStats(frames_rolled_back);
+                            
+                            // Enhanced rollback logging (production mode: only show significant rollbacks)
+                            bool should_log = !production_mode || frames_rolled_back >= 3;
+                            if (should_log) {
+                                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ROLLBACK: Frame %u → %u (%u frames back) [Count: %u, Max: %u, Avg: %.1f]", 
+                                           g_frame_counter, target_frame, frames_rolled_back, rollback_count, max_rollback_frames,
+                                           rollback_count > 0 ? (float)total_rollback_frames / rollback_count : 0.0f);
+                            }
                             
                             if (state_manager_initialized && state_data && state_length == sizeof(uint32_t) * 8) {
                                 // Load EXPLICIT DETERMINISTIC state from GekkoNet buffer
@@ -2458,8 +2747,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet session closed");
         }
         
-        // Cleanup file logging
+        // Cleanup file logging and input recording
         CleanupFileLogging();
+        CleanupInputRecording();
         
         
         // Cleanup shared memory

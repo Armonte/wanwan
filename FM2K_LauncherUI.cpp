@@ -1231,17 +1231,157 @@ void LauncherUI::RenderMultiClientTools() {
             // Open the current directory in file explorer
             system("explorer .");
         }
+        
+        ImGui::SameLine();
+        if (ImGui::Button("Export Input Recordings")) {
+            // Show input recording files in explorer
+            std::ifstream client1_record("FM2K_InputRecord_Client1.dat");
+            std::ifstream client2_record("FM2K_InputRecord_Client2.dat");
+            
+            if (client1_record.is_open() || client2_record.is_open()) {
+                system("explorer .");
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Input recording files shown in explorer");
+            } else {
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "No input recording files found - enable recording first");
+            }
+        }
     }
     
     ImGui::Separator();
     
     // Testing Tools
-    if (ImGui::CollapsingHeader("Testing Tools")) {
-        ImGui::TextColored(ImVec4(0.8f, 1.0f, 0.8f, 1.0f), "🚧 Testing automation coming soon...");
-        ImGui::BulletText("Automated connection tests");
-        ImGui::BulletText("Rollback stress testing");
-        ImGui::BulletText("Performance benchmarking");
-        ImGui::BulletText("Desync detection tests");
+    if (ImGui::CollapsingHeader("Testing Tools", ImGuiTreeNodeFlags_DefaultOpen)) {
+        // Production Mode Settings
+        ImGui::Text("Debug Settings:");
+        
+        static bool production_mode = false;
+        static bool input_recording = true;
+        
+        if (ImGui::Checkbox("Production Mode (Reduced Logging)", &production_mode)) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Production mode: %s", production_mode ? "Enabled" : "Disabled");
+        }
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "(?)");
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Reduces log spam from ~100 msgs/sec to ~5 msgs/sec\nSaves state every 32 frames instead of 8");
+        }
+        
+        if (ImGui::Checkbox("Input Recording", &input_recording)) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Input recording: %s", input_recording ? "Enabled" : "Disabled");
+        }
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "(?)");
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Records all inputs to .dat files for desync analysis\nFiles: FM2K_InputRecord_Client1.dat, FM2K_InputRecord_Client2.dat");
+        }
+        
+        ImGui::Separator();
+        
+        // Testing Buttons
+        ImGui::Text("Rollback Testing:");
+        
+        if (ImGui::Button("Test Rollback Detection")) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "🚧 Rollback stress testing - coming soon");
+        }
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "(?)");
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Will artificially create rollback scenarios to test stability");
+        }
+        
+        if (ImGui::Button("Generate Desync Test")) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "🚧 Desync generation testing - coming soon");
+        }
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "(?)");
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Will create artificial input differences to trigger desync detection");
+        }
+        
+        ImGui::Separator();
+        
+        // File Status
+        ImGui::Text("Recording Status:");
+        
+        // Check if input recording files exist and show their sizes
+        std::ifstream client1_record("FM2K_InputRecord_Client1.dat", std::ios::binary | std::ios::ate);
+        std::ifstream client2_record("FM2K_InputRecord_Client2.dat", std::ios::binary | std::ios::ate);
+        
+        if (client1_record.is_open()) {
+            size_t size1 = client1_record.tellg();
+            ImGui::Text("Client 1 Recording: %.1f KB", size1 / 1024.0f);
+        } else {
+            ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Client 1 Recording: Not started");
+        }
+        
+        if (client2_record.is_open()) {
+            size_t size2 = client2_record.tellg();
+            ImGui::Text("Client 2 Recording: %.1f KB", size2 / 1024.0f);
+        } else {
+            ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Client 2 Recording: Not started");
+        }
+    }
+    
+    // Live Rollback Performance Statistics
+    if (ImGui::CollapsingHeader("Live Rollback Statistics", ImGuiTreeNodeFlags_DefaultOpen)) {
+        RollbackStats rollback_stats = {};
+        bool stats_available = false;
+        
+        if (on_get_rollback_stats) {
+            stats_available = on_get_rollback_stats(rollback_stats);
+        }
+        
+        if (stats_available) {
+            // Current performance metrics
+            ImGui::Text("Real-time Rollback Performance:");
+            ImGui::Separator();
+            
+            // Key performance indicators
+            ImGui::Columns(2, "rollback_stats", false);
+            ImGui::Text("Rollbacks/Second:");
+            ImGui::NextColumn();
+            if (rollback_stats.rollbacks_per_second == 0) {
+                ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f), "%u (Stable)", rollback_stats.rollbacks_per_second);
+            } else if (rollback_stats.rollbacks_per_second <= 5) {
+                ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.5f, 1.0f), "%u (Good)", rollback_stats.rollbacks_per_second);
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "%u (High)", rollback_stats.rollbacks_per_second);
+            }
+            ImGui::NextColumn();
+            
+            ImGui::Text("Max Rollback:");
+            ImGui::NextColumn();
+            if (rollback_stats.max_rollback_frames <= 3) {
+                ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f), "%u frames", rollback_stats.max_rollback_frames);
+            } else if (rollback_stats.max_rollback_frames <= 8) {
+                ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.5f, 1.0f), "%u frames", rollback_stats.max_rollback_frames);
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "%u frames", rollback_stats.max_rollback_frames);
+            }
+            ImGui::NextColumn();
+            
+            ImGui::Text("Average Rollback:");
+            ImGui::NextColumn();
+            ImGui::Text("%u frames", rollback_stats.avg_rollback_frames);
+            ImGui::NextColumn();
+            
+            ImGui::Text("Current Frame:");
+            ImGui::NextColumn();
+            ImGui::Text("%u", rollback_stats.confirmed_frames);
+            ImGui::NextColumn();
+            
+            ImGui::Columns(1);
+            
+            ImGui::Separator();
+            
+            // Additional diagnostic info
+            ImGui::Text("Input Delay: %u frames", rollback_stats.input_delay_frames);
+            ImGui::Text("Speculative Frames: %u", rollback_stats.speculative_frames);
+            ImGui::Text("Frame Advantage: %.1f", rollback_stats.frame_advantage);
+        } else {
+            ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "⏳ Rollback statistics unavailable");
+            ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Launch clients to view real-time rollback performance");
+        }
     }
 }
 

@@ -75,5 +75,18 @@ namespace FM2K {
         bool RestoreStateFromStruct(const GameState* state, uint32_t target_frame);
         void SaveStateToBuffer(uint32_t frame_number);
         uint32_t Fletcher32(const uint8_t* data, size_t len);
+        
+        // BSNES PATTERN: In-memory rollback buffer system (fast, no file I/O)
+        bool SaveStateToMemoryBuffer(uint32_t slot, uint32_t frame_number);
+        bool LoadStateFromMemoryBuffer(uint32_t slot);
+        uint32_t GetStateChecksum(uint32_t slot);
+        
+        // SDL2 PATTERN: Minimal state for checksumming (only essential data, no volatile fields)
+        struct MinimalChecksumState {
+            uint32_t p1_hp;
+            uint32_t p2_hp;
+            uint32_t game_mode;
+            // Add more essential fields as needed
+        };
     }
 } 

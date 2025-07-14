@@ -75,6 +75,11 @@ extern uint32_t live_p2_input;
 extern bool can_advance_frame;        // Flag to control FM2K frame advancement
 extern bool waiting_for_gekko_advance; // True when waiting for GekkoNet AdvanceEvent
 
+// Timeout mechanisms to prevent deadlocks
+extern uint32_t handshake_timeout_frames;    // Timeout counter for network handshake
+extern uint32_t advance_timeout_frames;      // Timeout counter for frame advance waits
+extern uint32_t last_valid_players_frame;    // Last frame when AllPlayersValid() was true
+
 // Function pointers for original functions
 typedef int(__cdecl* ProcessGameInputsFunc)();
 typedef int(__cdecl* GetPlayerInputFunc)(int playerIndex, int inputType);

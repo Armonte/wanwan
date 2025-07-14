@@ -24,6 +24,11 @@ uint32_t live_p2_input = 0;
 bool can_advance_frame = true;        // Allow frame advancement initially
 bool waiting_for_gekko_advance = false; // Not waiting initially
 
+// Timeout mechanisms to prevent deadlocks
+uint32_t handshake_timeout_frames = 0;    // Timeout counter for network handshake
+uint32_t advance_timeout_frames = 0;      // Timeout counter for frame advance waits
+uint32_t last_valid_players_frame = 0;    // Last frame when AllPlayersValid() was true
+
 // Function pointers for original functions
 ProcessGameInputsFunc original_process_inputs = nullptr;
 GetPlayerInputFunc original_get_player_input = nullptr;

@@ -54,30 +54,27 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
 }
 
 int __cdecl Hook_ProcessGameInputs() {
-    // CRITICAL: Frame advance control - only block during active rollback (combat)
-    if (gekko_initialized && gekko_session && AllPlayersValid() && rollback_active) {
-        // Check how far ahead we are from the remote client
+    // SDL2 PATTERN: Let GekkoNet handle frame synchronization - don't block execution
+    // The SDL2 example shows they NEVER block with return 0, they just adjust timing
+    // GekkoNet is designed to handle the entire session from frame 1
+    if (gekko_initialized && gekko_session && AllPlayersValid()) {
+        // Check how far ahead we are from the remote client for logging only
         float frames_ahead = gekko_frames_ahead(gekko_session);
         
-        // Like GekkoNet SDL2 example: pause when too far ahead (lines 247-248, 160-169)
-        if (frames_ahead >= 2.0f) {
-            // Block FM2K frame advancement - we're running too fast
-            static uint32_t lag_log_counter = 0;
-            if (++lag_log_counter % 60 == 1) {  // Log every second
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GEKKO SYNC: Pausing FM2K - %.1f frames ahead of remote", frames_ahead);
+        // CRITICAL: Only block if EXTREMELY far ahead (emergency brake only)
+        if (frames_ahead >= 10.0f) {
+            static uint32_t emergency_brake_counter = 0;
+            if (++emergency_brake_counter % 60 == 1) {  // Log every second
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GEKKO EMERGENCY: Pausing FM2K - %.1f frames ahead (emergency brake)", frames_ahead);
             }
             return 0;
         }
         
-        if (waiting_for_gekko_advance && !can_advance_frame) {
-            // Block FM2K frame advancement - don't call original function
-            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GEKKO SYNC: Blocking FM2K frame advancement, waiting for AdvanceEvent");
-            return 0;
+        // SDL2 PATTERN: Log sync status but continue execution
+        static uint32_t sync_log_counter = 0;
+        if (++sync_log_counter % 300 == 1 && frames_ahead > 0.5f) {  // Log every 5 seconds if slightly ahead
+            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GEKKO SYNC: %.1f frames ahead (normal - letting GekkoNet handle)", frames_ahead);
         }
-        
-        // Reset frame advance flag after each frame
-        can_advance_frame = false;
-        waiting_for_gekko_advance = true;
     }
     
     g_frame_counter++;
@@ -169,22 +166,39 @@ int __cdecl Hook_ProcessGameInputs() {
         
         // Check if all players are ready
         if (!AllPlayersValid()) {
-            // Network handshake in progress - allow Windows message processing
-            MSG msg;
-            while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-                TranslateMessage(&msg);
-                DispatchMessage(&msg);
+            // CRITICAL: Track handshake duration to prevent infinite blocking
+            static uint32_t handshake_wait_frames = 0;
+            handshake_wait_frames++;
+            
+            // ESCAPE MECHANISM: After 15 seconds (1500 frames), force continuation
+            if (handshake_wait_frames > 1500) {
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GEKKO HANDSHAKE: TIMEOUT - Continuing without full sync after %u frames to prevent deadlock", handshake_wait_frames);
+                handshake_wait_frames = 0;
+                // Continue execution instead of blocking
+            } else {
+                // Network handshake in progress - allow Windows message processing
+                MSG msg;
+                while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&msg);
+                    DispatchMessage(&msg);
+                }
+                
+                // Continue polling GekkoNet for network handshake
+                gekko_network_poll(gekko_session);
+                
+                // Also need to call update_session during handshake
+                int handshake_update_count = 0;
+                gekko_update_session(gekko_session, &handshake_update_count);
+                
+                // Log handshake progress periodically
+                if (handshake_wait_frames % 300 == 1) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GEKKO HANDSHAKE: Waiting for network sync (%u frames, timeout in %u)", 
+                               handshake_wait_frames, 1500 - handshake_wait_frames);
+                }
+                
+                // Let FM2K continue running but block game logic advancement
+                return original_process_inputs ? original_process_inputs() : 0;
             }
-            
-            // Continue polling GekkoNet for network handshake
-            gekko_network_poll(gekko_session);
-            
-            // Also need to call update_session during handshake
-            int handshake_update_count = 0;
-            gekko_update_session(gekko_session, &handshake_update_count);
-            
-            // Let FM2K continue running but block game logic advancement
-            return original_process_inputs ? original_process_inputs() : 0;
         }
         
         // Session handshake complete - process session events
@@ -228,6 +242,7 @@ int __cdecl Hook_ProcessGameInputs() {
             }
         }
         
+        // BSNES PATTERN: Process all events synchronously without deferred flags
         for (int i = 0; i < update_count; i++) {
             auto update = updates[i];
             
@@ -241,14 +256,13 @@ int __cdecl Hook_ProcessGameInputs() {
                     uint32_t input_length = update->data.adv.input_len;
                     uint8_t* inputs = update->data.adv.inputs;
                     
-                    // CRITICAL: Allow FM2K frame advancement for this frame
-                    can_advance_frame = true;
-                    waiting_for_gekko_advance = false;
+                    // BSNES PATTERN: Process AdvanceEvent immediately and synchronously
+                    // No deferred flags - just update inputs and continue
                     
                     // Reduced logging: Only log occasionally or on non-zero inputs
                     bool should_log = (target_frame % 30 == 1);
                     if (should_log) {
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent to frame %u (inputs: %u bytes) - ALLOWING FM2K ADVANCE", 
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent to frame %u (inputs: %u bytes) - SYNCHRONOUS PROCESSING", 
                                     target_frame, input_length);
                     }
                     
@@ -267,7 +281,7 @@ int __cdecl Hook_ProcessGameInputs() {
                                        target_frame, inputs[0], inputs[1], networked_p1_input, networked_p2_input);
                         }
                         
-                        // GekkoNet will call the game's run loop after this AdvanceEvent
+                        // BSNES PATTERN: AdvanceEvent is processed immediately, no waiting flags
                     }
                     break;
                 }
@@ -281,18 +295,20 @@ int __cdecl Hook_ProcessGameInputs() {
                     
                     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SaveEvent for frame %u", save_frame);
                     
-                    // Save to local slot for rollback (ring buffer pattern)
-                    bool save_success = FM2K::State::SaveStateToSlot(save_frame % 8, save_frame);
+                    // FAST IN-MEMORY: Save to memory buffer instead of file (like bsnes)
+                    uint32_t slot = save_frame % 8;
+                    bool save_success = FM2K::State::SaveStateToMemoryBuffer(slot, save_frame);
                     
                     // Provide checksum to GekkoNet for desync detection
                     if (checksum_ptr && state_len_ptr && state_ptr && save_success) {
-                        // SAFE FALLBACK: Use simple frame-based checksum to avoid crashes
-                        // TODO: Re-enable MinimalGameState once memory addresses are stable
+                        // Use the fixed checksum from our memory buffer
+                        uint32_t state_checksum = FM2K::State::GetStateChecksum(slot);
                         *state_len_ptr = sizeof(uint32_t);
-                        memcpy(state_ptr, &save_frame, sizeof(uint32_t));
-                        *checksum_ptr = save_frame; // Use GekkoNet's synchronized frame number as checksum
+                        memcpy(state_ptr, &state_checksum, sizeof(uint32_t));
+                        *checksum_ptr = state_checksum;
                         
-                        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SaveEvent frame %u, checksum: 0x%08X (frame-based)", save_frame, *checksum_ptr);
+                        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SaveEvent frame %u, slot %u, checksum: 0x%08X (essential data only)", 
+                                     save_frame, slot, *checksum_ptr);
                     }
                     break;
                 }
@@ -303,15 +319,16 @@ int __cdecl Hook_ProcessGameInputs() {
                     
                     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: ROLLBACK from frame %u to frame %u", g_frame_counter, load_frame);
                     
-                    // Load from local slot (ring buffer pattern)
-                    bool load_success = FM2K::State::LoadStateFromSlot(load_frame % 8);
+                    // FAST IN-MEMORY: Load from memory buffer instead of file (like bsnes)
+                    uint32_t slot = load_frame % 8;
+                    bool load_success = FM2K::State::LoadStateFromMemoryBuffer(slot);
                     
                     if (load_success) {
                         // Update our frame counter to match the rollback point
                         g_frame_counter = load_frame;
                         SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Rollback successful, frame counter reset to %u", g_frame_counter);
                     } else {
-                        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Rollback failed for frame %u", load_frame);
+                        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Rollback failed for frame %u (slot %u)", load_frame, slot);
                     }
                     break;
                 }
@@ -562,28 +579,17 @@ void ManageRollbackActivation(uint32_t game_mode, uint32_t fm2k_mode, uint32_t c
 }
 
 bool ShouldActivateRollback(uint32_t game_mode, uint32_t fm2k_mode) {
-    // REVISED: Force rollback during character select for synchronization
-    // Based on logs showing character select desync issues
+    // SDL2/BSNES PATTERN: GekkoNet handles the entire session from start to finish
+    // Rollback should be active throughout the entire session once GekkoNet is initialized
     
-    // Don't activate during uninitialized or startup states
-    if (game_mode == 0xFFFFFFFF || game_mode == 0x0) {
-        return false;
+    // Only skip rollback during very early uninitialized states
+    if (game_mode == 0xFFFFFFFF) {
+        return false;  // Truly uninitialized
     }
     
-    // CRITICAL: Activate rollback during character select (1000-2999) to prevent desync
-    // This is necessary because CSS state changes need to be synchronized
-    if (game_mode >= 1000 && game_mode < 3000) {
-        return true;  // Force rollback during character select
-    }
-    
-    // Story mode (3000-3999) and other modes (>= 4000) should use rollback
-    // This includes actual combat scenarios
-    if (game_mode >= 3000) {
-        return true;
-    }
-    
-    // Default: no rollback for very early states
-    return false;
+    // SIMPLIFIED: Activate rollback for all game states once GekkoNet is ready
+    // This matches how the SDL2 example and bsnes handle the entire session
+    return true;
 }
 
 const char* GetGameModeString(uint32_t mode) {

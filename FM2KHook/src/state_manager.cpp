@@ -114,6 +114,11 @@ static uint32_t current_state_index = 0;
 static bool state_manager_initialized = false;
 static GameState save_slots[8];
 static bool slot_occupied[8] = {false};
+
+// BSNES PATTERN: In-memory rollback buffers (no file I/O)
+static GameState memory_rollback_slots[8];
+static bool memory_slot_occupied[8] = {false};
+static uint32_t memory_slot_frames[8] = {0};
 static uint32_t last_auto_save_frame = 0;
 static std::unique_ptr<uint8_t[]> slot_player_data_buffers[8];
 static std::unique_ptr<uint8_t[]> slot_object_pool_buffers[8];
@@ -365,6 +370,62 @@ bool RestoreStateFromStruct(const GameState* state, uint32_t target_frame) {
 
     return true;
 }
+
+// BSNES PATTERN: In-memory rollback system implementation
+bool SaveStateToMemoryBuffer(uint32_t slot, uint32_t frame_number) {
+    if (slot >= 8) return false;
+    
+    // Save current game state to memory buffer (no file I/O)
+    bool success = SaveCoreStateBasic(&memory_rollback_slots[slot], frame_number);
+    if (success) {
+        memory_rollback_slots[slot].frame_number = frame_number;
+        memory_rollback_slots[slot].timestamp_ms = get_microseconds() / 1000;
+        // SDL2 PATTERN: Checksum only essential data (exclude volatile timing/address fields)
+        MinimalChecksumState minimal_state = {};
+        // Read only essential gameplay data for checksum
+        uint32_t* p1_hp_ptr = (uint32_t*)Memory::P1_HP_ADDR;
+        uint32_t* p2_hp_ptr = (uint32_t*)Memory::P2_HP_ADDR;
+        uint32_t* game_mode_ptr = (uint32_t*)Memory::GAME_MODE_ADDR;
+        if (!IsBadReadPtr(p1_hp_ptr, sizeof(uint32_t))) minimal_state.p1_hp = *p1_hp_ptr;
+        if (!IsBadReadPtr(p2_hp_ptr, sizeof(uint32_t))) minimal_state.p2_hp = *p2_hp_ptr;
+        if (!IsBadReadPtr(game_mode_ptr, sizeof(uint32_t))) minimal_state.game_mode = *game_mode_ptr;
+        
+        memory_rollback_slots[slot].checksum = Fletcher32((const uint8_t*)&minimal_state, sizeof(MinimalChecksumState));
+        
+        memory_slot_occupied[slot] = true;
+        memory_slot_frames[slot] = frame_number;
+        
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "MEMORY ROLLBACK: Saved frame %u to slot %u (checksum: 0x%08X)", 
+                     frame_number, slot, memory_rollback_slots[slot].checksum);
+    }
+    
+    return success;
+}
+
+bool LoadStateFromMemoryBuffer(uint32_t slot) {
+    if (slot >= 8 || !memory_slot_occupied[slot]) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "MEMORY ROLLBACK: Cannot load from slot %u (not occupied)", slot);
+        return false;
+    }
+    
+    // Restore game state from memory buffer (no file I/O)
+    bool success = RestoreStateFromStruct(&memory_rollback_slots[slot], memory_slot_frames[slot]);
+    if (success) {
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "MEMORY ROLLBACK: Loaded frame %u from slot %u (checksum: 0x%08X)", 
+                     memory_slot_frames[slot], slot, memory_rollback_slots[slot].checksum);
+    }
+    
+    return success;
+}
+
+uint32_t GetStateChecksum(uint32_t slot) {
+    if (slot >= 8 || !memory_slot_occupied[slot]) {
+        return 0;
+    }
+    
+    return memory_rollback_slots[slot].checksum;
+}
+
 
 // ... more functions to follow
 }

@@ -133,6 +133,16 @@ bool AllPlayersValid() {
     }
     
     if (!gekko_session_started) {
+        // CRITICAL: Increment handshake timeout to prevent infinite blocking
+        handshake_timeout_frames++;
+        
+        // ESCAPE MECHANISM: After 10 seconds (1000 frames at 100fps), force session start
+        if (handshake_timeout_frames > 1000) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: TIMEOUT - Forcing session start after %u frames to prevent deadlock", handshake_timeout_frames);
+            gekko_session_started = true;
+            return true;
+        }
+        
         gekko_network_poll(gekko_session);
         
         int session_event_count = 0;
@@ -163,12 +173,14 @@ bool AllPlayersValid() {
         if (session_event_count == 0) {
             static int no_events_counter = 0;
             if (++no_events_counter % 300 == 0) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: No session events received yet - still waiting for network handshake... (attempt %d)", no_events_counter);
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: No session events received yet - still waiting for network handshake... (attempt %d, timeout in %u frames)", 
+                           no_events_counter, 1000 - handshake_timeout_frames);
             }
         }
         
         if (session_started_event_found) {
             gekko_session_started = true;
+            handshake_timeout_frames = 0; // Reset timeout on success
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SESSION STARTED - All players connected and synchronized! (BSNES AllPlayersValid pattern)");
             return true;
         }
@@ -176,6 +188,8 @@ bool AllPlayersValid() {
         return false;
     }
     
+    // Track when players are valid for timeout purposes
+    last_valid_players_frame = g_frame_counter;
     return true;
 }
 

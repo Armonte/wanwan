@@ -64,6 +64,7 @@ public:
     // Shared memory input polling
     void PollInputs();
     void InitializeSharedMemory();
+    void ApplyDeferredSettings();
     void CleanupSharedMemory();
 
 protected:
@@ -92,6 +93,11 @@ public:
         uint32_t interval_frames;
     };
     bool GetAutoSaveConfig(AutoSaveConfig& config);
+    
+    // Debug and testing configuration
+    bool SetProductionMode(bool enabled);
+    bool SetInputRecording(bool enabled);
+    bool SetMinimalGameStateTesting(bool enabled);
     
     // Save state profile removed - now using optimized FastGameState system
     
@@ -127,4 +133,14 @@ private:
     
     // Environment variables for process creation
     std::map<std::string, std::string> environment_variables_;
+    
+    // Deferred settings (applied when shared memory becomes available)
+    struct DeferredSettings {
+        bool has_minimal_gamestate_testing = false;
+        bool minimal_gamestate_testing_value = false;
+        bool has_production_mode = false;
+        bool production_mode_value = false;
+        bool has_input_recording = false;
+        bool input_recording_value = false;
+    } deferred_settings_;
 };

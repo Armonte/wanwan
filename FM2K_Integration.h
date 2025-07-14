@@ -36,18 +36,94 @@ namespace FM2K {
     constexpr uintptr_t P1_INPUT_ADDR = 0x470100;          // Current input state (working)
     constexpr uintptr_t P1_STAGE_X_ADDR = 0x470104;
     constexpr uintptr_t P1_STAGE_Y_ADDR = 0x470108;
-    constexpr uintptr_t P1_HP_ADDR = 0x47010C;
+    constexpr uintptr_t P1_HP_ADDR = 0x47010C;              // Current HP (verified in combat)
     constexpr uintptr_t P1_MAX_HP_ADDR = 0x470110;
     constexpr uintptr_t P1_INPUT_HISTORY_ADDR = 0x470200;  // Input history buffer
     
     constexpr uintptr_t P2_INPUT_ADDR = 0x470300;          // Current input state (working)
-    constexpr uintptr_t P2_HP_ADDR = 0x47030C;
+    constexpr uintptr_t P2_HP_ADDR = 0x47030C;              // Current HP (verified in combat)
     constexpr uintptr_t P2_MAX_HP_ADDR = 0x470310;
     constexpr uintptr_t P2_INPUT_HISTORY_ADDR = 0x470400;
     
+    // ArtMoney verified addresses (tested during live combat)
+    // Player coordinates (stage positions)
+    constexpr uintptr_t P1_COORD_X_ADDR = 0x4ADCC3;        // P1 X coordinate (u32)
+    constexpr uintptr_t P1_COORD_Y_ADDR = 0x4ADCC7;        // P1 Y coordinate (u16)
+    constexpr uintptr_t P2_COORD_X_ADDR = 0x4EDD02;        // P2 X coordinate (u32)
+    constexpr uintptr_t P2_COORD_Y_ADDR = 0x4EDD06;        // P2 Y coordinate (u16)
+    
+    // Player max HP (character-specific values)
+    constexpr uintptr_t P1_MAX_HP_ARTMONEY_ADDR = 0x4DFC85; // P1 max HP (u32) - verified: 800
+    constexpr uintptr_t P2_MAX_HP_ARTMONEY_ADDR = 0x4EDC4;  // P2 max HP (u32) - needs validation
+    
+    // Super meter system
+    constexpr uintptr_t P1_SUPER_ADDR = 0x4EDC3D;          // P1 super meter (u32)
+    constexpr uintptr_t P2_SUPER_ADDR = 0x4EDC0C;          // P2 super meter (u32)
+    constexpr uintptr_t P1_SPECIAL_STOCK_ADDR = 0x4EDDC95; // P1 special stock (u32) - needs validation
+    constexpr uintptr_t P2_SPECIAL_STOCK_ADDR = 0x4EDC4;   // P2 special stock (u32) - same as max HP?
+    
+    // Map/stage coordinates
+    constexpr uintptr_t MAP_X_COORD_ADDR = 0x44742C;       // Map X coordinate (u32)
+    constexpr uintptr_t MAP_Y_COORD_ADDR = 0x447F30;       // Map Y coordinate (u32) - needs validation
+    
     // Global state addresses
-    constexpr uintptr_t ROUND_TIMER_ADDR = 0x470060;
-    constexpr uintptr_t GAME_TIMER_ADDR = 0x470064;
+    constexpr uintptr_t ROUND_TIMER_ADDR = 0x470044;       // Primary timer (verified)
+    constexpr uintptr_t ROUND_TIMER_ALT_ADDR = 0x47DB94;   // ArtMoney timer (verified: same value)
+    constexpr uintptr_t GAME_TIMER_ADDR = 0x470060;
+    constexpr uintptr_t ROUND_NUMBER_ADDR = 0x4070044;     // Round number (u32)
+    
+    // Character variables (16 variables per player - verified addresses)
+    // Player 1 character variables (1-byte each)
+    constexpr uintptr_t P1_CHAR_VAR_A_ADDR = 0x4ADFD17;   // Char Var A (u8)
+    constexpr uintptr_t P1_CHAR_VAR_B_ADDR = 0x4ADFD19;   // Char Var B (u8)
+    constexpr uintptr_t P1_CHAR_VAR_C_ADDR = 0x4ADFD1B;   // Char Var C (u8)
+    constexpr uintptr_t P1_CHAR_VAR_D_ADDR = 0x4ADFD1D;   // Char Var D (u8)
+    constexpr uintptr_t P1_CHAR_VAR_E_ADDR = 0x4ADFD1F;   // Char Var E (u8)
+    constexpr uintptr_t P1_CHAR_VAR_F_ADDR = 0x4ADFD21;   // Char Var F (u8)
+    constexpr uintptr_t P1_CHAR_VAR_G_ADDR = 0x4ADFD23;   // Char Var G (u8)
+    constexpr uintptr_t P1_CHAR_VAR_H_ADDR = 0x4ADFD25;   // Char Var H (u8)
+    constexpr uintptr_t P1_CHAR_VAR_I_ADDR = 0x4ADFD27;   // Char Var I (u8)
+    constexpr uintptr_t P1_CHAR_VAR_J_ADDR = 0x4ADFD29;   // Char Var J (u8)
+    constexpr uintptr_t P1_CHAR_VAR_K_ADDR = 0x4ADFD2B;   // Char Var K (u8)
+    constexpr uintptr_t P1_CHAR_VAR_L_ADDR = 0x4ADFD2D;   // Char Var L (u8)
+    constexpr uintptr_t P1_CHAR_VAR_M_ADDR = 0x4ADFD2F;   // Char Var M (u8)
+    constexpr uintptr_t P1_CHAR_VAR_N_ADDR = 0x4ADFD31;   // Char Var N (u8)
+    constexpr uintptr_t P1_CHAR_VAR_O_ADDR = 0x4ADFD33;   // Char Var O (u8)
+    constexpr uintptr_t P1_CHAR_VAR_P_ADDR = 0x4ADFD35;   // Char Var P (u8)
+    
+    // Player 2 character variables (2-byte each) 
+    constexpr uintptr_t P2_CHAR_VAR_A_ADDR = 0x4ADFD5;    // Char Var A P2 (u16)
+    constexpr uintptr_t P2_CHAR_VAR_B_ADDR = 0x4EDD58;    // Char Var B P2 (u16)
+    constexpr uintptr_t P2_CHAR_VAR_C_ADDR = 0x4EDD5A;    // Char Var C P2 (u16)
+    constexpr uintptr_t P2_CHAR_VAR_D_ADDR = 0x4EDDC;     // Char Var D P2 (u16)
+    constexpr uintptr_t P2_CHAR_VAR_F_ADDR = 0x4EDD60;    // Char Var F P2 (u16)
+    constexpr uintptr_t P2_CHAR_VAR_G_ADDR = 0x4EDD62;    // Char Var G P2 (u16)
+    constexpr uintptr_t P2_CHAR_VAR_H_ADDR = 0x4EDD64;    // Char Var H P2 (u16)
+    constexpr uintptr_t P2_CHAR_VAR_I_ADDR = 0x4ADFD6;    // Char Var I P2 (u16)
+    constexpr uintptr_t P2_CHAR_VAR_J_ADDR = 0x4ADFD8;    // Char Var J P2 (u16)
+    constexpr uintptr_t P2_CHAR_VAR_K_ADDR = 0x4EDD6A;    // Char Var K P2 (u16)
+    constexpr uintptr_t P2_CHAR_VAR_L_ADDR = 0x4EDDC6;    // Char Var L P2 (u16)
+    constexpr uintptr_t P2_CHAR_VAR_M_ADDR = 0x4EDD6E;    // Char Var M P2 (u16)
+    constexpr uintptr_t P2_CHAR_VAR_N_ADDR = 0x4ADFD0;    // Char Var N P2 (u16)
+    constexpr uintptr_t P2_CHAR_VAR_O_ADDR = 0x4ADFD7;    // Char Var O P2 (u16)
+    constexpr uintptr_t P2_CHAR_VAR_P_ADDR = 0x4EDD74;    // Char Var P P2 (u16)
+    
+    // System variables (global game state variables)
+    constexpr uintptr_t SYSTEM_VAR_A_ADDR = 0x4456B0;     // System Var A (u8)
+    constexpr uintptr_t SYSTEM_VAR_B_ADDR = 0x4456B2;     // System Var B (u8)
+    constexpr uintptr_t SYSTEM_VAR_D_ADDR = 0x4456B6;     // System Var D (u8)
+    constexpr uintptr_t SYSTEM_VAR_E_ADDR = 0x4456B8;     // System Var E (u8)
+    constexpr uintptr_t SYSTEM_VAR_F_ADDR = 0x4456BA;     // System Var F (u8)
+    constexpr uintptr_t SYSTEM_VAR_G_ADDR = 0x4456BC;     // System Var G (u8)
+    constexpr uintptr_t SYSTEM_VAR_H_ADDR = 0x4456BE;     // System Var H (u16)
+    constexpr uintptr_t SYSTEM_VAR_I_ADDR = 0x4456C0;     // System Var I (u16)
+    constexpr uintptr_t SYSTEM_VAR_J_ADDR = 0x456C2;      // System Var J (u16)
+    constexpr uintptr_t SYSTEM_VAR_K_ADDR = 0x456C4;      // System Var K (u8)
+    constexpr uintptr_t SYSTEM_VAR_L_ADDR = 0x456C6;      // System Var L (u8)
+    constexpr uintptr_t SYSTEM_VAR_M_ADDR = 0x456C8;      // System Var M (u8)
+    constexpr uintptr_t SYSTEM_VAR_N_ADDR = 0x456CA;      // System Var N (u8)
+    constexpr uintptr_t SYSTEM_VAR_O_ADDR = 0x456CC;      // System Var O (u8)
+    constexpr uintptr_t SYSTEM_VAR_P_ADDR = 0x456CE;      // System Var P (u16)
 
     // Sprite effect system addresses
     constexpr uintptr_t EFFECT_ACTIVE_FLAGS = 0x40CC30;  // Bitfield of active effects
@@ -147,6 +223,103 @@ namespace FM2K {
         // Calculate state checksum for rollback verification
         uint32_t CalculateChecksum() const {
             return Fletcher32(reinterpret_cast<const uint16_t*>(this), sizeof(GameState));
+        }
+    };
+
+    // Minimal game state for GekkoNet rollback testing (48 bytes)
+    // Contains only essential combat state to test desync detection
+    struct MinimalGameState {
+        // Core combat state (32 bytes)
+        uint32_t p1_hp, p2_hp;              // Current HP (0x47010C, 0x47030C)
+        uint32_t p1_max_hp, p2_max_hp;      // Max HP (0x4DFC85, 0x4EDC4)
+        uint32_t p1_x, p1_y;                // Positions (0x4ADCC3, 0x4ADCC7)
+        uint32_t p2_x, p2_y;                // Positions (0x4EDD02, 0x4EDD06)
+        
+        // Essential timers & RNG (16 bytes)
+        uint32_t round_timer;                // 0x470044 or 0x47DB94
+        uint32_t random_seed;                // 0x41FB1C
+        uint32_t frame_number;               // Current frame
+        uint32_t input_checksum;             // XOR of recent inputs
+        
+        // Calculate minimal state checksum
+        uint32_t CalculateChecksum() const {
+            return Fletcher32(reinterpret_cast<const uint16_t*>(this), sizeof(MinimalGameState));
+        }
+        
+        // Load minimal state from memory addresses
+        bool LoadFromMemory() {
+            // Read HP values
+            uint32_t* p1_hp_ptr = (uint32_t*)P1_HP_ADDR;
+            uint32_t* p2_hp_ptr = (uint32_t*)P2_HP_ADDR;
+            uint32_t* p1_max_hp_ptr = (uint32_t*)P1_MAX_HP_ARTMONEY_ADDR;
+            uint32_t* p2_max_hp_ptr = (uint32_t*)P2_MAX_HP_ARTMONEY_ADDR;
+            
+            if (!p1_hp_ptr || !p2_hp_ptr || !p1_max_hp_ptr || !p2_max_hp_ptr) return false;
+            
+            p1_hp = *p1_hp_ptr;
+            p2_hp = *p2_hp_ptr;
+            p1_max_hp = *p1_max_hp_ptr;
+            p2_max_hp = *p2_max_hp_ptr;
+            
+            // Read positions
+            uint32_t* p1_x_ptr = (uint32_t*)P1_COORD_X_ADDR;
+            uint16_t* p1_y_ptr = (uint16_t*)P1_COORD_Y_ADDR;
+            uint32_t* p2_x_ptr = (uint32_t*)P2_COORD_X_ADDR;
+            uint16_t* p2_y_ptr = (uint16_t*)P2_COORD_Y_ADDR;
+            
+            if (!p1_x_ptr || !p1_y_ptr || !p2_x_ptr || !p2_y_ptr) return false;
+            
+            p1_x = *p1_x_ptr;
+            p1_y = *p1_y_ptr;
+            p2_x = *p2_x_ptr;
+            p2_y = *p2_y_ptr;
+            
+            // Read timers and RNG
+            uint32_t* timer_ptr = (uint32_t*)ROUND_TIMER_ADDR;
+            uint32_t* rng_ptr = (uint32_t*)RANDOM_SEED_ADDR;
+            
+            if (!timer_ptr || !rng_ptr) return false;
+            
+            round_timer = *timer_ptr;
+            random_seed = *rng_ptr;
+            
+            return true;
+        }
+        
+        // Save minimal state to memory addresses
+        bool SaveToMemory() const {
+            // Write HP values
+            uint32_t* p1_hp_ptr = (uint32_t*)P1_HP_ADDR;
+            uint32_t* p2_hp_ptr = (uint32_t*)P2_HP_ADDR;
+            
+            if (!p1_hp_ptr || !p2_hp_ptr) return false;
+            
+            *p1_hp_ptr = p1_hp;
+            *p2_hp_ptr = p2_hp;
+            
+            // Write positions
+            uint32_t* p1_x_ptr = (uint32_t*)P1_COORD_X_ADDR;
+            uint16_t* p1_y_ptr = (uint16_t*)P1_COORD_Y_ADDR;
+            uint32_t* p2_x_ptr = (uint32_t*)P2_COORD_X_ADDR;
+            uint16_t* p2_y_ptr = (uint16_t*)P2_COORD_Y_ADDR;
+            
+            if (!p1_x_ptr || !p1_y_ptr || !p2_x_ptr || !p2_y_ptr) return false;
+            
+            *p1_x_ptr = p1_x;
+            *p1_y_ptr = (uint16_t)p1_y;
+            *p2_x_ptr = p2_x;
+            *p2_y_ptr = (uint16_t)p2_y;
+            
+            // Write timers and RNG
+            uint32_t* timer_ptr = (uint32_t*)ROUND_TIMER_ADDR;
+            uint32_t* rng_ptr = (uint32_t*)RANDOM_SEED_ADDR;
+            
+            if (!timer_ptr || !rng_ptr) return false;
+            
+            *timer_ptr = round_timer;
+            *rng_ptr = random_seed;
+            
+            return true;
         }
     };
 
@@ -322,8 +495,21 @@ private:
     // Games directory (root where FM2K games are located)
     std::string games_root_path_;
     
+    // Pending configuration (set before instances are created)
+    struct PendingConfig {
+        bool has_minimal_gamestate_testing = false;
+        bool minimal_gamestate_testing_value = false;
+        bool has_production_mode = false;
+        bool production_mode_value = false;
+        bool has_input_recording = false;
+        bool input_recording_value = false;
+    } pending_config_;
+    
     // Helper method to read rollback statistics from hook shared memory  
     bool ReadRollbackStatsFromSharedMemory(RollbackStats& stats);
+    
+    // Apply pending configuration to game instances
+    void ApplyPendingConfigToInstance(FM2KGameInstance* instance);
 };
 
 // Game instance management - see FM2K_GameInstance.h for full definition
@@ -376,6 +562,11 @@ public:
         uint32_t interval_frames;
     };
     std::function<bool(AutoSaveConfig&)> on_get_auto_save_config;  // Get current auto-save settings
+    
+    // Debug and testing configuration callbacks
+    std::function<bool(bool)> on_set_production_mode;              // Set production mode (reduced logging)
+    std::function<bool(bool)> on_set_input_recording;              // Set input recording
+    std::function<bool(bool)> on_set_minimal_gamestate_testing;    // Set MinimalGameState testing
     
     // Multi-client testing data structures
     // NetworkStats struct removed - network stats handled by LocalNetworkAdapter

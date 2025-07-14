@@ -65,6 +65,16 @@ struct SharedInputData {
     // GekkoNet client role coordination (simplified)
     uint8_t player_index;            // 0 for Player 1, 1 for Player 2
     uint8_t session_role;            // 0 = Host, 1 = Guest
+    
+    // Production mode settings (added for enhanced debugging)
+    bool production_mode;                // Enable production mode (reduced logging)
+    bool enable_input_recording;         // Record inputs to file for testing
+    
+    // MinimalGameState testing mode
+    bool use_minimal_gamestate_testing;  // Enable 48-byte minimal state for GekkoNet testing
+    
+    // Configuration versioning to force hook to re-read settings
+    uint32_t config_version;  // Incremented each time configuration is updated
 };
 
 namespace {
@@ -536,6 +546,10 @@ void FM2KGameInstance::InitializeSharedMemory() {
             if (shared_memory_data_) {
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Shared memory opened successfully on attempt %d", attempt + 1);
                 last_processed_frame_ = 0;
+                
+                // Apply any deferred settings now that shared memory is available
+                ApplyDeferredSettings();
+                
                 return;
             } else {
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to map shared memory view");
@@ -742,6 +756,94 @@ bool FM2KGameInstance::SetClientRole(uint8_t player_index, bool is_host) {
                 player_index, is_host ? "Host" : "Guest");
     
     return true;
+}
+
+// Debug and testing configuration
+bool FM2KGameInstance::SetProductionMode(bool enabled) {
+    if (!shared_memory_data_) {
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not yet available, deferring production mode config: %s", enabled ? "enabled" : "disabled");
+        deferred_settings_.has_production_mode = true;
+        deferred_settings_.production_mode_value = enabled;
+        return false;  // Return false to indicate deferred
+    }
+    
+    SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
+    shared_data->production_mode = enabled;
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Production mode %s", enabled ? "enabled" : "disabled");
+    return true;
+}
+
+bool FM2KGameInstance::SetInputRecording(bool enabled) {
+    if (!shared_memory_data_) {
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not yet available, deferring input recording config: %s", enabled ? "enabled" : "disabled");
+        deferred_settings_.has_input_recording = true;
+        deferred_settings_.input_recording_value = enabled;
+        return false;  // Return false to indicate deferred
+    }
+    
+    SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
+    shared_data->enable_input_recording = enabled;
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Input recording %s", enabled ? "enabled" : "disabled");
+    return true;
+}
+
+bool FM2KGameInstance::SetMinimalGameStateTesting(bool enabled) {
+    if (!shared_memory_data_) {
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not yet available, deferring MinimalGameState testing config: %s", enabled ? "enabled" : "disabled");
+        deferred_settings_.has_minimal_gamestate_testing = true;
+        deferred_settings_.minimal_gamestate_testing_value = enabled;
+        return false;  // Return false to indicate deferred
+    }
+    
+    SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
+    shared_data->use_minimal_gamestate_testing = enabled;
+    shared_data->config_version++;  // Force hook to re-read configuration
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "MinimalGameState testing %s (config_version: %u)", enabled ? "enabled" : "disabled", shared_data->config_version);
+    return true;
+}
+
+void FM2KGameInstance::ApplyDeferredSettings() {
+    if (!shared_memory_data_) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Cannot apply deferred settings - shared memory not available");
+        return;
+    }
+    
+    SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
+    bool settings_applied = false;
+    
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Applying deferred settings to shared memory");
+    
+    if (deferred_settings_.has_minimal_gamestate_testing) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Applying deferred MinimalGameState testing: %s", 
+                   deferred_settings_.minimal_gamestate_testing_value ? "enabled" : "disabled");
+        shared_data->use_minimal_gamestate_testing = deferred_settings_.minimal_gamestate_testing_value;
+        deferred_settings_.has_minimal_gamestate_testing = false;
+        settings_applied = true;
+    }
+    
+    if (deferred_settings_.has_production_mode) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Applying deferred production mode: %s", 
+                   deferred_settings_.production_mode_value ? "enabled" : "disabled");
+        shared_data->production_mode = deferred_settings_.production_mode_value;
+        deferred_settings_.has_production_mode = false;
+        settings_applied = true;
+    }
+    
+    if (deferred_settings_.has_input_recording) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Applying deferred input recording: %s", 
+                   deferred_settings_.input_recording_value ? "enabled" : "disabled");
+        shared_data->enable_input_recording = deferred_settings_.input_recording_value;
+        deferred_settings_.has_input_recording = false;
+        settings_applied = true;
+    }
+    
+    if (settings_applied) {
+        shared_data->config_version++;  // Increment version to force hook to re-read
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Deferred settings applied successfully (config_version: %u)", shared_data->config_version);
+    }
 }
 
 // Environment variable configuration for OnlineSession-style networking

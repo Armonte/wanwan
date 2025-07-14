@@ -13,6 +13,13 @@ set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g")
 # Create simple DLL target
 add_library(FM2KHook SHARED
     src/dllmain.cpp
+    src/globals.cpp
+    src/gekkonet_hooks.cpp
+    src/logging.cpp
+    src/shared_mem.cpp
+    src/state_manager.cpp
+    src/game_state_detector.cpp
+    src/hooks.cpp
     ../LocalNetworkAdapter.cpp
 )
 

@@ -43,6 +43,9 @@ LauncherUI::LauncherUI()
     on_debug_auto_save_config = nullptr;
     on_get_slot_status = nullptr;
     on_get_auto_save_config = nullptr;
+    on_set_production_mode = nullptr;
+    on_set_input_recording = nullptr;
+    on_set_minimal_gamestate_testing = nullptr;
     // on_set_save_profile removed - now using optimized FastGameState system
     
     // Initialize multi-client testing callbacks
@@ -1224,6 +1227,9 @@ void LauncherUI::RenderMultiClientTools() {
         
         if (ImGui::Checkbox("Production Mode (Reduced Logging)", &production_mode)) {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Production mode: %s", production_mode ? "Enabled" : "Disabled");
+            if (on_set_production_mode) {
+                on_set_production_mode(production_mode);
+            }
         }
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "(?)");
@@ -1233,11 +1239,33 @@ void LauncherUI::RenderMultiClientTools() {
         
         if (ImGui::Checkbox("Input Recording", &input_recording)) {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Input recording: %s", input_recording ? "Enabled" : "Disabled");
+            if (on_set_input_recording) {
+                on_set_input_recording(input_recording);
+            }
         }
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "(?)");
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Records all inputs to .dat files for desync analysis\nFiles: FM2K_InputRecord_Client1.dat, FM2K_InputRecord_Client2.dat");
+        }
+        
+        static bool use_minimal_gamestate_testing = false;
+        if (ImGui::Checkbox("MinimalGameState Testing (48 bytes)", &use_minimal_gamestate_testing)) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "MinimalGameState testing checkbox: %s", use_minimal_gamestate_testing ? "Enabled" : "Disabled");
+            if (on_set_minimal_gamestate_testing) {
+                bool success = on_set_minimal_gamestate_testing(use_minimal_gamestate_testing);
+                // Success includes both immediate application and deferred settings
+                if (!success) {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "MinimalGameState testing config failed completely");
+                }
+            } else {
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "MinimalGameState testing callback not available");
+            }
+        }
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "(?)");
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Uses 48-byte minimal state for GekkoNet rollback testing\nShows detailed field-by-field desync analysis:\n• HP values, positions, timers, RNG\n• Frame-to-frame deltas\n• Checksum validation");
         }
         
         ImGui::Separator();

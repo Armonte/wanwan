@@ -638,6 +638,95 @@ bool FM2KLauncher::Initialize() {
         return false;
     };
     
+    // Connect debug and testing configuration callbacks
+    ui_->on_set_production_mode = [this](bool enabled) -> bool {
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "UI callback: SetProductionMode(%s)", enabled ? "true" : "false");
+        bool success = false;
+        bool deferred = false;
+        
+        if (game_instance_) {
+            success = game_instance_->SetProductionMode(enabled);
+            if (!success) {
+                deferred = true;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Production mode config deferred - will be applied when shared memory is ready");
+            }
+        }
+        if (client1_instance_) {
+            if (client1_instance_->SetProductionMode(enabled)) {
+                success = true;
+            }
+        }
+        if (client2_instance_) {
+            if (client2_instance_->SetProductionMode(enabled)) {
+                success = true;
+            }
+        }
+        
+        return success || deferred;
+    };
+    
+    ui_->on_set_input_recording = [this](bool enabled) -> bool {
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "UI callback: SetInputRecording(%s)", enabled ? "true" : "false");
+        bool success = false;
+        bool deferred = false;
+        
+        if (game_instance_) {
+            success = game_instance_->SetInputRecording(enabled);
+            if (!success) {
+                deferred = true;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Input recording config deferred - will be applied when shared memory is ready");
+            }
+        }
+        if (client1_instance_) {
+            if (client1_instance_->SetInputRecording(enabled)) {
+                success = true;
+            }
+        }
+        if (client2_instance_) {
+            if (client2_instance_->SetInputRecording(enabled)) {
+                success = true;
+            }
+        }
+        
+        return success || deferred;
+    };
+    
+    ui_->on_set_minimal_gamestate_testing = [this](bool enabled) -> bool {
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "UI callback: SetMinimalGameStateTesting(%s)", enabled ? "true" : "false");
+        bool success = false;
+        bool deferred = false;
+        
+        // Check if any game instances exist
+        if (game_instance_ || client1_instance_ || client2_instance_) {
+            // Apply to existing instances
+            if (game_instance_) {
+                success = game_instance_->SetMinimalGameStateTesting(enabled);
+                if (!success) {
+                    deferred = true;
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "MinimalGameState testing config deferred - will be applied when shared memory is ready");
+                }
+            }
+            if (client1_instance_) {
+                if (client1_instance_->SetMinimalGameStateTesting(enabled)) {
+                    success = true;
+                }
+            }
+            if (client2_instance_) {
+                if (client2_instance_->SetMinimalGameStateTesting(enabled)) {
+                    success = true;
+                }
+            }
+        } else {
+            // No instances exist yet - store as pending configuration
+            pending_config_.has_minimal_gamestate_testing = true;
+            pending_config_.minimal_gamestate_testing_value = enabled;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "No game instances exist yet - storing MinimalGameState testing config as pending: %s", enabled ? "enabled" : "disabled");
+            return true;  // Successfully stored as pending
+        }
+        
+        return success || deferred;  // Return true if either applied or deferred
+    };
+    
     // Save profile callback removed - now using optimized FastGameState system
     
     // Connect slot status callback
@@ -1097,6 +1186,9 @@ bool FM2KLauncher::LaunchGame(const FM2K::FM2KGameInfo& game) {
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Creating new FM2KGameInstance");
     game_instance_ = std::make_unique<FM2KGameInstance>();
     
+    // Apply any pending configuration before launching
+    ApplyPendingConfigToInstance(game_instance_.get());
+    
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Launching game with EXE: %s, KGT: %s", 
                  game.exe_path.c_str(), game.dll_path.c_str());
                  
@@ -1228,17 +1320,31 @@ bool FM2KLauncher::LaunchLocalClient(const std::string& game_path, bool is_host,
     // Create new game instance
     *target_instance = std::make_unique<FM2KGameInstance>();
     
+    // Apply any pending configuration before launching
+    ApplyPendingConfigToInstance(target_instance->get());
+    
     // Configure GekkoNet session coordination for this client
     uint8_t player_index = is_host ? 0 : 1;  // Host = Player 0, Guest = Player 1
     
+    // FIXED: Use correct networking configuration while keeping non-network variables identical
     // Set environment variables BEFORE launching process (OnlineSession style)
-    (*target_instance)->SetEnvironmentVariable("FM2K_PLAYER_INDEX", std::to_string(player_index));
-    (*target_instance)->SetEnvironmentVariable("FM2K_LOCAL_PORT", std::to_string(port));
-    (*target_instance)->SetEnvironmentVariable("FM2K_REMOTE_ADDR", "127.0.0.1:" + std::to_string(is_host ? 7001 : 7000));
+    (*target_instance)->SetEnvironmentVariable("FM2K_PLAYER_INDEX", "0");  // Keep identical for deterministic initialization
+    (*target_instance)->SetEnvironmentVariable("FM2K_LOCAL_PORT", std::to_string(port));  // Keep port different (required for networking)
+    (*target_instance)->SetEnvironmentVariable("FM2K_REMOTE_ADDR", "127.0.0.1:" + std::to_string(is_host ? 7001 : 7000));  // Restore correct remote addressing
     
     // Add production mode and input recording settings
     (*target_instance)->SetEnvironmentVariable("FM2K_PRODUCTION_MODE", "0");  // Default to debug mode for now
     (*target_instance)->SetEnvironmentVariable("FM2K_INPUT_RECORDING", "1");  // Enable input recording by default
+    
+    // CRITICAL: Force identical RNG seed for both clients to prevent desync
+    (*target_instance)->SetEnvironmentVariable("FM2K_FORCE_RNG_SEED", "12345678");  // Fixed seed for testing
+    
+    // Add startup delay for timing synchronization
+    if (!is_host) {
+        // Guest client waits 500ms to reduce timing differences
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Guest client waiting 500ms for timing synchronization...");
+        SDL_Delay(500);
+    }
     
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launching FM2K game with OnlineSession-style config: %s", actual_game_path.c_str());
     
@@ -1435,5 +1541,35 @@ bool FM2KLauncher::ReadRollbackStatsFromSharedMemory(RollbackStats& stats) {
     }
     
     return stats_read;
+}
+
+// Apply pending configuration to a game instance
+void FM2KLauncher::ApplyPendingConfigToInstance(FM2KGameInstance* instance) {
+    if (!instance) {
+        return;
+    }
+    
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Applying pending configuration to game instance");
+    
+    // Apply MinimalGameState testing config
+    if (pending_config_.has_minimal_gamestate_testing) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Applying pending MinimalGameState testing: %s", 
+                   pending_config_.minimal_gamestate_testing_value ? "enabled" : "disabled");
+        instance->SetMinimalGameStateTesting(pending_config_.minimal_gamestate_testing_value);
+    }
+    
+    // Apply production mode config
+    if (pending_config_.has_production_mode) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Applying pending production mode: %s", 
+                   pending_config_.production_mode_value ? "enabled" : "disabled");
+        instance->SetProductionMode(pending_config_.production_mode_value);
+    }
+    
+    // Apply input recording config
+    if (pending_config_.has_input_recording) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Applying pending input recording: %s", 
+                   pending_config_.input_recording_value ? "enabled" : "disabled");
+        instance->SetInputRecording(pending_config_.input_recording_value);
+    }
 } 
 

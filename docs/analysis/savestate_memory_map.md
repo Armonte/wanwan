@@ -67,15 +67,36 @@ This section covers global variables that track the overall state of the match, 
 | Global Name | Address | Captured | Description |
 | :--- | :--- | :--- | :--- |
 | `g_game_timer` | `0x470044` | ✅ | The main round timer that counts down during a match. **VERIFIED: Combat value=1** |
+| `g_game_timer_alt` | `0x47DB94` | ✅ | **ArtMoney timer address - VERIFIED: Same value as 0x470044 (value=1)** |
 | `g_round_timer` | `0x470060` | ✅ | Initialized with the round duration from the game's config files. **VERIFIED: Combat value=0** |
 | `g_round_timer_counter` | `0x424F00` | ✅ | A secondary timer or counter used for specific game state transitions. **VERIFIED: Combat value=102, likely visible countdown** |
 | **In-game timer (visible)** | `0x424F00` | ✅ | **The visible countdown timer displayed during matches - VERIFIED as round_timer_counter** |
 
-### Player Health
+### Player Health & Max HP
 | Global Name | Address | Description |
 | :--- | :--- | :--- |
-| `g_p1_hp` | `0x47010C` | Player 1 health points. **VERIFIED: Combat value=0** |
-| `g_p2_hp` | `0x47030C` | Player 2 health points. **VERIFIED: Combat value=5** |
+| `g_p1_hp` | `0x47010C` | Player 1 current health points. **VERIFIED: Combat value=0** |
+| `g_p2_hp` | `0x47030C` | Player 2 current health points. **VERIFIED: Combat value=6** |
+| `g_p1_max_hp` (ArtMoney) | `0x4DFC85` | **Player 1 maximum health points. VERIFIED: Combat value=800** |
+| `g_p2_max_hp` (ArtMoney) | `0x4EDC4` | **Player 2 maximum health points. NEEDS VALIDATION** |
+
+### Player Coordinates & Positions
+| Global Name | Address | Type | Description |
+| :--- | :--- | :--- | :--- |
+| `g_p1_coord_x` (ArtMoney) | `0x4ADCC3` | u32 | **Player 1 X coordinate. VERIFIED: Combat value=0** |
+| `g_p1_coord_y` (ArtMoney) | `0x4ADCC7` | u16 | **Player 1 Y coordinate. VERIFIED: Combat value=0** |
+| `g_p2_coord_x` (ArtMoney) | `0x4EDD02` | u32 | **Player 2 X coordinate. VERIFIED: Combat value=760** |
+| `g_p2_coord_y` (ArtMoney) | `0x4EDD06` | u16 | **Player 2 Y coordinate. VERIFIED: Combat value=920** |
+| `g_map_x_coord` (ArtMoney) | `0x44742C` | u32 | **Map/stage X coordinate. VERIFIED: Combat value=0** |
+| `g_map_y_coord` (ArtMoney) | `0x447F30` | u32 | **Map/stage Y coordinate. NEEDS VALIDATION** |
+
+### Super Meter System
+| Global Name | Address | Type | Description |
+| :--- | :--- | :--- | :--- |
+| `g_p1_super` (ArtMoney) | `0x4EDC3D` | u32 | **Player 1 super meter. VERIFIED: Combat value=0** |
+| `g_p2_super` (ArtMoney) | `0x4EDC0C` | u32 | **Player 2 super meter. VERIFIED: Combat value=0** |
+| `g_p1_special_stock` (ArtMoney) | `0x4EDDC95` | u32 | **Player 1 special stock. NEEDS VALIDATION** |
+| `g_p2_special_stock` (ArtMoney) | `0x4EDC4` | u32 | **Player 2 special stock. NEEDS VALIDATION** |
 
 ### Match State
 | Global Name | Address | Description |
@@ -94,6 +115,71 @@ This section covers global variables that track the overall state of the match, 
 | :--- | :--- | :--- |
 | `g_camera_x` | `0x447F2C` | The horizontal position of the game camera. |
 | `g_camera_y` | `0x447F30` | The vertical position of the game camera. |
+
+### Character Variables (ArtMoney Verified)
+
+FM2K provides 16 character variables per player for custom character logic and state tracking.
+
+#### Player 1 Character Variables (1-byte each)
+| Variable Name | Address | Description |
+| :--- | :--- | :--- |
+| `g_p1_char_var_a` | `0x4ADFD17` | Character variable A for Player 1 |
+| `g_p1_char_var_b` | `0x4ADFD19` | Character variable B for Player 1 |
+| `g_p1_char_var_c` | `0x4ADFD1B` | Character variable C for Player 1 |
+| `g_p1_char_var_d` | `0x4ADFD1D` | Character variable D for Player 1 |
+| `g_p1_char_var_e` | `0x4ADFD1F` | Character variable E for Player 1 |
+| `g_p1_char_var_f` | `0x4ADFD21` | Character variable F for Player 1 |
+| `g_p1_char_var_g` | `0x4ADFD23` | Character variable G for Player 1 |
+| `g_p1_char_var_h` | `0x4ADFD25` | Character variable H for Player 1 |
+| `g_p1_char_var_i` | `0x4ADFD27` | Character variable I for Player 1 |
+| `g_p1_char_var_j` | `0x4ADFD29` | Character variable J for Player 1 |
+| `g_p1_char_var_k` | `0x4ADFD2B` | Character variable K for Player 1 |
+| `g_p1_char_var_l` | `0x4ADFD2D` | Character variable L for Player 1 |
+| `g_p1_char_var_m` | `0x4ADFD2F` | Character variable M for Player 1 |
+| `g_p1_char_var_n` | `0x4ADFD31` | Character variable N for Player 1 |
+| `g_p1_char_var_o` | `0x4ADFD33` | Character variable O for Player 1 |
+| `g_p1_char_var_p` | `0x4ADFD35` | Character variable P for Player 1 |
+
+#### Player 2 Character Variables (2-byte each)
+| Variable Name | Address | Description |
+| :--- | :--- | :--- |
+| `g_p2_char_var_a` | `0x4ADFD5` | Character variable A for Player 2 |
+| `g_p2_char_var_b` | `0x4EDD58` | Character variable B for Player 2 |
+| `g_p2_char_var_c` | `0x4EDD5A` | Character variable C for Player 2 |
+| `g_p2_char_var_d` | `0x4EDDC` | Character variable D for Player 2 |
+| `g_p2_char_var_f` | `0x4EDD60` | Character variable F for Player 2 |
+| `g_p2_char_var_g` | `0x4EDD62` | Character variable G for Player 2 |
+| `g_p2_char_var_h` | `0x4EDD64` | Character variable H for Player 2 |
+| `g_p2_char_var_i` | `0x4ADFD6` | Character variable I for Player 2 |
+| `g_p2_char_var_j` | `0x4ADFD8` | Character variable J for Player 2 |
+| `g_p2_char_var_k` | `0x4EDD6A` | Character variable K for Player 2 |
+| `g_p2_char_var_l` | `0x4EDDC6` | Character variable L for Player 2 |
+| `g_p2_char_var_m` | `0x4EDD6E` | Character variable M for Player 2 |
+| `g_p2_char_var_n` | `0x4ADFD0` | Character variable N for Player 2 |
+| `g_p2_char_var_o` | `0x4ADFD7` | Character variable O for Player 2 |
+| `g_p2_char_var_p` | `0x4EDD74` | Character variable P for Player 2 |
+
+### System Variables (ArtMoney Verified)
+
+Global system variables for game state management.
+
+| Variable Name | Address | Type | Description |
+| :--- | :--- | :--- | :--- |
+| `g_system_var_a` | `0x4456B0` | u8 | System variable A |
+| `g_system_var_b` | `0x4456B2` | u8 | System variable B |
+| `g_system_var_d` | `0x4456B6` | u8 | System variable D |
+| `g_system_var_e` | `0x4456B8` | u8 | System variable E |
+| `g_system_var_f` | `0x4456BA` | u8 | System variable F |
+| `g_system_var_g` | `0x4456BC` | u8 | System variable G |
+| `g_system_var_h` | `0x4456BE` | u16 | System variable H |
+| `g_system_var_i` | `0x4456C0` | u16 | System variable I |
+| `g_system_var_j` | `0x456C2` | u16 | System variable J |
+| `g_system_var_k` | `0x456C4` | u8 | System variable K |
+| `g_system_var_l` | `0x456C6` | u8 | System variable L |
+| `g_system_var_m` | `0x456C8` | u8 | System variable M |
+| `g_system_var_n` | `0x456CA` | u8 | System variable N |
+| `g_system_var_o` | `0x456CC` | u8 | System variable O |
+| `g_system_var_p` | `0x456CE` | u16 | System variable P |
 
 ---
 
@@ -154,6 +240,11 @@ This save state implementation is **complete as a debug and research tool**. Sta
 - **Round timer counter**: `g_round_timer_counter` (0x424F00) - **VERIFIED as visible in-game timer (value=102 during combat)**
 - **Object type analysis**: CHARACTER_STATE_MACHINE (type=4), UI objects (type=6), system objects (type=1, type=3)
 - **Memory address verification**: All HP, timer, and game mode addresses confirmed with IDA MCP during live combat
+- **ArtMoney address integration**: 70+ verified addresses from ArtMoney table including coordinates, max HP, super meter, character variables
+- **MinimalGameState structure**: 48-byte minimal state for GekkoNet desync testing (coordinates, HP, timers, RNG)
+- **Alternative timer address**: `g_game_timer_alt` (0x47DB94) - same value as primary timer
+- **Player coordinate system**: X/Y positions for both players with different data types (u32/u16)
+- **Character & system variables**: 16 character variables per player + 16 system variables for advanced state tracking
 
 ### ❌ **Still Missing Critical Data**
 - **Player action states**: Animation/action state beyond basic HP

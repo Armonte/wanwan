@@ -252,6 +252,22 @@ bool SaveCoreStateBasic(GameState* state, uint32_t frame_number) {
     uint32_t* object_list_heads_ptr = (uint32_t*)Memory::OBJECT_LIST_HEADS_ADDR;
     uint32_t* object_list_tails_ptr = (uint32_t*)Memory::OBJECT_LIST_TAILS_ADDR;
     
+    // Game mode state pointers for character select synchronization
+    uint32_t* game_mode_ptr = (uint32_t*)Memory::GAME_MODE_ADDR;
+    uint32_t* fm2k_game_mode_ptr = (uint32_t*)Memory::FM2K_GAME_MODE_ADDR;
+    uint32_t* character_select_mode_ptr = (uint32_t*)Memory::CHARACTER_SELECT_MODE_ADDR;
+    
+    // Character Select Menu State pointers (critical for CSS synchronization)
+    uint32_t* menu_selection_ptr = (uint32_t*)Memory::MENU_SELECTION_ADDR;
+    uint32_t* p1_css_cursor_x_ptr = (uint32_t*)Memory::P1_CSS_CURSOR_X_ADDR;
+    uint32_t* p1_css_cursor_y_ptr = (uint32_t*)Memory::P1_CSS_CURSOR_Y_ADDR;
+    uint32_t* p2_css_cursor_x_ptr = (uint32_t*)Memory::P2_CSS_CURSOR_X_ADDR;
+    uint32_t* p2_css_cursor_y_ptr = (uint32_t*)Memory::P2_CSS_CURSOR_Y_ADDR;
+    uint32_t* p1_selected_char_ptr = (uint32_t*)Memory::P1_SELECTED_CHAR_ADDR;
+    uint32_t* p2_selected_char_ptr = (uint32_t*)Memory::P2_SELECTED_CHAR_ADDR;
+    uint32_t* p1_char_related_ptr = (uint32_t*)Memory::P1_CHAR_RELATED_ADDR;
+    uint32_t* p2_char_related_ptr = (uint32_t*)Memory::P2_CHAR_RELATED_ADDR;
+    
     if (!IsBadReadPtr(frame_ptr, sizeof(uint32_t))) { state->core.input_buffer_index = *frame_ptr; }
     if (!IsBadReadPtr(p1_input_ptr, sizeof(uint16_t))) { state->core.p1_input_current = *p1_input_ptr; }
     if (!IsBadReadPtr(p2_input_ptr, sizeof(uint16_t))) { state->core.p2_input_current = *p2_input_ptr; }
@@ -265,6 +281,23 @@ bool SaveCoreStateBasic(GameState* state, uint32_t frame_number) {
     if (!IsBadReadPtr(round_timer_counter_ptr, sizeof(uint32_t))) { state->core.round_timer_counter = *round_timer_counter_ptr; } else { state->core.round_timer_counter = 0; }
     if (!IsBadReadPtr(object_list_heads_ptr, sizeof(uint32_t))) { state->core.object_list_heads = *object_list_heads_ptr; } else { state->core.object_list_heads = 0; }
     if (!IsBadReadPtr(object_list_tails_ptr, sizeof(uint32_t))) { state->core.object_list_tails = *object_list_tails_ptr; } else { state->core.object_list_tails = 0; }
+    
+    // Save game mode state for character select synchronization
+    if (!IsBadReadPtr(game_mode_ptr, sizeof(uint32_t))) { state->core.game_mode = *game_mode_ptr; } else { state->core.game_mode = 0xFFFFFFFF; }
+    if (!IsBadReadPtr(fm2k_game_mode_ptr, sizeof(uint32_t))) { state->core.fm2k_game_mode = *fm2k_game_mode_ptr; } else { state->core.fm2k_game_mode = 0xFFFFFFFF; }
+    if (!IsBadReadPtr(character_select_mode_ptr, sizeof(uint32_t))) { state->core.character_select_mode = *character_select_mode_ptr; } else { state->core.character_select_mode = 0xFFFFFFFF; }
+    
+    // Save Character Select Menu State (CRITICAL for CSS synchronization) 
+    if (!IsBadReadPtr(menu_selection_ptr, sizeof(uint32_t))) { state->core.menu_selection = *menu_selection_ptr; } else { state->core.menu_selection = 0; }
+    if (!IsBadReadPtr(p1_css_cursor_x_ptr, sizeof(uint32_t))) { state->core.p1_css_cursor_x = *p1_css_cursor_x_ptr; } else { state->core.p1_css_cursor_x = 0; }
+    if (!IsBadReadPtr(p1_css_cursor_y_ptr, sizeof(uint32_t))) { state->core.p1_css_cursor_y = *p1_css_cursor_y_ptr; } else { state->core.p1_css_cursor_y = 0; }
+    if (!IsBadReadPtr(p2_css_cursor_x_ptr, sizeof(uint32_t))) { state->core.p2_css_cursor_x = *p2_css_cursor_x_ptr; } else { state->core.p2_css_cursor_x = 0; }
+    if (!IsBadReadPtr(p2_css_cursor_y_ptr, sizeof(uint32_t))) { state->core.p2_css_cursor_y = *p2_css_cursor_y_ptr; } else { state->core.p2_css_cursor_y = 0; }
+    if (!IsBadReadPtr(p1_selected_char_ptr, sizeof(uint32_t))) { state->core.p1_selected_char = *p1_selected_char_ptr; } else { state->core.p1_selected_char = 0; }
+    if (!IsBadReadPtr(p2_selected_char_ptr, sizeof(uint32_t))) { state->core.p2_selected_char = *p2_selected_char_ptr; } else { state->core.p2_selected_char = 0; }
+    if (!IsBadReadPtr(p1_char_related_ptr, sizeof(uint32_t))) { state->core.p1_char_related = *p1_char_related_ptr; } else { state->core.p1_char_related = 0; }
+    if (!IsBadReadPtr(p2_char_related_ptr, sizeof(uint32_t))) { state->core.p2_char_related = *p2_char_related_ptr; } else { state->core.p2_char_related = 0; }
+    
     return true;
 }
 
@@ -283,6 +316,22 @@ bool RestoreStateFromStruct(const GameState* state, uint32_t target_frame) {
     uint32_t* round_timer_counter_ptr = (uint32_t*)Memory::ROUND_TIMER_COUNTER_ADDR;
     uint32_t* object_list_heads_ptr = (uint32_t*)Memory::OBJECT_LIST_HEADS_ADDR;
     uint32_t* object_list_tails_ptr = (uint32_t*)Memory::OBJECT_LIST_TAILS_ADDR;
+    
+    // Game mode state pointers for character select synchronization
+    uint32_t* game_mode_ptr = (uint32_t*)Memory::GAME_MODE_ADDR;
+    uint32_t* fm2k_game_mode_ptr = (uint32_t*)Memory::FM2K_GAME_MODE_ADDR;
+    uint32_t* character_select_mode_ptr = (uint32_t*)Memory::CHARACTER_SELECT_MODE_ADDR;
+    
+    // Character Select Menu State pointers (critical for CSS synchronization)
+    uint32_t* menu_selection_ptr = (uint32_t*)Memory::MENU_SELECTION_ADDR;
+    uint32_t* p1_css_cursor_x_ptr = (uint32_t*)Memory::P1_CSS_CURSOR_X_ADDR;
+    uint32_t* p1_css_cursor_y_ptr = (uint32_t*)Memory::P1_CSS_CURSOR_Y_ADDR;
+    uint32_t* p2_css_cursor_x_ptr = (uint32_t*)Memory::P2_CSS_CURSOR_X_ADDR;
+    uint32_t* p2_css_cursor_y_ptr = (uint32_t*)Memory::P2_CSS_CURSOR_Y_ADDR;
+    uint32_t* p1_selected_char_ptr = (uint32_t*)Memory::P1_SELECTED_CHAR_ADDR;
+    uint32_t* p2_selected_char_ptr = (uint32_t*)Memory::P2_SELECTED_CHAR_ADDR;
+    uint32_t* p1_char_related_ptr = (uint32_t*)Memory::P1_CHAR_RELATED_ADDR;
+    uint32_t* p2_char_related_ptr = (uint32_t*)Memory::P2_CHAR_RELATED_ADDR;
 
     if (!IsBadWritePtr(frame_ptr, sizeof(uint32_t))) { *frame_ptr = state->core.input_buffer_index; }
     if (!IsBadWritePtr(p1_input_ptr, sizeof(uint16_t))) { *p1_input_ptr = state->core.p1_input_current; }
@@ -297,6 +346,22 @@ bool RestoreStateFromStruct(const GameState* state, uint32_t target_frame) {
     if (!IsBadWritePtr(round_timer_counter_ptr, sizeof(uint32_t))) { *round_timer_counter_ptr = state->core.round_timer_counter; }
     if (!IsBadWritePtr(object_list_heads_ptr, sizeof(uint32_t))) { *object_list_heads_ptr = state->core.object_list_heads; }
     if (!IsBadWritePtr(object_list_tails_ptr, sizeof(uint32_t))) { *object_list_tails_ptr = state->core.object_list_tails; }
+    
+    // Restore game mode state for character select synchronization
+    if (!IsBadWritePtr(game_mode_ptr, sizeof(uint32_t))) { *game_mode_ptr = state->core.game_mode; }
+    if (!IsBadWritePtr(fm2k_game_mode_ptr, sizeof(uint32_t))) { *fm2k_game_mode_ptr = state->core.fm2k_game_mode; }
+    if (!IsBadWritePtr(character_select_mode_ptr, sizeof(uint32_t))) { *character_select_mode_ptr = state->core.character_select_mode; }
+    
+    // Restore Character Select Menu State (CRITICAL for CSS synchronization)
+    if (!IsBadWritePtr(menu_selection_ptr, sizeof(uint32_t))) { *menu_selection_ptr = state->core.menu_selection; }
+    if (!IsBadWritePtr(p1_css_cursor_x_ptr, sizeof(uint32_t))) { *p1_css_cursor_x_ptr = state->core.p1_css_cursor_x; }
+    if (!IsBadWritePtr(p1_css_cursor_y_ptr, sizeof(uint32_t))) { *p1_css_cursor_y_ptr = state->core.p1_css_cursor_y; }
+    if (!IsBadWritePtr(p2_css_cursor_x_ptr, sizeof(uint32_t))) { *p2_css_cursor_x_ptr = state->core.p2_css_cursor_x; }
+    if (!IsBadWritePtr(p2_css_cursor_y_ptr, sizeof(uint32_t))) { *p2_css_cursor_y_ptr = state->core.p2_css_cursor_y; }
+    if (!IsBadWritePtr(p1_selected_char_ptr, sizeof(uint32_t))) { *p1_selected_char_ptr = state->core.p1_selected_char; }
+    if (!IsBadWritePtr(p2_selected_char_ptr, sizeof(uint32_t))) { *p2_selected_char_ptr = state->core.p2_selected_char; }
+    if (!IsBadWritePtr(p1_char_related_ptr, sizeof(uint32_t))) { *p1_char_related_ptr = state->core.p1_char_related; }
+    if (!IsBadWritePtr(p2_char_related_ptr, sizeof(uint32_t))) { *p2_char_related_ptr = state->core.p2_char_related; }
 
     return true;
 }

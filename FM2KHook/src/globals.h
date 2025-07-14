@@ -38,6 +38,17 @@ namespace FM2K::State::Memory {
     constexpr uintptr_t OBJECT_LIST_HEADS_ADDR = 0x430240;
     constexpr uintptr_t OBJECT_LIST_TAILS_ADDR = 0x430244;
     constexpr uintptr_t ROUND_TIMER_COUNTER_ADDR = 0x424F00;
+    
+    // Character Select Menu State (discovered via Cheat Engine)
+    constexpr uintptr_t MENU_SELECTION_ADDR = 0x424780;        // g_menu_selection (main menu cursor)
+    constexpr uintptr_t P1_CSS_CURSOR_X_ADDR = 0x424E50;       // p1Cursor X (column) - 4 bytes
+    constexpr uintptr_t P1_CSS_CURSOR_Y_ADDR = 0x424E54;       // p1Cursor Y (row) - 4 bytes
+    constexpr uintptr_t P2_CSS_CURSOR_X_ADDR = 0x424E58;       // p2Cursor X (column) - 4 bytes  
+    constexpr uintptr_t P2_CSS_CURSOR_Y_ADDR = 0x424E5C;       // p2Cursor Y (row) - 4 bytes
+    constexpr uintptr_t P1_SELECTED_CHAR_ADDR = 0x470020;      // p1CharToDisplayAndLoad
+    constexpr uintptr_t P2_SELECTED_CHAR_ADDR = 0x470024;      // p2CharToDisplayAndLoad
+    constexpr uintptr_t P1_CHAR_RELATED_ADDR = 0x4CF960;       // u_p1_related
+    constexpr uintptr_t P2_CHAR_RELATED_ADDR = 0x4CF964;       // u_p2_related
 }
 
 // Global variables
@@ -59,6 +70,10 @@ extern uint32_t networked_p2_input;
 extern bool use_networked_inputs;
 extern uint32_t live_p1_input;
 extern uint32_t live_p2_input;
+
+// Frame advance control (GekkoNet synchronization)
+extern bool can_advance_frame;        // Flag to control FM2K frame advancement
+extern bool waiting_for_gekko_advance; // True when waiting for GekkoNet AdvanceEvent
 
 // Function pointers for original functions
 typedef int(__cdecl* ProcessGameInputsFunc)();

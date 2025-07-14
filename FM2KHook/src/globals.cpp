@@ -20,6 +20,10 @@ bool use_networked_inputs = false;
 uint32_t live_p1_input = 0;
 uint32_t live_p2_input = 0;
 
+// Frame advance control (GekkoNet synchronization)
+bool can_advance_frame = true;        // Allow frame advancement initially
+bool waiting_for_gekko_advance = false; // Not waiting initially
+
 // Function pointers for original functions
 ProcessGameInputsFunc original_process_inputs = nullptr;
 GetPlayerInputFunc original_get_player_input = nullptr;

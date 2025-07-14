@@ -40,6 +40,22 @@ namespace FM2K {
             uint32_t round_timer_counter;
             uint32_t object_list_heads;
             uint32_t object_list_tails;
+            
+            // Game mode and menu state synchronization
+            uint32_t game_mode;
+            uint32_t fm2k_game_mode;
+            uint32_t character_select_mode;
+            
+            // Character Select Menu State (critical for CSS synchronization)
+            uint32_t menu_selection;           // Main menu cursor
+            uint32_t p1_css_cursor_x;          // P1 cursor X (column)
+            uint32_t p1_css_cursor_y;          // P1 cursor Y (row)
+            uint32_t p2_css_cursor_x;          // P2 cursor X (column)
+            uint32_t p2_css_cursor_y;          // P2 cursor Y (row)
+            uint32_t p1_selected_char;         // P1 selected character ID
+            uint32_t p2_selected_char;         // P2 selected character ID
+            uint32_t p1_char_related;          // P1 related character
+            uint32_t p2_char_related;          // P2 related character
         };
 
         struct GameState {

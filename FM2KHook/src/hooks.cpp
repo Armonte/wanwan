@@ -54,6 +54,32 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
 }
 
 int __cdecl Hook_ProcessGameInputs() {
+    // CRITICAL: Frame advance control - only block during active rollback (combat)
+    if (gekko_initialized && gekko_session && AllPlayersValid() && rollback_active) {
+        // Check how far ahead we are from the remote client
+        float frames_ahead = gekko_frames_ahead(gekko_session);
+        
+        // Like GekkoNet SDL2 example: pause when too far ahead (lines 247-248, 160-169)
+        if (frames_ahead >= 2.0f) {
+            // Block FM2K frame advancement - we're running too fast
+            static uint32_t lag_log_counter = 0;
+            if (++lag_log_counter % 60 == 1) {  // Log every second
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GEKKO SYNC: Pausing FM2K - %.1f frames ahead of remote", frames_ahead);
+            }
+            return 0;
+        }
+        
+        if (waiting_for_gekko_advance && !can_advance_frame) {
+            // Block FM2K frame advancement - don't call original function
+            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GEKKO SYNC: Blocking FM2K frame advancement, waiting for AdvanceEvent");
+            return 0;
+        }
+        
+        // Reset frame advance flag after each frame
+        can_advance_frame = false;
+        waiting_for_gekko_advance = true;
+    }
+    
     g_frame_counter++;
     
     // Always output on first few calls to verify hook is working
@@ -66,6 +92,31 @@ int __cdecl Hook_ProcessGameInputs() {
     
     // Process debug commands from launcher
     ProcessDebugCommands();
+    
+    // CRITICAL: Continuous CSS monitoring (every 60 frames during character select)
+    static uint32_t css_monitor_counter = 0;
+    if (current_game_mode > 0 && current_game_mode < 3000 && (++css_monitor_counter % 60 == 1)) {
+        uint32_t* menu_sel_ptr = (uint32_t*)FM2K::State::Memory::MENU_SELECTION_ADDR;
+        uint32_t* p1_cursor_x_ptr = (uint32_t*)FM2K::State::Memory::P1_CSS_CURSOR_X_ADDR;
+        uint32_t* p1_cursor_y_ptr = (uint32_t*)FM2K::State::Memory::P1_CSS_CURSOR_Y_ADDR;
+        uint32_t* p2_cursor_x_ptr = (uint32_t*)FM2K::State::Memory::P2_CSS_CURSOR_X_ADDR;
+        uint32_t* p2_cursor_y_ptr = (uint32_t*)FM2K::State::Memory::P2_CSS_CURSOR_Y_ADDR;
+        uint32_t* p1_char_ptr = (uint32_t*)FM2K::State::Memory::P1_SELECTED_CHAR_ADDR;
+        uint32_t* p2_char_ptr = (uint32_t*)FM2K::State::Memory::P2_SELECTED_CHAR_ADDR;
+        
+        if (!IsBadReadPtr(menu_sel_ptr, sizeof(uint32_t)) && !IsBadReadPtr(p1_cursor_x_ptr, sizeof(uint32_t))) {
+            uint32_t menu_sel = *menu_sel_ptr;
+            uint32_t p1_cursor_x = *p1_cursor_x_ptr;
+            uint32_t p1_cursor_y = *p1_cursor_y_ptr;
+            uint32_t p2_cursor_x = *p2_cursor_x_ptr;
+            uint32_t p2_cursor_y = *p2_cursor_y_ptr;
+            uint32_t p1_char = *p1_char_ptr;
+            uint32_t p2_char = *p2_char_ptr;
+            
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS MONITOR (Frame %u): menu=%d, P1=(%d,%d), P2=(%d,%d), chars=(%d,%d), game_mode=0x%X", 
+                       g_frame_counter, menu_sel, p1_cursor_x, p1_cursor_y, p2_cursor_x, p2_cursor_y, p1_char, p2_char, current_game_mode);
+        }
+    }
     
     // Capture current inputs from game memory
     uint32_t p1_input = 0;
@@ -90,14 +141,14 @@ int __cdecl Hook_ProcessGameInputs() {
         // Call gekko_network_poll EVERY frame
         gekko_network_poll(gekko_session);
         
-        // FIXED: Each client sends their own controller input based on their role
-        // HOST (original_player_index=0) controls P1, sends live_p1_input
-        // CLIENT (original_player_index=1) controls P2, sends live_p2_input
+        // FIXED: Both clients use P1 controls locally for better UX
+        // HOST (original_player_index=0) controls P1, sends as P1 input
+        // CLIENT (original_player_index=1) controls P1 locally, sends as P2 input
         uint8_t local_input = 0;
         if (original_player_index == 0) {
-            local_input = (uint8_t)(live_p1_input & 0xFF);  // HOST sends P1 input
+            local_input = (uint8_t)(live_p1_input & 0xFF);  // HOST uses P1 controls, sends as P1
         } else {
-            local_input = (uint8_t)(live_p2_input & 0xFF);  // CLIENT sends P2 input
+            local_input = (uint8_t)(live_p1_input & 0xFF);  // CLIENT uses P1 controls, sends as P2
         }
         gekko_add_local_input(gekko_session, local_player_handle, &local_input);
         
@@ -105,7 +156,7 @@ int __cdecl Hook_ProcessGameInputs() {
         static uint32_t send_frame_count = 0;
         send_frame_count++;
         if (send_frame_count <= 5 || send_frame_count % 600 == 0) {  // Only log first 5 frames or every 10 seconds
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT SEND: Handle %d sending 0x%02X (original_player=%d, role=%s)", 
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT SEND: Handle %d sending 0x%02X (original_player=%d, role=%s, using P1 controls)", 
                        local_player_handle, local_input, original_player_index, 
                        (original_player_index == 0) ? "HOST" : "CLIENT");
         }
@@ -190,10 +241,14 @@ int __cdecl Hook_ProcessGameInputs() {
                     uint32_t input_length = update->data.adv.input_len;
                     uint8_t* inputs = update->data.adv.inputs;
                     
+                    // CRITICAL: Allow FM2K frame advancement for this frame
+                    can_advance_frame = true;
+                    waiting_for_gekko_advance = false;
+                    
                     // Reduced logging: Only log occasionally or on non-zero inputs
                     bool should_log = (target_frame % 30 == 1);
                     if (should_log) {
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent to frame %u (inputs: %u bytes)", 
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent to frame %u (inputs: %u bytes) - ALLOWING FM2K ADVANCE", 
                                     target_frame, input_length);
                     }
                     
@@ -428,6 +483,34 @@ void MonitorGameStateTransitions() {
                    GetGameModeString(new_game_mode), new_game_mode);
         current_game_mode = new_game_mode;
         state_changed = true;
+        
+        // Log character select state when in CSS mode (< 3000)
+        if (new_game_mode < 3000) {
+            uint32_t* menu_sel_ptr = (uint32_t*)FM2K::State::Memory::MENU_SELECTION_ADDR;
+            uint32_t* p1_cursor_x_ptr = (uint32_t*)FM2K::State::Memory::P1_CSS_CURSOR_X_ADDR;
+            uint32_t* p1_cursor_y_ptr = (uint32_t*)FM2K::State::Memory::P1_CSS_CURSOR_Y_ADDR;
+            uint32_t* p2_cursor_x_ptr = (uint32_t*)FM2K::State::Memory::P2_CSS_CURSOR_X_ADDR;
+            uint32_t* p2_cursor_y_ptr = (uint32_t*)FM2K::State::Memory::P2_CSS_CURSOR_Y_ADDR;
+            uint32_t* p1_char_ptr = (uint32_t*)FM2K::State::Memory::P1_SELECTED_CHAR_ADDR;
+            uint32_t* p2_char_ptr = (uint32_t*)FM2K::State::Memory::P2_SELECTED_CHAR_ADDR;
+            
+            if (!IsBadReadPtr(menu_sel_ptr, sizeof(uint32_t)) && !IsBadReadPtr(p1_cursor_x_ptr, sizeof(uint32_t)) && 
+                !IsBadReadPtr(p1_cursor_y_ptr, sizeof(uint32_t)) && !IsBadReadPtr(p2_cursor_x_ptr, sizeof(uint32_t)) && 
+                !IsBadReadPtr(p2_cursor_y_ptr, sizeof(uint32_t)) && !IsBadReadPtr(p1_char_ptr, sizeof(uint32_t)) && 
+                !IsBadReadPtr(p2_char_ptr, sizeof(uint32_t))) {
+                
+                uint32_t menu_sel = *menu_sel_ptr;
+                uint32_t p1_cursor_x = *p1_cursor_x_ptr;
+                uint32_t p1_cursor_y = *p1_cursor_y_ptr;
+                uint32_t p2_cursor_x = *p2_cursor_x_ptr;
+                uint32_t p2_cursor_y = *p2_cursor_y_ptr;
+                uint32_t p1_char = *p1_char_ptr;
+                uint32_t p2_char = *p2_char_ptr;
+                
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS STATE: menu=%d, P1_cursor=(%d,%d), P2_cursor=(%d,%d), P1_char=%d, P2_char=%d", 
+                           menu_sel, p1_cursor_x, p1_cursor_y, p2_cursor_x, p2_cursor_y, p1_char, p2_char);
+            }
+        }
     }
     
     if (new_fm2k_mode != current_fm2k_mode) {
@@ -458,43 +541,49 @@ void MonitorGameStateTransitions() {
 }
 
 void ManageRollbackActivation(uint32_t game_mode, uint32_t fm2k_mode, uint32_t char_select_mode) {
-    // TEMPORARILY DISABLED: Don't interfere with existing GekkoNet flow
-    // TODO: Re-enable once we understand game mode values and fix input issues
-    
-    /*
     bool should_activate = ShouldActivateRollback(game_mode, fm2k_mode);
     
     if (should_activate && !rollback_active) {
-        // Activate rollback for combat
+        // Activate rollback for combat - enable frame synchronization
         rollback_active = true;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K STATE: *** ACTIVATING ROLLBACK NETCODE *** (Combat detected)");
+        waiting_for_gekko_advance = true;
+        can_advance_frame = false;
         
-        // TODO: Initialize GekkoNet session if not already done
-        // TODO: Reset frame counter for combat phase
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K STATE: *** ACTIVATING ROLLBACK NETCODE *** (Combat detected, game_mode=0x%X)", game_mode);
         
     } else if (!should_activate && rollback_active) {
-        // Deactivate rollback (returning to menu/character select)
+        // Deactivate rollback (returning to menu/character select) - disable frame synchronization
         rollback_active = false;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K STATE: *** DEACTIVATING ROLLBACK NETCODE *** (Left combat)");
+        waiting_for_gekko_advance = false;
+        can_advance_frame = true;  // Allow free running during menus
         
-        // TODO: Potentially preserve some session state but stop rollback saves
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K STATE: *** DEACTIVATING ROLLBACK NETCODE *** (Left combat, game_mode=0x%X)", game_mode);
     }
-    */
-    
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "FM2K STATE: Rollback management disabled for debugging");
 }
 
 bool ShouldActivateRollback(uint32_t game_mode, uint32_t fm2k_mode) {
-    // TODO: Determine the exact values that indicate combat mode
-    // For now, activate rollback when we're not in uninitialized state (0xFFFFFFFF)
-    // This will need to be refined once we observe the actual game mode values
+    // REVISED: Force rollback during character select for synchronization
+    // Based on logs showing character select desync issues
     
-    // Likely combat indicators (to be determined through testing):
-    // - game_mode != 0xFFFFFFFF (not uninitialized)
-    // - fm2k_mode indicates active gameplay
-    // - Not in character select or menu modes
+    // Don't activate during uninitialized or startup states
+    if (game_mode == 0xFFFFFFFF || game_mode == 0x0) {
+        return false;
+    }
     
-    return (game_mode != 0xFFFFFFFF && game_mode != 0x0 && fm2k_mode != 0xFFFFFFFF);
+    // CRITICAL: Activate rollback during character select (1000-2999) to prevent desync
+    // This is necessary because CSS state changes need to be synchronized
+    if (game_mode >= 1000 && game_mode < 3000) {
+        return true;  // Force rollback during character select
+    }
+    
+    // Story mode (3000-3999) and other modes (>= 4000) should use rollback
+    // This includes actual combat scenarios
+    if (game_mode >= 3000) {
+        return true;
+    }
+    
+    // Default: no rollback for very early states
+    return false;
 }
 
 const char* GetGameModeString(uint32_t mode) {

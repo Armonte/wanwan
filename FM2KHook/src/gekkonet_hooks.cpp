@@ -18,6 +18,9 @@ bool InitializeGekkoNet() {
     
     if (env_player) {
         player_index = static_cast<uint8_t>(atoi(env_player));
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Environment FM2K_PLAYER_INDEX=%s → player_index=%d", env_player, player_index);
+    } else {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: ERROR - FM2K_PLAYER_INDEX environment variable not set!");
     }
     
     ::player_index = player_index;
@@ -72,31 +75,32 @@ bool InitializeGekkoNet() {
     
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Adding players - Player index: %u", player_index);
     
-    // Store the original player identity before it gets overwritten
-    uint8_t original_player_index = player_index;
+    // CRITICAL: Store original player index before reassignment
+    original_player_index = player_index;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Setting original_player_index=%d", original_player_index);
     
-    // BSNES DETERMINISTIC PATTERN: Ensure consistent handle-to-player mapping
-    // Both clients must agree: Handle 0 = P1, Handle 1 = P2
-    int p1_handle, p2_handle;
-    
-    if (original_player_index == 0) {
-        // Host controls P1: Local=P1(handle 0), Remote=P2(handle 1)
-        p1_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
+    // EXACT GEKKONET REFERENCE PATTERN: Order-dependent actor addition
+    // The reference example shows this is the correct way to do it
+    // EXACT WORKING PATTERN from dllmain_orig.cpp - REASSIGN player_index like OnlineSession reference
+    if (player_index == 0) {
+        // add local player - REASSIGN player_index to handle like OnlineSession line 219
+        player_index = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
+        local_player_handle = player_index;  // HOST: should be handle 0
+        // add remote player
         auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), (unsigned int)remote_address.size() };
-        p2_handle = gekko_add_actor(gekko_session, RemotePlayer, &remote);
-        local_player_handle = p1_handle;  // Host sends to P1 handle
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Host - P1 handle: %d (LOCAL), P2 handle: %d (REMOTE)", p1_handle, p2_handle);
+        gekko_add_actor(gekko_session, RemotePlayer, &remote);
+        
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: HOST - original_player=%d, LOCAL handle: %d", original_player_index, local_player_handle);
     } else {
-        // Client controls P2: Remote=P1(handle 0), Local=P2(handle 1)
+        // add remote player
         auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), (unsigned int)remote_address.size() };
-        p1_handle = gekko_add_actor(gekko_session, RemotePlayer, &remote);
-        p2_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
-        local_player_handle = p2_handle;  // Client sends to P2 handle
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Client - P1 handle: %d (REMOTE), P2 handle: %d (LOCAL)", p1_handle, p2_handle);
+        gekko_add_actor(gekko_session, RemotePlayer, &remote);
+        // add local player - REASSIGN player_index to handle like OnlineSession line 228
+        player_index = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
+        local_player_handle = player_index;  // CLIENT: should be handle 1
+        
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: CLIENT - original_player=%d, LOCAL handle: %d", original_player_index, local_player_handle);
     }
-    
-    // Keep player_index as the original identity (0 or 1) for input logic
-    player_index = original_player_index;
     
     if (local_player_handle < 0) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Failed to add local player! Handle: %d", local_player_handle);

@@ -23,6 +23,9 @@ namespace FM2K::State::Memory {
     constexpr uintptr_t GAME_OBJECT_POOL_ADDR = 0x4701E0;
     constexpr size_t GAME_OBJECT_POOL_SIZE = 0x5F800;
     constexpr uintptr_t GAME_MODE_ADDR = 0x470054;
+    constexpr uintptr_t FM2K_GAME_MODE_ADDR = 0x470040;        // g_fm2k_game_mode  
+    constexpr uintptr_t CHARACTER_SELECT_MODE_ADDR = 0x470058; // g_character_select_mode_flag
+    constexpr uintptr_t REPLAY_MODE_ADDR = 0x4701C0;           // g_replay_mode
     constexpr uintptr_t ROUND_SETTING_ADDR = 0x470068;
     constexpr uintptr_t P1_ROUND_COUNT_ADDR = 0x4700EC;
     constexpr uintptr_t P1_ROUND_STATE_ADDR = 0x4700F0;
@@ -44,6 +47,7 @@ extern bool gekko_session_started;
 extern bool is_online_mode;
 extern bool is_host;
 extern uint8_t player_index;
+extern uint8_t original_player_index;  // Store original before reassignment
 extern int local_player_handle;
 extern bool use_minimal_gamestate_testing;
 extern bool production_mode;
@@ -71,6 +75,19 @@ extern RunGameLoopFunc original_run_game_loop;
 extern uint32_t last_auto_save_frame;
 extern bool state_manager_initialized;
 
+// Game state monitoring variables
+extern uint32_t current_game_mode;
+extern uint32_t current_fm2k_mode;
+extern uint32_t current_char_select_mode;
+extern bool rollback_active;
+extern bool game_state_initialized;
+
 // Function declarations for debugging and reporting
 void GenerateDesyncReport(uint32_t desync_frame, uint32_t local_checksum, uint32_t remote_checksum);
-void LogMinimalGameStateDesync(uint32_t desync_frame, uint32_t local_checksum, uint32_t remote_checksum); 
+void LogMinimalGameStateDesync(uint32_t desync_frame, uint32_t local_checksum, uint32_t remote_checksum);
+
+// Game state management functions
+void MonitorGameStateTransitions();
+void ManageRollbackActivation(uint32_t game_mode, uint32_t fm2k_mode, uint32_t char_select_mode);
+bool ShouldActivateRollback(uint32_t game_mode, uint32_t fm2k_mode);
+const char* GetGameModeString(uint32_t mode); 

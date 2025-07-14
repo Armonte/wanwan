@@ -1328,7 +1328,7 @@ bool FM2KLauncher::LaunchLocalClient(const std::string& game_path, bool is_host,
     
     // FIXED: Use correct networking configuration while keeping non-network variables identical
     // Set environment variables BEFORE launching process (OnlineSession style)
-    (*target_instance)->SetEnvironmentVariable("FM2K_PLAYER_INDEX", "0");  // Keep identical for deterministic initialization
+    (*target_instance)->SetEnvironmentVariable("FM2K_PLAYER_INDEX", std::to_string(player_index));  // Host=0, Guest=1
     (*target_instance)->SetEnvironmentVariable("FM2K_LOCAL_PORT", std::to_string(port));  // Keep port different (required for networking)
     (*target_instance)->SetEnvironmentVariable("FM2K_REMOTE_ADDR", "127.0.0.1:" + std::to_string(is_host ? 7001 : 7000));  // Restore correct remote addressing
     

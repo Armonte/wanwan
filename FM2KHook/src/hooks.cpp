@@ -38,9 +38,14 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
     
     // Return networked input if available
     if (use_networked_inputs && gekko_initialized && gekko_session && AllPlayersValid()) {
+        // Host is P1 (handle 0), Client is P2 (handle 1). This is consistent on both machines.
+        // networked_p1_input is from handle 0, networked_p2_input is from handle 1.
+        // The game requests input for player_id 0 (P1) and player_id 1 (P2).
+        // The mapping is direct and requires no swapping based on the local player's role.
         if (player_id == 0) {
             return networked_p1_input;
-        } else if (player_id == 1) {
+        }
+        if (player_id == 1) {
             return networked_p2_input;
         }
     }
@@ -85,19 +90,19 @@ int __cdecl Hook_ProcessGameInputs() {
         // Call gekko_network_poll EVERY frame
         gekko_network_poll(gekko_session);
         
-        // BSNES PATTERN: Send local controller input to correct handle
-        // Host (player_index 0) sends local controller input to P1 handle (0)
-        // Client (player_index 1) sends local controller input to P2 handle (1)
-        uint8_t local_input = (player_index == 0) ? (uint8_t)(live_p1_input & 0xFF) : (uint8_t)(live_p2_input & 0xFF);
+        // REFERENCE PATTERN: Both clients always send their LOCAL controller input
+        // Like OnlineSession get_key_inputs() - always read the same input source (local controller)
+        // In FM2K, the local controller input is always captured in live_p1_input
+        uint8_t local_input = (uint8_t)(live_p1_input & 0xFF);
         gekko_add_local_input(gekko_session, local_player_handle, &local_input);
         
-        // Enhanced logging for input transmission (reduced frequency)
-        static uint32_t last_input_log = 0;
-        if (g_frame_counter - last_input_log > 300) {  // Log every 5 seconds (300 frames @ 60fps)
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GEKKO INPUT: Frame %u, Player %u sending 0x%02X (P1_live=0x%02X, P2_live=0x%02X)", 
-                       g_frame_counter, player_index + 1, local_input, 
-                       (uint8_t)(live_p1_input & 0xFF), (uint8_t)(live_p2_input & 0xFF));
-            last_input_log = g_frame_counter;
+        // Enhanced input logging to debug transmission 
+        static uint32_t send_frame_count = 0;
+        send_frame_count++;
+        if (local_input != 0 || send_frame_count <= 10 || send_frame_count % 60 == 0) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT SEND: Handle %d sending 0x%02X (original_player=%d, role=%s)", 
+                       local_player_handle, local_input, original_player_index, 
+                       (original_player_index == 0) ? "HOST" : "CLIENT");
         }
         
         // Record inputs for testing/debugging if enabled
@@ -195,11 +200,11 @@ int __cdecl Hook_ProcessGameInputs() {
                         networked_p2_input = inputs[1];  // Handle 1 -> P2
                         use_networked_inputs = true;     // Always use network inputs during AdvanceEvent
                         
-                        // Debug logging for received inputs (reduced frequency)
+                        // Debug logging for received inputs (INCREASED frequency for debugging)
                         static uint32_t advance_log_counter = 0;
-                        if (++advance_log_counter % 300 == 1) {  // Log every 5 seconds (300 frames @ 60fps)
-                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GEKKO AdvanceEvent: Frame %u, inputs P1=0x%02X P2=0x%02X, use_networked now=%s", 
-                                       target_frame, inputs[0], inputs[1], use_networked_inputs ? "YES" : "NO");
+                        if ((inputs[0] | inputs[1]) != 0 || ++advance_log_counter % 60 == 1) {  // Log when there's input or every second
+                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GEKKO AdvanceEvent: Frame %u, inputs[0]=0x%02X inputs[1]=0x%02X → P1=0x%02X P2=0x%02X", 
+                                       target_frame, inputs[0], inputs[1], networked_p1_input, networked_p2_input);
                         }
                         
                         // GekkoNet will call the game's run loop after this AdvanceEvent
@@ -262,6 +267,10 @@ int __cdecl Hook_ProcessGameInputs() {
 }
 
 int __cdecl Hook_UpdateGameState() {
+    // Monitor game state transitions for rollback management
+    MonitorGameStateTransitions();
+    
+    // Original logic for GekkoNet session management
     if (gekko_initialized && !gekko_session_started) {
         return 0;
     }
@@ -382,4 +391,119 @@ void ShutdownHooks() {
     MH_DisableHook(MH_ALL_HOOKS);
     MH_Uninitialize();
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Hooks shut down");
+}
+
+// Game state monitoring implementation
+void MonitorGameStateTransitions() {
+    // Read current game mode values from memory
+    uint32_t* game_mode_ptr = (uint32_t*)FM2K::State::Memory::GAME_MODE_ADDR;
+    uint32_t* fm2k_mode_ptr = (uint32_t*)FM2K::State::Memory::FM2K_GAME_MODE_ADDR;
+    uint32_t* char_select_ptr = (uint32_t*)FM2K::State::Memory::CHARACTER_SELECT_MODE_ADDR;
+    
+    // Safely read values
+    uint32_t new_game_mode = 0xFFFFFFFF;
+    uint32_t new_fm2k_mode = 0xFFFFFFFF;
+    uint32_t new_char_select = 0xFFFFFFFF;
+    
+    if (!IsBadReadPtr(game_mode_ptr, sizeof(uint32_t))) {
+        new_game_mode = *game_mode_ptr;
+    }
+    if (!IsBadReadPtr(fm2k_mode_ptr, sizeof(uint32_t))) {
+        new_fm2k_mode = *fm2k_mode_ptr;
+    }
+    if (!IsBadReadPtr(char_select_ptr, sizeof(uint32_t))) {
+        new_char_select = *char_select_ptr;
+    }
+    
+    // Check for state transitions and log them
+    bool state_changed = false;
+    if (new_game_mode != current_game_mode) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K STATE: game_mode changed from %s (0x%08X) to %s (0x%08X)", 
+                   GetGameModeString(current_game_mode), current_game_mode,
+                   GetGameModeString(new_game_mode), new_game_mode);
+        current_game_mode = new_game_mode;
+        state_changed = true;
+    }
+    
+    if (new_fm2k_mode != current_fm2k_mode) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K STATE: fm2k_mode changed from 0x%08X to 0x%08X", 
+                   current_fm2k_mode, new_fm2k_mode);
+        current_fm2k_mode = new_fm2k_mode;
+        state_changed = true;
+    }
+    
+    if (new_char_select != current_char_select_mode) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K STATE: char_select_mode changed from 0x%08X to 0x%08X", 
+                   current_char_select_mode, new_char_select);
+        current_char_select_mode = new_char_select;
+        state_changed = true;
+    }
+    
+    // Manage rollback activation based on state changes
+    if (state_changed) {
+        ManageRollbackActivation(new_game_mode, new_fm2k_mode, new_char_select);
+    }
+    
+    // Mark as initialized after first read
+    if (!game_state_initialized) {
+        game_state_initialized = true;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K STATE: Initial state - game_mode=0x%08X, fm2k_mode=0x%08X, char_select=0x%08X", 
+                   new_game_mode, new_fm2k_mode, new_char_select);
+    }
+}
+
+void ManageRollbackActivation(uint32_t game_mode, uint32_t fm2k_mode, uint32_t char_select_mode) {
+    // TEMPORARILY DISABLED: Don't interfere with existing GekkoNet flow
+    // TODO: Re-enable once we understand game mode values and fix input issues
+    
+    /*
+    bool should_activate = ShouldActivateRollback(game_mode, fm2k_mode);
+    
+    if (should_activate && !rollback_active) {
+        // Activate rollback for combat
+        rollback_active = true;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K STATE: *** ACTIVATING ROLLBACK NETCODE *** (Combat detected)");
+        
+        // TODO: Initialize GekkoNet session if not already done
+        // TODO: Reset frame counter for combat phase
+        
+    } else if (!should_activate && rollback_active) {
+        // Deactivate rollback (returning to menu/character select)
+        rollback_active = false;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K STATE: *** DEACTIVATING ROLLBACK NETCODE *** (Left combat)");
+        
+        // TODO: Potentially preserve some session state but stop rollback saves
+    }
+    */
+    
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "FM2K STATE: Rollback management disabled for debugging");
+}
+
+bool ShouldActivateRollback(uint32_t game_mode, uint32_t fm2k_mode) {
+    // TODO: Determine the exact values that indicate combat mode
+    // For now, activate rollback when we're not in uninitialized state (0xFFFFFFFF)
+    // This will need to be refined once we observe the actual game mode values
+    
+    // Likely combat indicators (to be determined through testing):
+    // - game_mode != 0xFFFFFFFF (not uninitialized)
+    // - fm2k_mode indicates active gameplay
+    // - Not in character select or menu modes
+    
+    return (game_mode != 0xFFFFFFFF && game_mode != 0x0 && fm2k_mode != 0xFFFFFFFF);
+}
+
+const char* GetGameModeString(uint32_t mode) {
+    switch (mode) {
+        case 0xFFFFFFFF: return "UNINITIALIZED";
+        case 0x0: return "STARTUP";
+        case 0x1: return "INTRO";
+        case 0x2: return "MAIN_MENU";
+        case 0x3: return "CHARACTER_SELECT";
+        case 0x4: return "STAGE_SELECT";
+        case 0x5: return "LOADING";
+        case 0x1000: return "COMBAT_1000";
+        case 0x2000: return "COMBAT_2000";
+        case 0x3000: return "COMBAT_3000";
+        default: return "UNKNOWN";
+    }
 } 

@@ -7,6 +7,7 @@ bool gekko_session_started = false;
 bool is_online_mode = false;
 bool is_host = false;
 uint8_t player_index = 0;
+uint8_t original_player_index = 0;  // Store original before reassignment
 int local_player_handle = -1;
 bool use_minimal_gamestate_testing = false;
 bool production_mode = false;
@@ -27,4 +28,11 @@ RunGameLoopFunc original_run_game_loop = nullptr;
 
 // State manager variables
 uint32_t last_auto_save_frame = 0;
-bool state_manager_initialized = false; 
+bool state_manager_initialized = false;
+
+// Game state monitoring variables
+uint32_t current_game_mode = 0xFFFFFFFF;
+uint32_t current_fm2k_mode = 0xFFFFFFFF;
+uint32_t current_char_select_mode = 0xFFFFFFFF;
+bool rollback_active = false;
+bool game_state_initialized = false; 

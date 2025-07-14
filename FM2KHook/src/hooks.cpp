@@ -90,16 +90,21 @@ int __cdecl Hook_ProcessGameInputs() {
         // Call gekko_network_poll EVERY frame
         gekko_network_poll(gekko_session);
         
-        // REFERENCE PATTERN: Both clients always send their LOCAL controller input
-        // Like OnlineSession get_key_inputs() - always read the same input source (local controller)
-        // In FM2K, the local controller input is always captured in live_p1_input
-        uint8_t local_input = (uint8_t)(live_p1_input & 0xFF);
+        // FIXED: Each client sends their own controller input based on their role
+        // HOST (original_player_index=0) controls P1, sends live_p1_input
+        // CLIENT (original_player_index=1) controls P2, sends live_p2_input
+        uint8_t local_input = 0;
+        if (original_player_index == 0) {
+            local_input = (uint8_t)(live_p1_input & 0xFF);  // HOST sends P1 input
+        } else {
+            local_input = (uint8_t)(live_p2_input & 0xFF);  // CLIENT sends P2 input
+        }
         gekko_add_local_input(gekko_session, local_player_handle, &local_input);
         
         // Enhanced input logging to debug transmission 
         static uint32_t send_frame_count = 0;
         send_frame_count++;
-        if (local_input != 0 || send_frame_count <= 10 || send_frame_count % 60 == 0) {
+        if (send_frame_count <= 5 || send_frame_count % 600 == 0) {  // Only log first 5 frames or every 10 seconds
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT SEND: Handle %d sending 0x%02X (original_player=%d, role=%s)", 
                        local_player_handle, local_input, original_player_index, 
                        (original_player_index == 0) ? "HOST" : "CLIENT");
@@ -200,9 +205,9 @@ int __cdecl Hook_ProcessGameInputs() {
                         networked_p2_input = inputs[1];  // Handle 1 -> P2
                         use_networked_inputs = true;     // Always use network inputs during AdvanceEvent
                         
-                        // Debug logging for received inputs (INCREASED frequency for debugging)
+                        // Debug logging for received inputs (REDUCED frequency for performance)
                         static uint32_t advance_log_counter = 0;
-                        if ((inputs[0] | inputs[1]) != 0 || ++advance_log_counter % 60 == 1) {  // Log when there's input or every second
+                        if (++advance_log_counter % 1800 == 1) {  // Log every 30 seconds only
                             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GEKKO AdvanceEvent: Frame %u, inputs[0]=0x%02X inputs[1]=0x%02X → P1=0x%02X P2=0x%02X", 
                                        target_frame, inputs[0], inputs[1], networked_p1_input, networked_p2_input);
                         }

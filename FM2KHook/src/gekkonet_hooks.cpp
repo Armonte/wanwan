@@ -115,7 +115,12 @@ bool InitializeGekkoNet() {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Set input delay for local player handle %d", local_player_handle);
     
     gekko_initialized = true;
+    
+    // CRITICAL: Activate frame gating immediately after GekkoNet initialization
+    waiting_for_gekko_advance = true;
+    can_advance_frame = false;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet initialization complete with real UDP networking!");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Frame gating ACTIVATED - FM2K will wait for network synchronization");
     return true;
 }
 
@@ -181,6 +186,7 @@ bool AllPlayersValid() {
         
         if (session_started_event_found) {
             gekko_session_started = true;
+            gekko_session_active = true;  // CRITICAL: Set session active for full synchronization
             handshake_timeout_frames = 0; // Reset timeout on success
             
             // CRITICAL: Synchronize FM2K frame counters at session start to prevent input_buffer_index desyncs

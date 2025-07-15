@@ -19,7 +19,7 @@ namespace FM2K {
         // UNIFIED: Single state structure for both rollback and checksumming (no padding, consistent across clients)
         #pragma pack(push, 1)  // Ensure no padding between fields
         struct CoreGameState {
-            uint32_t input_buffer_index;
+            // uint32_t input_buffer_index; // REMOVED for determinism
             uint16_t p1_input_current;
             uint16_t p2_input_current;
         //    uint32_t p1_hp;

@@ -34,8 +34,10 @@ uint32_t last_valid_players_frame = 0;    // Last frame when AllPlayersValid() w
 // Function pointers for original functions
 ProcessGameInputsFunc original_process_inputs = nullptr;
 GetPlayerInputFunc original_get_player_input = nullptr;
-UpdateGameStateFunc original_update_game = nullptr;
+UpdateGameStateFunc original_update_game_state = nullptr;
 RunGameLoopFunc original_run_game_loop = nullptr;
+
+// Binary patch restoration removed - we no longer hook update_game_state
 
 // State manager variables
 uint32_t last_auto_save_frame = 0;

@@ -203,7 +203,6 @@ void LogMinimalGameStateDesync(uint32_t desync_frame, uint32_t local_checksum, u
     uint32_t* p1_selected_char_ptr = (uint32_t*)FM2K::State::Memory::P1_SELECTED_CHAR_ADDR;
     uint32_t* p2_selected_char_ptr = (uint32_t*)FM2K::State::Memory::P2_SELECTED_CHAR_ADDR;
     
-    if (!IsBadReadPtr(frame_ptr, sizeof(uint32_t))) current_state.input_buffer_index = *frame_ptr;
     if (!IsBadReadPtr(p1_input_ptr, sizeof(uint16_t))) current_state.p1_input_current = *p1_input_ptr;
     if (!IsBadReadPtr(p2_input_ptr, sizeof(uint16_t))) current_state.p2_input_current = *p2_input_ptr;
     if (!IsBadReadPtr(mainmenu_cursor_ptr, sizeof(uint32_t))) current_state.menu_selection = *mainmenu_cursor_ptr;
@@ -218,7 +217,7 @@ void LogMinimalGameStateDesync(uint32_t desync_frame, uint32_t local_checksum, u
     uint32_t calculated_checksum = current_state.CalculateChecksum();
     
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Current Checksum State:");
-    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  Frame: %u, Inputs: P1=%u P2=%u", current_state.input_buffer_index, current_state.p1_input_current, current_state.p2_input_current);
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  Inputs: P1=%u P2=%u", current_state.p1_input_current, current_state.p2_input_current);
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  Main Menu Cursor: %u", current_state.menu_selection);
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  P1 CSS Cursor: (%u, %u)", current_state.p1_css_cursor_x, current_state.p1_css_cursor_y);
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  P2 CSS Cursor: (%u, %u)", current_state.p2_css_cursor_x, current_state.p2_css_cursor_y);

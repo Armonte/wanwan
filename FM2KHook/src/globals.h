@@ -104,8 +104,10 @@ typedef BOOL(__cdecl* RunGameLoopFunc)();
 
 extern ProcessGameInputsFunc original_process_inputs;
 extern GetPlayerInputFunc original_get_player_input;
-extern UpdateGameStateFunc original_update_game;
+extern UpdateGameStateFunc original_update_game_state;
 extern RunGameLoopFunc original_run_game_loop;
+
+// Binary patch restoration removed - we no longer hook update_game_state
 
 // State manager variables
 extern uint32_t last_auto_save_frame;

@@ -2279,22 +2279,22 @@ bool SaveGameStateDirect(FM2K::State::GameState* state, uint32_t frame_number) {
         if (core_changed) {
             SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Core state changes detected:");
             if (state->core.input_buffer_index != last_core_state.core.input_buffer_index) {
-                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "  Input buffer index: %u → %u", last_core_state.core.input_buffer_index, state->core.input_buffer_index);
+                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "  Input buffer index: %u -> %u", last_core_state.core.input_buffer_index, state->core.input_buffer_index);
             }
             if (state->core.p1_input_current != last_core_state.core.p1_input_current) {
-                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "  P1 input: 0x%08X → 0x%08X", last_core_state.core.p1_input_current, state->core.p1_input_current);
+                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "  P1 input: 0x%08X -> 0x%08X", last_core_state.core.p1_input_current, state->core.p1_input_current);
             }
             if (state->core.p2_input_current != last_core_state.core.p2_input_current) {
-                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "  P2 input: 0x%08X → 0x%08X", last_core_state.core.p2_input_current, state->core.p2_input_current);
+                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "  P2 input: 0x%08X -> 0x%08X", last_core_state.core.p2_input_current, state->core.p2_input_current);
             }
             if (state->core.round_timer != last_core_state.core.round_timer) {
-                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "  Round timer: %u → %u", last_core_state.core.round_timer, state->core.round_timer);
+                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "  Round timer: %u -> %u", last_core_state.core.round_timer, state->core.round_timer);
             }
             if (state->core.game_timer != last_core_state.core.game_timer) {
-                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "  Game timer: %u → %u", last_core_state.core.game_timer, state->core.game_timer);
+                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "  Game timer: %u -> %u", last_core_state.core.game_timer, state->core.game_timer);
             }
             if (state->core.random_seed != last_core_state.core.random_seed) {
-                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "  RNG seed: 0x%08X → 0x%08X", last_core_state.core.random_seed, state->core.random_seed);
+                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "  RNG seed: 0x%08X -> 0x%08X", last_core_state.core.random_seed, state->core.random_seed);
             }
         }
         SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Checksums - Core: 0x%08X, Player: 0x%08X, Objects: 0x%08X", core_checksum, player_checksum, object_checksum);
@@ -2373,27 +2373,27 @@ bool LoadGameStateDirect(const FM2K::State::GameState* state) {
     // Validate basic pointers and restore core state
     if (!IsBadWritePtr(frame_ptr, sizeof(uint32_t))) {
         *frame_ptr = state->core.input_buffer_index;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RESTORE: Frame counter written: %u → %u", before_frame, *frame_ptr);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RESTORE: Frame counter written: %u -> %u", before_frame, *frame_ptr);
     }
     if (!IsBadWritePtr(p1_input_ptr, sizeof(uint16_t))) {
         *p1_input_ptr = (uint16_t)state->core.p1_input_current;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RESTORE: P1 input written: 0x%04X → 0x%04X", before_p1_input, *p1_input_ptr);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RESTORE: P1 input written: 0x%04X -> 0x%04X", before_p1_input, *p1_input_ptr);
     }
     if (!IsBadWritePtr(p2_input_ptr, sizeof(uint16_t))) {
         *p2_input_ptr = (uint16_t)state->core.p2_input_current;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RESTORE: P2 input written: 0x%04X → 0x%04X", before_p2_input, *p2_input_ptr);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RESTORE: P2 input written: 0x%04X -> 0x%04X", before_p2_input, *p2_input_ptr);
     }
     if (!IsBadWritePtr(p1_hp_ptr, sizeof(uint32_t))) {
         *p1_hp_ptr = state->core.p1_hp;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RESTORE: P1 HP written: %u → %u", before_p1_hp, *p1_hp_ptr);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RESTORE: P1 HP written: %u -> %u", before_p1_hp, *p1_hp_ptr);
     }
     if (!IsBadWritePtr(p2_hp_ptr, sizeof(uint32_t))) {
         *p2_hp_ptr = state->core.p2_hp;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RESTORE: P2 HP written: %u → %u", before_p2_hp, *p2_hp_ptr);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RESTORE: P2 HP written: %u -> %u", before_p2_hp, *p2_hp_ptr);
     }
     if (!IsBadWritePtr(round_timer_ptr, sizeof(uint32_t))) {
         *round_timer_ptr = state->core.round_timer;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RESTORE: Round timer written: %u → %u", before_round_timer, *round_timer_ptr);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RESTORE: Round timer written: %u -> %u", before_round_timer, *round_timer_ptr);
     }
     if (!IsBadWritePtr(game_timer_ptr, sizeof(uint32_t))) {
         *game_timer_ptr = state->core.game_timer;

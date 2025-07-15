@@ -181,7 +181,7 @@ namespace FM2K {
     struct GameState {
         // Frame and timing state
         uint32_t frame_number;
-        uint32_t input_buffer_index;
+        // uint32_t input_buffer_index; // REMOVED for determinism
         uint32_t last_frame_time;
         uint32_t frame_time_delta;
         uint8_t frame_skip_count;

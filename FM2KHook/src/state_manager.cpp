@@ -184,7 +184,6 @@ bool SaveCoreStateBasic(GameState* state, uint32_t frame_number) {
     uint32_t* p1_char_related_ptr = (uint32_t*)Memory::P1_CHAR_RELATED_ADDR;
     uint32_t* p2_char_related_ptr = (uint32_t*)Memory::P2_CHAR_RELATED_ADDR;
     
-    if (!IsBadReadPtr(frame_ptr, sizeof(uint32_t))) { state->core.input_buffer_index = *frame_ptr; }
     if (!IsBadReadPtr(p1_input_ptr, sizeof(uint16_t))) { state->core.p1_input_current = *p1_input_ptr; }
     if (!IsBadReadPtr(p2_input_ptr, sizeof(uint16_t))) { state->core.p2_input_current = *p2_input_ptr; }
     // DISABLED FIELDS - set to constants for minimal state
@@ -251,7 +250,6 @@ bool RestoreStateFromStruct(const GameState* state, uint32_t target_frame) {
     uint32_t* p1_char_related_ptr = (uint32_t*)Memory::P1_CHAR_RELATED_ADDR;
     uint32_t* p2_char_related_ptr = (uint32_t*)Memory::P2_CHAR_RELATED_ADDR;
 
-    if (!IsBadWritePtr(frame_ptr, sizeof(uint32_t))) { *frame_ptr = state->core.input_buffer_index; }
     if (!IsBadWritePtr(p1_input_ptr, sizeof(uint16_t))) { *p1_input_ptr = state->core.p1_input_current; }
     if (!IsBadWritePtr(p2_input_ptr, sizeof(uint16_t))) { *p2_input_ptr = state->core.p2_input_current; }
     // DISABLED FIELDS - commenting out to match minimized state structure
@@ -317,8 +315,8 @@ bool SaveStateToMemoryBuffer(uint32_t slot, uint32_t frame_number) {
         const CoreGameState& core = memory_rollback_slots[slot].core;
         if (frame_number <= 50) {  // Extended logging to see post-warmup sync effects
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CHECKSUM DEBUG Frame %u:", frame_number);
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  input_buffer_index=%u, p1_input=%u, p2_input=%u", 
-                       core.input_buffer_index, core.p1_input_current, core.p2_input_current);
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  p1_input=%u, p2_input=%u", 
+                       core.p1_input_current, core.p2_input_current);
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  menu=%u, css_cursors=(%u,%u),(%u,%u)", 
                        core.menu_selection, core.p1_css_cursor_x, core.p1_css_cursor_y,
                        core.p2_css_cursor_x, core.p2_css_cursor_y);

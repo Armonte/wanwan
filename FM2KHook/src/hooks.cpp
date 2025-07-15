@@ -62,6 +62,89 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
 }
 
 int __cdecl Hook_ProcessGameInputs() {
+    // DEBUG: Log that we reached this function to diagnose Player 1 issue
+    static uint32_t debug_call_counter = 0;
+    debug_call_counter++;
+    
+    if (debug_call_counter <= 5 || debug_call_counter % 100 == 0) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: DEBUG - Hook_ProcessGameInputs called #%u (Player %d)", 
+                   debug_call_counter, original_player_index);
+    }
+    
+    // CRITICAL: Check for session events BEFORE frame gating to update gekko_session_active
+    if (gekko_initialized && gekko_session) {
+        AllPlayersValid();  // This updates gekko_session_active based on network events
+    }
+    
+    // CRITICAL: Frame gating mechanism - control when FM2K advances frames
+    // This is the correct hook point (process_game_inputs_FRAMESTEP_HOOK) that only runs in main loop
+    
+    // CRITICAL: Determine if we should advance frames, but don't return early
+    // We need to continue processing GekkoNet updates even when blocking frames
+    bool should_advance_frame = true;
+    
+    if (gekko_initialized && gekko_session && waiting_for_gekko_advance) {
+        static uint32_t frame_wait_counter = 0;
+        frame_wait_counter++;
+        
+        // During handshake, allow frames but limit rate to prevent runaway
+        if (!gekko_session_active) {
+            // Handshake phase: Allow one frame every 3 frames (33 FPS instead of 100 FPS)
+            if (frame_wait_counter >= 3) {
+                frame_wait_counter = 0;
+                waiting_for_gekko_advance = false;
+                can_advance_frame = true;
+                should_advance_frame = true;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FRAME GATE: Handshake rate limiting - allowing frame advancement");
+            } else {
+                should_advance_frame = false;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FRAME GATE: Handshake rate limiting (waiting %u/3 frames)", frame_wait_counter);
+            }
+        } else {
+            // Active session: Wait for AdvanceEvent (strict synchronization)
+            // Emergency timeout after 1 second (100 frames) to prevent complete deadlock
+            if (frame_wait_counter > 100) {
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "FRAME GATE: Emergency timeout - advancing without GekkoNet permission");
+                frame_wait_counter = 0;
+                waiting_for_gekko_advance = false;
+                can_advance_frame = true;
+                should_advance_frame = true;
+            } else {
+                should_advance_frame = false;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FRAME GATE: Blocking frame advancement (waiting %u frames)", frame_wait_counter);
+            }
+        }
+    }
+    
+    // CRITICAL: If we shouldn't advance frames, return early but continue GekkoNet processing
+    if (!should_advance_frame) {
+        // Continue processing GekkoNet updates even when blocking frames
+        if (gekko_initialized && gekko_session) {
+            gekko_network_poll(gekko_session);
+            
+            // Add inputs to GekkoNet
+            uint8_t local_input = (uint8_t)(live_p1_input & 0xFF);
+            gekko_add_local_input(gekko_session, local_player_handle, &local_input);
+            
+            // Process GekkoNet updates to generate new AdvanceEvents
+            int update_count = 0;
+            auto updates = gekko_update_session(gekko_session, &update_count);
+            
+            // Process AdvanceEvents to potentially unblock frame advancement
+            for (int i = 0; i < update_count; i++) {
+                auto update = updates[i];
+                if (update->type == AdvanceEvent) {
+                    waiting_for_gekko_advance = false;
+                    can_advance_frame = true;
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FRAME GATE: Received AdvanceEvent - unblocking frame advancement");
+                    break;
+                }
+            }
+        }
+        
+        return 0;  // Block frame advancement but continue GekkoNet processing
+    }
+    
     // SDL2 PATTERN: Let GekkoNet handle frame synchronization - don't block execution
     // The SDL2 example shows they NEVER block with return 0, they just adjust timing
     // GekkoNet is designed to handle the entire session from frame 1
@@ -303,32 +386,7 @@ int __cdecl Hook_ProcessGameInputs() {
             }
         }
         
-        // Session handshake complete - process session events
-        int session_event_count = 0;
-        auto session_events = gekko_session_events(gekko_session, &session_event_count);
-        for (int i = 0; i < session_event_count; i++) {
-            auto event = session_events[i];
-            
-            if (event->type == DesyncDetected) {
-                auto desync = event->data.desynced;
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "=== DESYNC DETECTED ===");
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Frame: %u", desync.frame);
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Local Checksum: 0x%08X", desync.local_checksum);
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Remote Checksum: 0x%08X", desync.remote_checksum);
-                
-                GenerateDesyncReport(desync.frame, desync.local_checksum, desync.remote_checksum);
-                
-                if (use_minimal_gamestate_testing) {
-                    LogMinimalGameStateDesync(desync.frame, desync.local_checksum, desync.remote_checksum);
-                }
-            } else if (event->type == PlayerDisconnected) {
-                auto disco = event->data.disconnected;
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Player disconnected: %d", disco.handle);
-            } else if (event->type == PlayerConnected) {
-                auto connected = event->data.connected;
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Player connected: %d", connected.handle);
-            }
-        }
+        // Session events are now processed in AllPlayersValid() call at the beginning of function
         
         // Get game updates
         int update_count = 0;
@@ -364,7 +422,7 @@ int __cdecl Hook_ProcessGameInputs() {
                     // Reduced logging: Only log occasionally or on non-zero inputs
                     bool should_log = (target_frame % 30 == 1);
                     if (should_log) {
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent to frame %u (inputs: %u bytes) - SYNCHRONOUS PROCESSING", 
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent to frame %u (inputs: %u bytes) - ALLOWING FRAME ADVANCEMENT", 
                                     target_frame, input_length);
                     }
                     
@@ -382,9 +440,12 @@ int __cdecl Hook_ProcessGameInputs() {
                             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GEKKO AdvanceEvent: Frame %u, inputs[0]=0x%02X inputs[1]=0x%02X → P1=0x%02X P2=0x%02X", 
                                        target_frame, inputs[0], inputs[1], networked_p1_input, networked_p2_input);
                         }
-                        
-                        // BSNES PATTERN: AdvanceEvent is processed immediately, no waiting flags
                     }
+                    
+                    // CRITICAL: Allow one frame advancement
+                    can_advance_frame = true;
+                    waiting_for_gekko_advance = false;
+                    
                     break;
                 }
                 
@@ -443,23 +504,19 @@ int __cdecl Hook_ProcessGameInputs() {
         }
     }
     
+    // CRITICAL: After processing inputs (frame advancement), wait for next GekkoNet AdvanceEvent
+    // This happens after the frame has been processed and before the next frame
+    if (gekko_initialized && gekko_session) {
+        waiting_for_gekko_advance = true;
+        can_advance_frame = false;
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "FRAME GATE: Input processing complete, now waiting for next AdvanceEvent");
+    }
+    
     return original_process_inputs ? original_process_inputs() : 0;
 }
 
-int __cdecl Hook_UpdateGameState() {
-    // Monitor game state transitions for rollback management
-    MonitorGameStateTransitions();
-    
-    // Original logic for GekkoNet session management
-    if (gekko_initialized && !gekko_session_started) {
-        return 0;
-    }
-    
-    if (original_update_game) {
-        return original_update_game();
-    }
-    return 0;
-}
+// Hook_UpdateGameState function removed - we no longer hook update_game_state
+// Frame gating now happens in Hook_ProcessGameInputs (process_game_inputs_FRAMESTEP_HOOK)
 
 BOOL __cdecl Hook_RunGameLoop() {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** RUN_GAME_LOOP INTERCEPTED - BSNES-LEVEL CONTROL! ***");
@@ -483,8 +540,12 @@ BOOL __cdecl Hook_RunGameLoop() {
     
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Calling original run_game_loop...");
     if (original_run_game_loop) {
-        return original_run_game_loop();
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: DEBUG - About to call original_run_game_loop");
+        BOOL result = original_run_game_loop();
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: DEBUG - original_run_game_loop returned: %s", result ? "TRUE" : "FALSE");
+        return result;
     }
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: ERROR - original_run_game_loop is NULL!");
     return FALSE;
 }
 
@@ -533,20 +594,8 @@ bool InitializeHooks() {
         return false;
     }
     
-    void* updateFuncAddr = (void*)FM2K::State::Memory::UPDATE_GAME_ADDR;
-    MH_STATUS status2 = MH_CreateHook(updateFuncAddr, (void*)Hook_UpdateGameState, (void**)&original_update_game);
-    if (status2 != MH_OK) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ERROR FM2K HOOK: Failed to create update hook: %d", status2);
-        MH_Uninitialize();
-        return false;
-    }
-    
-    MH_STATUS enable2 = MH_EnableHook(updateFuncAddr);
-    if (enable2 != MH_OK) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ERROR FM2K HOOK: Failed to enable update hook: %d", enable2);
-        MH_Uninitialize();
-        return false;
-    }
+    // Binary patch removed - we no longer hook update_game_state
+    // Frame control now happens in process_game_inputs_FRAMESTEP_HOOK
     
     void* runGameLoopFuncAddr = (void*)FM2K::State::Memory::RUN_GAME_LOOP_ADDR;
     MH_STATUS status3 = MH_CreateHook(runGameLoopFuncAddr, (void*)Hook_RunGameLoop, (void**)&original_run_game_loop);

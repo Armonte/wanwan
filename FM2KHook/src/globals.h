@@ -82,6 +82,20 @@ extern uint32_t handshake_timeout_frames;    // Timeout counter for network hand
 extern uint32_t advance_timeout_frames;      // Timeout counter for frame advance waits
 extern uint32_t last_valid_players_frame;    // Last frame when AllPlayersValid() was true
 
+// BSNES PATTERN: Frame drift correction system
+struct FrameAdvantageHistory {
+    static const int HISTORY_SIZE = 26;   // ~26 frame rolling average like BSNES
+    float local_advantage[HISTORY_SIZE];  // Local frame advantage history
+    float remote_advantage[HISTORY_SIZE]; // Remote frame advantage history  
+    int history_index = 0;                // Current index in circular buffer
+    uint32_t drift_check_counter = 0;     // Counter for periodic drift checks (every 180 frames)
+    bool drift_correction_active = false; // Flag to prevent multiple corrections
+    
+    float GetAverageAdvantage() const;     // Calculate rolling average of frame advantage
+    void AddAdvantage(float local_adv, float remote_adv); // Add new advantage reading
+};
+extern FrameAdvantageHistory frame_advantage_history;
+
 // Function pointers for original functions
 typedef int(__cdecl* ProcessGameInputsFunc)();
 typedef int(__cdecl* GetPlayerInputFunc)(int playerIndex, int inputType);
@@ -111,4 +125,8 @@ void LogMinimalGameStateDesync(uint32_t desync_frame, uint32_t local_checksum, u
 // Game state management functions
 void MonitorGameStateTransitions();
 void ManageRollbackActivation(uint32_t game_mode, uint32_t fm2k_mode, uint32_t char_select_mode);
-const char* GetGameModeString(uint32_t mode); 
+const char* GetGameModeString(uint32_t mode);
+
+// BSNES PATTERN: Frame drift correction functions
+void CheckFrameDrift();
+void ApplyRiftSyncCorrection(float avg_advantage); 

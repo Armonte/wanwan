@@ -87,6 +87,71 @@ int __cdecl Hook_ProcessGameInputs() {
     
     g_frame_counter++;
     
+    // CRITICAL: Post-warmup frame counter synchronization
+    static bool post_warmup_sync_done = false;
+    static uint32_t sync_attempt_counter = 0;
+    static bool first_session_active_detected = false;
+    
+    // Try a different approach: sync on FIRST time we see gekko_session_active 
+    if (gekko_session_active && !first_session_active_detected) {
+        first_session_active_detected = true;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "🔄 FIRST SESSION ACTIVE DETECTED - Checking for post-warmup sync...");
+        
+        if (!post_warmup_sync_done) {
+            uint32_t* frame_counter_ptr = (uint32_t*)FM2K::State::Memory::FRAME_COUNTER_ADDR;
+            if (!IsBadWritePtr(frame_counter_ptr, sizeof(uint32_t))) {
+                uint32_t old_frame_counter = *frame_counter_ptr;
+                *frame_counter_ptr = 0;  // Reset both clients to frame 0 after warmup
+                g_frame_counter = 0;     // Reset our internal counter too  
+                synchronized_frame = 0;  // Reset GekkoNet sync counter
+                post_warmup_sync_done = true;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "⚡ POST-WARMUP SYNC EXECUTED: Frame counters synchronized (FM2K: %u→0, internal: 0)", old_frame_counter);
+            }
+        }
+    }
+    
+    // Legacy check for debugging
+    if (gekko_session_started && !post_warmup_sync_done && sync_attempt_counter < 5) {
+        sync_attempt_counter++;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "POST-WARMUP SYNC CHECK %u: session_started=%s, sync_done=%s, session_active=%s", 
+                   sync_attempt_counter, gekko_session_started ? "YES" : "NO", 
+                   post_warmup_sync_done ? "YES" : "NO", gekko_session_active ? "YES" : "NO");
+    }
+    
+    // BSNES PATTERN: Frame drift correction system ("rift syncing")
+    if (gekko_session_active) {
+        float frames_ahead = gekko_frames_ahead(gekko_session);
+        
+        // Track frame advantage in rolling history
+        frame_advantage_history.AddAdvantage(frames_ahead, 0.0f);  // Remote advantage is inverse
+        frame_advantage_history.drift_check_counter++;
+        
+        // BSNES PATTERN: Check for drift every 180 frames (3 seconds at 60fps)
+        if (frame_advantage_history.drift_check_counter % 180 == 0) {
+            float avg_advantage = frame_advantage_history.GetAverageAdvantage();
+            
+            // If consistently ahead by 1+ frames and not already correcting
+            if (avg_advantage >= 1.0f && !frame_advantage_history.drift_correction_active) {
+                frame_advantage_history.drift_correction_active = true;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "BSNES RIFT SYNC: Correcting frame drift (avg advantage: %.2f)", avg_advantage);
+                
+                // BSNES "halt frame" pattern: effectively waste one frame to let remote catch up
+                uint32_t* frame_counter_ptr = (uint32_t*)FM2K::State::Memory::FRAME_COUNTER_ADDR;
+                if (!IsBadReadPtr(frame_counter_ptr, sizeof(uint32_t))) {
+                    uint32_t current_fm2k_frame = *frame_counter_ptr;
+                    // Don't increment FM2K frame counter this cycle to create a "halt"
+                    if (!IsBadWritePtr(frame_counter_ptr, sizeof(uint32_t))) {
+                        *frame_counter_ptr = current_fm2k_frame;  // Keep same frame number
+                    }
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "BSNES RIFT SYNC: Halted FM2K frame at %u (sync_frame: %u)", current_fm2k_frame, synchronized_frame);
+                }
+                
+                frame_advantage_history.drift_correction_active = false;
+                return original_process_inputs ? original_process_inputs() : 0;  // Continue normally
+            }
+        }
+    }
+    
     // Always output on first few calls to verify hook is working
     if (g_frame_counter <= 5) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Hook called! Frame %u", g_frame_counter);
@@ -161,14 +226,12 @@ int __cdecl Hook_ProcessGameInputs() {
                 if (event->type == SessionStarted) {
                     gekko_session_started = true;
                     
-                    // CRITICAL: Synchronize FM2K frame counters at session start to prevent input_buffer_index desyncs
+                    // DEFER: Don't reset frame counter here - warmup frames still executing!
+                    // We'll reset after warmup completes in the main process_inputs hook
                     uint32_t* frame_counter_ptr = (uint32_t*)FM2K::State::Memory::FRAME_COUNTER_ADDR;
-                    if (!IsBadWritePtr(frame_counter_ptr, sizeof(uint32_t))) {
-                        uint32_t old_frame_counter = *frame_counter_ptr;
-                        *frame_counter_ptr = 0;  // Reset both clients to frame 0
-                        g_frame_counter = 0;     // Reset our internal counter too
-                        synchronized_frame = 0;  // Reset GekkoNet sync counter
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SESSION STARTED - Frame counters synchronized (FM2K: %u→0, internal: 0)", old_frame_counter);
+                    if (!IsBadReadPtr(frame_counter_ptr, sizeof(uint32_t))) {
+                        uint32_t current_frame = *frame_counter_ptr;
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SESSION STARTED - Frame counter: %u (warmup in progress)", current_frame);
                     } else {
                         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SESSION STARTED in main loop!");
                     }

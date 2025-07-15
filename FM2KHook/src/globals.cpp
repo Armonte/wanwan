@@ -46,4 +46,28 @@ uint32_t current_game_mode = 0xFFFFFFFF;
 uint32_t current_fm2k_mode = 0xFFFFFFFF;
 uint32_t current_char_select_mode = 0xFFFFFFFF;
 bool rollback_active = false;
-bool game_state_initialized = false; 
+bool game_state_initialized = false;
+
+// BSNES PATTERN: Frame drift correction system
+FrameAdvantageHistory frame_advantage_history;
+
+// FrameAdvantageHistory implementation
+float FrameAdvantageHistory::GetAverageAdvantage() const {
+    float sum_local = 0.0f;
+    float sum_remote = 0.0f;
+    
+    for (int i = 0; i < HISTORY_SIZE; i++) {
+        sum_local += local_advantage[i];
+        sum_remote += remote_advantage[i];
+    }
+    
+    float avg_local = sum_local / HISTORY_SIZE;
+    float avg_remote = sum_remote / HISTORY_SIZE;
+    return (avg_local - avg_remote);  // Positive = ahead, negative = behind
+}
+
+void FrameAdvantageHistory::AddAdvantage(float local_adv, float remote_adv) {
+    local_advantage[history_index] = local_adv;
+    remote_advantage[history_index] = remote_adv;
+    history_index = (history_index + 1) % HISTORY_SIZE;
+} 

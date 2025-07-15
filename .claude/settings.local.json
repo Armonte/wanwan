@@ -27,7 +27,8 @@
       "mcp__github_com_mrexodia_ida-pro-mcp__data_read_byte",
       "mcp__github_com_mrexodia_ida-pro-mcp__list_globals",
       "mcp__github_com_mrexodia_ida-pro-mcp__list_strings_filter",
-      "mcp__github_com_mrexodia_ida-pro-mcp__data_read_qword"
+      "mcp__github_com_mrexodia_ida-pro-mcp__data_read_qword",
+      "Bash(ls:*)"
     ],
     "deny": []
   }

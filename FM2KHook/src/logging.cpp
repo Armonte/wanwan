@@ -192,9 +192,9 @@ void LogMinimalGameStateDesync(uint32_t desync_frame, uint32_t local_checksum, u
     FM2K::State::CoreGameState current_state = {};
     
     // Read the current state manually for debugging
-    uint32_t* p1_hp_ptr = (uint32_t*)FM2K::State::Memory::P1_HP_ADDR;
-    uint32_t* p2_hp_ptr = (uint32_t*)FM2K::State::Memory::P2_HP_ADDR;
-    uint32_t* game_mode_ptr = (uint32_t*)FM2K::State::Memory::GAME_MODE_ADDR;
+    uint32_t* frame_ptr = (uint32_t*)FM2K::State::Memory::FRAME_COUNTER_ADDR;
+    uint16_t* p1_input_ptr = (uint16_t*)FM2K::State::Memory::P1_INPUT_ADDR;
+    uint16_t* p2_input_ptr = (uint16_t*)FM2K::State::Memory::P2_INPUT_ADDR;
     uint32_t* mainmenu_cursor_ptr = (uint32_t*)FM2K::State::Memory::MENU_SELECTION_ADDR;
     uint32_t* p1_css_cursor_x_ptr = (uint32_t*)FM2K::State::Memory::P1_CSS_CURSOR_X_ADDR;
     uint32_t* p1_css_cursor_y_ptr = (uint32_t*)FM2K::State::Memory::P1_CSS_CURSOR_Y_ADDR;
@@ -203,26 +203,25 @@ void LogMinimalGameStateDesync(uint32_t desync_frame, uint32_t local_checksum, u
     uint32_t* p1_selected_char_ptr = (uint32_t*)FM2K::State::Memory::P1_SELECTED_CHAR_ADDR;
     uint32_t* p2_selected_char_ptr = (uint32_t*)FM2K::State::Memory::P2_SELECTED_CHAR_ADDR;
     
-    if (!IsBadReadPtr(game_mode_ptr, sizeof(uint32_t))) current_state.game_mode = *game_mode_ptr;
+    if (!IsBadReadPtr(frame_ptr, sizeof(uint32_t))) current_state.input_buffer_index = *frame_ptr;
+    if (!IsBadReadPtr(p1_input_ptr, sizeof(uint16_t))) current_state.p1_input_current = *p1_input_ptr;
+    if (!IsBadReadPtr(p2_input_ptr, sizeof(uint16_t))) current_state.p2_input_current = *p2_input_ptr;
     if (!IsBadReadPtr(mainmenu_cursor_ptr, sizeof(uint32_t))) current_state.menu_selection = *mainmenu_cursor_ptr;
-    if (!IsBadReadPtr(p1_hp_ptr, sizeof(uint32_t))) current_state.p1_hp = *p1_hp_ptr;
-    if (!IsBadReadPtr(p2_hp_ptr, sizeof(uint32_t))) current_state.p2_hp = *p2_hp_ptr;
     if (!IsBadReadPtr(p1_css_cursor_x_ptr, sizeof(uint32_t))) current_state.p1_css_cursor_x = *p1_css_cursor_x_ptr;
     if (!IsBadReadPtr(p1_css_cursor_y_ptr, sizeof(uint32_t))) current_state.p1_css_cursor_y = *p1_css_cursor_y_ptr;
     if (!IsBadReadPtr(p2_css_cursor_x_ptr, sizeof(uint32_t))) current_state.p2_css_cursor_x = *p2_css_cursor_x_ptr;
     if (!IsBadReadPtr(p2_css_cursor_y_ptr, sizeof(uint32_t))) current_state.p2_css_cursor_y = *p2_css_cursor_y_ptr;
-    if (!IsBadReadPtr(p1_selected_char_ptr, sizeof(uint32_t))) current_state.p1_selected_char = *p1_selected_char_ptr;
-    if (!IsBadReadPtr(p2_selected_char_ptr, sizeof(uint32_t))) current_state.p2_selected_char = *p2_selected_char_ptr;
+    // DISABLED FIELDS - commenting out to match minimized state structure
+    // if (!IsBadReadPtr(p1_selected_char_ptr, sizeof(uint32_t))) current_state.p1_selected_char = *p1_selected_char_ptr;
+    // if (!IsBadReadPtr(p2_selected_char_ptr, sizeof(uint32_t))) current_state.p2_selected_char = *p2_selected_char_ptr;
     
     uint32_t calculated_checksum = current_state.CalculateChecksum();
     
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Current Checksum State:");
-    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  Game Mode: 0x%08X", current_state.game_mode);
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  Frame: %u, Inputs: P1=%u P2=%u", current_state.input_buffer_index, current_state.p1_input_current, current_state.p2_input_current);
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  Main Menu Cursor: %u", current_state.menu_selection);
-    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  P1 HP: %u, P2 HP: %u", current_state.p1_hp, current_state.p2_hp);
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  P1 CSS Cursor: (%u, %u)", current_state.p1_css_cursor_x, current_state.p1_css_cursor_y);
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  P2 CSS Cursor: (%u, %u)", current_state.p2_css_cursor_x, current_state.p2_css_cursor_y);
-    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  Selected Chars: P1=%u, P2=%u", current_state.p1_selected_char, current_state.p2_selected_char);
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  Calculated Checksum: 0x%08X (expected: 0x%08X)", calculated_checksum, local_checksum);
     
     // Check if our calculated checksum matches the reported local checksum

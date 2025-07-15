@@ -2,6 +2,7 @@
 #include "globals.h"
 #include "logging.h"
 #include "game_state_detector.h"
+#include <string>
 
 // Helper function
 static inline uint64_t get_microseconds() {
@@ -186,21 +187,22 @@ bool SaveCoreStateBasic(GameState* state, uint32_t frame_number) {
     if (!IsBadReadPtr(frame_ptr, sizeof(uint32_t))) { state->core.input_buffer_index = *frame_ptr; }
     if (!IsBadReadPtr(p1_input_ptr, sizeof(uint16_t))) { state->core.p1_input_current = *p1_input_ptr; }
     if (!IsBadReadPtr(p2_input_ptr, sizeof(uint16_t))) { state->core.p2_input_current = *p2_input_ptr; }
-    if (!IsBadReadPtr(p1_hp_ptr, sizeof(uint32_t))) { state->core.p1_hp = *p1_hp_ptr; }
-    if (!IsBadReadPtr(p2_hp_ptr, sizeof(uint32_t))) { state->core.p2_hp = *p2_hp_ptr; }
-    if (!IsBadReadPtr(round_timer_ptr, sizeof(uint32_t))) { state->core.round_timer = *round_timer_ptr; }
-    if (!IsBadReadPtr(game_timer_ptr, sizeof(uint32_t))) { state->core.game_timer = *game_timer_ptr; }
-    if (!IsBadReadPtr(random_seed_ptr, sizeof(uint32_t))) { state->core.random_seed = *random_seed_ptr; }
-    if (!IsBadReadPtr(timer_countdown1_ptr, sizeof(uint32_t))) { state->core.timer_countdown1 = *timer_countdown1_ptr; } else { state->core.timer_countdown1 = 0; }
-    if (!IsBadReadPtr(timer_countdown2_ptr, sizeof(uint32_t))) { state->core.timer_countdown2 = *timer_countdown2_ptr; } else { state->core.timer_countdown2 = 0; }
-    if (!IsBadReadPtr(round_timer_counter_ptr, sizeof(uint32_t))) { state->core.round_timer_counter = *round_timer_counter_ptr; } else { state->core.round_timer_counter = 0; }
-    if (!IsBadReadPtr(object_list_heads_ptr, sizeof(uint32_t))) { state->core.object_list_heads = *object_list_heads_ptr; } else { state->core.object_list_heads = 0; }
-    if (!IsBadReadPtr(object_list_tails_ptr, sizeof(uint32_t))) { state->core.object_list_tails = *object_list_tails_ptr; } else { state->core.object_list_tails = 0; }
+    // DISABLED FIELDS - set to constants for minimal state
+    // if (!IsBadReadPtr(p1_hp_ptr, sizeof(uint32_t))) { state->core.p1_hp = *p1_hp_ptr; }
+    // if (!IsBadReadPtr(p2_hp_ptr, sizeof(uint32_t))) { state->core.p2_hp = *p2_hp_ptr; }
+    // if (!IsBadReadPtr(round_timer_ptr, sizeof(uint32_t))) { state->core.round_timer = *round_timer_ptr; }
+    // if (!IsBadReadPtr(game_timer_ptr, sizeof(uint32_t))) { state->core.game_timer = *game_timer_ptr; }
+    // if (!IsBadReadPtr(random_seed_ptr, sizeof(uint32_t))) { state->core.random_seed = *random_seed_ptr; }
+    // if (!IsBadReadPtr(timer_countdown1_ptr, sizeof(uint32_t))) { state->core.timer_countdown1 = *timer_countdown1_ptr; } else { state->core.timer_countdown1 = 0; }
+    // if (!IsBadReadPtr(timer_countdown2_ptr, sizeof(uint32_t))) { state->core.timer_countdown2 = *timer_countdown2_ptr; } else { state->core.timer_countdown2 = 0; }
+    // if (!IsBadReadPtr(round_timer_counter_ptr, sizeof(uint32_t))) { state->core.round_timer_counter = *round_timer_counter_ptr; } else { state->core.round_timer_counter = 0; }
+    // if (!IsBadReadPtr(object_list_heads_ptr, sizeof(uint32_t))) { state->core.object_list_heads = *object_list_heads_ptr; } else { state->core.object_list_heads = 0; }
+    // if (!IsBadReadPtr(object_list_tails_ptr, sizeof(uint32_t))) { state->core.object_list_tails = *object_list_tails_ptr; } else { state->core.object_list_tails = 0; }
     
-    // Save game mode state for character select synchronization
-    if (!IsBadReadPtr(game_mode_ptr, sizeof(uint32_t))) { state->core.game_mode = *game_mode_ptr; } else { state->core.game_mode = 0xFFFFFFFF; }
-    if (!IsBadReadPtr(fm2k_game_mode_ptr, sizeof(uint32_t))) { state->core.fm2k_game_mode = *fm2k_game_mode_ptr; } else { state->core.fm2k_game_mode = 0xFFFFFFFF; }
-    if (!IsBadReadPtr(character_select_mode_ptr, sizeof(uint32_t))) { state->core.character_select_mode = *character_select_mode_ptr; } else { state->core.character_select_mode = 0xFFFFFFFF; }
+    // DISABLED FIELDS - set to constants for minimal state  
+    // if (!IsBadReadPtr(game_mode_ptr, sizeof(uint32_t))) { state->core.game_mode = *game_mode_ptr; } else { state->core.game_mode = 0xFFFFFFFF; }
+    // if (!IsBadReadPtr(fm2k_game_mode_ptr, sizeof(uint32_t))) { state->core.fm2k_game_mode = *fm2k_game_mode_ptr; } else { state->core.fm2k_game_mode = 0xFFFFFFFF; }
+    // if (!IsBadReadPtr(character_select_mode_ptr, sizeof(uint32_t))) { state->core.character_select_mode = *character_select_mode_ptr; } else { state->core.character_select_mode = 0xFFFFFFFF; }
     
     // Save Character Select Menu State (CRITICAL for CSS synchronization) 
     if (!IsBadReadPtr(menu_selection_ptr, sizeof(uint32_t))) { state->core.menu_selection = *menu_selection_ptr; } else { state->core.menu_selection = 0; }
@@ -208,10 +210,11 @@ bool SaveCoreStateBasic(GameState* state, uint32_t frame_number) {
     if (!IsBadReadPtr(p1_css_cursor_y_ptr, sizeof(uint32_t))) { state->core.p1_css_cursor_y = *p1_css_cursor_y_ptr; } else { state->core.p1_css_cursor_y = 0; }
     if (!IsBadReadPtr(p2_css_cursor_x_ptr, sizeof(uint32_t))) { state->core.p2_css_cursor_x = *p2_css_cursor_x_ptr; } else { state->core.p2_css_cursor_x = 0; }
     if (!IsBadReadPtr(p2_css_cursor_y_ptr, sizeof(uint32_t))) { state->core.p2_css_cursor_y = *p2_css_cursor_y_ptr; } else { state->core.p2_css_cursor_y = 0; }
-    if (!IsBadReadPtr(p1_selected_char_ptr, sizeof(uint32_t))) { state->core.p1_selected_char = *p1_selected_char_ptr; } else { state->core.p1_selected_char = 0; }
-    if (!IsBadReadPtr(p2_selected_char_ptr, sizeof(uint32_t))) { state->core.p2_selected_char = *p2_selected_char_ptr; } else { state->core.p2_selected_char = 0; }
-    if (!IsBadReadPtr(p1_char_related_ptr, sizeof(uint32_t))) { state->core.p1_char_related = *p1_char_related_ptr; } else { state->core.p1_char_related = 0; }
-    if (!IsBadReadPtr(p2_char_related_ptr, sizeof(uint32_t))) { state->core.p2_char_related = *p2_char_related_ptr; } else { state->core.p2_char_related = 0; }
+    // DISABLED FIELDS - commenting out to match minimized state structure
+    // if (!IsBadReadPtr(p1_selected_char_ptr, sizeof(uint32_t))) { state->core.p1_selected_char = *p1_selected_char_ptr; } else { state->core.p1_selected_char = 0; }
+    // if (!IsBadReadPtr(p2_selected_char_ptr, sizeof(uint32_t))) { state->core.p2_selected_char = *p2_selected_char_ptr; } else { state->core.p2_selected_char = 0; }
+    // if (!IsBadReadPtr(p1_char_related_ptr, sizeof(uint32_t))) { state->core.p1_char_related = *p1_char_related_ptr; } else { state->core.p1_char_related = 0; }
+    // if (!IsBadReadPtr(p2_char_related_ptr, sizeof(uint32_t))) { state->core.p2_char_related = *p2_char_related_ptr; } else { state->core.p2_char_related = 0; }
     
     return true;
 }
@@ -251,21 +254,22 @@ bool RestoreStateFromStruct(const GameState* state, uint32_t target_frame) {
     if (!IsBadWritePtr(frame_ptr, sizeof(uint32_t))) { *frame_ptr = state->core.input_buffer_index; }
     if (!IsBadWritePtr(p1_input_ptr, sizeof(uint16_t))) { *p1_input_ptr = state->core.p1_input_current; }
     if (!IsBadWritePtr(p2_input_ptr, sizeof(uint16_t))) { *p2_input_ptr = state->core.p2_input_current; }
-    if (!IsBadWritePtr(p1_hp_ptr, sizeof(uint32_t))) { *p1_hp_ptr = state->core.p1_hp; }
-    if (!IsBadWritePtr(p2_hp_ptr, sizeof(uint32_t))) { *p2_hp_ptr = state->core.p2_hp; }
-    if (!IsBadWritePtr(round_timer_ptr, sizeof(uint32_t))) { *round_timer_ptr = state->core.round_timer; }
-    if (!IsBadWritePtr(game_timer_ptr, sizeof(uint32_t))) { *game_timer_ptr = state->core.game_timer; }
-    if (!IsBadWritePtr(random_seed_ptr, sizeof(uint32_t))) { *random_seed_ptr = state->core.random_seed; }
-    if (!IsBadWritePtr(timer_countdown1_ptr, sizeof(uint32_t))) { *timer_countdown1_ptr = state->core.timer_countdown1; }
-    if (!IsBadWritePtr(timer_countdown2_ptr, sizeof(uint32_t))) { *timer_countdown2_ptr = state->core.timer_countdown2; }
-    if (!IsBadWritePtr(round_timer_counter_ptr, sizeof(uint32_t))) { *round_timer_counter_ptr = state->core.round_timer_counter; }
-    if (!IsBadWritePtr(object_list_heads_ptr, sizeof(uint32_t))) { *object_list_heads_ptr = state->core.object_list_heads; }
-    if (!IsBadWritePtr(object_list_tails_ptr, sizeof(uint32_t))) { *object_list_tails_ptr = state->core.object_list_tails; }
+    // DISABLED FIELDS - commenting out to match minimized state structure
+    // if (!IsBadWritePtr(p1_hp_ptr, sizeof(uint32_t))) { *p1_hp_ptr = state->core.p1_hp; }
+    // if (!IsBadWritePtr(p2_hp_ptr, sizeof(uint32_t))) { *p2_hp_ptr = state->core.p2_hp; }
+    // if (!IsBadWritePtr(round_timer_ptr, sizeof(uint32_t))) { *round_timer_ptr = state->core.round_timer; }
+    // if (!IsBadWritePtr(game_timer_ptr, sizeof(uint32_t))) { *game_timer_ptr = state->core.game_timer; }
+    // if (!IsBadWritePtr(random_seed_ptr, sizeof(uint32_t))) { *random_seed_ptr = state->core.random_seed; }
+    // if (!IsBadWritePtr(timer_countdown1_ptr, sizeof(uint32_t))) { *timer_countdown1_ptr = state->core.timer_countdown1; }
+    // if (!IsBadWritePtr(timer_countdown2_ptr, sizeof(uint32_t))) { *timer_countdown2_ptr = state->core.timer_countdown2; }
+    // if (!IsBadWritePtr(round_timer_counter_ptr, sizeof(uint32_t))) { *round_timer_counter_ptr = state->core.round_timer_counter; }
+    // if (!IsBadWritePtr(object_list_heads_ptr, sizeof(uint32_t))) { *object_list_heads_ptr = state->core.object_list_heads; }
+    // if (!IsBadWritePtr(object_list_tails_ptr, sizeof(uint32_t))) { *object_list_tails_ptr = state->core.object_list_tails; }
     
-    // Restore game mode state for character select synchronization
-    if (!IsBadWritePtr(game_mode_ptr, sizeof(uint32_t))) { *game_mode_ptr = state->core.game_mode; }
-    if (!IsBadWritePtr(fm2k_game_mode_ptr, sizeof(uint32_t))) { *fm2k_game_mode_ptr = state->core.fm2k_game_mode; }
-    if (!IsBadWritePtr(character_select_mode_ptr, sizeof(uint32_t))) { *character_select_mode_ptr = state->core.character_select_mode; }
+    // DISABLED FIELDS - commenting out to match minimized state structure
+    // if (!IsBadWritePtr(game_mode_ptr, sizeof(uint32_t))) { *game_mode_ptr = state->core.game_mode; }
+    // if (!IsBadWritePtr(fm2k_game_mode_ptr, sizeof(uint32_t))) { *fm2k_game_mode_ptr = state->core.fm2k_game_mode; }
+    // if (!IsBadWritePtr(character_select_mode_ptr, sizeof(uint32_t))) { *character_select_mode_ptr = state->core.character_select_mode; }
     
     // Restore Character Select Menu State (CRITICAL for CSS synchronization)
     if (!IsBadWritePtr(menu_selection_ptr, sizeof(uint32_t))) { *menu_selection_ptr = state->core.menu_selection; }
@@ -287,10 +291,11 @@ bool RestoreStateFromStruct(const GameState* state, uint32_t target_frame) {
     }
     if (!IsBadWritePtr(p2_css_cursor_x_ptr, sizeof(uint32_t))) { *p2_css_cursor_x_ptr = state->core.p2_css_cursor_x; }
     if (!IsBadWritePtr(p2_css_cursor_y_ptr, sizeof(uint32_t))) { *p2_css_cursor_y_ptr = state->core.p2_css_cursor_y; }
-    if (!IsBadWritePtr(p1_selected_char_ptr, sizeof(uint32_t))) { *p1_selected_char_ptr = state->core.p1_selected_char; }
-    if (!IsBadWritePtr(p2_selected_char_ptr, sizeof(uint32_t))) { *p2_selected_char_ptr = state->core.p2_selected_char; }
-    if (!IsBadWritePtr(p1_char_related_ptr, sizeof(uint32_t))) { *p1_char_related_ptr = state->core.p1_char_related; }
-    if (!IsBadWritePtr(p2_char_related_ptr, sizeof(uint32_t))) { *p2_char_related_ptr = state->core.p2_char_related; }
+    // DISABLED FIELDS - commenting out to match minimized state structure
+    // if (!IsBadWritePtr(p1_selected_char_ptr, sizeof(uint32_t))) { *p1_selected_char_ptr = state->core.p1_selected_char; }
+    // if (!IsBadWritePtr(p2_selected_char_ptr, sizeof(uint32_t))) { *p2_selected_char_ptr = state->core.p2_selected_char; }
+    // if (!IsBadWritePtr(p1_char_related_ptr, sizeof(uint32_t))) { *p1_char_related_ptr = state->core.p1_char_related; }
+    // if (!IsBadWritePtr(p2_char_related_ptr, sizeof(uint32_t))) { *p2_char_related_ptr = state->core.p2_char_related; }
 
     return true;
 }
@@ -310,17 +315,24 @@ bool SaveStateToMemoryBuffer(uint32_t slot, uint32_t frame_number) {
         
         // DEBUG: DETAILED field-by-field logging for checksum debugging
         const CoreGameState& core = memory_rollback_slots[slot].core;
-        if (frame_number <= 20) {  // Log first 20 frames in detail
+        if (frame_number <= 50) {  // Extended logging to see post-warmup sync effects
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CHECKSUM DEBUG Frame %u:", frame_number);
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  input_buffer_index=%u, p1_input=%u, p2_input=%u", 
                        core.input_buffer_index, core.p1_input_current, core.p2_input_current);
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  hp=(%u,%u), timers=(%u,%u), seed=%u", 
-                       core.p1_hp, core.p2_hp, core.round_timer, core.game_timer, core.random_seed);
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  game_modes=(0x%X,0x%X,0x%X)", 
-                       core.game_mode, core.fm2k_game_mode, core.character_select_mode);
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  menu=%u, css_cursors=(%u,%u),(%u,%u), chars=(%u,%u)", 
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  menu=%u, css_cursors=(%u,%u),(%u,%u)", 
                        core.menu_selection, core.p1_css_cursor_x, core.p1_css_cursor_y,
-                       core.p2_css_cursor_x, core.p2_css_cursor_y, core.p1_selected_char, core.p2_selected_char);
+                       core.p2_css_cursor_x, core.p2_css_cursor_y);
+                       
+            // CRITICAL: Raw memory dump for checksum debugging
+            const uint8_t* raw_bytes = (const uint8_t*)&core;
+            std::string hex_dump;
+            for (size_t i = 0; i < sizeof(CoreGameState); i++) {
+                char hex_byte[8];
+                snprintf(hex_byte, sizeof(hex_byte), "%02X", raw_bytes[i]);
+                hex_dump += hex_byte;
+                if ((i + 1) % 4 == 0) hex_dump += " ";  // Space every 4 bytes
+            }
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  RAW MEMORY: %s", hex_dump.c_str());
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  FINAL CHECKSUM: 0x%08X", memory_rollback_slots[slot].checksum);
         }
         

@@ -23,41 +23,49 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
     static bool last_use_networked = false;
     bool current_use_networked = use_networked_inputs;
     
-    // Log when use_networked_inputs changes state or periodically (reduced frequency)
-    if (g_frame_counter - last_logged_frame > 300 || last_use_networked != current_use_networked) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Hook_GetPlayerInput: P%d input=0x%02X, use_networked=%s, gekko_init=%s, session_valid=%s, net_p1=0x%02X, net_p2=0x%02X", 
+    // CSS cursor sync logging - log every movement during character select
+    static uint32_t last_css_input[2] = {0, 0};
+    bool is_css_mode = (current_game_mode > 0 && current_game_mode < 3000);
+    
+    // BSNES PATTERN: Always use networked inputs when session is active (simplified logic)
+    int returned_input = original_input;
+    if (gekko_session_active && use_networked_inputs) {
+        // Host is P1 (handle 0), Client is P2 (handle 1). This is consistent on both machines.
+        // networked_p1_input is from handle 0, networked_p2_input is from handle 1.
+        // The game requests input for player_id 0 (P1) and player_id 1 (P2).
+        // The mapping is direct and requires no swapping based on the local player's role.
+        if (player_id == 0) {
+            returned_input = networked_p1_input;
+        } else if (player_id == 1) {
+            returned_input = networked_p2_input;
+        }
+    }
+    
+    // Log CSS cursor movements or periodic status
+    if (is_css_mode && player_id < 2 && (returned_input != last_css_input[player_id])) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS INPUT: P%d input changed 0x%02X -> 0x%02X (frame %u, use_net=%s)", 
+                   player_id + 1, last_css_input[player_id] & 0xFF, returned_input & 0xFF, 
+                   g_frame_counter, use_networked_inputs ? "YES" : "NO");
+        last_css_input[player_id] = returned_input;
+    } else if (g_frame_counter - last_logged_frame > 300 || last_use_networked != current_use_networked) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Hook_GetPlayerInput: P%d input=0x%02X, session_active=%s, use_networked=%s, net_p1=0x%02X, net_p2=0x%02X", 
                    player_id + 1, original_input & 0xFF, 
+                   gekko_session_active ? "YES" : "NO",
                    use_networked_inputs ? "YES" : "NO",
-                   gekko_initialized ? "YES" : "NO",
-                   (gekko_session && AllPlayersValid()) ? "YES" : "NO",
                    networked_p1_input & 0xFF,
                    networked_p2_input & 0xFF);
         last_logged_frame = g_frame_counter;
         last_use_networked = current_use_networked;
     }
     
-    // Return networked input if available
-    if (use_networked_inputs && gekko_initialized && gekko_session && AllPlayersValid()) {
-        // Host is P1 (handle 0), Client is P2 (handle 1). This is consistent on both machines.
-        // networked_p1_input is from handle 0, networked_p2_input is from handle 1.
-        // The game requests input for player_id 0 (P1) and player_id 1 (P2).
-        // The mapping is direct and requires no swapping based on the local player's role.
-        if (player_id == 0) {
-            return networked_p1_input;
-        }
-        if (player_id == 1) {
-            return networked_p2_input;
-        }
-    }
-    
-    return original_input;
+    return returned_input;
 }
 
 int __cdecl Hook_ProcessGameInputs() {
     // SDL2 PATTERN: Let GekkoNet handle frame synchronization - don't block execution
     // The SDL2 example shows they NEVER block with return 0, they just adjust timing
     // GekkoNet is designed to handle the entire session from frame 1
-    if (gekko_initialized && gekko_session && AllPlayersValid()) {
+    if (gekko_session_active) {
         // Check how far ahead we are from the remote client for logging only
         float frames_ahead = gekko_frames_ahead(gekko_session);
         
@@ -90,9 +98,10 @@ int __cdecl Hook_ProcessGameInputs() {
     // Process debug commands from launcher
     ProcessDebugCommands();
     
-    // CRITICAL: Continuous CSS monitoring (every 60 frames during character select)
-    static uint32_t css_monitor_counter = 0;
-    if (current_game_mode > 0 && current_game_mode < 3000 && (++css_monitor_counter % 60 == 1)) {
+    // BSNES PATTERN: Continuous monitoring every frame (like combat) - no special case for CSS
+    // All game states get identical frame-by-frame treatment
+    
+    if (current_game_mode > 0 && current_game_mode < 3000) {  // Monitor all frames during menus/CSS
         uint32_t* menu_sel_ptr = (uint32_t*)FM2K::State::Memory::MENU_SELECTION_ADDR;
         uint32_t* p1_cursor_x_ptr = (uint32_t*)FM2K::State::Memory::P1_CSS_CURSOR_X_ADDR;
         uint32_t* p1_cursor_y_ptr = (uint32_t*)FM2K::State::Memory::P1_CSS_CURSOR_Y_ADDR;
@@ -110,8 +119,10 @@ int __cdecl Hook_ProcessGameInputs() {
             uint32_t p1_char = *p1_char_ptr;
             uint32_t p2_char = *p2_char_ptr;
             
+            // BSNES PATTERN: Use synchronized frame for consistent logging across clients
+            uint32_t display_frame = gekko_session_active ? synchronized_frame : g_frame_counter;
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS MONITOR (Frame %u): menu=%d, P1=(%d,%d), P2=(%d,%d), chars=(%d,%d), game_mode=0x%X", 
-                       g_frame_counter, menu_sel, p1_cursor_x, p1_cursor_y, p2_cursor_x, p2_cursor_y, p1_char, p2_char, current_game_mode);
+                       display_frame, menu_sel, p1_cursor_x, p1_cursor_y, p2_cursor_x, p2_cursor_y, p1_char, p2_char, current_game_mode);
         }
     }
     
@@ -137,6 +148,34 @@ int __cdecl Hook_ProcessGameInputs() {
     if (gekko_initialized && gekko_session) {
         // Call gekko_network_poll EVERY frame
         gekko_network_poll(gekko_session);
+        
+        // BSNES PATTERN: Process session events immediately after polling
+        if (!gekko_session_started) {
+            int session_event_count = 0;
+            auto session_events = gekko_session_events(gekko_session, &session_event_count);
+            
+            for (int i = 0; i < session_event_count; i++) {
+                auto event = session_events[i];
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Session Event: %d", event->type);
+                
+                if (event->type == SessionStarted) {
+                    gekko_session_started = true;
+                    
+                    // CRITICAL: Synchronize FM2K frame counters at session start to prevent input_buffer_index desyncs
+                    uint32_t* frame_counter_ptr = (uint32_t*)FM2K::State::Memory::FRAME_COUNTER_ADDR;
+                    if (!IsBadWritePtr(frame_counter_ptr, sizeof(uint32_t))) {
+                        uint32_t old_frame_counter = *frame_counter_ptr;
+                        *frame_counter_ptr = 0;  // Reset both clients to frame 0
+                        g_frame_counter = 0;     // Reset our internal counter too
+                        synchronized_frame = 0;  // Reset GekkoNet sync counter
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SESSION STARTED - Frame counters synchronized (FM2K: %u→0, internal: 0)", old_frame_counter);
+                    } else {
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SESSION STARTED in main loop!");
+                    }
+                    break;
+                }
+            }
+        }
         
         // FIXED: Both clients use P1 controls locally for better UX
         // HOST (original_player_index=0) controls P1, sends as P1 input
@@ -164,8 +203,8 @@ int __cdecl Hook_ProcessGameInputs() {
         // CRITICAL: Always use live inputs for local capture, but use networked inputs when available
         // This ensures that before GekkoNet has synchronized inputs, the game still functions normally
         
-        // Check if all players are ready
-        if (!AllPlayersValid()) {
+        // BSNES PATTERN: Check if session is not fully active (simplified logic)
+        if (!gekko_session_active) {
             // CRITICAL: Track handshake duration to prevent infinite blocking
             static uint32_t handshake_wait_frames = 0;
             handshake_wait_frames++;
@@ -256,8 +295,8 @@ int __cdecl Hook_ProcessGameInputs() {
                     uint32_t input_length = update->data.adv.input_len;
                     uint8_t* inputs = update->data.adv.inputs;
                     
-                    // BSNES PATTERN: Process AdvanceEvent immediately and synchronously
-                    // No deferred flags - just update inputs and continue
+                    // BSNES PATTERN: Update synchronized frame counter and process immediately
+                    synchronized_frame = target_frame;
                     
                     // Reduced logging: Only log occasionally or on non-zero inputs
                     bool should_log = (target_frame % 30 == 1);
@@ -317,16 +356,17 @@ int __cdecl Hook_ProcessGameInputs() {
                     // BSNES PATTERN: Load state and update frame counter
                     uint32_t load_frame = update->data.load.frame;
                     
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: ROLLBACK from frame %u to frame %u", g_frame_counter, load_frame);
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: ROLLBACK from frame %u to frame %u", synchronized_frame, load_frame);
                     
                     // FAST IN-MEMORY: Load from memory buffer instead of file (like bsnes)
                     uint32_t slot = load_frame % 8;
                     bool load_success = FM2K::State::LoadStateFromMemoryBuffer(slot);
                     
                     if (load_success) {
-                        // Update our frame counter to match the rollback point
+                        // BSNES PATTERN: Update both frame counters to match the rollback point
                         g_frame_counter = load_frame;
-                        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Rollback successful, frame counter reset to %u", g_frame_counter);
+                        synchronized_frame = load_frame;
+                        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Rollback successful, frame counters reset to %u", load_frame);
                     } else {
                         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Rollback failed for frame %u (slot %u)", load_frame, slot);
                     }
@@ -558,38 +598,26 @@ void MonitorGameStateTransitions() {
 }
 
 void ManageRollbackActivation(uint32_t game_mode, uint32_t fm2k_mode, uint32_t char_select_mode) {
-    bool should_activate = ShouldActivateRollback(game_mode, fm2k_mode);
+    // BSNES PATTERN: Update unified session state (session startup handled in main loop)
+    gekko_session_active = (gekko_session && gekko_initialized && gekko_session_started);
     
-    if (should_activate && !rollback_active) {
-        // Activate rollback for combat - enable frame synchronization
-        rollback_active = true;
-        waiting_for_gekko_advance = true;
-        can_advance_frame = false;
-        
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K STATE: *** ACTIVATING ROLLBACK NETCODE *** (Combat detected, game_mode=0x%X)", game_mode);
-        
-    } else if (!should_activate && rollback_active) {
-        // Deactivate rollback (returning to menu/character select) - disable frame synchronization
-        rollback_active = false;
-        waiting_for_gekko_advance = false;
-        can_advance_frame = true;  // Allow free running during menus
-        
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K STATE: *** DEACTIVATING ROLLBACK NETCODE *** (Left combat, game_mode=0x%X)", game_mode);
+    if (gekko_session_active) {
+        // Once GekkoNet session is active, it stays active for entire session
+        if (!rollback_active) {
+            rollback_active = true;
+            waiting_for_gekko_advance = true;
+            can_advance_frame = false;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "BSNES PATTERN: GekkoNet session active - rollback enabled for entire session");
+        }
+    } else {
+        // Only disable rollback if GekkoNet is not available at all
+        if (rollback_active) {
+            rollback_active = false;
+            waiting_for_gekko_advance = false;
+            can_advance_frame = true;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "BSNES PATTERN: GekkoNet session inactive - rollback disabled");
+        }
     }
-}
-
-bool ShouldActivateRollback(uint32_t game_mode, uint32_t fm2k_mode) {
-    // SDL2/BSNES PATTERN: GekkoNet handles the entire session from start to finish
-    // Rollback should be active throughout the entire session once GekkoNet is initialized
-    
-    // Only skip rollback during very early uninitialized states
-    if (game_mode == 0xFFFFFFFF) {
-        return false;  // Truly uninitialized
-    }
-    
-    // SIMPLIFIED: Activate rollback for all game states once GekkoNet is ready
-    // This matches how the SDL2 example and bsnes handle the entire session
-    return true;
 }
 
 const char* GetGameModeString(uint32_t mode) {

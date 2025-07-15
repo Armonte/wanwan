@@ -4,6 +4,8 @@
 GekkoSession* gekko_session = nullptr;
 bool gekko_initialized = false;
 bool gekko_session_started = false;
+bool gekko_session_active = false;  // BSNES PATTERN: Single unified session state
+uint32_t synchronized_frame = 0;    // BSNES PATTERN: GekkoNet-synchronized frame counter
 bool is_online_mode = false;
 bool is_host = false;
 uint8_t player_index = 0;

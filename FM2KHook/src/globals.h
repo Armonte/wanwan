@@ -1,7 +1,7 @@
 #pragma once
 
 #include "common.h"
-#include "state_manager.h" // For GameState and MinimalGameState
+#include "state_manager.h" // For GameState and CoreGameState
 #include "gekkonet.h"
 
 // Key FM2K addresses
@@ -55,6 +55,8 @@ namespace FM2K::State::Memory {
 extern GekkoSession* gekko_session;
 extern bool gekko_initialized;
 extern bool gekko_session_started;
+extern bool gekko_session_active;  // BSNES PATTERN: Single unified session state
+extern uint32_t synchronized_frame;  // BSNES PATTERN: GekkoNet-synchronized frame counter
 extern bool is_online_mode;
 extern bool is_host;
 extern uint8_t player_index;
@@ -109,5 +111,4 @@ void LogMinimalGameStateDesync(uint32_t desync_frame, uint32_t local_checksum, u
 // Game state management functions
 void MonitorGameStateTransitions();
 void ManageRollbackActivation(uint32_t game_mode, uint32_t fm2k_mode, uint32_t char_select_mode);
-bool ShouldActivateRollback(uint32_t game_mode, uint32_t fm2k_mode);
 const char* GetGameModeString(uint32_t mode); 

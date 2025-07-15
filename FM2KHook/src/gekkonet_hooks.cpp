@@ -2,6 +2,7 @@
 #include "globals.h"
 #include "logging.h"
 #include "gekkonet.h"
+#include "state_manager.h"
 
 bool InitializeGekkoNet() {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** INITIALIZING GEKKONET WITH REAL UDP NETWORKING (OnlineSession Style) ***");
@@ -181,7 +182,18 @@ bool AllPlayersValid() {
         if (session_started_event_found) {
             gekko_session_started = true;
             handshake_timeout_frames = 0; // Reset timeout on success
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SESSION STARTED - All players connected and synchronized! (BSNES AllPlayersValid pattern)");
+            
+            // CRITICAL: Synchronize FM2K frame counters at session start to prevent input_buffer_index desyncs
+            uint32_t* frame_counter_ptr = (uint32_t*)FM2K::State::Memory::FRAME_COUNTER_ADDR;
+            if (!IsBadWritePtr(frame_counter_ptr, sizeof(uint32_t))) {
+                uint32_t old_frame_counter = *frame_counter_ptr;
+                *frame_counter_ptr = 0;  // Reset both clients to frame 0
+                g_frame_counter = 0;     // Reset our internal counter too
+                synchronized_frame = 0;  // Reset GekkoNet sync counter
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SESSION STARTED - Frame counters synchronized (FM2K: %u→0, internal: 0) - All players connected!", old_frame_counter);
+            } else {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SESSION STARTED - All players connected and synchronized! (BSNES AllPlayersValid pattern)");
+            }
             return true;
         }
         

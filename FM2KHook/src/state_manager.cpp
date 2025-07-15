@@ -11,100 +11,7 @@ static inline uint64_t get_microseconds() {
 
 namespace FM2K {
 
-// MinimalGameState method implementations
-bool MinimalGameState::LoadFromMemory() {
-    // Read HP values
-    uint32_t* p1_hp_ptr = (uint32_t*)State::Memory::P1_HP_ADDR;
-    uint32_t* p2_hp_ptr = (uint32_t*)State::Memory::P2_HP_ADDR;
-    uint32_t* p1_max_hp_ptr = (uint32_t*)0x4DFC85;  // P1_MAX_HP_ARTMONEY_ADDR
-    uint32_t* p2_max_hp_ptr = (uint32_t*)0x4EDC4;   // P2_MAX_HP_ARTMONEY_ADDR
-    
-    if (!p1_hp_ptr || !p2_hp_ptr || !p1_max_hp_ptr || !p2_max_hp_ptr) return false;
-    if (IsBadReadPtr(p1_hp_ptr, sizeof(uint32_t)) || IsBadReadPtr(p2_hp_ptr, sizeof(uint32_t)) ||
-        IsBadReadPtr(p1_max_hp_ptr, sizeof(uint32_t)) || IsBadReadPtr(p2_max_hp_ptr, sizeof(uint32_t))) return false;
-    
-    p1_hp = *p1_hp_ptr;
-    p2_hp = *p2_hp_ptr;
-    p1_max_hp = *p1_max_hp_ptr;
-    p2_max_hp = *p2_max_hp_ptr;
-    
-    // Read positions
-    uint32_t* p1_x_ptr = (uint32_t*)0x4ADCC3;  // P1_COORD_X_ADDR
-    uint16_t* p1_y_ptr = (uint16_t*)0x4ADCC7;  // P1_COORD_Y_ADDR
-    uint32_t* p2_x_ptr = (uint32_t*)0x4EDD02;  // P2_COORD_X_ADDR
-    uint16_t* p2_y_ptr = (uint16_t*)0x4EDD06;  // P2_COORD_Y_ADDR
-    
-    if (!p1_x_ptr || !p1_y_ptr || !p2_x_ptr || !p2_y_ptr) return false;
-    if (IsBadReadPtr(p1_x_ptr, sizeof(uint32_t)) || IsBadReadPtr(p1_y_ptr, sizeof(uint16_t)) ||
-        IsBadReadPtr(p2_x_ptr, sizeof(uint32_t)) || IsBadReadPtr(p2_y_ptr, sizeof(uint16_t))) return false;
-    
-    p1_x = *p1_x_ptr;
-    p1_y = *p1_y_ptr;
-    p2_x = *p2_x_ptr;
-    p2_y = *p2_y_ptr;
-    
-    // Read timer and RNG
-    uint32_t* timer_ptr = (uint32_t*)State::Memory::GAME_TIMER_ADDR;
-    uint32_t* rng_ptr = (uint32_t*)State::Memory::RANDOM_SEED_ADDR;
-    
-    if (!timer_ptr || !rng_ptr) return false;
-    if (IsBadReadPtr(timer_ptr, sizeof(uint32_t)) || IsBadReadPtr(rng_ptr, sizeof(uint32_t))) return false;
-    
-    round_timer = *timer_ptr;
-    random_seed = *rng_ptr;
-    
-    return true;
-}
-
-bool MinimalGameState::SaveToMemory() const {
-    // Write HP values
-    uint32_t* p1_hp_ptr = (uint32_t*)State::Memory::P1_HP_ADDR;
-    uint32_t* p2_hp_ptr = (uint32_t*)State::Memory::P2_HP_ADDR;
-    
-    if (!p1_hp_ptr || !p2_hp_ptr) return false;
-    if (IsBadWritePtr(p1_hp_ptr, sizeof(uint32_t)) || IsBadWritePtr(p2_hp_ptr, sizeof(uint32_t))) return false;
-    
-    *p1_hp_ptr = p1_hp;
-    *p2_hp_ptr = p2_hp;
-    
-    // Write positions
-    uint32_t* p1_x_ptr = (uint32_t*)0x4ADCC3;  // P1_COORD_X_ADDR
-    uint16_t* p1_y_ptr = (uint16_t*)0x4ADCC7;  // P1_COORD_Y_ADDR
-    uint32_t* p2_x_ptr = (uint32_t*)0x4EDD02;  // P2_COORD_X_ADDR
-    uint16_t* p2_y_ptr = (uint16_t*)0x4EDD06;  // P2_COORD_Y_ADDR
-    
-    if (!p1_x_ptr || !p1_y_ptr || !p2_x_ptr || !p2_y_ptr) return false;
-    if (IsBadWritePtr(p1_x_ptr, sizeof(uint32_t)) || IsBadWritePtr(p1_y_ptr, sizeof(uint16_t)) ||
-        IsBadWritePtr(p2_x_ptr, sizeof(uint32_t)) || IsBadWritePtr(p2_y_ptr, sizeof(uint16_t))) return false;
-    
-    *p1_x_ptr = p1_x;
-    *p1_y_ptr = (uint16_t)p1_y;
-    *p2_x_ptr = p2_x;
-    *p2_y_ptr = (uint16_t)p2_y;
-    
-    // Write timer and RNG
-    uint32_t* timer_ptr = (uint32_t*)State::Memory::GAME_TIMER_ADDR;
-    uint32_t* rng_ptr = (uint32_t*)State::Memory::RANDOM_SEED_ADDR;
-    
-    if (!timer_ptr || !rng_ptr) return false;
-    if (IsBadWritePtr(timer_ptr, sizeof(uint32_t)) || IsBadWritePtr(rng_ptr, sizeof(uint32_t))) return false;
-    
-    *timer_ptr = round_timer;
-    *rng_ptr = random_seed;
-    
-    return true;
-}
-
-uint32_t MinimalGameState::CalculateChecksum() const {
-    // Simple Fletcher32-like checksum for 48 bytes
-    uint32_t sum1 = 0, sum2 = 0;
-    const uint32_t* data = reinterpret_cast<const uint32_t*>(this);
-    for (int i = 0; i < 12; i++) {  // 48 bytes / 4 = 12 uint32_t
-        sum1 += data[i];
-        sum2 += sum1;
-    }
-    return (sum2 << 16) | (sum1 & 0xFFFF);
-}
+// REMOVED: MinimalGameState implementations - using only MinimalChecksumState
 
 namespace State {
 
@@ -243,6 +150,9 @@ void CleanupStateManager() {
 }
 
 bool SaveCoreStateBasic(GameState* state, uint32_t frame_number) {
+    // CRITICAL: Initialize entire CoreGameState to zero for consistent checksums across clients
+    memset(&state->core, 0, sizeof(CoreGameState));
+    
     uint32_t* frame_ptr = (uint32_t*)Memory::FRAME_COUNTER_ADDR;
     uint16_t* p1_input_ptr = (uint16_t*)Memory::P1_INPUT_ADDR;
     uint16_t* p2_input_ptr = (uint16_t*)Memory::P2_INPUT_ADDR;
@@ -359,8 +269,22 @@ bool RestoreStateFromStruct(const GameState* state, uint32_t target_frame) {
     
     // Restore Character Select Menu State (CRITICAL for CSS synchronization)
     if (!IsBadWritePtr(menu_selection_ptr, sizeof(uint32_t))) { *menu_selection_ptr = state->core.menu_selection; }
-    if (!IsBadWritePtr(p1_css_cursor_x_ptr, sizeof(uint32_t))) { *p1_css_cursor_x_ptr = state->core.p1_css_cursor_x; }
-    if (!IsBadWritePtr(p1_css_cursor_y_ptr, sizeof(uint32_t))) { *p1_css_cursor_y_ptr = state->core.p1_css_cursor_y; }
+    if (!IsBadWritePtr(p1_css_cursor_x_ptr, sizeof(uint32_t))) { 
+        uint32_t old_x = *p1_css_cursor_x_ptr;
+        *p1_css_cursor_x_ptr = state->core.p1_css_cursor_x; 
+        if (old_x != state->core.p1_css_cursor_x) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS RESTORE: P1 cursor X %u -> %u (frame %u)", 
+                       old_x, state->core.p1_css_cursor_x, target_frame);
+        }
+    }
+    if (!IsBadWritePtr(p1_css_cursor_y_ptr, sizeof(uint32_t))) { 
+        uint32_t old_y = *p1_css_cursor_y_ptr;
+        *p1_css_cursor_y_ptr = state->core.p1_css_cursor_y; 
+        if (old_y != state->core.p1_css_cursor_y) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS RESTORE: P1 cursor Y %u -> %u (frame %u)", 
+                       old_y, state->core.p1_css_cursor_y, target_frame);
+        }
+    }
     if (!IsBadWritePtr(p2_css_cursor_x_ptr, sizeof(uint32_t))) { *p2_css_cursor_x_ptr = state->core.p2_css_cursor_x; }
     if (!IsBadWritePtr(p2_css_cursor_y_ptr, sizeof(uint32_t))) { *p2_css_cursor_y_ptr = state->core.p2_css_cursor_y; }
     if (!IsBadWritePtr(p1_selected_char_ptr, sizeof(uint32_t))) { *p1_selected_char_ptr = state->core.p1_selected_char; }
@@ -380,17 +304,25 @@ bool SaveStateToMemoryBuffer(uint32_t slot, uint32_t frame_number) {
     if (success) {
         memory_rollback_slots[slot].frame_number = frame_number;
         memory_rollback_slots[slot].timestamp_ms = get_microseconds() / 1000;
-        // SDL2 PATTERN: Checksum only essential data (exclude volatile timing/address fields)
-        MinimalChecksumState minimal_state = {};
-        // Read only essential gameplay data for checksum
-        uint32_t* p1_hp_ptr = (uint32_t*)Memory::P1_HP_ADDR;
-        uint32_t* p2_hp_ptr = (uint32_t*)Memory::P2_HP_ADDR;
-        uint32_t* game_mode_ptr = (uint32_t*)Memory::GAME_MODE_ADDR;
-        if (!IsBadReadPtr(p1_hp_ptr, sizeof(uint32_t))) minimal_state.p1_hp = *p1_hp_ptr;
-        if (!IsBadReadPtr(p2_hp_ptr, sizeof(uint32_t))) minimal_state.p2_hp = *p2_hp_ptr;
-        if (!IsBadReadPtr(game_mode_ptr, sizeof(uint32_t))) minimal_state.game_mode = *game_mode_ptr;
         
-        memory_rollback_slots[slot].checksum = Fletcher32((const uint8_t*)&minimal_state, sizeof(MinimalChecksumState));
+        // UNIFIED: Calculate checksum directly from the saved CoreGameState
+        memory_rollback_slots[slot].checksum = memory_rollback_slots[slot].core.CalculateChecksum();
+        
+        // DEBUG: DETAILED field-by-field logging for checksum debugging
+        const CoreGameState& core = memory_rollback_slots[slot].core;
+        if (frame_number <= 20) {  // Log first 20 frames in detail
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CHECKSUM DEBUG Frame %u:", frame_number);
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  input_buffer_index=%u, p1_input=%u, p2_input=%u", 
+                       core.input_buffer_index, core.p1_input_current, core.p2_input_current);
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  hp=(%u,%u), timers=(%u,%u), seed=%u", 
+                       core.p1_hp, core.p2_hp, core.round_timer, core.game_timer, core.random_seed);
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  game_modes=(0x%X,0x%X,0x%X)", 
+                       core.game_mode, core.fm2k_game_mode, core.character_select_mode);
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  menu=%u, css_cursors=(%u,%u),(%u,%u), chars=(%u,%u)", 
+                       core.menu_selection, core.p1_css_cursor_x, core.p1_css_cursor_y,
+                       core.p2_css_cursor_x, core.p2_css_cursor_y, core.p1_selected_char, core.p2_selected_char);
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  FINAL CHECKSUM: 0x%08X", memory_rollback_slots[slot].checksum);
+        }
         
         memory_slot_occupied[slot] = true;
         memory_slot_frames[slot] = frame_number;

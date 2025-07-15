@@ -1,6 +1,6 @@
 #include "logging.h"
 #include "globals.h"
-#include "state_manager.h" // For MinimalGameState
+#include "state_manager.h" // For CoreGameState
 
 // File logging
 static std::ofstream log_file;
@@ -185,24 +185,55 @@ void GenerateDesyncReport(uint32_t desync_frame, uint32_t local_checksum, uint32
 }
 
 void LogMinimalGameStateDesync(uint32_t desync_frame, uint32_t local_checksum, uint32_t remote_checksum) {
-    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "=== MINIMAL GAMESTATE DESYNC ANALYSIS ===");
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "=== CHECKSUM STATE DESYNC ANALYSIS ===");
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Desync Frame: %u", desync_frame);
     
-    FM2K::MinimalGameState current_state;
-    if (current_state.LoadFromMemory()) {
-        current_state.frame_number = desync_frame;
-        
-        uint32_t calculated_checksum = current_state.CalculateChecksum();
-        
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Current Local State:");
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  P1 HP: %u / %u", current_state.p1_hp, current_state.p1_max_hp);
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  P2 HP: %u / %u", current_state.p2_hp, current_state.p2_max_hp);
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  P1 Position: (%u, %u)", current_state.p1_x, current_state.p1_y);
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  P2 Position: (%u, %u)", current_state.p2_x, current_state.p2_y);
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  Round Timer: %u", current_state.round_timer);
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  RNG Seed: 0x%08X", current_state.random_seed);
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  Input Checksum: 0x%08X", current_state.input_checksum);
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  Calculated Checksum: 0x%08X (expected: 0x%08X)", calculated_checksum, local_checksum);
+    // Get current checksum state for comparison using CoreGameState  
+    FM2K::State::CoreGameState current_state = {};
+    
+    // Read the current state manually for debugging
+    uint32_t* p1_hp_ptr = (uint32_t*)FM2K::State::Memory::P1_HP_ADDR;
+    uint32_t* p2_hp_ptr = (uint32_t*)FM2K::State::Memory::P2_HP_ADDR;
+    uint32_t* game_mode_ptr = (uint32_t*)FM2K::State::Memory::GAME_MODE_ADDR;
+    uint32_t* mainmenu_cursor_ptr = (uint32_t*)FM2K::State::Memory::MENU_SELECTION_ADDR;
+    uint32_t* p1_css_cursor_x_ptr = (uint32_t*)FM2K::State::Memory::P1_CSS_CURSOR_X_ADDR;
+    uint32_t* p1_css_cursor_y_ptr = (uint32_t*)FM2K::State::Memory::P1_CSS_CURSOR_Y_ADDR;
+    uint32_t* p2_css_cursor_x_ptr = (uint32_t*)FM2K::State::Memory::P2_CSS_CURSOR_X_ADDR;
+    uint32_t* p2_css_cursor_y_ptr = (uint32_t*)FM2K::State::Memory::P2_CSS_CURSOR_Y_ADDR;
+    uint32_t* p1_selected_char_ptr = (uint32_t*)FM2K::State::Memory::P1_SELECTED_CHAR_ADDR;
+    uint32_t* p2_selected_char_ptr = (uint32_t*)FM2K::State::Memory::P2_SELECTED_CHAR_ADDR;
+    
+    if (!IsBadReadPtr(game_mode_ptr, sizeof(uint32_t))) current_state.game_mode = *game_mode_ptr;
+    if (!IsBadReadPtr(mainmenu_cursor_ptr, sizeof(uint32_t))) current_state.menu_selection = *mainmenu_cursor_ptr;
+    if (!IsBadReadPtr(p1_hp_ptr, sizeof(uint32_t))) current_state.p1_hp = *p1_hp_ptr;
+    if (!IsBadReadPtr(p2_hp_ptr, sizeof(uint32_t))) current_state.p2_hp = *p2_hp_ptr;
+    if (!IsBadReadPtr(p1_css_cursor_x_ptr, sizeof(uint32_t))) current_state.p1_css_cursor_x = *p1_css_cursor_x_ptr;
+    if (!IsBadReadPtr(p1_css_cursor_y_ptr, sizeof(uint32_t))) current_state.p1_css_cursor_y = *p1_css_cursor_y_ptr;
+    if (!IsBadReadPtr(p2_css_cursor_x_ptr, sizeof(uint32_t))) current_state.p2_css_cursor_x = *p2_css_cursor_x_ptr;
+    if (!IsBadReadPtr(p2_css_cursor_y_ptr, sizeof(uint32_t))) current_state.p2_css_cursor_y = *p2_css_cursor_y_ptr;
+    if (!IsBadReadPtr(p1_selected_char_ptr, sizeof(uint32_t))) current_state.p1_selected_char = *p1_selected_char_ptr;
+    if (!IsBadReadPtr(p2_selected_char_ptr, sizeof(uint32_t))) current_state.p2_selected_char = *p2_selected_char_ptr;
+    
+    uint32_t calculated_checksum = current_state.CalculateChecksum();
+    
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Current Checksum State:");
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  Game Mode: 0x%08X", current_state.game_mode);
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  Main Menu Cursor: %u", current_state.menu_selection);
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  P1 HP: %u, P2 HP: %u", current_state.p1_hp, current_state.p2_hp);
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  P1 CSS Cursor: (%u, %u)", current_state.p1_css_cursor_x, current_state.p1_css_cursor_y);
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  P2 CSS Cursor: (%u, %u)", current_state.p2_css_cursor_x, current_state.p2_css_cursor_y);
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  Selected Chars: P1=%u, P2=%u", current_state.p1_selected_char, current_state.p2_selected_char);
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  Calculated Checksum: 0x%08X (expected: 0x%08X)", calculated_checksum, local_checksum);
+    
+    // Check if our calculated checksum matches the reported local checksum
+    if (calculated_checksum != local_checksum) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "⚠️  WARNING: Calculated checksum doesn't match reported local checksum!");
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "⚠️  This suggests memory corruption or race condition in state capture!");
     }
     
-    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "===============================================");
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Checksum Comparison:");
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  Local:  0x%08X", local_checksum);
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  Remote: 0x%08X", remote_checksum);
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "  Diff:   0x%08X", local_checksum ^ remote_checksum);
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "==============================================");
 } 

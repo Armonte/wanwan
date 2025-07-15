@@ -3,20 +3,7 @@
 #include "common.h"
 
 namespace FM2K {
-    struct MinimalGameState {
-        uint32_t p1_hp, p2_hp;
-        uint32_t p1_max_hp, p2_max_hp;
-        uint32_t p1_x, p1_y;
-        uint32_t p2_x, p2_y;
-        uint32_t round_timer;
-        uint32_t random_seed;
-        uint32_t frame_number;
-        uint32_t input_checksum;
-        
-        uint32_t CalculateChecksum() const;
-        bool LoadFromMemory();
-        bool SaveToMemory() const;
-    };
+    // REMOVED: MinimalGameState - using only MinimalChecksumState for consistency
 
     // Active object info structure
     struct ActiveObjectInfo {
@@ -26,6 +13,11 @@ namespace FM2K {
     };
 
     namespace State {
+        // Forward declaration for Fletcher32 checksum function
+        uint32_t Fletcher32(const uint8_t* data, size_t len);
+        
+        // UNIFIED: Single state structure for both rollback and checksumming (no padding, consistent across clients)
+        #pragma pack(push, 1)  // Ensure no padding between fields
         struct CoreGameState {
             uint32_t input_buffer_index;
             uint16_t p1_input_current;
@@ -56,7 +48,13 @@ namespace FM2K {
             uint32_t p2_selected_char;         // P2 selected character ID
             uint32_t p1_char_related;          // P1 related character
             uint32_t p2_char_related;          // P2 related character
+            
+            // UNIFIED: Single checksum calculation method for consistency
+            uint32_t CalculateChecksum() const {
+                return FM2K::State::Fletcher32((const uint8_t*)this, sizeof(CoreGameState));
+            }
         };
+        #pragma pack(pop)
 
         struct GameState {
             CoreGameState core;
@@ -81,12 +79,6 @@ namespace FM2K {
         bool LoadStateFromMemoryBuffer(uint32_t slot);
         uint32_t GetStateChecksum(uint32_t slot);
         
-        // SDL2 PATTERN: Minimal state for checksumming (only essential data, no volatile fields)
-        struct MinimalChecksumState {
-            uint32_t p1_hp;
-            uint32_t p2_hp;
-            uint32_t game_mode;
-            // Add more essential fields as needed
-        };
+        // REMOVED: MinimalChecksumState - now using CoreGameState for both rollback and checksumming
     }
 } 

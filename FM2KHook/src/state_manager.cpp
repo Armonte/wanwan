@@ -278,6 +278,17 @@ bool SaveCoreStateBasic(GameState* state, uint32_t frame_number) {
     if (!IsBadReadPtr(p2_input_ptr, sizeof(uint16_t))) { state->core.p2_input_current = *p2_input_ptr; }
     if (!IsBadReadPtr(p1_hp_ptr, sizeof(uint32_t))) { state->core.p1_hp = *p1_hp_ptr; }
     if (!IsBadReadPtr(p2_hp_ptr, sizeof(uint32_t))) { state->core.p2_hp = *p2_hp_ptr; }
+    
+    // Save character positions (CRITICAL for rollback)
+    uint32_t* p1_x_ptr = (uint32_t*)0x4ADCC3;  // P1_COORD_X_ADDR
+    uint16_t* p1_y_ptr = (uint16_t*)0x4ADCC7;  // P1_COORD_Y_ADDR
+    uint32_t* p2_x_ptr = (uint32_t*)0x4EDD02;  // P2_COORD_X_ADDR
+    uint16_t* p2_y_ptr = (uint16_t*)0x4EDD06;  // P2_COORD_Y_ADDR
+    
+    if (!IsBadReadPtr(p1_x_ptr, sizeof(uint32_t))) { state->core.p1_x = *p1_x_ptr; } else { state->core.p1_x = 0; }
+    if (!IsBadReadPtr(p1_y_ptr, sizeof(uint16_t))) { state->core.p1_y = *p1_y_ptr; } else { state->core.p1_y = 0; }
+    if (!IsBadReadPtr(p2_x_ptr, sizeof(uint32_t))) { state->core.p2_x = *p2_x_ptr; } else { state->core.p2_x = 0; }
+    if (!IsBadReadPtr(p2_y_ptr, sizeof(uint16_t))) { state->core.p2_y = *p2_y_ptr; } else { state->core.p2_y = 0; }
     if (!IsBadReadPtr(round_timer_ptr, sizeof(uint32_t))) { state->core.round_timer = *round_timer_ptr; }
     if (!IsBadReadPtr(game_timer_ptr, sizeof(uint32_t))) { state->core.game_timer = *game_timer_ptr; }
     if (!IsBadReadPtr(random_seed_ptr, sizeof(uint32_t))) { state->core.random_seed = *random_seed_ptr; }
@@ -343,6 +354,17 @@ bool RestoreStateFromStruct(const GameState* state, uint32_t target_frame) {
     if (!IsBadWritePtr(p2_input_ptr, sizeof(uint16_t))) { *p2_input_ptr = state->core.p2_input_current; }
     if (!IsBadWritePtr(p1_hp_ptr, sizeof(uint32_t))) { *p1_hp_ptr = state->core.p1_hp; }
     if (!IsBadWritePtr(p2_hp_ptr, sizeof(uint32_t))) { *p2_hp_ptr = state->core.p2_hp; }
+    
+    // Restore character positions (CRITICAL for rollback)
+    uint32_t* p1_x_ptr = (uint32_t*)0x4ADCC3;  // P1_COORD_X_ADDR
+    uint16_t* p1_y_ptr = (uint16_t*)0x4ADCC7;  // P1_COORD_Y_ADDR
+    uint32_t* p2_x_ptr = (uint32_t*)0x4EDD02;  // P2_COORD_X_ADDR
+    uint16_t* p2_y_ptr = (uint16_t*)0x4EDD06;  // P2_COORD_Y_ADDR
+    
+    if (!IsBadWritePtr(p1_x_ptr, sizeof(uint32_t))) { *p1_x_ptr = state->core.p1_x; }
+    if (!IsBadWritePtr(p1_y_ptr, sizeof(uint16_t))) { *p1_y_ptr = (uint16_t)state->core.p1_y; }
+    if (!IsBadWritePtr(p2_x_ptr, sizeof(uint32_t))) { *p2_x_ptr = state->core.p2_x; }
+    if (!IsBadWritePtr(p2_y_ptr, sizeof(uint16_t))) { *p2_y_ptr = (uint16_t)state->core.p2_y; }
     if (!IsBadWritePtr(round_timer_ptr, sizeof(uint32_t))) { *round_timer_ptr = state->core.round_timer; }
     if (!IsBadWritePtr(game_timer_ptr, sizeof(uint32_t))) { *game_timer_ptr = state->core.game_timer; }
     if (!IsBadWritePtr(random_seed_ptr, sizeof(uint32_t))) { *random_seed_ptr = state->core.random_seed; }
@@ -386,8 +408,17 @@ bool SaveStateToMemoryBuffer(uint32_t slot, uint32_t frame_number) {
         uint32_t* p1_hp_ptr = (uint32_t*)Memory::P1_HP_ADDR;
         uint32_t* p2_hp_ptr = (uint32_t*)Memory::P2_HP_ADDR;
         uint32_t* game_mode_ptr = (uint32_t*)Memory::GAME_MODE_ADDR;
+        uint32_t* p1_x_ptr = (uint32_t*)0x4ADCC3;  // P1_COORD_X_ADDR
+        uint16_t* p1_y_ptr = (uint16_t*)0x4ADCC7;  // P1_COORD_Y_ADDR
+        uint32_t* p2_x_ptr = (uint32_t*)0x4EDD02;  // P2_COORD_X_ADDR
+        uint16_t* p2_y_ptr = (uint16_t*)0x4EDD06;  // P2_COORD_Y_ADDR
+        
         if (!IsBadReadPtr(p1_hp_ptr, sizeof(uint32_t))) minimal_state.p1_hp = *p1_hp_ptr;
         if (!IsBadReadPtr(p2_hp_ptr, sizeof(uint32_t))) minimal_state.p2_hp = *p2_hp_ptr;
+        if (!IsBadReadPtr(p1_x_ptr, sizeof(uint32_t))) minimal_state.p1_x = *p1_x_ptr;
+        if (!IsBadReadPtr(p1_y_ptr, sizeof(uint16_t))) minimal_state.p1_y = *p1_y_ptr;
+        if (!IsBadReadPtr(p2_x_ptr, sizeof(uint32_t))) minimal_state.p2_x = *p2_x_ptr;
+        if (!IsBadReadPtr(p2_y_ptr, sizeof(uint16_t))) minimal_state.p2_y = *p2_y_ptr;
         if (!IsBadReadPtr(game_mode_ptr, sizeof(uint32_t))) minimal_state.game_mode = *game_mode_ptr;
         
         memory_rollback_slots[slot].checksum = Fletcher32((const uint8_t*)&minimal_state, sizeof(MinimalChecksumState));

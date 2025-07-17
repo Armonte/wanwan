@@ -47,6 +47,8 @@ namespace FM2K::State::Memory {
     constexpr uintptr_t P2_CSS_CURSOR_Y_ADDR = 0x424E5C;       // p2Cursor Y (row) - 4 bytes
     constexpr uintptr_t P1_SELECTED_CHAR_ADDR = 0x470020;      // p1CharToDisplayAndLoad
     constexpr uintptr_t P2_SELECTED_CHAR_ADDR = 0x470024;      // p2CharToDisplayAndLoad
+    constexpr uintptr_t P1_CSS_CONFIRMED_ADDR = 0x47019C;      // g_css_p1_confirmed (set to 1 when locked in)
+    constexpr uintptr_t P2_CSS_CONFIRMED_ADDR = 0x4701A0;      // g_css_p2_confirmed (set to 1 when locked in)
     constexpr uintptr_t P1_CHAR_RELATED_ADDR = 0x4CF960;       // u_p1_related
     constexpr uintptr_t P2_CHAR_RELATED_ADDR = 0x4CF964;       // u_p2_related
 }
@@ -74,6 +76,7 @@ extern uint32_t live_p2_input;
 // Frame advance control (GekkoNet synchronization)
 extern bool can_advance_frame;        // Flag to control FM2K frame advancement
 extern bool waiting_for_gekko_advance; // True when waiting for GekkoNet AdvanceEvent
+extern bool gekko_frame_control_enabled; // True when GekkoNet should control frame advancement
 
 // Timeout mechanisms to prevent deadlocks
 extern uint32_t handshake_timeout_frames;    // Timeout counter for network handshake

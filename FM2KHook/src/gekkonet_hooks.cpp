@@ -140,6 +140,12 @@ bool AllPlayersValid() {
         if (handshake_timeout_frames > 1000) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: TIMEOUT - Forcing session start after %u frames to prevent deadlock", handshake_timeout_frames);
             gekko_session_started = true;
+            
+            // Enable frame control even on timeout to maintain consistency
+            gekko_frame_control_enabled = true;
+            can_advance_frame = false;
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: FRAME CONTROL ENABLED (timeout) - FM2K now waits for AdvanceEvent");
+            
             return true;
         }
         
@@ -181,7 +187,13 @@ bool AllPlayersValid() {
         if (session_started_event_found) {
             gekko_session_started = true;
             handshake_timeout_frames = 0; // Reset timeout on success
+            
+            // ENABLE THORN'S FRAMESTEP PATTERN - GekkoNet now controls FM2K frame advancement
+            gekko_frame_control_enabled = true;
+            can_advance_frame = false; // Start blocking immediately
+            
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SESSION STARTED - All players connected and synchronized! (BSNES AllPlayersValid pattern)");
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: FRAME CONTROL ENABLED - FM2K now waits for AdvanceEvent to progress frames");
             return true;
         }
         

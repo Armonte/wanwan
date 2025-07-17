@@ -32,6 +32,10 @@ namespace FM2K {
             uint16_t p2_input_current;
             uint32_t p1_hp;
             uint32_t p2_hp;
+            uint32_t p1_x;                     // P1 position X
+            uint32_t p1_y;                     // P1 position Y
+            uint32_t p2_x;                     // P2 position X
+            uint32_t p2_y;                     // P2 position Y
             uint32_t round_timer;
             uint32_t game_timer;
             uint32_t random_seed;
@@ -85,6 +89,10 @@ namespace FM2K {
         struct MinimalChecksumState {
             uint32_t p1_hp;
             uint32_t p2_hp;
+            uint32_t p1_x;
+            uint32_t p1_y;
+            uint32_t p2_x;
+            uint32_t p2_y;
             uint32_t game_mode;
             // Add more essential fields as needed
         };

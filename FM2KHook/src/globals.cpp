@@ -23,6 +23,7 @@ uint32_t live_p2_input = 0;
 // Frame advance control (GekkoNet synchronization)
 bool can_advance_frame = true;        // Allow frame advancement initially
 bool waiting_for_gekko_advance = false; // Not waiting initially
+bool gekko_frame_control_enabled = false; // Disabled by default, enable after GekkoNet starts
 
 // Timeout mechanisms to prevent deadlocks
 uint32_t handshake_timeout_frames = 0;    // Timeout counter for network handshake

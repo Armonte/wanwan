@@ -4,6 +4,10 @@
 #include "state_manager.h"
 #include "logging.h"
 #include "shared_mem.h"
+#include "game_state_machine.h"
+#include "css_sync.h"
+#include <windows.h>
+#include <mmsystem.h>
 
 // Use global function pointers from globals.h
 
@@ -54,29 +58,28 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
 }
 
 int __cdecl Hook_ProcessGameInputs() {
-    // SDL2 PATTERN: Let GekkoNet handle frame synchronization - don't block execution
-    // The SDL2 example shows they NEVER block with return 0, they just adjust timing
-    // GekkoNet is designed to handle the entire session from frame 1
-    if (gekko_initialized && gekko_session && AllPlayersValid()) {
-        // Check how far ahead we are from the remote client for logging only
-        float frames_ahead = gekko_frames_ahead(gekko_session);
-        
-        // CRITICAL: Only block if EXTREMELY far ahead (emergency brake only)
-        if (frames_ahead >= 10.0f) {
-            static uint32_t emergency_brake_counter = 0;
-            if (++emergency_brake_counter % 60 == 1) {  // Log every second
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GEKKO EMERGENCY: Pausing FM2K - %.1f frames ahead (emergency brake)", frames_ahead);
-            }
-            return 0;
-        }
-        
-        // SDL2 PATTERN: Log sync status but continue execution
-        static uint32_t sync_log_counter = 0;
-        if (++sync_log_counter % 300 == 1 && frames_ahead > 0.5f) {  // Log every 5 seconds if slightly ahead
-            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GEKKO SYNC: %.1f frames ahead (normal - letting GekkoNet handle)", frames_ahead);
+    // SPEED TEST: Add delay to slow game to 50% speed to prove we have control
+    static DWORD last_frame_time = 0;
+    DWORD current_time = timeGetTime();
+    
+    // Normal FM2K runs at 100 FPS (10ms per frame)
+    // To slow to 50%, we want 50 FPS (20ms per frame)
+    const DWORD target_frame_time = 20; // 20ms = 50 FPS = 50% speed
+    
+    if (last_frame_time > 0) {
+        DWORD elapsed = current_time - last_frame_time;
+        if (elapsed < target_frame_time) {
+            DWORD sleep_time = target_frame_time - elapsed;
+            Sleep(sleep_time);
+            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "SPEED TEST: Slowing frame by %ums (50%% speed)", sleep_time);
         }
     }
+    last_frame_time = timeGetTime();
     
+    // CRITICAL: Let the original function handle frame advancement
+    int original_result = original_process_inputs ? original_process_inputs() : 0;
+    
+    // Update our frame counter AFTER original function (which increments FM2K's counter)
     g_frame_counter++;
     
     // Always output on first few calls to verify hook is working
@@ -90,28 +93,46 @@ int __cdecl Hook_ProcessGameInputs() {
     // Process debug commands from launcher
     ProcessDebugCommands();
     
-    // CRITICAL: Continuous CSS monitoring (every 60 frames during character select)
-    static uint32_t css_monitor_counter = 0;
-    if (current_game_mode > 0 && current_game_mode < 3000 && (++css_monitor_counter % 60 == 1)) {
-        uint32_t* menu_sel_ptr = (uint32_t*)FM2K::State::Memory::MENU_SELECTION_ADDR;
-        uint32_t* p1_cursor_x_ptr = (uint32_t*)FM2K::State::Memory::P1_CSS_CURSOR_X_ADDR;
-        uint32_t* p1_cursor_y_ptr = (uint32_t*)FM2K::State::Memory::P1_CSS_CURSOR_Y_ADDR;
-        uint32_t* p2_cursor_x_ptr = (uint32_t*)FM2K::State::Memory::P2_CSS_CURSOR_X_ADDR;
-        uint32_t* p2_cursor_y_ptr = (uint32_t*)FM2K::State::Memory::P2_CSS_CURSOR_Y_ADDR;
-        uint32_t* p1_char_ptr = (uint32_t*)FM2K::State::Memory::P1_SELECTED_CHAR_ADDR;
-        uint32_t* p2_char_ptr = (uint32_t*)FM2K::State::Memory::P2_SELECTED_CHAR_ADDR;
+    // Update game state machine and character select sync
+    FM2K::State::g_game_state_machine.Update(current_game_mode);
+    FM2K::CSS::g_css_sync.Update();
+    
+    // Handle battle synchronization during battle transitions
+    if (FM2K::State::g_game_state_machine.GetCurrentPhase() == FM2K::State::GamePhase::IN_BATTLE &&
+        !FM2K::State::g_game_state_machine.IsBattleSyncConfirmed()) {
+        // Continue sync process - this will auto-confirm after timeout
+        FM2K::State::g_game_state_machine.RequestBattleSync();
+    }
+    
+    // Debug: Log rollback state periodically during menus and battle sync
+    static uint32_t rollback_log_counter = 0;
+    if (current_game_mode < 3000 && (++rollback_log_counter % 300 == 1)) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+            "MENU STATE: mode=%d, rollback_active=%s, frames_in_phase=%d",
+            current_game_mode, rollback_active ? "YES" : "NO",
+            FM2K::State::g_game_state_machine.GetFramesInCurrentPhase());
+    } else if (current_game_mode >= 3000 && !FM2K::State::g_game_state_machine.IsBattleSyncConfirmed() && (++rollback_log_counter % 60 == 1)) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+            "BATTLE SYNC: Waiting for synchronization confirmation (frame %u)", g_frame_counter);
+    }
+    
+    // Log character selection transitions
+    if (FM2K::State::g_game_state_machine.HasTransitioned()) {
+        auto current_phase = FM2K::State::g_game_state_machine.GetCurrentPhase();
+        auto previous_phase = FM2K::State::g_game_state_machine.GetPreviousPhase();
         
-        if (!IsBadReadPtr(menu_sel_ptr, sizeof(uint32_t)) && !IsBadReadPtr(p1_cursor_x_ptr, sizeof(uint32_t))) {
-            uint32_t menu_sel = *menu_sel_ptr;
-            uint32_t p1_cursor_x = *p1_cursor_x_ptr;
-            uint32_t p1_cursor_y = *p1_cursor_y_ptr;
-            uint32_t p2_cursor_x = *p2_cursor_x_ptr;
-            uint32_t p2_cursor_y = *p2_cursor_y_ptr;
-            uint32_t p1_char = *p1_char_ptr;
-            uint32_t p2_char = *p2_char_ptr;
-            
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS MONITOR (Frame %u): menu=%d, P1=(%d,%d), P2=(%d,%d), chars=(%d,%d), game_mode=0x%X", 
-                       g_frame_counter, menu_sel, p1_cursor_x, p1_cursor_y, p2_cursor_x, p2_cursor_y, p1_char, p2_char, current_game_mode);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GAME PHASE TRANSITION: %d -> %d (frame %u)", 
+                   static_cast<int>(previous_phase), static_cast<int>(current_phase), g_frame_counter);
+                   
+        // CRITICAL: Log input state at transition time to debug desync
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, 
+            "TRANSITION INPUTS: live_p1=0x%02X, live_p2=0x%02X, net_p1=0x%02X, net_p2=0x%02X",
+            live_p1_input & 0xFF, live_p2_input & 0xFF, 
+            networked_p1_input & 0xFF, networked_p2_input & 0xFF);
+                   
+        // Log when both players confirm character selection
+        if (FM2K::State::g_game_state_machine.IsCharacterSelectionComplete()) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CHARACTER SELECTION COMPLETE - Both players confirmed!");
         }
     }
     
@@ -138,14 +159,14 @@ int __cdecl Hook_ProcessGameInputs() {
         // Call gekko_network_poll EVERY frame
         gekko_network_poll(gekko_session);
         
-        // FIXED: Both clients use P1 controls locally for better UX
+        // CORRECT INPUT MAPPING:
         // HOST (original_player_index=0) controls P1, sends as P1 input
-        // CLIENT (original_player_index=1) controls P1 locally, sends as P2 input
+        // CLIENT (original_player_index=1) controls P2, sends as P2 input
         uint8_t local_input = 0;
         if (original_player_index == 0) {
             local_input = (uint8_t)(live_p1_input & 0xFF);  // HOST uses P1 controls, sends as P1
         } else {
-            local_input = (uint8_t)(live_p1_input & 0xFF);  // CLIENT uses P1 controls, sends as P2
+            local_input = (uint8_t)(live_p2_input & 0xFF);  // CLIENT uses P2 controls, sends as P2
         }
         gekko_add_local_input(gekko_session, local_player_handle, &local_input);
         
@@ -153,9 +174,10 @@ int __cdecl Hook_ProcessGameInputs() {
         static uint32_t send_frame_count = 0;
         send_frame_count++;
         if (send_frame_count <= 5 || send_frame_count % 600 == 0) {  // Only log first 5 frames or every 10 seconds
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT SEND: Handle %d sending 0x%02X (original_player=%d, role=%s, using P1 controls)", 
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT SEND: Handle %d sending 0x%02X (original_player=%d, role=%s, using %s controls)", 
                        local_player_handle, local_input, original_player_index, 
-                       (original_player_index == 0) ? "HOST" : "CLIENT");
+                       (original_player_index == 0) ? "HOST" : "CLIENT",
+                       (original_player_index == 0) ? "P1" : "P2");
         }
         
         // Record inputs for testing/debugging if enabled
@@ -256,33 +278,33 @@ int __cdecl Hook_ProcessGameInputs() {
                     uint32_t input_length = update->data.adv.input_len;
                     uint8_t* inputs = update->data.adv.inputs;
                     
-                    // BSNES PATTERN: Process AdvanceEvent immediately and synchronously
-                    // No deferred flags - just update inputs and continue
+                    // GEKKO PATTERN: AdvanceEvent tells us to simulate one frame with given inputs
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: *** ADVANCE EVENT *** Frame %u (our frame: %u)", target_frame, g_frame_counter);
                     
-                    // Reduced logging: Only log occasionally or on non-zero inputs
-                    bool should_log = (target_frame % 30 == 1);
-                    if (should_log) {
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent to frame %u (inputs: %u bytes) - SYNCHRONOUS PROCESSING", 
-                                    target_frame, input_length);
+                    // CRITICAL: Sync our frame counter with GekkoNet's expectation
+                    if (g_frame_counter != target_frame) {
+                        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Frame desync detected! Correcting %u → %u", g_frame_counter, target_frame);
+                        g_frame_counter = target_frame;
                     }
                     
-                    // Like bsnes: Store inputs directly for the hooked input function to return
+                    // Store the provided inputs for this frame
                     if (inputs && input_length >= 2) {
-                        // BSNES PATTERN: Map GekkoNet handles to FM2K player slots
+                        // Map GekkoNet handles to FM2K player slots
                         // Handle 0 = P1 input, Handle 1 = P2 input (consistent across both clients)
                         networked_p1_input = inputs[0];  // Handle 0 -> P1
                         networked_p2_input = inputs[1];  // Handle 1 -> P2
                         use_networked_inputs = true;     // Always use network inputs during AdvanceEvent
                         
-                        // Debug logging for received inputs (REDUCED frequency for performance)
-                        static uint32_t advance_log_counter = 0;
-                        if (++advance_log_counter % 1800 == 1) {  // Log every 30 seconds only
-                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GEKKO AdvanceEvent: Frame %u, inputs[0]=0x%02X inputs[1]=0x%02X → P1=0x%02X P2=0x%02X", 
-                                       target_frame, inputs[0], inputs[1], networked_p1_input, networked_p2_input);
-                        }
-                        
-                        // BSNES PATTERN: AdvanceEvent is processed immediately, no waiting flags
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent inputs - P1: 0x%02X, P2: 0x%02X", 
+                                   inputs[0], inputs[1]);
                     }
+                    
+                    // THORN'S PATTERN: Give FM2K permission to advance ONE frame
+                    // This is like pressing "continue" in Thorn's framestep tool
+                    can_advance_frame = true;
+                    waiting_for_gekko_advance = false;
+                    
+                    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Granting frame advance permission for frame %u", target_frame);
                     break;
                 }
                 
@@ -292,6 +314,26 @@ int __cdecl Hook_ProcessGameInputs() {
                     uint32_t* checksum_ptr = update->data.save.checksum;
                     uint32_t* state_len_ptr = update->data.save.state_len;
                     uint8_t* state_ptr = update->data.save.state;
+                    
+                    // CRITICAL: Skip saves during transition stabilization to prevent desyncs
+                    bool in_stabilization = FM2K::State::g_game_state_machine.IsInTransitionStabilization();
+                    if (in_stabilization) {
+                        // Log only occasionally to reduce spam
+                        static uint32_t skip_save_counter = 0;
+                        if (++skip_save_counter % 60 == 1) {
+                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                                "GekkoNet: Skipping SaveEvents during stabilization (frame %u)", save_frame);
+                        }
+                        
+                        // Provide dummy checksum to keep GekkoNet happy
+                        if (checksum_ptr && state_len_ptr && state_ptr) {
+                            uint32_t dummy_checksum = 0x12345678;  // Fixed value during stabilization
+                            *state_len_ptr = sizeof(uint32_t);
+                            memcpy(state_ptr, &dummy_checksum, sizeof(uint32_t));
+                            *checksum_ptr = dummy_checksum;
+                        }
+                        break;
+                    }
                     
                     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SaveEvent for frame %u", save_frame);
                     
@@ -317,7 +359,25 @@ int __cdecl Hook_ProcessGameInputs() {
                     // BSNES PATTERN: Load state and update frame counter
                     uint32_t load_frame = update->data.load.frame;
                     
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: ROLLBACK from frame %u to frame %u", g_frame_counter, load_frame);
+                    // CRITICAL: Skip loads during transition stabilization to prevent desyncs
+                    bool in_stabilization = FM2K::State::g_game_state_machine.IsInTransitionStabilization();
+                    if (in_stabilization) {
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                            "GekkoNet: SKIPPING LoadEvent frame %u (in stabilization period)", load_frame);
+                        break;
+                    }
+                    
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: *** ROLLBACK *** from frame %u to frame %u (slot %u)", g_frame_counter, load_frame, load_frame % 8);
+                    
+                    // Log current state before rollback for debugging
+                    uint32_t* p1_hp_ptr = (uint32_t*)FM2K::State::Memory::P1_HP_ADDR;
+                    uint32_t* p2_hp_ptr = (uint32_t*)FM2K::State::Memory::P2_HP_ADDR;
+                    uint32_t* p1_x_ptr = (uint32_t*)0x4ADCC3;
+                    uint32_t* p2_x_ptr = (uint32_t*)0x4EDD02;
+                    
+                    uint32_t before_p1_hp = p1_hp_ptr && !IsBadReadPtr(p1_hp_ptr, 4) ? *p1_hp_ptr : 0;
+                    uint32_t before_p1_x = p1_x_ptr && !IsBadReadPtr(p1_x_ptr, 4) ? *p1_x_ptr : 0;
+                    uint32_t before_p2_x = p2_x_ptr && !IsBadReadPtr(p2_x_ptr, 4) ? *p2_x_ptr : 0;
                     
                     // FAST IN-MEMORY: Load from memory buffer instead of file (like bsnes)
                     uint32_t slot = load_frame % 8;
@@ -326,9 +386,16 @@ int __cdecl Hook_ProcessGameInputs() {
                     if (load_success) {
                         // Update our frame counter to match the rollback point
                         g_frame_counter = load_frame;
-                        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Rollback successful, frame counter reset to %u", g_frame_counter);
+                        
+                        // Log state after rollback to verify it worked
+                        uint32_t after_p1_hp = p1_hp_ptr && !IsBadReadPtr(p1_hp_ptr, 4) ? *p1_hp_ptr : 0;
+                        uint32_t after_p1_x = p1_x_ptr && !IsBadReadPtr(p1_x_ptr, 4) ? *p1_x_ptr : 0;
+                        uint32_t after_p2_x = p2_x_ptr && !IsBadReadPtr(p2_x_ptr, 4) ? *p2_x_ptr : 0;
+                        
+                        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: *** ROLLBACK SUCCESS *** frame %u, P1_HP: %u→%u, P1_X: %u→%u, P2_X: %u→%u", 
+                                   g_frame_counter, before_p1_hp, after_p1_hp, before_p1_x, after_p1_x, before_p2_x, after_p2_x);
                     } else {
-                        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Rollback failed for frame %u (slot %u)", load_frame, slot);
+                        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: *** ROLLBACK FAILED *** for frame %u (slot %u)", load_frame, slot);
                     }
                     break;
                 }
@@ -340,7 +407,7 @@ int __cdecl Hook_ProcessGameInputs() {
         }
     }
     
-    return original_process_inputs ? original_process_inputs() : 0;
+    return original_result;
 }
 
 int __cdecl Hook_UpdateGameState() {
@@ -359,30 +426,40 @@ int __cdecl Hook_UpdateGameState() {
 }
 
 BOOL __cdecl Hook_RunGameLoop() {
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** RUN_GAME_LOOP INTERCEPTED - BSNES-LEVEL CONTROL! ***");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** TAKING COMPLETE CONTROL OF MAIN GAME LOOP ***");
     
     if (!gekko_initialized) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Initializing GekkoNet at BSNES level!");
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Initializing GekkoNet at main loop level!");
         if (!InitializeGekkoNet()) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: ? GekkoNet initialization failed!");
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet initialization failed!");
             if (original_run_game_loop) {
                 return original_run_game_loop();
             }
             return FALSE;
         }
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: ? GekkoNet initialized at main loop level!");
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet initialized successfully!");
     }
     
-    if (gekko_initialized && gekko_session) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet ready - synchronization will happen in game loop to preserve message handling");
-        gekko_session_started = false;
-    }
+    // DISABLE the individual function blocking since we're controlling the entire loop now
+    gekko_frame_control_enabled = false;
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Calling original run_game_loop...");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Starting controlled game loop - session will connect during execution...");
+    
+    // SIMPLER APPROACH: Let FM2K run but control it through existing hooks
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** LETTING FM2K RUN WITH GEKKONET CONTROL ***");
+    
+    // Re-enable the individual function blocking since we'll control through hooks
+    gekko_frame_control_enabled = true;
+    can_advance_frame = false; // Start blocked
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Calling original run_game_loop with GekkoNet control enabled...");
+    
+    // Call the original run_game_loop - our hooks will control the frame advancement
     if (original_run_game_loop) {
         return original_run_game_loop();
     }
-    return FALSE;
+    
+    return TRUE;
 }
 
 bool InitializeHooks() {
@@ -501,8 +578,8 @@ void MonitorGameStateTransitions() {
         current_game_mode = new_game_mode;
         state_changed = true;
         
-        // Log character select state when in CSS mode (< 3000)
-        if (new_game_mode < 3000) {
+        // Log character select state when in CSS mode (2000-2999)
+        if (new_game_mode >= 2000 && new_game_mode < 3000) {
             uint32_t* menu_sel_ptr = (uint32_t*)FM2K::State::Memory::MENU_SELECTION_ADDR;
             uint32_t* p1_cursor_x_ptr = (uint32_t*)FM2K::State::Memory::P1_CSS_CURSOR_X_ADDR;
             uint32_t* p1_cursor_y_ptr = (uint32_t*)FM2K::State::Memory::P1_CSS_CURSOR_Y_ADDR;
@@ -510,11 +587,14 @@ void MonitorGameStateTransitions() {
             uint32_t* p2_cursor_y_ptr = (uint32_t*)FM2K::State::Memory::P2_CSS_CURSOR_Y_ADDR;
             uint32_t* p1_char_ptr = (uint32_t*)FM2K::State::Memory::P1_SELECTED_CHAR_ADDR;
             uint32_t* p2_char_ptr = (uint32_t*)FM2K::State::Memory::P2_SELECTED_CHAR_ADDR;
+            uint32_t* p1_confirmed_ptr = (uint32_t*)FM2K::State::Memory::P1_CSS_CONFIRMED_ADDR;
+            uint32_t* p2_confirmed_ptr = (uint32_t*)FM2K::State::Memory::P2_CSS_CONFIRMED_ADDR;
             
             if (!IsBadReadPtr(menu_sel_ptr, sizeof(uint32_t)) && !IsBadReadPtr(p1_cursor_x_ptr, sizeof(uint32_t)) && 
                 !IsBadReadPtr(p1_cursor_y_ptr, sizeof(uint32_t)) && !IsBadReadPtr(p2_cursor_x_ptr, sizeof(uint32_t)) && 
                 !IsBadReadPtr(p2_cursor_y_ptr, sizeof(uint32_t)) && !IsBadReadPtr(p1_char_ptr, sizeof(uint32_t)) && 
-                !IsBadReadPtr(p2_char_ptr, sizeof(uint32_t))) {
+                !IsBadReadPtr(p2_char_ptr, sizeof(uint32_t)) && !IsBadReadPtr(p1_confirmed_ptr, sizeof(uint32_t)) && 
+                !IsBadReadPtr(p2_confirmed_ptr, sizeof(uint32_t))) {
                 
                 uint32_t menu_sel = *menu_sel_ptr;
                 uint32_t p1_cursor_x = *p1_cursor_x_ptr;
@@ -523,9 +603,11 @@ void MonitorGameStateTransitions() {
                 uint32_t p2_cursor_y = *p2_cursor_y_ptr;
                 uint32_t p1_char = *p1_char_ptr;
                 uint32_t p2_char = *p2_char_ptr;
+                uint32_t p1_confirmed = *p1_confirmed_ptr;
+                uint32_t p2_confirmed = *p2_confirmed_ptr;
                 
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS STATE: menu=%d, P1_cursor=(%d,%d), P2_cursor=(%d,%d), P1_char=%d, P2_char=%d", 
-                           menu_sel, p1_cursor_x, p1_cursor_y, p2_cursor_x, p2_cursor_y, p1_char, p2_char);
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS STATE: menu=%d, P1_cursor=(%d,%d), P2_cursor=(%d,%d), P1_char=%d, P2_char=%d, confirmed=(%d,%d)", 
+                           menu_sel, p1_cursor_x, p1_cursor_y, p2_cursor_x, p2_cursor_y, p1_char, p2_char, p1_confirmed, p2_confirmed);
             }
         }
     }
@@ -558,52 +640,61 @@ void MonitorGameStateTransitions() {
 }
 
 void ManageRollbackActivation(uint32_t game_mode, uint32_t fm2k_mode, uint32_t char_select_mode) {
-    bool should_activate = ShouldActivateRollback(game_mode, fm2k_mode);
+    // Use state machine to determine rollback activation
+    bool should_activate = FM2K::State::g_game_state_machine.ShouldEnableRollback();
+    bool should_use_lockstep = FM2K::State::g_game_state_machine.ShouldUseLockstep();
+    bool in_stabilization = FM2K::State::g_game_state_machine.IsInTransitionStabilization();
     
-    if (should_activate && !rollback_active) {
+    // CRITICAL: Disable rollback during transition stabilization to prevent desyncs
+    if (in_stabilization && rollback_active) {
+        rollback_active = false;
+        waiting_for_gekko_advance = false;
+        can_advance_frame = true;
+        
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, 
+            "FM2K STATE: *** DISABLING ROLLBACK FOR STABILIZATION *** (Transition period, frame %d in phase)", 
+            FM2K::State::g_game_state_machine.GetFramesInCurrentPhase());
+    }
+    
+    if (should_activate && !rollback_active && !in_stabilization) {
         // Activate rollback for combat - enable frame synchronization
         rollback_active = true;
         waiting_for_gekko_advance = true;
         can_advance_frame = false;
         
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K STATE: *** ACTIVATING ROLLBACK NETCODE *** (Combat detected, game_mode=0x%X)", game_mode);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+            "FM2K STATE: *** ACTIVATING ROLLBACK NETCODE *** (Battle stabilized after %d frames, game_mode=0x%X)", 
+            FM2K::State::g_game_state_machine.GetFramesInCurrentPhase(), game_mode);
         
-    } else if (!should_activate && rollback_active) {
+    } else if (!should_activate && rollback_active && !in_stabilization) {
         // Deactivate rollback (returning to menu/character select) - disable frame synchronization
         rollback_active = false;
         waiting_for_gekko_advance = false;
         can_advance_frame = true;  // Allow free running during menus
         
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K STATE: *** DEACTIVATING ROLLBACK NETCODE *** (Left combat, game_mode=0x%X)", game_mode);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K STATE: *** DEACTIVATING ROLLBACK NETCODE *** (Left battle, game_mode=0x%X)", game_mode);
+    }
+    
+    // Handle lockstep mode for character select
+    if (should_use_lockstep && !rollback_active) {
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "FM2K STATE: Using lockstep sync for character select");
     }
 }
 
 bool ShouldActivateRollback(uint32_t game_mode, uint32_t fm2k_mode) {
-    // SDL2/BSNES PATTERN: GekkoNet handles the entire session from start to finish
-    // Rollback should be active throughout the entire session once GekkoNet is initialized
-    
-    // Only skip rollback during very early uninitialized states
-    if (game_mode == 0xFFFFFFFF) {
-        return false;  // Truly uninitialized
-    }
-    
-    // SIMPLIFIED: Activate rollback for all game states once GekkoNet is ready
-    // This matches how the SDL2 example and bsnes handle the entire session
-    return true;
+    // UPDATED: Use state machine logic instead of always returning true
+    // This function is legacy - the state machine handles this now
+    return FM2K::State::g_game_state_machine.ShouldEnableRollback();
 }
 
 const char* GetGameModeString(uint32_t mode) {
     switch (mode) {
         case 0xFFFFFFFF: return "UNINITIALIZED";
         case 0x0: return "STARTUP";
-        case 0x1: return "INTRO";
-        case 0x2: return "MAIN_MENU";
-        case 0x3: return "CHARACTER_SELECT";
-        case 0x4: return "STAGE_SELECT";
-        case 0x5: return "LOADING";
-        case 0x1000: return "COMBAT_1000";
-        case 0x2000: return "COMBAT_2000";
-        case 0x3000: return "COMBAT_3000";
-        default: return "UNKNOWN";
+        default:
+            if (mode >= 1000 && mode < 2000) return "TITLE_SCREEN";
+            if (mode >= 2000 && mode < 3000) return "CHARACTER_SELECT";
+            if (mode >= 3000 && mode < 4000) return "IN_BATTLE";
+            return "UNKNOWN";
     }
 } 

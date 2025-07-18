@@ -188,16 +188,42 @@ void SaveStateToBuffer(uint32_t frame_number) {
 
 bool SaveStateToSlot(uint32_t slot, uint32_t frame_number) {
     if (slot >= 8) return false;
-    // Simple stub implementation
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "SaveStateToSlot: slot %u, frame %u", slot, frame_number);
-    return true;
+    
+    // Use the working SaveCoreStateBasic approach that was tested
+    GameState state = {};
+    if (SaveCoreStateBasic(&state, frame_number)) {
+        state.frame_number = frame_number;
+        state.timestamp_ms = get_microseconds() / 1000;
+        state.checksum = Fletcher32((const uint8_t*)&state.core, sizeof(CoreGameState));
+        
+        // Save to our slot array
+        save_slots[slot] = state;
+        slot_occupied[slot] = true;
+        
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SaveStateToSlot: slot %u, frame %u, checksum=0x%08X", 
+                   slot, frame_number, state.checksum);
+        return true;
+    }
+    
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SaveStateToSlot: Failed to save state to slot %u", slot);
+    return false;
 }
 
 bool LoadStateFromSlot(uint32_t slot) {
-    if (slot >= 8) return false;
-    // Simple stub implementation
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "LoadStateFromSlot: slot %u", slot);
-    return true;
+    if (slot >= 8 || !slot_occupied[slot]) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "LoadStateFromSlot: slot %u not occupied", slot);
+        return false;
+    }
+    
+    // Use the working RestoreStateFromStruct approach that was tested
+    if (RestoreStateFromStruct(&save_slots[slot], save_slots[slot].frame_number)) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LoadStateFromSlot: slot %u, frame %u, checksum=0x%08X", 
+                   slot, save_slots[slot].frame_number, save_slots[slot].checksum);
+        return true;
+    }
+    
+    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "LoadStateFromSlot: Failed to restore state from slot %u", slot);
+    return false;
 }
 
 bool ValidatePhase1Performance() {
@@ -457,6 +483,58 @@ uint32_t GetStateChecksum(uint32_t slot) {
     return memory_rollback_slots[slot].checksum;
 }
 
+// GEKKONET INTERFACE: Functions required for proper GekkoNet save/load
+uint32_t GetGameStateSize() {
+    // Return the size of our CoreGameState structure for GekkoNet
+    return sizeof(CoreGameState);
+}
+
+void* GetGameStatePointer() {
+    // Return pointer to a static GameState structure that GekkoNet can use
+    static GameState gekko_state = {};
+    
+    // Update the state with current FM2K memory
+    // Use frame counter from memory if g_frame_counter is not available
+    uint32_t current_frame = 0;
+    uint32_t* frame_ptr = (uint32_t*)Memory::FRAME_COUNTER_ADDR;
+    if (!IsBadReadPtr(frame_ptr, sizeof(uint32_t))) {
+        current_frame = *frame_ptr;
+    }
+    
+    SaveCoreStateBasic(&gekko_state, current_frame);
+    gekko_state.frame_number = current_frame;
+    gekko_state.timestamp_ms = get_microseconds() / 1000;
+    
+    return &gekko_state.core;
+}
+
+uint32_t CalculateStateChecksum(const void* state, uint32_t size) {
+    // Use our Fletcher32 implementation like in the OnlineSession example
+    return Fletcher32((const uint8_t*)state, size);
+}
+
+// SLOT ACCESS: Functions to access save slot system  
+GameState* GetSaveSlot(uint32_t slot) {
+    if (slot >= 8) return nullptr;
+    return &save_slots[slot];
+}
+
+bool IsSlotOccupied(uint32_t slot) {
+    if (slot >= 8) return false;
+    return slot_occupied[slot];
+}
+
+void SetSaveSlot(uint32_t slot, const GameState& state) {
+    if (slot < 8) {
+        save_slots[slot] = state;
+    }
+}
+
+void SetSlotOccupied(uint32_t slot, bool occupied) {
+    if (slot < 8) {
+        slot_occupied[slot] = occupied;
+    }
+}
 
 // ... more functions to follow
 }

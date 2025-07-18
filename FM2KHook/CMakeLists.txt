@@ -22,6 +22,9 @@ add_library(FM2KHook SHARED
     src/game_state_machine.cpp
     src/css_sync.cpp
     src/hooks.cpp
+    src/object_tracker.cpp
+    src/object_analysis.cpp
+    src/object_pool_scanner.cpp
     ../LocalNetworkAdapter.cpp
 )
 

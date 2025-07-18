@@ -109,9 +109,9 @@ bool InitializeGekkoNet() {
         return false;
     }
     
-    gekko_set_local_delay(gekko_session, local_player_handle, 1);
+    gekko_set_local_delay(gekko_session, local_player_handle, 2);
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Set input delay for local player handle %d", local_player_handle);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Set input delay to 2 frames for local player handle %d", local_player_handle);
     
     gekko_initialized = true;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet initialization complete with real UDP networking!");

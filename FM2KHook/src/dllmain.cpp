@@ -21,7 +21,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             SDL_SetLogPriorities(SDL_LOG_PRIORITY_INFO);
             
             InitializeFileLogging();
-            InitializeSharedMemory();
+            // TEMPORARILY DISABLED: InitializeSharedMemory(); // Causing dual client crashes
             
             char* forced_seed = getenv("FM2K_FORCE_RNG_SEED");
             if (forced_seed) {
@@ -47,7 +47,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         CleanupGekkoNet();
         CleanupFileLogging();
         CleanupInputRecording();
-        CleanupSharedMemory();
+        // TEMPORARILY DISABLED: CleanupSharedMemory(); // Was disabled in init
         ShutdownHooks();
         break;
     }

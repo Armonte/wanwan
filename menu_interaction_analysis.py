@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+
+print('FM2K Menu Interaction Analysis: Highlight Bar Movement')
+print('=' * 65)
+
+print('MAJOR DISCOVERY: Dynamic Object Activation/Deactivation!')
+print()
+
+print('Menu State Change: "VS Player" → "VS CPU"')
+print()
+
+print('Object State Changes:')
+print('Slot    Before    After     Field 44    Analysis')
+print('----    ------    -----     --------    --------')
+print('1       Type 4    Type 4    0x16 (22)   Active object, value changed?')
+print('2       Type 4    Type 4    0x19 (25)   Active object, value changed?')
+print('4       Type 4    Type 0    0x1E (30)   DEACTIVATED when highlight moved')
+print('9       Type 4    Type 0    0x30 (48)   DEACTIVATED (was highlight bar)')
+
+print()
+print('Key Findings:')
+print('✓ Highlight bar objects DEACTIVATE when not selected (Type 4 → Type 0)')
+print('✓ Field at offset 44 appears to be menu position/ID')
+print('✓ Objects stay in same slots but change type for active/inactive')
+print('✓ Multiple objects can represent same UI element in different states')
+
+print()
+print('Menu Position Mapping (Field 44 values):')
+print('- 0x16 (22): Unknown menu item')
+print('- 0x19 (25): Unknown menu item') 
+print('- 0x1E (30): Previous highlight position')
+print('- 0x30 (48): Current highlight position (VS CPU)')
+
+print()
+print('Object Lifecycle Insight:')
+print('1. Objects allocated for each menu item')
+print('2. Type 4 = active/highlighted state')
+print('3. Type 0 = inactive/unhighlighted state')
+print('4. Same slot reused, just type changes')
+print('5. Field 44 = menu position/identifier')
+
+print()
+print('Rollback Strategy Implications:')
+print('✓ Must track Type 0 ↔ Type 4 transitions')
+print('✓ Type field (offset 0) is THE critical rollback field')
+print('✓ Field 44 (menu position) is secondary critical field')
+print('✓ Most of 382 bytes probably static for menu objects')
+
+print()
+print('Giuroll Parallel Refined:')
+print('- Giuroll: heap alloc/free creates/destroys memory')
+print('- FM2K: type changes activate/deactivate objects')
+print('- Both: object state transitions critical for rollback')
+print('- Save strategy: track active objects + their critical fields')
+
+print()
+print('Type 4 Object Field Mapping (Menu Context):')
+print('  Offset 0: Object type (0=inactive, 4=active)')
+print('  Offset 4: ID (0x0C for menu objects)')
+print('  Offset 16: 0xFFFFFFFF (seems constant for menu)')
+print('  Offset 44: Menu position/ID (critical for highlight)')
+
+print()
+print('Next Tests:')
+print('- Move highlight again → confirm pattern')
+print('- Enter character select → see Type 4 evolution')
+print('- Map Type 4 fields in different contexts')
+
+print()
+print('Memory Efficiency for Menu Objects:')
+print('Full object: 382 bytes')
+print('Critical fields: 8 bytes (type + ID + position)')
+print('Reduction: 98% memory savings for menu state')

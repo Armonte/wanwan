@@ -80,6 +80,17 @@ namespace FM2K {
         void SaveStateToBuffer(uint32_t frame_number);
         uint32_t Fletcher32(const uint8_t* data, size_t len);
         
+        // GEKKONET INTERFACE: Functions required for proper GekkoNet save/load
+        uint32_t GetGameStateSize();
+        void* GetGameStatePointer(); 
+        uint32_t CalculateStateChecksum(const void* state, uint32_t size);
+        
+        // SLOT ACCESS: Functions to access save slot system
+        GameState* GetSaveSlot(uint32_t slot);
+        bool IsSlotOccupied(uint32_t slot);
+        void SetSaveSlot(uint32_t slot, const GameState& state);
+        void SetSlotOccupied(uint32_t slot, bool occupied);
+        
         // BSNES PATTERN: In-memory rollback buffer system (fast, no file I/O)
         bool SaveStateToMemoryBuffer(uint32_t slot, uint32_t frame_number);
         bool LoadStateFromMemoryBuffer(uint32_t slot);

@@ -23,6 +23,7 @@ GameStateMachine::GameStateMachine()
     , battle_start_frame_(0)
     , battle_sync_confirmed_(false)
     , battle_sync_frame_(0)
+    , char_selection_confirmed_(false)
 {
 }
 
@@ -60,6 +61,7 @@ void GameStateMachine::Update(uint32_t current_game_mode) {
         // Clear character select state when leaving CSS
         if (previous_phase_ == GamePhase::CHARACTER_SELECT) {
             char_select_state_ = {};
+            char_selection_confirmed_ = false;
         }
         
         // CRITICAL: Disable rollback during phase transitions to prevent desync
@@ -108,7 +110,7 @@ void GameStateMachine::UpdateCharacterSelect(const CharacterSelectState& css_sta
     }
     
     // Check if both players are ready to transition
-    if (css_state.BothPlayersConfirmed()) {
+    if (css_state.BothPlayersConfirmed() && !char_selection_confirmed_) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
             "Both players confirmed - ready for battle transition");
     }

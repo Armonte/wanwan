@@ -20,6 +20,9 @@ public:
     void ReceiveRemoteState();
     void ApplyRemoteState();
     
+    // Confirmation handshake method
+    void ReceiveRemoteConfirmation() { confirmation_received_ = true; }
+    
     // Query sync status
     bool IsInSync() const { return in_sync_; }
     uint32_t GetDesyncFrames() const { return desync_frames_; }
@@ -34,6 +37,9 @@ private:
     // Apply lockstep synchronization
     void ApplyLockstepSync();
     
+    // Handle character confirmation synchronization
+    void HandleCharacterConfirmation();
+    
     // State tracking
     State::CharacterSelectState local_state_;
     State::CharacterSelectState remote_state_;
@@ -43,6 +49,10 @@ private:
     bool in_sync_;
     uint32_t desync_frames_;
     uint32_t last_sync_frame_;
+    
+    // Confirmation tracking
+    bool confirmation_sent_;
+    bool confirmation_received_;
     
     // Network message types for CSS
     struct CSSStateMessage {

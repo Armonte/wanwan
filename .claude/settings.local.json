@@ -28,7 +28,10 @@
       "mcp__github_com_mrexodia_ida-pro-mcp__list_globals",
       "mcp__github_com_mrexodia_ida-pro-mcp__list_strings_filter",
       "mcp__github_com_mrexodia_ida-pro-mcp__data_read_qword",
-      "Bash(cp:*)"
+      "Bash(cp:*)",
+      "mcp__github_com_mrexodia_ida-pro-mcp__set_function_prototype",
+      "mcp__github_com_mrexodia_ida-pro-mcp__rename_local_variable",
+      "mcp__github_com_mrexodia_ida-pro-mcp__rename_global_variable"
     ],
     "deny": []
   }

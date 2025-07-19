@@ -17,6 +17,8 @@ CharSelectSync::CharSelectSync()
     , in_sync_(true)
     , desync_frames_(0)
     , last_sync_frame_(0)
+    , confirmation_sent_(false)
+    , confirmation_received_(false)
 {
 }
 
@@ -37,8 +39,11 @@ void CharSelectSync::Update() {
         return;
     }
     
-    // Apply lockstep synchronization
+    // SIMPLIFIED: Use lockstep synchronization for character select
     ApplyLockstepSync();
+    
+    // Handle character confirmation synchronization
+    HandleCharacterConfirmation();
 }
 
 State::CharacterSelectState CharSelectSync::ReadCurrentState() {
@@ -62,8 +67,8 @@ State::CharacterSelectState CharSelectSync::ReadCurrentState() {
 }
 
 void CharSelectSync::ApplyLockstepSync() {
-    // Simplified lockstep: Just monitor and log character select state
-    // Let GekkoNet handle the actual synchronization through its normal mechanisms
+    // SIMPLIFIED LOCKSTEP: Just ensure both clients see the same state
+    // Let GekkoNet handle the frame synchronization
     
     // Log significant state changes
     static State::CharacterSelectState last_logged_state = {};
@@ -71,24 +76,53 @@ void CharSelectSync::ApplyLockstepSync() {
     
     if (state_changed) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "CSS State Change: P1_cursor=(%d,%d) P2_cursor=(%d,%d) chars=(%d,%d) confirmed=(%d,%d)",
+            "CSS Lockstep: P1_cursor=(%d,%d) P2_cursor=(%d,%d) chars=(%d,%d) confirmed=(%d,%d)",
             local_state_.p1_cursor_x, local_state_.p1_cursor_y,
             local_state_.p2_cursor_x, local_state_.p2_cursor_y,
             local_state_.p1_selected_char, local_state_.p2_selected_char,
             local_state_.p1_confirmed, local_state_.p2_confirmed);
             
         last_logged_state = local_state_;
-        in_sync_ = true;  // Assume sync through GekkoNet's normal operation
+        in_sync_ = true;
         desync_frames_ = 0;
+    }
+}
+
+void CharSelectSync::HandleCharacterConfirmation() {
+    if (!gekko_session_started) return;
+
+    // 1. Check if the local player has confirmed their selection
+    bool local_player_confirmed = false;
+    if (is_host) {
+        local_player_confirmed = (local_state_.p1_confirmed == 1);
+    } else {
+        local_player_confirmed = (local_state_.p2_confirmed == 1);
+    }
+
+    // 2. If confirmed and we haven't sent our signal yet, send it.
+    if (local_player_confirmed && !confirmation_sent_) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Local player confirmed. Sending 0xFF signal.");
+        confirmation_sent_ = true;
+        
+        // This is the special input signal.
+        uint8_t confirmation_input = 0xFF;
+        gekko_add_local_input(gekko_session, local_player_handle, &confirmation_input);
+    }
+
+    // 3. Check if the handshake is complete.
+    if (confirmation_sent_ && confirmation_received_ && !State::g_game_state_machine.IsCharacterSelectionConfirmed()) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Handshake complete! Both players confirmed.");
+        
+        // Tell the state machine it's safe to transition.
+        State::g_game_state_machine.ConfirmCharacterSelection();
     }
 }
 
 void CharSelectSync::SendLocalState() {
     if (!gekko_session) return;
     
-    // For lockstep mode during character select, we don't need to send custom messages
-    // Instead, we'll use the existing input system and sync through state comparison
-    // This is simpler and works within the existing GekkoNet framework
+    // For lockstep mode, we don't need custom messages
+    // GekkoNet handles the synchronization through its normal mechanisms
 }
 
 void CharSelectSync::ReceiveRemoteState() {
@@ -96,7 +130,6 @@ void CharSelectSync::ReceiveRemoteState() {
     
     // For lockstep mode, we read the remote state directly from memory
     // after GekkoNet has synchronized the game states
-    // This avoids the complexity of custom message types
 }
 
 void CharSelectSync::ApplyRemoteState() {
@@ -124,6 +157,8 @@ void CharSelectSync::ForceResync() {
     // Reset sync state
     in_sync_ = true;
     desync_frames_ = 0;
+    confirmation_sent_ = false;
+    confirmation_received_ = false;
     
     // Send current state immediately
     SendLocalState();

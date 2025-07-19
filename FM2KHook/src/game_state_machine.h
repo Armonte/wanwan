@@ -70,8 +70,11 @@ public:
     // Transition detection
     bool HasTransitioned() const { return phase_changed_; }
     bool IsTransitioningToBattle() const {
-        return current_phase_ == GamePhase::IN_BATTLE && 
-               previous_phase_ == GamePhase::CHARACTER_SELECT;
+        // The transition is only valid if the handshake is complete.
+        return phase_changed_ &&
+               current_phase_ == GamePhase::IN_BATTLE &&
+               previous_phase_ == GamePhase::CHARACTER_SELECT &&
+               char_selection_confirmed_;
     }
     
     // Frame tracking for transitions
@@ -90,15 +93,18 @@ public:
     
     // Check if we're in a transition stabilization period
     bool IsInTransitionStabilization() const {
-        // CRITICAL: Disable ALL rollback until we're actually in battle
-        // This prevents desyncs during menu navigation
-        if (current_phase_ != GamePhase::IN_BATTLE) {
-            return true;  // Always stabilize during menus
+        // After a phase change, wait for a brief period for the game state to become stable.
+        if (frames_in_phase_ < 60) { // 60 frames = ~1 second stabilization window
+            return true;
         }
-        
-        // For battle: Wait for sync confirmation from both clients
-        // Only enable rollback after both clients confirm battle entry
-        return !battle_sync_confirmed_;
+    
+        // Special case for battle: we are not stable until both clients have confirmed battle entry.
+        if (current_phase_ == GamePhase::IN_BATTLE) {
+            return !battle_sync_confirmed_;
+        }
+
+        // Otherwise, we are considered stable.
+        return false;
     }
     
     // Get the frame when battle started (for sync purposes)
@@ -108,6 +114,12 @@ public:
     void ConfirmBattleSync() { battle_sync_confirmed_ = true; }
     bool IsBattleSyncConfirmed() const { return battle_sync_confirmed_; }
     void RequestBattleSync();
+    
+    // Character selection confirmation
+    void ConfirmCharacterSelection() { 
+        char_selection_confirmed_ = true; 
+    }
+    bool IsCharacterSelectionConfirmed() const { return char_selection_confirmed_; }
     
 private:
     GamePhase current_phase_;
@@ -123,6 +135,7 @@ private:
     uint32_t battle_start_frame_;
     bool battle_sync_confirmed_;
     uint32_t battle_sync_frame_;
+    bool char_selection_confirmed_;
     
     // Helper to determine sync strategy for a phase
     SyncStrategy DetermineSyncStrategy(GamePhase phase) const;

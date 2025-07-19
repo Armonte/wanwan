@@ -2,11 +2,22 @@
 #include "globals.h"
 #include "logging.h"
 #include "gekkonet.h"
+#include "game_state_machine.h"
+#include <SDL3/SDL_log.h>
+#include <cstdint>
+#include <memory>
+#include <vector>
+#include <cstring>
+#include <cstdlib>
 
 bool InitializeGekkoNet() {
+    // Set network session flag in the game state machine
+    FM2K::State::g_game_state_machine.SetNetworkSession(true);
+
+    // Logging for network session initialization
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** REIMPLEMENTING FM2K MAIN LOOP WITH GEKKONET CONTROL ***");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Initializing GgekkoNet...");
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** INITIALIZING GEKKONET WITH REAL UDP NETWORKING (OnlineSession Style) ***");
-    
-    is_online_mode = true;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: FORCING ONLINE MODE FOR TESTING");
     
     uint16_t local_port = 7000;

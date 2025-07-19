@@ -9,17 +9,49 @@ namespace ObjectPool {
 std::vector<CompactObject> Scanner::ScanActiveObjects() {
     std::vector<CompactObject> active_objects;
     
-    for (uint16_t slot = 0; slot < MAX_OBJECT_SLOTS; slot++) {
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Starting object pool scan...");
+    
+    // SAFETY: Check if object pool base address is valid
+    if (IsBadReadPtr((void*)OBJECT_POOL_BASE_ADDR, OBJECT_SIZE_BYTES)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "CRASH DEBUG: Object pool base address 0x%08X invalid", OBJECT_POOL_BASE_ADDR);
+        return active_objects;
+    }
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Object pool base address 0x%08X is valid, starting scan...", OBJECT_POOL_BASE_ADDR);
+    
+    // SAFETY: Limit scan to first 10 slots during initial debugging
+    uint16_t max_slots_to_scan = 10; // Was MAX_OBJECT_SLOTS (1024)
+    
+    for (uint16_t slot = 0; slot < max_slots_to_scan; slot++) {
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Scanning slot %d...", slot);
+        
         uint32_t type, id, x_coord, y_coord, anim_state;
         
         if (ReadRawObjectData(slot, &type, &id, &x_coord, &y_coord, &anim_state)) {
+            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Slot %d: type=%d, id=%d", slot, type, id);
+            
             // Only include active objects (type != 0)
             if (type != 0) {
-                active_objects.emplace_back(slot, type, id, x_coord, y_coord, anim_state);
+                try {
+                    active_objects.emplace_back(slot, type, id, x_coord, y_coord, anim_state);
+                    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Added active object at slot %d", slot);
+                } catch (...) {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "CRASH DEBUG: Exception adding object at slot %d", slot);
+                    break;
+                }
             }
+        } else {
+            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Failed to read slot %d", slot);
+        }
+        
+        // SAFETY: Limit active objects
+        if (active_objects.size() > 5) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Active object limit reached at slot %d, stopping", slot);
+            break;
         }
     }
     
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Object scan completed: %zu active objects found", active_objects.size());
     return active_objects;
 }
 
@@ -65,16 +97,19 @@ bool Scanner::RestoreObjectToSlot(const CompactObject& obj) {
 }
 
 void Scanner::ClearObjectPool() {
-    for (uint16_t slot = 0; slot < MAX_OBJECT_SLOTS; slot++) {
-        uintptr_t slot_addr = GetSlotAddress(slot);
-        
-        if (!IsBadWritePtr((void*)slot_addr, OBJECT_SIZE_BYTES)) {
-            // Zero out the entire object slot
-            memset((void*)slot_addr, 0, OBJECT_SIZE_BYTES);
-        }
+    uintptr_t pool_start = OBJECT_POOL_BASE_ADDR;
+    uintptr_t pool_end = pool_start + (MAX_OBJECT_SLOTS * OBJECT_SIZE_BYTES);
+    
+    // SAFETY: Basic validation
+    if (IsBadWritePtr((void*)pool_start, (UINT_PTR)pool_end - (UINT_PTR)pool_start)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ClearObjectPool: Invalid object pool address range!");
+        return;
     }
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Object pool cleared for rollback restoration");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Clearing object pool from 0x%08X to 0x%08X", pool_start, pool_end);
+    
+    // Zero out the entire memory region
+    memset((void*)pool_start, 0, MAX_OBJECT_SLOTS * OBJECT_SIZE_BYTES);
 }
 
 bool Scanner::ReadRawObjectData(uint16_t slot, uint32_t* type, uint32_t* id,

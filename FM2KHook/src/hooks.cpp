@@ -25,23 +25,14 @@ static void CaptureRealInputs() {
     // Just like dllmain_orig.cpp - inputs are captured when FM2K calls Hook_GetPlayerInput
     // Don't override them here - let the input hooks do their job
     
-    // DEBUG: Log non-zero input captures (very reduced frequency)
-    static uint32_t input_capture_count = 0;
-    if ((live_p1_input != 0 || live_p2_input != 0) && (++input_capture_count % 600 == 0)) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT_CAPTURE: P1=0x%02X P2=0x%02X frame=%u", 
-                   live_p1_input & 0xFF, live_p2_input & 0xFF, g_frame_counter);
-    }
+    // Simplified input capture without excessive logging
 }
 
 // Use global function pointers from globals.h
 
-// CRITICAL FIX: Convert 8-bit network inputs to 11-bit game format
+// Simplified input conversion without debug logging
 static uint32_t ConvertNetworkInputToGameFormat(uint32_t network_input) {
     uint32_t game_input = 0;
-    
-    // Convert 8-bit network format to 11-bit game format
-    // Network format: 0x01=LEFT, 0x02=RIGHT, 0x04=UP, 0x08=DOWN, 0x10=START, 0x20=BUTTON1, 0x40=BUTTON2, 0x80=BUTTON3
-    // Game format: 0x001=LEFT, 0x002=RIGHT, 0x004=UP, 0x008=DOWN, 0x010=BUTTON1, 0x020=BUTTON2, 0x040=BUTTON3, 0x080=BUTTON4, etc.
     
     if (network_input & 0x01) game_input |= 0x001;  // LEFT
     if (network_input & 0x02) game_input |= 0x002;  // RIGHT
@@ -51,14 +42,6 @@ static uint32_t ConvertNetworkInputToGameFormat(uint32_t network_input) {
     if (network_input & 0x20) game_input |= 0x020;  // BUTTON2
     if (network_input & 0x40) game_input |= 0x040;  // BUTTON3
     if (network_input & 0x80) game_input |= 0x080;  // BUTTON4
-    
-    // DEBUG: Log conversion for non-zero inputs
-    static uint32_t conversion_count = 0;
-    conversion_count++;
-    if (network_input != 0 || conversion_count % 200 == 0) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT_CONVERSION: network=0x%02X → game=0x%03X (count=%u)", 
-                   network_input & 0xFF, game_input & 0x7FF, conversion_count);
-    }
     
     return game_input;
 }
@@ -119,93 +102,17 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
         }
     }
     
-    // DEBUG: Verify hook is being called and check raw inputs (reduced frequency)
-    static uint32_t hook_call_count = 0;
-    hook_call_count++;
-    if (hook_call_count % 500 == 0 || (original_input != 0 && hook_call_count % 50 == 0)) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "HOOK_GETINPUT: P%d type=%d orig=0x%02X calls=%u", 
-                   player_id, input_type, original_input & 0xFF, hook_call_count);
-    }
+    // Simplified hook without excessive logging
     
-    // During CSS: Return synchronized inputs for proper cursor movement
+    // Simplified CSS: Just pass synchronized inputs without cursor manipulation
     if (FM2K::State::g_game_state_machine.GetCurrentPhase() == FM2K::State::GamePhase::CHARACTER_SELECT) {
         if (use_networked_inputs && gekko_initialized && gekko_session) {
-            // Use synchronized inputs during CSS for both players
             if (player_id == 0) {
-                // CRITICAL FIX: Convert 8-bit network inputs to 11-bit game format
-                uint32_t converted_input = ConvertNetworkInputToGameFormat(networked_p1_input);
-                
-                // CRITICAL FIX: Manual cursor position management for P1
-                static uint32_t last_p1_input = 0xFF;
-                if (networked_p1_input != last_p1_input) {
-                    // Force cursor position update when input changes
-                    if (!IsBadWritePtr((void*)0x424E50, sizeof(uint32_t) * 2)) {
-                        uint32_t* p1_cursor = (uint32_t*)0x424E50;
-                        
-                        // Get current cursor position
-                        uint32_t current_x = p1_cursor[0];
-                        uint32_t current_y = p1_cursor[1];
-                        
-                        // Calculate new position based on input
-                        if (networked_p1_input & 0x02) { // RIGHT
-                            p1_cursor[0] = current_x + 1;
-                        } else if (networked_p1_input & 0x01) { // LEFT
-                            p1_cursor[0] = (current_x > 0) ? current_x - 1 : 0;
-                        }
-                        
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS_CURSOR_FORCE: P1 input=0x%02X, pos=(%d,%d)→(%d,%d)", 
-                                   networked_p1_input & 0xFF, current_x, current_y, p1_cursor[0], p1_cursor[1]);
-                    }
-                    last_p1_input = networked_p1_input;
-                }
-                
-                // DEBUG: Log P1 input routing during CSS (reduced frequency)
-                static uint32_t p1_route_count = 0;
-                p1_route_count++;
-                if (p1_route_count % 100 == 0 || networked_p1_input != 0) {
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS_INPUT_ROUTE: P1 returning networked=0x%02X → converted=0x%03X (player_id=%d)", 
-                               networked_p1_input & 0xFF, converted_input & 0x7FF, player_id);
-                }
-                return converted_input;
+                return ConvertNetworkInputToGameFormat(networked_p1_input);
             } else if (player_id == 1) {
-                // CRITICAL FIX: Convert 8-bit network inputs to 11-bit game format
-                uint32_t converted_input = ConvertNetworkInputToGameFormat(networked_p2_input);
-                
-                // CRITICAL FIX: Manual cursor position management for P2
-                static uint32_t last_p2_input = 0xFF;
-                if (networked_p2_input != last_p2_input) {
-                    // Force cursor position update when input changes
-                    if (!IsBadWritePtr((void*)0x424E58, sizeof(uint32_t) * 2)) {
-                        uint32_t* p2_cursor = (uint32_t*)0x424E58;
-                        
-                        // Get current cursor position
-                        uint32_t current_x = p2_cursor[0];
-                        uint32_t current_y = p2_cursor[1];
-                        
-                        // Calculate new position based on input
-                        if (networked_p2_input & 0x02) { // RIGHT
-                            p2_cursor[0] = current_x + 1;
-                        } else if (networked_p2_input & 0x01) { // LEFT
-                            p2_cursor[0] = (current_x > 0) ? current_x - 1 : 0;
-                        }
-                        
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS_CURSOR_FORCE: P2 input=0x%02X, pos=(%d,%d)→(%d,%d)", 
-                                   networked_p2_input & 0xFF, current_x, current_y, p2_cursor[0], p2_cursor[1]);
-                    }
-                    last_p2_input = networked_p2_input;
-                }
-                
-                // DEBUG: Log P2 input routing during CSS (reduced frequency)
-                static uint32_t p2_route_count = 0;
-                p2_route_count++;
-                if (p2_route_count % 100 == 0 || networked_p2_input != 0) {
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS_INPUT_ROUTE: P2 returning networked=0x%02X → converted=0x%03X (player_id=%d)", 
-                               networked_p2_input & 0xFF, converted_input & 0x7FF, player_id);
-                }
-                return converted_input;
+                return ConvertNetworkInputToGameFormat(networked_p2_input);
             }
         }
-        // Fallback to original input if no network sync
         return original_input;
     }
     
@@ -260,32 +167,26 @@ int __cdecl Hook_ProcessGameInputs() {
             input_source = "CLIENT_KEYBOARD";
         }
         
-        // DEBUG: Enhanced input sending debug - log all non-zero inputs and periodic status
-        static uint32_t debug_frame_count = 0;
-        static uint8_t last_sent_input = 0xFF;
-        debug_frame_count++;
+        // CRITICAL: Apply CSS input filtering during character select to prevent desyncs
+        if (FM2K::State::g_game_state_machine.GetCurrentPhase() == FM2K::State::GamePhase::CHARACTER_SELECT) {
+            uint8_t player_num = ::is_host ? 1 : 2;
+            uint32_t filtered_input = FM2K::CSS::g_css_sync.ValidateAndFilterCSSInput(local_input, player_num, g_frame_counter);
+            local_input = (uint8_t)(filtered_input & 0xFF);
+        }
         
-        bool should_log_send = false;
-        if (local_input != 0 && debug_frame_count % 100 == 0) should_log_send = true; // Log non-zero every 100 frames
-        if (local_input != last_sent_input) should_log_send = true; // Log changes
-        if (debug_frame_count % 600 == 0) should_log_send = true; // Periodic (every 10 seconds)
-        
-        if (should_log_send) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT_SEND: %s handle=%d sending=0x%02X (live_p1=0x%02X, live_p2=0x%02X) frame=%u", 
-                       input_source, local_player_handle, local_input, 
-                       live_p1_input & 0xFF, live_p2_input & 0xFF, g_frame_counter);
-            last_sent_input = local_input;
+        // CRITICAL: Log CSS input synchronization for debugging desyncs
+        if (FM2K::State::g_game_state_machine.GetCurrentPhase() == FM2K::State::GamePhase::CHARACTER_SELECT) {
+            static uint32_t css_input_count = 0;
+            css_input_count++;
+            if (css_input_count % 60 == 0 || local_input != 0) {  // Log every second or when input changes
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS_LOCKSTEP: Frame %u sending input=0x%02X (count=%u)", 
+                           g_frame_counter, local_input, css_input_count);
+            }
         }
         
         gekko_add_local_input(gekko_session, local_player_handle, &local_input);
         
-        // INPUT TIMING LOGGING: Log input changes with frame numbers
-        static uint8_t last_local_input = 0;
-        if (local_input != last_local_input) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT TIMING: Handle %d frame %u - input changed 0x%02X → 0x%02X", 
-                       local_player_handle, g_frame_counter, last_local_input, local_input);
-            last_local_input = local_input;
-        }
+        // Simplified input timing without logging
         
         // Process GekkoNet events following the example pattern
         gekko_network_poll(gekko_session);
@@ -330,6 +231,16 @@ int __cdecl Hook_ProcessGameInputs() {
                     networked_p1_input = received_p1;
                     networked_p2_input = received_p2;
                     use_networked_inputs = true;
+                    
+                    // CRITICAL: Log CSS lockstep synchronization
+                    if (FM2K::State::g_game_state_machine.GetCurrentPhase() == FM2K::State::GamePhase::CHARACTER_SELECT) {
+                        static uint32_t css_advance_count = 0;
+                        css_advance_count++;
+                        if (css_advance_count % 60 == 0 || received_p1 != 0 || received_p2 != 0) {
+                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS_LOCKSTEP: Frame %u synchronized P1=0x%02X P2=0x%02X (count=%u)", 
+                                       update->data.adv.frame, received_p1, received_p2, css_advance_count);
+                        }
+                    }
 
                     // Check if the remote player sent a confirmation signal.
                     uint8_t remote_input = is_host ? networked_p2_input : networked_p1_input;
@@ -348,67 +259,9 @@ int __cdecl Hook_ProcessGameInputs() {
                         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ADVANCE EVENT: Filtered out 0xFF confirmation signal for gameplay");
                     }
 
-                    // DEBUG: Log received inputs when they change or have non-zero values
-                    static uint8_t last_p1_input = 0xFF;
-                    static uint8_t last_p2_input = 0xFF;
-                    static uint32_t last_advance_log_frame = 0;
-                    static uint32_t input_hold_frames = 0;
-                    
-                    bool input_changed = (networked_p1_input != last_p1_input || networked_p2_input != last_p2_input);
-                    bool has_input = (networked_p1_input != 0 || networked_p2_input != 0);
-                    bool periodic_log = (update->data.adv.frame - last_advance_log_frame >= 600); // Log every 600 frames (10 seconds)
-                    
-                    // CRITICAL FIX: Reduce logging frequency to prevent console flooding
-                    if (input_changed) {
-                        // Log input changes immediately
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ADVANCE_EVENT_PROCESSED: Frame %u - Using P1=0x%02X, P2=0x%02X (changed=%s)", 
-                                   update->data.adv.frame, networked_p1_input, networked_p2_input, "YES");
-                        last_p1_input = networked_p1_input;
-                        last_p2_input = networked_p2_input;
-                        last_advance_log_frame = update->data.adv.frame;
-                        input_hold_frames = 0;
-                    } else if (has_input) {
-                        // For held inputs, only log every 300 frames (5 seconds) to prevent flooding
-                        input_hold_frames++;
-                        if (input_hold_frames % 300 == 0) {
-                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ADVANCE_EVENT_HELD: Frame %u - Holding P1=0x%02X, P2=0x%02X (hold_frames=%u)", 
-                                       update->data.adv.frame, networked_p1_input, networked_p2_input, input_hold_frames);
-                        }
-                    } else if (periodic_log) {
-                        // Periodic status log when no inputs
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ADVANCE_EVENT_IDLE: Frame %u - No inputs (P1=0x%02X, P2=0x%02X)", 
-                                   update->data.adv.frame, networked_p1_input, networked_p2_input);
-                        last_advance_log_frame = update->data.adv.frame;
-                    }
+                    // Simplified advance event processing
 
-                    // CRITICAL TIMING ANALYSIS: Track input changes and their effects
-                    static uint8_t last_p1_direction = 0xFF;
-                    static uint8_t last_p2_direction = 0xFF;
-                    uint8_t p1_direction = networked_p1_input & 0x0F;  // Extract direction bits
-                    uint8_t p2_direction = networked_p2_input & 0x0F;  // Extract direction bits
-                    
-                    bool p1_direction_changed = (p1_direction != last_p1_direction);
-                    bool p2_direction_changed = (p2_direction != last_p2_direction);
-                    
-                    if (p1_direction_changed || p2_direction_changed) {
-                        // CRITICAL FIX: Only log direction changes, not held inputs
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                                   "DIRECTION_CHANGE: Frame %u - P1: 0x%02X→0x%02X, P2: 0x%02X→0x%02X (p1_changed=%s, p2_changed=%s)", 
-                                   update->data.adv.frame, 
-                                   last_p1_direction, p1_direction,
-                                   last_p2_direction, p2_direction,
-                                   p1_direction_changed ? "YES" : "NO",
-                                   p2_direction_changed ? "YES" : "NO");
-                        
-                        last_p1_direction = p1_direction;
-                        last_p2_direction = p2_direction;
-                    }
-
-                    // DEBUG: Before calling original_process_inputs, log current game state
-                    if (has_input || input_changed) {
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                                   "ADVANCE_GAME_STEP: About to call original_process_inputs() with networked inputs active");
-                    }
+                    // Simplified direction tracking without logging
 
                     // Now, let the original game code run with the synchronized inputs.
                     if (original_process_inputs) {
@@ -416,34 +269,7 @@ int __cdecl Hook_ProcessGameInputs() {
                     }
                     g_frame_counter++;
                     
-                    // CRITICAL: Track cursor position changes after input processing
-                    if (p1_direction_changed || p2_direction_changed) {
-                        // Read cursor positions after input processing
-                        uint32_t p1_cursor_x = 0, p1_cursor_y = 0;
-                        uint32_t p2_cursor_x = 0, p2_cursor_y = 0;
-                        
-                        if (!IsBadReadPtr((void*)0x424E50, sizeof(uint32_t) * 2)) {
-                            uint32_t* p1_cursor = (uint32_t*)0x424E50;
-                            p1_cursor_x = p1_cursor[0];
-                            p1_cursor_y = p1_cursor[1];
-                        }
-                        
-                        if (!IsBadReadPtr((void*)0x424E58, sizeof(uint32_t) * 2)) {
-                            uint32_t* p2_cursor = (uint32_t*)0x424E58;
-                            p2_cursor_x = p2_cursor[0];
-                            p2_cursor_y = p2_cursor[1];
-                        }
-                        
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                                   "CURSOR_AFTER_INPUT: Frame %u - P1_cursor=(%d,%d) P2_cursor=(%d,%d) after direction change", 
-                                   update->data.adv.frame, p1_cursor_x, p1_cursor_y, p2_cursor_x, p2_cursor_y);
-                    }
-                    
-                    // DEBUG: After game step
-                    if (has_input || input_changed) {
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                                   "ADVANCE_GAME_DONE: original_process_inputs() completed, frame now %u", g_frame_counter);
-                    }
+                    // Simplified post-processing without cursor tracking
                     break;
                 }
                     
@@ -834,38 +660,7 @@ void MonitorGameStateTransitions() {
         current_game_mode = new_game_mode;
         state_changed = true;
         
-        // Log character select state when in CSS mode (2000-2999)
-        if (new_game_mode >= 2000 && new_game_mode < 3000) {
-            uint32_t* menu_sel_ptr = (uint32_t*)FM2K::State::Memory::MENU_SELECTION_ADDR;
-            uint32_t* p1_cursor_x_ptr = (uint32_t*)FM2K::State::Memory::P1_CSS_CURSOR_X_ADDR;
-            uint32_t* p1_cursor_y_ptr = (uint32_t*)FM2K::State::Memory::P1_CSS_CURSOR_Y_ADDR;
-            uint32_t* p2_cursor_x_ptr = (uint32_t*)FM2K::State::Memory::P2_CSS_CURSOR_X_ADDR;
-            uint32_t* p2_cursor_y_ptr = (uint32_t*)FM2K::State::Memory::P2_CSS_CURSOR_Y_ADDR;
-            uint32_t* p1_char_ptr = (uint32_t*)FM2K::State::Memory::P1_SELECTED_CHAR_ADDR;
-            uint32_t* p2_char_ptr = (uint32_t*)FM2K::State::Memory::P2_SELECTED_CHAR_ADDR;
-            uint32_t* p1_confirmed_ptr = (uint32_t*)FM2K::State::Memory::P1_CSS_CONFIRMED_ADDR;
-            uint32_t* p2_confirmed_ptr = (uint32_t*)FM2K::State::Memory::P2_CSS_CONFIRMED_ADDR;
-            
-            if (!IsBadReadPtr(menu_sel_ptr, sizeof(uint32_t)) && !IsBadReadPtr(p1_cursor_x_ptr, sizeof(uint32_t)) && 
-                !IsBadReadPtr(p1_cursor_y_ptr, sizeof(uint32_t)) && !IsBadReadPtr(p2_cursor_x_ptr, sizeof(uint32_t)) && 
-                !IsBadReadPtr(p2_cursor_y_ptr, sizeof(uint32_t)) && !IsBadReadPtr(p1_char_ptr, sizeof(uint32_t)) && 
-                !IsBadReadPtr(p2_char_ptr, sizeof(uint32_t)) && !IsBadReadPtr(p1_confirmed_ptr, sizeof(uint32_t)) && 
-                !IsBadReadPtr(p2_confirmed_ptr, sizeof(uint32_t))) {
-                
-                uint32_t menu_sel = *menu_sel_ptr;
-                uint32_t p1_cursor_x = *p1_cursor_x_ptr;
-                uint32_t p1_cursor_y = *p1_cursor_y_ptr;
-                uint32_t p2_cursor_x = *p2_cursor_x_ptr;
-                uint32_t p2_cursor_y = *p2_cursor_y_ptr;
-                uint32_t p1_char = *p1_char_ptr;
-                uint32_t p2_char = *p2_char_ptr;
-                uint32_t p1_confirmed = *p1_confirmed_ptr;
-                uint32_t p2_confirmed = *p2_confirmed_ptr;
-                
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS STATE: menu=%d, P1_cursor=(%d,%d), P2_cursor=(%d,%d), P1_char=%d, P2_char=%d, confirmed=(%d,%d)", 
-                           menu_sel, p1_cursor_x, p1_cursor_y, p2_cursor_x, p2_cursor_y, p1_char, p2_char, p1_confirmed, p2_confirmed);
-            }
-        }
+        // Simplified CSS mode detection without state logging
     }
     
     if (new_fm2k_mode != current_fm2k_mode) {

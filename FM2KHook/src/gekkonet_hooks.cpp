@@ -70,7 +70,7 @@ bool InitializeGekkoNet() {
     GekkoConfig config;
     config.num_players = 2;
     config.max_spectators = 0;
-    config.input_prediction_window = 3;  // Match launcher: 30ms prediction at 100 FPS
+    config.input_prediction_window = 0;  // LOCKSTEP mode for CSS - no rollback/prediction
     config.spectator_delay = 0;
     config.input_size = sizeof(uint8_t);
     config.state_size = sizeof(uint32_t);

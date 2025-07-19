@@ -20,7 +20,7 @@ add_library(FM2KHook SHARED
     src/state_manager.cpp
     src/game_state_detector.cpp
     src/game_state_machine.cpp
-    src/css_sync.cpp
+    src/css_sync_simple.cpp
     src/hooks.cpp
     src/object_tracker.cpp
     src/object_analysis.cpp

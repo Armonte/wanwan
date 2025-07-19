@@ -29,19 +29,32 @@ CharSelectSync::CharSelectSync()
     , last_sync_frame_(0)
     , confirmation_sent_(false)
     , confirmation_received_(false)
+    , css_frame_count_(0)
+    , last_input_frame_(0)
 {
 }
 
 void CharSelectSync::Update() {
-    static uint32_t css_update_count = 0;
-    css_update_count++;
-    
     // Only sync if we're in a network session
     if (!gekko_initialized || !gekko_session_started) {
         return;
     }
     
-    // SIMPLIFIED: Just handle confirmation handshake
+    // Reset CSS frame counter when first entering character select
+    static bool css_reset = false;
+    if (!css_reset) {
+        css_frame_count_ = 0;
+        last_input_frame_ = 0;
+        css_reset = true;
+    }
+    
+    // Increment CSS frame counter for input filtering
+    css_frame_count_++;
+    
+    // Read current state for confirmation tracking
+    local_state_ = ReadCurrentState();
+    
+    // Handle confirmation handshake
     HandleCharacterConfirmation();
 }
 
@@ -149,8 +162,28 @@ void CharSelectSync::UpdateCSSTimingAndValidation(uint32_t css_frames) {
 }
 
 uint32_t CharSelectSync::ValidateAndFilterCSSInput(uint32_t raw_input, uint8_t player_num, uint32_t css_frames) {
-    // Simplified - no input filtering
-    return raw_input;
+    // CCCaster-style input filtering to prevent desyncs
+    uint32_t filtered_input = raw_input;
+    
+    // CRITICAL: Prevent confirmation inputs for first 150 frames (CCCaster's "moon selector desync" fix)
+    if (css_frames < 150) {
+        // Remove confirm/start buttons during lockout period
+        filtered_input &= ~(0x10 | 0x20);  // Remove START and BUTTON1 (common confirm buttons)
+    }
+    
+    // CRITICAL: Prevent rapid confirm/cancel inputs (2-3 frame lockout after any input)
+    uint32_t frames_since_last_input = css_frames - last_input_frame_;
+    if (frames_since_last_input < 3) {
+        // Remove confirm/cancel buttons if we had recent input
+        filtered_input &= ~(0x10 | 0x20 | 0x40);  // Remove START, BUTTON1, BUTTON2
+    }
+    
+    // Update last input frame if we have any input
+    if (raw_input != 0) {
+        last_input_frame_ = css_frames;
+    }
+    
+    return filtered_input;
 }
 
 bool CharSelectSync::IsInInputLockout(uint32_t css_frames) {

@@ -32,6 +32,9 @@ public:
     // Force resync if needed (e.g., after network hiccup)
     void ForceResync();
     
+    // Validate and filter CSS input (CCCaster-style) - PUBLIC for hooks.cpp
+    uint32_t ValidateAndFilterCSSInput(uint32_t raw_input, uint8_t player, uint32_t css_frames);
+    
 private:
     // Read current CSS state from memory
     State::CharacterSelectState ReadCurrentState();
@@ -49,9 +52,6 @@ private:
     
     // Update comprehensive CSS timing and validation state
     void UpdateCSSTimingAndValidation(uint32_t css_frames);
-    
-    // Validate and filter CSS input (CCCaster-style)
-    uint32_t ValidateAndFilterCSSInput(uint32_t raw_input, uint8_t player, uint32_t css_frames);
     
     // Input lockout and validation checks
     bool IsInInputLockout(uint32_t css_frames);
@@ -78,6 +78,10 @@ private:
     // Confirmation tracking
     bool confirmation_sent_;
     bool confirmation_received_;
+    
+    // CCCaster-style frame tracking for input filtering
+    uint32_t css_frame_count_;
+    uint32_t last_input_frame_;
     
     // Network message types for CSS
     struct CSSStateMessage {

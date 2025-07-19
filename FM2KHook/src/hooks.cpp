@@ -16,27 +16,29 @@
 // Use global function pointers from globals.h
 
 // New hook for boot-to-character-select hack
-int __cdecl Hook_InitializeGameMode() {
-    // Set character select mode flag to 1 (vs player mode)
-    uint32_t* char_select_mode_ptr = (uint32_t*)FM2K::State::Memory::CHARACTER_SELECT_MODE_ADDR;
-    if (!IsBadReadPtr(char_select_mode_ptr, sizeof(uint32_t))) {
-        *char_select_mode_ptr = 1;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Set character select mode flag to 1 (vs player)");
-    }
-    
+// This hook modifies the game's initialization to boot directly to character select screen
+// instead of showing the title screen and splash screens. It does this by:
+// 1. Setting the character select mode flag to 1 (vs player mode instead of vs CPU)
+// 2. Changing the initialization object byte from 0x11 to 0x0A to skip to character select
+void ApplyBootToCharacterSelectPatches() {
     // Change initialization object from 0x11 to 0x0A to boot to character select
-    uint8_t* init_object_ptr = (uint8_t*)0x409CDA;
-    if (!IsBadReadPtr(init_object_ptr, sizeof(uint8_t))) {
-        *init_object_ptr = 0x0A;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Modified initialization object from 0x11 to 0x0A");
+    uint8_t* init_object_ptr = (uint8_t*)0x409CD9;
+    if (!IsBadReadPtr(init_object_ptr, sizeof(uint16_t))) {
+        // Make the memory writable
+        DWORD old_protect;
+        if (VirtualProtect(init_object_ptr, 2, PAGE_EXECUTE_READWRITE, &old_protect)) {
+            // Write the instruction: 6A 0A (push 0x0A)
+            init_object_ptr[0] = 0x6A;  // push instruction
+            init_object_ptr[1] = 0x0A;  // immediate value
+            
+            // Restore original protection
+            VirtualProtect(init_object_ptr, 2, old_protect, &old_protect);
+            
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Wrote instruction 6A 0A at 0x409CD9");
+        } else {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Failed to make memory writable at 0x409CD9");
+        }
     }
-    
-    // Call original function if it exists
-    if (original_initialize_game_mode) {
-        return original_initialize_game_mode();
-    }
-    
-    return 0;
 }
 
 // Hook implementations
@@ -364,6 +366,17 @@ int __cdecl Hook_UpdateGameState() {
 BOOL __cdecl Hook_RunGameLoop() {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** REIMPLEMENTING FM2K MAIN LOOP WITH GEKKONET CONTROL ***");
     
+    // Set character select mode flag after memory clearing
+    uint8_t* char_select_mode_ptr = (uint8_t*)FM2K::State::Memory::CHARACTER_SELECT_MODE_ADDR;
+    if (!IsBadReadPtr(char_select_mode_ptr, sizeof(uint8_t))) {
+        DWORD old_protect;
+        if (VirtualProtect(char_select_mode_ptr, sizeof(uint8_t), PAGE_READWRITE, &old_protect)) {
+            *char_select_mode_ptr = 1;
+            VirtualProtect(char_select_mode_ptr, sizeof(uint8_t), old_protect, &old_protect);
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Set character select mode flag to 1 after memory clearing");
+        }
+    }
+    
     if (!gekko_initialized) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Initializing GekkoNet...");
         if (!InitializeGekkoNet()) {
@@ -518,6 +531,9 @@ bool InitializeHooks() {
         MH_Uninitialize();
         return false;
     }
+    
+    // Apply boot-to-character-select patches directly
+    ApplyBootToCharacterSelectPatches();
     
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SUCCESS FM2K HOOK: BSNES-level architecture installed successfully!");
     return true;

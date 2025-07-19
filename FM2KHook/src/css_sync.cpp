@@ -18,6 +18,12 @@ namespace Memory {
     constexpr uintptr_t PLAYER_CHARACTER_SELECTION_ADDR = 0x470020;  // g_player_character_selection[2]
     constexpr uintptr_t P1_CONFIRMED_STATUS_ADDR = 0x47019C;         // g_css_p1_confirmed
     constexpr uintptr_t P2_CONFIRMED_STATUS_ADDR = 0x4701A0;         // g_css_p2_confirmed
+    
+    // VARIANT/COLOR (NEW - From FM2K_Integration.h)
+    constexpr uintptr_t P1_VARIANT_ADDR = 0x47019C;
+    constexpr uintptr_t P2_VARIANT_ADDR = 0x4701A0;
+    constexpr uintptr_t P1_COLOR_ADDR = 0x4701A4;
+    constexpr uintptr_t P2_COLOR_ADDR = 0x4701A8;
 }
 namespace Constants {
     constexpr uint32_t SELECT_CHARA = 0;
@@ -197,21 +203,40 @@ State::CharacterSelectState CharSelectSync::ReadCurrentState() {
     
     // Set other fields to defaults for now
     state.selected_stage = 0;
-    state.p1_variant = 0;
-    state.p2_variant = 0;
-    state.p1_color = 0;
-    state.p2_color = 0;
+    
+    // Read variant and color
+    if (!IsBadReadPtr((void*)FM2K::CharSelect::Memory::P1_VARIANT_ADDR, sizeof(uint32_t))) {
+        state.p1_variant = *(uint32_t*)FM2K::CharSelect::Memory::P1_VARIANT_ADDR;
+    } else {
+        state.p1_variant = 0;
+    }
+    if (!IsBadReadPtr((void*)FM2K::CharSelect::Memory::P2_VARIANT_ADDR, sizeof(uint32_t))) {
+        state.p2_variant = *(uint32_t*)FM2K::CharSelect::Memory::P2_VARIANT_ADDR;
+    } else {
+        state.p2_variant = 0;
+    }
+    if (!IsBadReadPtr((void*)FM2K::CharSelect::Memory::P1_COLOR_ADDR, sizeof(uint32_t))) {
+        state.p1_color = *(uint32_t*)FM2K::CharSelect::Memory::P1_COLOR_ADDR;
+    } else {
+        state.p1_color = 0;
+    }
+    if (!IsBadReadPtr((void*)FM2K::CharSelect::Memory::P2_COLOR_ADDR, sizeof(uint32_t))) {
+        state.p2_color = *(uint32_t*)FM2K::CharSelect::Memory::P2_COLOR_ADDR;
+    } else {
+        state.p2_color = 0;
+    }
     
     // DEBUG: Log memory reads occasionally to verify addresses are working
     static uint32_t read_count = 0;
     read_count++;
     if (read_count % 1200 == 0) { // Every 20 seconds instead of 10
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                   "CSS_MEMORY_READ_VERIFIED: P1_cursor=(%d,%d) P2_cursor=(%d,%d) chars=(%d,%d) confirmed=(%d,%d)", 
+                   "CSS_MEMORY_READ_VERIFIED: P1_cursor=(%d,%d) P2_cursor=(%d,%d) chars=(%d,%d) confirmed=(%d,%d) p1_color=%d p2_color=%d", 
                    state.p1_cursor_x, state.p1_cursor_y,
                    state.p2_cursor_x, state.p2_cursor_y,
                    state.p1_character, state.p2_character,
-                   state.p1_confirmed, state.p2_confirmed);
+                   state.p1_confirmed, state.p2_confirmed,
+                   state.p1_color, state.p2_color);
     }
     
     return state;
@@ -231,11 +256,12 @@ void CharSelectSync::ApplyLockstepSync() {
         // Only log every 60 frames (1 second at 60fps) to reduce spam
         if (log_counter % 60 == 0) {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "CSS Lockstep: P1_cursor=(%d,%d) P2_cursor=(%d,%d) chars=(%d,%d) confirmed=(%d,%d)",
+                "CSS Lockstep: P1_cursor=(%d,%d) P2_cursor=(%d,%d) chars=(%d,%d) confirmed=(%d,%d) p1_color=%d p2_color=%d",
                 local_state_.p1_cursor_x, local_state_.p1_cursor_y,
                 local_state_.p2_cursor_x, local_state_.p2_cursor_y,
                 local_state_.p1_character, local_state_.p2_character,
-                local_state_.p1_confirmed, local_state_.p2_confirmed);
+                local_state_.p1_confirmed, local_state_.p2_confirmed,
+                local_state_.p1_color, local_state_.p2_color);
         }
             
         last_logged_state = local_state_;
@@ -245,6 +271,9 @@ void CharSelectSync::ApplyLockstepSync() {
     
     // 2. CRITICAL: Handle CSS input processing like CCCaster
     ProcessCSSInputs();
+    
+    // 3. REMOVED: ApplyRemoteStateSynchronization() - GekkoNet handles input sync automatically
+    // The CSS sync should only monitor state changes, not interfere with input processing
 }
 
 void CharSelectSync::ProcessCSSInputs() {
@@ -275,7 +304,8 @@ void CharSelectSync::ProcessCSSInputs() {
     uint8_t local_player_num = ::is_host ? 1 : 2;
     uint32_t local_input = (local_player_num == 1) ? ::live_p1_input : ::live_p2_input;
     
-    if (local_input != 0) {
+    static uint32_t monitor_count = 0;
+    if (local_input != 0 && (++monitor_count % 300 == 0)) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
                    "CSS_INPUT_MONITOR: P%d local_input=0x%02X (frames=%u)", 
                    local_player_num, local_input & 0xFF, css_frames);
@@ -478,17 +508,38 @@ void CharSelectSync::ReceiveRemoteConfirmation() {
 void CharSelectSync::HandleCharacterConfirmation() {
     if (!gekko_session_started) return;
 
+    // CRITICAL FIX: Only allow the LOCAL player to confirm, not both players
+    // Host can only confirm P1, Client can only confirm P2
+    
     // 1. Check if the local player has confirmed their selection
     bool local_player_confirmed = false;
+    uint8_t local_player_num = ::is_host ? 1 : 2;
+    
     if (::is_host) {
+        // Host can only confirm P1
         local_player_confirmed = (local_state_.p1_confirmed == 1);
+        if (local_state_.p2_confirmed == 1) {
+            // CRITICAL: Reset P2 confirmation if host somehow triggered it
+            if (!IsBadWritePtr((void*)0x4701A0, sizeof(uint32_t))) {
+                *(uint32_t*)0x4701A0 = 0;
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "CSS_CONFIRM_FIX: Host reset invalid P2 confirmation");
+            }
+        }
     } else {
+        // Client can only confirm P2
         local_player_confirmed = (local_state_.p2_confirmed == 1);
+        if (local_state_.p1_confirmed == 1) {
+            // CRITICAL: Reset P1 confirmation if client somehow triggered it
+            if (!IsBadWritePtr((void*)0x47019C, sizeof(uint32_t))) {
+                *(uint32_t*)0x47019C = 0;
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "CSS_CONFIRM_FIX: Client reset invalid P1 confirmation");
+            }
+        }
     }
 
     // 2. If confirmed and we haven't sent our signal yet, send it.
     if (local_player_confirmed && !confirmation_sent_) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Local player confirmed. Sending 0xFF signal.");
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Local player %d confirmed. Sending 0xFF signal.", local_player_num);
         confirmation_sent_ = true;
         
         // This is the special input signal - ONLY send once per CSS session
@@ -497,7 +548,7 @@ void CharSelectSync::HandleCharacterConfirmation() {
         
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
                    "CSS_CONFIRM: Player %d sent 0xFF confirmation to remote", 
-                   ::is_host ? 1 : 2);
+                   local_player_num);
     }
 
     // 3. Check if the handshake is complete.
@@ -508,12 +559,13 @@ void CharSelectSync::HandleCharacterConfirmation() {
         State::g_game_state_machine.ConfirmCharacterSelection();
     }
     
-    // 4. DEBUG: Log handshake status periodically
+    // 4. DEBUG: Log handshake status periodically (reduced frequency)
     static uint32_t handshake_debug_count = 0;
     handshake_debug_count++;
-    if (handshake_debug_count % 180 == 0) { // Every 3 seconds
+    if (handshake_debug_count % 600 == 0) { // Every 10 seconds instead of 3
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                   "CSS_HANDSHAKE_STATUS: local_confirmed=%s sent=%s received=%s state_confirmed=%s",
+                   "CSS_HANDSHAKE_STATUS: P%d_confirmed=%s sent=%s received=%s state_confirmed=%s",
+                   local_player_num,
                    local_player_confirmed ? "YES" : "NO",
                    confirmation_sent_ ? "YES" : "NO", 
                    confirmation_received_ ? "YES" : "NO",
@@ -553,6 +605,12 @@ void CharSelectSync::ApplyRemoteState() {
         if (!IsBadWritePtr((void*)FM2K::CharSelect::Memory::P2_CONFIRMED_STATUS_ADDR, sizeof(uint32_t))) {
             *(uint32_t*)FM2K::CharSelect::Memory::P2_CONFIRMED_STATUS_ADDR = remote_state_.p2_confirmed;
         }
+        if (!IsBadWritePtr((void*)FM2K::CharSelect::Memory::P2_VARIANT_ADDR, sizeof(uint32_t))) {
+            *(uint32_t*)FM2K::CharSelect::Memory::P2_VARIANT_ADDR = remote_state_.p2_variant;
+        }
+        if (!IsBadWritePtr((void*)FM2K::CharSelect::Memory::P2_COLOR_ADDR, sizeof(uint32_t))) {
+            *(uint32_t*)FM2K::CharSelect::Memory::P2_COLOR_ADDR = remote_state_.p2_color;
+        }
     } else {
         // Client controls P2, apply remote P1 state
         if (!IsBadWritePtr((void*)FM2K::CharSelect::Memory::P1_SELECTION_CURSOR_ADDR, sizeof(uint32_t) * 2)) {
@@ -566,6 +624,12 @@ void CharSelectSync::ApplyRemoteState() {
         }
         if (!IsBadWritePtr((void*)FM2K::CharSelect::Memory::P1_CONFIRMED_STATUS_ADDR, sizeof(uint32_t))) {
             *(uint32_t*)FM2K::CharSelect::Memory::P1_CONFIRMED_STATUS_ADDR = remote_state_.p1_confirmed;
+        }
+        if (!IsBadWritePtr((void*)FM2K::CharSelect::Memory::P1_VARIANT_ADDR, sizeof(uint32_t))) {
+            *(uint32_t*)FM2K::CharSelect::Memory::P1_VARIANT_ADDR = remote_state_.p1_variant;
+        }
+        if (!IsBadWritePtr((void*)FM2K::CharSelect::Memory::P1_COLOR_ADDR, sizeof(uint32_t))) {
+            *(uint32_t*)FM2K::CharSelect::Memory::P1_COLOR_ADDR = remote_state_.p1_color;
         }
     }
 }

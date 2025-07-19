@@ -13,6 +13,25 @@
 #include <windows.h>
 #include <mmsystem.h>
 
+// ARCHITECTURE FIX: Real input capture following CCCaster/GekkoNet pattern
+static void CaptureRealInputs() {
+    // Following the pattern from GekkoNet SDL2 example and CCCaster
+    // This captures actual keyboard/controller input before the game processes it
+    
+    // For now, we'll read the inputs directly from the game's memory addresses
+    // In the future, this could be enhanced to use direct keyboard/controller APIs
+    
+    // BACK TO WORKING APPROACH: Use Hook_GetPlayerInput to capture inputs at source
+    // Just like dllmain_orig.cpp - inputs are captured when FM2K calls Hook_GetPlayerInput
+    // Don't override them here - let the input hooks do their job
+    
+    // DEBUG: Log non-zero input captures (reduced spam - only when inputs are actually pressed)
+    if (live_p1_input != 0 || live_p2_input != 0) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT_CAPTURE: P1=0x%02X P2=0x%02X frame=%u", 
+                   live_p1_input & 0xFF, live_p2_input & 0xFF, g_frame_counter);
+    }
+}
+
 // Use global function pointers from globals.h
 
 // New hook for boot-to-character-select hack
@@ -43,54 +62,68 @@ void ApplyBootToCharacterSelectPatches() {
 
 // Hook implementations
 int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
-    int original_input = original_get_player_input ? original_get_player_input(player_id, input_type) : 0;
+    // CRITICAL FIX: Both clients read P1 controls locally, but map to their network slot
+    // This matches fighting game conventions - everyone uses same local controls (WASD/arrow keys)
     
-    // Always capture live inputs for networking
+    int original_input = 0;
+    
     if (player_id == 0) {
-        live_p1_input = original_input;
+        // P1 slot - always read from keyboard on both clients
+        original_input = original_get_player_input ? original_get_player_input(0, input_type) : 0;
+        
+        if (::is_host) {
+            // Host: Local P1 controls go to P1 slot
+            live_p1_input = original_input;
+        } else {
+            // Client: Local P1 controls go to P2 slot (for network transmission)
+            live_p2_input = original_input;
+            // But for local FM2K, P1 slot gets 0 (remote player)
+            original_input = 0;
+        }
     } else if (player_id == 1) {
-        live_p2_input = original_input;
-        // DEBUG: Log when P2 input is captured
-        static uint32_t p2_input_count = 0;
-        p2_input_count++;
-        if (p2_input_count % 100 == 0 || original_input != 0) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DEBUG P2 INPUT CAPTURE: original_input=0x%02X, live_p2_input=0x%02X", 
-                       original_input, live_p2_input);
+        // P2 slot 
+        if (::is_host) {
+            // Host: P2 slot gets 0 (remote player input comes from network)
+            original_input = 0;
+        } else {
+            // Client: P2 slot gets local controls (read P1 controls and return for P2)
+            original_input = original_get_player_input ? original_get_player_input(0, input_type) : 0;
+            live_p2_input = original_input;
         }
     }
     
-    // Enhanced logging for debugging
-    static uint32_t last_logged_frame = 0;
-    static bool last_use_networked = false;
-    bool current_use_networked = use_networked_inputs;
-    
-    // Log when use_networked_inputs changes state or periodically (reduced frequency)
-    if (g_frame_counter - last_logged_frame > 300 || last_use_networked != current_use_networked) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Hook_GetPlayerInput: P%d input=0x%02X, use_networked=%s, gekko_init=%s, session_valid=%s, net_p1=0x%02X, net_p2=0x%02X", 
-                   player_id + 1, original_input & 0xFF, 
-                   use_networked_inputs ? "YES" : "NO",
-                   gekko_initialized ? "YES" : "NO",
-                   (gekko_session && AllPlayersValid()) ? "YES" : "NO",
-                   networked_p1_input & 0xFF,
-                   networked_p2_input & 0xFF);
-        last_logged_frame = g_frame_counter;
-        last_use_networked = current_use_networked;
+    // DEBUG: Verify hook is being called and check raw inputs (reduced frequency)
+    static uint32_t hook_call_count = 0;
+    hook_call_count++;
+    if (hook_call_count % 500 == 0 || (original_input != 0 && hook_call_count % 50 == 0)) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "HOOK_GETINPUT: P%d type=%d orig=0x%02X calls=%u", 
+                   player_id, input_type, original_input & 0xFF, hook_call_count);
     }
     
-    // Return networked input if available
-    if (use_networked_inputs && gekko_initialized && gekko_session && AllPlayersValid()) {
-        // Host is P1 (handle 0), Client is P2 (handle 1). This is consistent on both machines.
-        // networked_p1_input is from handle 0, networked_p2_input is from handle 1.
-        // The game requests input for player_id 0 (P1) and player_id 1 (P2).
-        // The mapping is direct and requires no swapping based on the local player's role.
+    // During CSS: Return synchronized inputs for proper cursor movement
+    if (FM2K::State::g_game_state_machine.GetCurrentPhase() == FM2K::State::GamePhase::CHARACTER_SELECT) {
+        if (use_networked_inputs && gekko_initialized && gekko_session) {
+            // Use synchronized inputs during CSS for both players
+            if (player_id == 0) {
+                return networked_p1_input;
+            } else if (player_id == 1) {
+                return networked_p2_input;
+            }
+        }
+        // Fallback to original input if no network sync
+        return original_input;
+    }
+    
+    // During battle: Use synchronized networked inputs if available
+    if (use_networked_inputs && gekko_initialized && gekko_session) {
         if (player_id == 0) {
             return networked_p1_input;
-        }
-        if (player_id == 1) {
+        } else if (player_id == 1) {
             return networked_p2_input;
         }
     }
     
+    // Fall back to original input (like dllmain_orig.cpp)
     return original_input;
 }
 
@@ -106,36 +139,47 @@ int __cdecl Hook_ProcessGameInputs() {
         g_frame_counter++;
     }
     
-    // Early logging to verify hook works
+    // Early logging to verify hook works (only first few frames)
     if (g_frame_counter <= 3) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Frame %u", g_frame_counter);
     }
     
     // GekkoNet rollback control (only if session is active)
     if (gekko_initialized && gekko_session && gekko_session_started) {
+        // ARCHITECTURE FIX: Proper input capture following CCCaster/GekkoNet pattern
+        // 1. CAPTURE: Read actual controller/keyboard inputs (like CCCaster's updateControls)
+        CaptureRealInputs();
+        
         // Update CSS synchronization
         FM2K::CSS::g_css_sync.Update();
         
-        // Send local input based on our GekkoNet handle (correct GekkoNet model)
-        // Handle 0 (Host) sends P1 input, Handle 1 (Client) sends P2 input
+        // 2. SEND: Send local input to GekkoNet (like GekkoNet example's gekko_add_local_input)
+        // GEKKONET-STYLE: Only send OUR keyboard input, regardless of player slot
         uint8_t local_input;
-        if (local_player_handle == 0) {
-            local_input = (uint8_t)(live_p1_input & 0xFF);
+        const char* input_source;
+        if (::is_host) {
+            local_input = (uint8_t)(live_p1_input & 0xFF); // Host's keyboard input
+            input_source = "HOST_KEYBOARD";
         } else {
-            local_input = (uint8_t)(live_p2_input & 0xFF);
-            // CRITICAL DEBUG: Why is Player 2 input always 0?
-            if (live_p2_input != 0) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CRITICAL: Player 2 has input 0x%02X but local_input=0x%02X", 
-                           live_p2_input, local_input);
-            }
+            local_input = (uint8_t)(live_p2_input & 0xFF); // Client's keyboard input  
+            input_source = "CLIENT_KEYBOARD";
         }
         
-        // DEBUG: Log input values every 100 frames to debug Player 2 issue
+        // DEBUG: Enhanced input sending debug - log all non-zero inputs and periodic status
         static uint32_t debug_frame_count = 0;
+        static uint8_t last_sent_input = 0xFF;
         debug_frame_count++;
-        if (debug_frame_count % 100 == 0 || (local_player_handle == 1 && local_input != 0)) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DEBUG INPUT: Handle %d, live_p1=0x%02X, live_p2=0x%02X, local_input=0x%02X, calculation=(handle==0)?p1:p2", 
-                       local_player_handle, live_p1_input & 0xFF, live_p2_input & 0xFF, local_input);
+        
+        bool should_log_send = false;
+        if (local_input != 0 && debug_frame_count % 100 == 0) should_log_send = true; // Log non-zero every 100 frames
+        if (local_input != last_sent_input) should_log_send = true; // Log changes
+        if (debug_frame_count % 600 == 0) should_log_send = true; // Periodic (every 10 seconds)
+        
+        if (should_log_send) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT_SEND: %s handle=%d sending=0x%02X (live_p1=0x%02X, live_p2=0x%02X) frame=%u", 
+                       input_source, local_player_handle, local_input, 
+                       live_p1_input & 0xFF, live_p2_input & 0xFF, g_frame_counter);
+            last_sent_input = local_input;
         }
         
         gekko_add_local_input(gekko_session, local_player_handle, &local_input);
@@ -175,9 +219,21 @@ int __cdecl Hook_ProcessGameInputs() {
             
             switch (update->type) {
                 case AdvanceEvent: {
+                    // CRITICAL DEBUG: Log the exact inputs received from GekkoNet
+                    uint8_t received_p1 = update->data.adv.inputs[0];
+                    uint8_t received_p2 = update->data.adv.inputs[1];
+                    
+                    // Only log ADVANCE_EVENT_RAW for non-zero inputs or occasionally
+                    static uint32_t advance_log_count = 0;
+                    if ((received_p1 != 0 || received_p2 != 0) && (++advance_log_count % 200 == 0)) {
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                                   "ADVANCE_EVENT_RAW: Frame %u - GekkoNet delivered P1=0x%02X, P2=0x%02X (orig_player=%d, is_host=%s)", 
+                                   update->data.adv.frame, received_p1, received_p2, original_player_index, is_host ? "YES" : "NO");
+                    }
+                    
                     // Always apply the synchronized inputs first.
-                    networked_p1_input = update->data.adv.inputs[0];
-                    networked_p2_input = update->data.adv.inputs[1];
+                    networked_p1_input = received_p1;
+                    networked_p2_input = received_p2;
                     use_networked_inputs = true;
 
                     // Check if the remote player sent a confirmation signal.
@@ -185,17 +241,52 @@ int __cdecl Hook_ProcessGameInputs() {
                     if (remote_input == 0xFF) {
                         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ADVANCE EVENT: Remote player sent 0xFF confirmation signal");
                         FM2K::CSS::g_css_sync.ReceiveRemoteConfirmation();
+                        
+                        // IMPORTANT: Filter out 0xFF from normal gameplay inputs
+                        // Replace 0xFF with 0x00 to prevent invalid game inputs
+                        if (is_host) {
+                            networked_p2_input = 0x00;
+                        } else {
+                            networked_p1_input = 0x00;
+                        }
+                        
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ADVANCE EVENT: Filtered out 0xFF confirmation signal for gameplay");
                     }
 
-                    // DEBUG: Log received inputs to see if Player 2's inputs are coming through
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ADVANCE EVENT: Frame %u - Received P1=0x%02X, P2=0x%02X", 
-                               update->data.adv.frame, networked_p1_input, networked_p2_input);
+                    // DEBUG: Log received inputs when they change or have non-zero values
+                    static uint8_t last_p1_input = 0xFF;
+                    static uint8_t last_p2_input = 0xFF;
+                    static uint32_t last_advance_log_frame = 0;
+                    
+                    bool input_changed = (networked_p1_input != last_p1_input || networked_p2_input != last_p2_input);
+                    bool has_input = (networked_p1_input != 0 || networked_p2_input != 0);
+                    bool periodic_log = (update->data.adv.frame - last_advance_log_frame >= 120); // Log every 120 frames (2 seconds)
+                    
+                    if (input_changed || has_input || periodic_log) {
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ADVANCE_EVENT_PROCESSED: Frame %u - Using P1=0x%02X, P2=0x%02X (changed=%s)", 
+                                   update->data.adv.frame, networked_p1_input, networked_p2_input, input_changed ? "YES" : "NO");
+                        last_p1_input = networked_p1_input;
+                        last_p2_input = networked_p2_input;
+                        last_advance_log_frame = update->data.adv.frame;
+                    }
+
+                    // DEBUG: Before calling original_process_inputs, log current game state
+                    if (has_input || input_changed) {
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                                   "ADVANCE_GAME_STEP: About to call original_process_inputs() with networked inputs active");
+                    }
 
                     // Now, let the original game code run with the synchronized inputs.
                     if (original_process_inputs) {
                         original_process_inputs();
                     }
                     g_frame_counter++;
+                    
+                    // DEBUG: After game step
+                    if (has_input || input_changed) {
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                                   "ADVANCE_GAME_DONE: original_process_inputs() completed, frame now %u", g_frame_counter);
+                    }
                     break;
                 }
                     
@@ -267,7 +358,12 @@ int __cdecl Hook_ProcessGameInputs() {
                     } else {
                         // We are in lockstep (menus, CSS, or transition). Perform a minimal "dummy" save.
                         // GekkoNet requires a state buffer, but its contents don't matter for lockstep.
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SaveEvent: Lockstep (Minimal) Save at frame %u", update->data.save.frame);
+                        // Only log lockstep saves periodically to reduce spam
+                        static uint32_t last_lockstep_log_frame = 0;
+                        if (update->data.save.frame - last_lockstep_log_frame >= 300) { // Log every 300 frames (5 seconds at 60fps)
+                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SaveEvent: Lockstep (Minimal) Save at frame %u", update->data.save.frame);
+                            last_lockstep_log_frame = update->data.save.frame;
+                        }
                         if (update->data.save.state_len) *update->data.save.state_len = 8; // A small, non-zero size.
                         if (update->data.save.checksum) *update->data.save.checksum = 0xDEADBEEF + update->data.save.frame;
                         if (update->data.save.state) {

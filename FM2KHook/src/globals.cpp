@@ -19,6 +19,8 @@ uint32_t networked_p2_input = 0;
 bool use_networked_inputs = false;
 uint32_t live_p1_input = 0;
 uint32_t live_p2_input = 0;
+uint32_t backup_p1_input = 0;  // Raw inputs from game for debugging
+uint32_t backup_p2_input = 0;
 
 // Frame advance control (GekkoNet synchronization)
 bool can_advance_frame = true;        // Allow frame advancement initially

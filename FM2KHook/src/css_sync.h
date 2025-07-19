@@ -20,8 +20,10 @@ public:
     void ReceiveRemoteState();
     void ApplyRemoteState();
     
-    // Confirmation handshake method
+    // Confirmation handshake methods
     void ReceiveRemoteConfirmation() { confirmation_received_ = true; }
+    bool HasSentConfirmation() const { return confirmation_sent_; }
+    bool HasReceivedConfirmation() const { return confirmation_received_; }
     
     // Query sync status
     bool IsInSync() const { return in_sync_; }
@@ -37,8 +39,31 @@ private:
     // Apply lockstep synchronization
     void ApplyLockstepSync();
     
+    // Process CSS inputs (CCCaster-style)
+    void ProcessCSSInputs();
+    
     // Handle character confirmation synchronization
     void HandleCharacterConfirmation();
+    
+    // ===== CCCASTER-STYLE INPUT VALIDATION METHODS =====
+    
+    // Update comprehensive CSS timing and validation state
+    void UpdateCSSTimingAndValidation(uint32_t css_frames);
+    
+    // Validate and filter CSS input (CCCaster-style)
+    uint32_t ValidateAndFilterCSSInput(uint32_t raw_input, uint8_t player, uint32_t css_frames);
+    
+    // Input lockout and validation checks
+    bool IsInInputLockout(uint32_t css_frames);
+    bool CanPlayerConfirm(uint8_t player, uint32_t css_frames);
+    bool CanPlayerCancel(uint8_t player, uint32_t css_frames);
+    
+    // Button history tracking (CCCaster-style)
+    void UpdateButtonHistory(uint8_t player, uint32_t input);
+    bool HasRecentButtonInHistory(uint8_t player, uint32_t button_mask, uint32_t start_offset, uint32_t end_offset);
+    
+    // Debug and logging
+    void LogCSSInputState(uint32_t css_frames);
     
     // State tracking
     State::CharacterSelectState local_state_;

@@ -102,17 +102,25 @@ void GameStateMachine::UpdateCharacterSelect(const CharacterSelectState& css_sta
     // Log confirmation changes
     if (!prev_p1_confirmed && css_state.p1_confirmed == 1) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-            "P1 confirmed character selection: %d", css_state.p1_selected_char);
+            "P1 confirmed character selection: %d", css_state.p1_character);
     }
     if (!prev_p2_confirmed && css_state.p2_confirmed == 1) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-            "P2 confirmed character selection: %d", css_state.p2_selected_char);
+            "P2 confirmed character selection: %d", css_state.p2_character);
     }
     
     // Check if both players are ready to transition
     if (css_state.BothPlayersConfirmed() && !char_selection_confirmed_) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
             "Both players confirmed - ready for battle transition");
+        
+        // Auto-confirm character selection if both players confirmed locally
+        // This allows the transition to proceed
+        if (is_network_session_) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                "CSS: Auto-confirming character selection for network session");
+            char_selection_confirmed_ = true;
+        }
     }
 }
 

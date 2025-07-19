@@ -72,6 +72,8 @@ extern uint32_t networked_p2_input;
 extern bool use_networked_inputs;
 extern uint32_t live_p1_input;
 extern uint32_t live_p2_input;
+extern uint32_t backup_p1_input;  // Raw inputs from game for debugging
+extern uint32_t backup_p2_input;
 
 // Frame advance control (GekkoNet synchronization)
 extern bool can_advance_frame;        // Flag to control FM2K frame advancement

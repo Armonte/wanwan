@@ -72,6 +72,83 @@ namespace FM2K {
     constexpr uintptr_t GAME_TIMER_ADDR = 0x470060;
     constexpr uintptr_t ROUND_NUMBER_ADDR = 0x4070044;     // Round number (u32)
     
+    // ======= CHARACTER SELECT ADDRESSES (CCCaster-style) =======
+    // Core character selection state (similar to CC_P1/P2_CHARACTER_ADDR)
+    constexpr uintptr_t P1_CHARACTER_ID_ADDR = 0x470180;    // P1 selected character ID (u32)
+    constexpr uintptr_t P2_CHARACTER_ID_ADDR = 0x470184;    // P2 selected character ID (u32)
+    constexpr uintptr_t SELECTED_STAGE_ADDR = 0x470188;     // Selected stage ID (u32)
+    
+    // Character grid cursor positions (similar to CC_P1/P2_CHARA_SELECTOR_ADDR)
+    constexpr uintptr_t P1_CURSOR_X_ADDR = 0x47018C;        // P1 character grid cursor X (u32)
+    constexpr uintptr_t P1_CURSOR_Y_ADDR = 0x470190;        // P1 character grid cursor Y (u32)
+    constexpr uintptr_t P2_CURSOR_X_ADDR = 0x470194;        // P2 character grid cursor X (u32)
+    constexpr uintptr_t P2_CURSOR_Y_ADDR = 0x470198;        // P2 character grid cursor Y (u32)
+    
+    // Character variations and colors (similar to CC_P1/P2_MOON_SELECTOR_ADDR, CC_P1/P2_COLOR_SELECTOR_ADDR)
+    constexpr uintptr_t P1_VARIANT_ADDR = 0x47019C;         // P1 character variant/style (u32) - also confirms P1
+    constexpr uintptr_t P2_VARIANT_ADDR = 0x4701A0;         // P2 character variant/style (u32) - also confirms P2
+    constexpr uintptr_t P1_COLOR_ADDR = 0x4701A4;           // P1 color palette selection (u32)
+    constexpr uintptr_t P2_COLOR_ADDR = 0x4701A8;           // P2 color palette selection (u32)
+    
+    // Selection mode tracking (similar to CC_P1/P2_SELECTOR_MODE_ADDR)
+    constexpr uintptr_t P1_SELECTION_MODE_ADDR = 0x4701AC;  // P1 selection mode (0=selecting, 1=confirmed, 2=ready) (u32)
+    constexpr uintptr_t P2_SELECTION_MODE_ADDR = 0x4701B0;  // P2 selection mode (0=selecting, 1=confirmed, 2=ready) (u32)
+    
+    // CSS timing and validation
+    constexpr uintptr_t CSS_FRAME_COUNTER_ADDR = 0x4701B4;  // Frames since entering CSS (u32)
+    constexpr uintptr_t CSS_STATE_FLAGS_ADDR = 0x4701B8;    // CSS state flags (lockout, timing validation) (u32)
+    
+    // Character select confirmation addresses (verified working addresses)
+    constexpr uintptr_t P1_CONFIRMED_ADDR = 0x47019C;       // P1 confirmation status (1 = confirmed) (same as variant for FM2K)
+    constexpr uintptr_t P2_CONFIRMED_ADDR = 0x4701A0;       // P2 confirmation status (1 = confirmed) (same as variant for FM2K)
+    
+    // ======= CHARACTER SELECT MEMORY ACCESS NAMESPACE =======
+    namespace CharSelect {
+        // Core selection addresses (CCCaster-style access)
+        namespace Memory {
+            // Character selection data
+            constexpr uintptr_t P1_CHARACTER_ADDR = P1_CHARACTER_ID_ADDR;
+            constexpr uintptr_t P2_CHARACTER_ADDR = P2_CHARACTER_ID_ADDR;
+            constexpr uintptr_t STAGE_SELECTOR_ADDR = SELECTED_STAGE_ADDR;
+            
+            // Cursor positions (character grid navigation)
+            constexpr uintptr_t P1_CURSOR_X_ADDR = FM2K::P1_CURSOR_X_ADDR;
+            constexpr uintptr_t P1_CURSOR_Y_ADDR = FM2K::P1_CURSOR_Y_ADDR;
+            constexpr uintptr_t P2_CURSOR_X_ADDR = FM2K::P2_CURSOR_X_ADDR;
+            constexpr uintptr_t P2_CURSOR_Y_ADDR = FM2K::P2_CURSOR_Y_ADDR;
+            
+            // Character variations and colors
+            constexpr uintptr_t P1_VARIANT_SELECTOR_ADDR = P1_VARIANT_ADDR;
+            constexpr uintptr_t P2_VARIANT_SELECTOR_ADDR = P2_VARIANT_ADDR;
+            constexpr uintptr_t P1_COLOR_SELECTOR_ADDR = P1_COLOR_ADDR;
+            constexpr uintptr_t P2_COLOR_SELECTOR_ADDR = P2_COLOR_ADDR;
+            
+            // Selection mode tracking 
+            constexpr uintptr_t P1_SELECTOR_MODE_ADDR = P1_SELECTION_MODE_ADDR;
+            constexpr uintptr_t P2_SELECTOR_MODE_ADDR = P2_SELECTION_MODE_ADDR;
+            
+            // Confirmation status (CCCaster compatibility)
+            constexpr uintptr_t P1_CONFIRMED_STATUS_ADDR = P1_CONFIRMED_ADDR;
+            constexpr uintptr_t P2_CONFIRMED_STATUS_ADDR = P2_CONFIRMED_ADDR;
+            
+            // Timing and validation
+            constexpr uintptr_t CSS_FRAME_COUNTER_ADDR = FM2K::CSS_FRAME_COUNTER_ADDR;
+            constexpr uintptr_t CSS_STATE_FLAGS_ADDR = FM2K::CSS_STATE_FLAGS_ADDR;
+        }
+        
+        // Character select constants (similar to CCCaster's CC_SELECT_CHARA)
+        namespace Constants {
+            constexpr uint32_t SELECT_CHARA = 0;        // Player is selecting character
+            constexpr uint32_t CHARA_CONFIRMED = 1;     // Player has confirmed character
+            constexpr uint32_t FULLY_READY = 2;         // Player is ready for battle
+            
+            // Input validation timing (CCCaster-style)
+            constexpr uint32_t CSS_LOCKOUT_FRAMES = 150;        // Frames to wait before allowing confirm (prevents moon selector desync)
+            constexpr uint32_t MODE_CHANGE_LOCKOUT = 2;         // Frames to wait after selector mode change
+            constexpr uint32_t BUTTON_HISTORY_FRAMES = 3;       // Frames to check for button conflicts
+        }
+    }
+    
     // Character variables (16 variables per player - verified addresses)
     // Player 1 character variables (1-byte each)
     constexpr uintptr_t P1_CHAR_VAR_A_ADDR = 0x4ADFD17;   // Char Var A (u8)

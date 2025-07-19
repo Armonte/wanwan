@@ -105,8 +105,16 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
         if (use_networked_inputs && gekko_initialized && gekko_session) {
             // Use synchronized inputs during CSS for both players
             if (player_id == 0) {
+                // DEBUG: Log P1 input routing during CSS
+                if (networked_p1_input != 0) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS_INPUT_ROUTE: P1 returning networked=0x%02X", networked_p1_input & 0xFF);
+                }
                 return networked_p1_input;
             } else if (player_id == 1) {
+                // DEBUG: Log P2 input routing during CSS
+                if (networked_p2_input != 0) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS_INPUT_ROUTE: P2 returning networked=0x%02X", networked_p2_input & 0xFF);
+                }
                 return networked_p2_input;
             }
         }

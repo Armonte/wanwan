@@ -455,6 +455,26 @@ void CharSelectSync::LogCSSInputState(uint32_t css_frames) {
                local_state_.p2_can_cancel ? "OK" : "NO");
 }
 
+void CharSelectSync::ReceiveRemoteConfirmation() {
+    // Set the internal flag
+    confirmation_received_ = true;
+    
+    // CRITICAL: Write to FM2K's memory to register the remote player confirmation
+    if (::is_host) {
+        // Host: Set P2 confirmation in FM2K memory
+        if (!IsBadWritePtr((void*)FM2K::CharSelect::Memory::P2_CONFIRMED_STATUS_ADDR, sizeof(uint32_t))) {
+            *(uint32_t*)FM2K::CharSelect::Memory::P2_CONFIRMED_STATUS_ADDR = 1;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS_CONFIRM: Host set P2 confirmation=1 in FM2K memory");
+        }
+    } else {
+        // Client: Set P1 confirmation in FM2K memory  
+        if (!IsBadWritePtr((void*)FM2K::CharSelect::Memory::P1_CONFIRMED_STATUS_ADDR, sizeof(uint32_t))) {
+            *(uint32_t*)FM2K::CharSelect::Memory::P1_CONFIRMED_STATUS_ADDR = 1;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS_CONFIRM: Client set P1 confirmation=1 in FM2K memory");
+        }
+    }
+}
+
 void CharSelectSync::HandleCharacterConfirmation() {
     if (!gekko_session_started) return;
 

@@ -21,7 +21,7 @@ public:
     void ApplyRemoteState();
     
     // Confirmation handshake methods
-    void ReceiveRemoteConfirmation() { confirmation_received_ = true; }
+    void ReceiveRemoteConfirmation();
     bool HasSentConfirmation() const { return confirmation_sent_; }
     bool HasReceivedConfirmation() const { return confirmation_received_; }
     

@@ -70,7 +70,7 @@ bool InitializeGekkoNet() {
     GekkoConfig config;
     config.num_players = 2;
     config.max_spectators = 0;
-    config.input_prediction_window = 10;
+    config.input_prediction_window = 3;  // Match launcher: 30ms prediction at 100 FPS
     config.spectator_delay = 0;
     config.input_size = sizeof(uint8_t);
     config.state_size = sizeof(uint32_t);
@@ -120,9 +120,9 @@ bool InitializeGekkoNet() {
         return false;
     }
     
-    gekko_set_local_delay(gekko_session, local_player_handle, 2);
+    gekko_set_local_delay(gekko_session, local_player_handle, 1);  // Match launcher: 1 frame delay
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Set input delay to 2 frames for local player handle %d", local_player_handle);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Set input delay to 1 frame for local player handle %d", local_player_handle);
     
     gekko_initialized = true;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet initialization complete with real UDP networking!");

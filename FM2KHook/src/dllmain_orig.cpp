@@ -2850,7 +2850,7 @@ bool InitializeGekkoNet() {
     GekkoConfig config;
     config.num_players = 2;              // CRITICAL: FM2K is 2-player game
     config.max_spectators = 0;
-    config.input_prediction_window = 10;  // Higher window like the example
+    config.input_prediction_window = 3;   // Match launcher: 30ms prediction at 100 FPS
     config.spectator_delay = 0;
     config.input_size = sizeof(uint8_t);  // 1 byte per PLAYER (2 total)
     config.state_size = sizeof(uint32_t); // Minimal state like bsnes

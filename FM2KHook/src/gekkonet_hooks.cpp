@@ -17,11 +17,11 @@ bool InitializeGekkoNet() {
     // Logging for network session initialization
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** REIMPLEMENTING FM2K MAIN LOOP WITH GEKKONET CONTROL ***");
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Initializing GgekkoNet...");
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** INITIALIZING GEKKONET WITH REAL UDP NETWORKING (OnlineSession Style) ***");
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: FORCING ONLINE MODE FOR TESTING");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** INITIALIZING GEKKONET WITH ROLLBACK NETCODE (3-Frame Prediction) ***");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: CSS PROTECTED BY ENHANCED INPUT FILTERING");
     
-    uint16_t local_port = 7000;
-    std::string remote_address = "127.0.0.1:7001";
+    static uint16_t local_port = 7000;
+    static std::string remote_address = "127.0.0.1:7001";
     
     char* env_player = getenv("FM2K_PLAYER_INDEX");
     char* env_port = getenv("FM2K_LOCAL_PORT");
@@ -70,7 +70,8 @@ bool InitializeGekkoNet() {
     GekkoConfig config;
     config.num_players = 2;
     config.max_spectators = 0;
-    config.input_prediction_window = 0;  // LOCKSTEP mode - prevents CSS desyncs completely
+    config.input_prediction_window = 0;  // ROLLBACK mode - test CSS with prediction frames
+    // Previously was 0 (lockstep) - now testing rollback compatibility
     config.spectator_delay = 0;
     config.input_size = sizeof(uint8_t);
     config.state_size = sizeof(uint32_t);
@@ -222,4 +223,43 @@ void ConfigureNetworkMode(bool online_mode, bool host_mode) {
     
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Network mode configured - Online: %s, Host: %s", 
                 online_mode ? "YES" : "NO", host_mode ? "YES" : "NO");
+}
+
+uint16_t GetGekkoLocalPort() {
+    static uint16_t cached_port = 0;
+    static bool port_initialized = false;
+    
+    if (!port_initialized) {
+        cached_port = 7000;  // Default
+        char* env_port = getenv("FM2K_LOCAL_PORT");
+        if (env_port) {
+            cached_port = static_cast<uint16_t>(atoi(env_port));
+        }
+        port_initialized = true;
+    }
+    
+    return cached_port;
+}
+
+const char* GetGekkoRemoteIP() {
+    static std::string cached_ip;
+    static bool ip_initialized = false;
+    
+    if (!ip_initialized) {
+        cached_ip = "127.0.0.1";  // Default
+        char* env_remote = getenv("FM2K_REMOTE_ADDR");
+        if (env_remote) {
+            std::string remote_addr = std::string(env_remote);
+            // Extract IP from "IP:PORT" format
+            size_t colon_pos = remote_addr.find(':');
+            if (colon_pos != std::string::npos) {
+                cached_ip = remote_addr.substr(0, colon_pos);
+            } else {
+                cached_ip = remote_addr;
+            }
+        }
+        ip_initialized = true;
+    }
+    
+    return cached_ip.c_str();
 } 

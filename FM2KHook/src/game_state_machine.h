@@ -140,6 +140,7 @@ public:
     
     // Frame tracking for transitions
     uint32_t GetFramesInCurrentPhase() const { return frames_in_phase_; }
+    void SetFramesInCurrentPhase(uint32_t frames) { frames_in_phase_ = frames; }
     
     // Network sync control
     bool ShouldEnableRollback() const {

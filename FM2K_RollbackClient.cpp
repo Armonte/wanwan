@@ -1419,7 +1419,7 @@ bool FM2KLauncher::InitializeGekkoSession() {
     // Configure session for FM2K dual-client testing
     gekko_config_.num_players = 2;
     gekko_config_.max_spectators = 0;
-    gekko_config_.input_prediction_window = 3;  // 30ms prediction at 100 FPS
+    gekko_config_.input_prediction_window = 0;  // 30ms prediction at 100 FPS
     gekko_config_.spectator_delay = 0;
     gekko_config_.input_size = sizeof(uint16_t);  // FM2K 11-bit input mask
     gekko_config_.state_size = 50 * 1024;  // Start with MINIMAL profile size

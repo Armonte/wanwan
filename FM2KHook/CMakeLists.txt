@@ -21,6 +21,7 @@ add_library(FM2KHook SHARED
     src/game_state_detector.cpp
     src/game_state_machine.cpp
     src/css_sync_simple.cpp
+    src/css_tcp_sync.cpp
     src/hooks.cpp
     src/object_tracker.cpp
     src/object_analysis.cpp
@@ -42,6 +43,7 @@ target_link_libraries(FM2KHook PRIVATE
     MinHook
     GekkoNet
     SDL3::SDL3-static
+    SDL3_net::SDL3_net-static
     ws2_32
     winmm
 )
@@ -52,6 +54,7 @@ target_include_directories(FM2KHook PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/vendored/minhook/include
     ${CMAKE_SOURCE_DIR}/vendored/SDL/include
+    ${CMAKE_SOURCE_DIR}/vendored/SDL_net/include
     ${CMAKE_SOURCE_DIR}/vendored/GekkoNet/include
     ${CMAKE_SOURCE_DIR}/vendored/GekkoNet/GekkoLib/include
 )

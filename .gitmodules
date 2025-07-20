@@ -1,0 +1,19 @@
+[submodule "vendored/SDL_net"]
+	path = vendored/SDL_net
+	url = https://github.com/libsdl-org/SDL_net.git
+[submodule "vendored/SDL_image"]
+	path = vendored/SDL_image
+	url = https://github.com/libsdl-org/SDL_image.git
+[submodule "vendored/imgui"]
+	path = vendored/imgui
+	url = https://github.com/ocornut/imgui.git
+	branch = docking
+[submodule "vendored/GekkoNet"]
+	path = vendored/GekkoNet
+	url = https://github.com/HeatXD/GekkoNet.git
+[submodule "vendored/minhook"]
+	path = vendored/minhook
+	url = https://github.com/TsudaKageyu/minhook.git
+[submodule "vendored/SDL"]
+	path = vendored/SDL
+	url = https://github.com/libsdl-org/SDL.git

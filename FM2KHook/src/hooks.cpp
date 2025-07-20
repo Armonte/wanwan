@@ -9,7 +9,7 @@
 #include "object_tracker.h"
 #include "object_analysis.h"
 #include "object_pool_scanner.h"
-#include "boot_object_analyzer.cpp"
+// #include "boot_object_analyzer.cpp"  // REMOVED: Performance optimization
 #include <windows.h>
 #include <mmsystem.h>
 
@@ -30,20 +30,20 @@ static void CaptureRealInputs() {
 
 // Use global function pointers from globals.h
 
-// Simplified input conversion without debug logging
-static uint32_t ConvertNetworkInputToGameFormat(uint32_t network_input) {
-    uint32_t game_input = 0;
-    
-    if (network_input & 0x01) game_input |= 0x001;  // LEFT
-    if (network_input & 0x02) game_input |= 0x002;  // RIGHT
-    if (network_input & 0x04) game_input |= 0x004;  // UP
-    if (network_input & 0x08) game_input |= 0x008;  // DOWN
-    if (network_input & 0x10) game_input |= 0x010;  // BUTTON1 (START)
-    if (network_input & 0x20) game_input |= 0x020;  // BUTTON2
-    if (network_input & 0x40) game_input |= 0x040;  // BUTTON3
-    if (network_input & 0x80) game_input |= 0x080;  // BUTTON4
-    
-    return game_input;
+// Direct memory access - addresses are known to be valid
+template<typename T>
+T ReadMemorySafe(uintptr_t address) {
+    return *(T*)address;
+}
+
+template<typename T>
+void WriteMemorySafe(uintptr_t address, T value) {
+    *(T*)address = value;
+}
+
+// Direct input passthrough - network format matches game format for low 8 bits
+static inline uint32_t ConvertNetworkInputToGameFormat(uint32_t network_input) {
+    return network_input & 0xFF;
 }
 
 // New hook for boot-to-character-select hack
@@ -88,6 +88,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
         } else {
             // Client: P1 slot gets 0 (remote player), keyboard goes to live_p2_input
             original_input = original_get_player_input ? original_get_player_input(0, input_type) : 0;
+            
             live_p2_input = original_input;  // Store for network transmission
             original_input = 0;  // FM2K P1 slot gets 0 (remote player)
         }
@@ -104,24 +105,12 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
     
     // Simplified hook without excessive logging
     
-    // Simplified CSS: Just pass synchronized inputs without cursor manipulation
-    if (FM2K::State::g_game_state_machine.GetCurrentPhase() == FM2K::State::GamePhase::CHARACTER_SELECT) {
-        if (use_networked_inputs && gekko_initialized && gekko_session) {
-            if (player_id == 0) {
-                return ConvertNetworkInputToGameFormat(networked_p1_input);
-            } else if (player_id == 1) {
-                return ConvertNetworkInputToGameFormat(networked_p2_input);
-            }
-        }
-        return original_input;
-    }
-    
-    // During battle: Use synchronized networked inputs if available
+    // Fast path for networked inputs
     if (use_networked_inputs && gekko_initialized && gekko_session) {
         if (player_id == 0) {
-            return ConvertNetworkInputToGameFormat(networked_p1_input);
+            return networked_p1_input & 0xFF;
         } else if (player_id == 1) {
-            return ConvertNetworkInputToGameFormat(networked_p2_input);
+            return networked_p2_input & 0xFF;
         }
     }
     
@@ -133,15 +122,6 @@ int __cdecl Hook_ProcessGameInputs() {
     // In lockstep/rollback mode, the game's frame advancement is handled inside the AdvanceEvent.
     // We do nothing here to allow GekkoNet to control the frame pacing.
     if (!waiting_for_gekko_advance) {
-        // If not waiting for GekkoNet, we're in a non-networked or pre-session state.
-        // But still add timing consideration for CSS to prevent rapid cursor movements
-        bool in_css = (FM2K::State::g_game_state_machine.GetCurrentPhase() == FM2K::State::GamePhase::CHARACTER_SELECT);
-        
-        if (in_css && gekko_session_started) {
-            // Even in non-networked mode, add slight delay during CSS for consistency
-            Sleep(1);
-        }
-        
         // Call the original function to let the game run normally.
         if (original_process_inputs) {
             original_process_inputs();
@@ -149,10 +129,6 @@ int __cdecl Hook_ProcessGameInputs() {
         g_frame_counter++;
     }
     
-    // Early logging to verify hook works (only first few frames)
-    if (g_frame_counter <= 3) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Frame %u", g_frame_counter);
-    }
     
     // GekkoNet rollback control (only if session is active)
     if (gekko_initialized && gekko_session && gekko_session_started) {
@@ -160,15 +136,7 @@ int __cdecl Hook_ProcessGameInputs() {
         // 1. CAPTURE: Read actual controller/keyboard inputs (like CCCaster's updateControls)
         CaptureRealInputs();
         
-        // Update CSS synchronization only during character select phase (reduced frequency)
-        auto current_phase = FM2K::State::g_game_state_machine.GetCurrentPhase();
-        if (current_phase == FM2K::State::GamePhase::CHARACTER_SELECT) {
-            // Only update CSS sync every 5 frames to reduce lag
-            static uint32_t css_update_counter = 0;
-            if (++css_update_counter % 5 == 0) {
-                FM2K::CSS::g_css_sync.Update();
-            }
-        }
+        // CSS sync disabled for performance
         
         // 2. SEND: Send local input to GekkoNet (like GekkoNet example's gekko_add_local_input)
         // GEKKONET-STYLE: Only send OUR keyboard input, regardless of player slot
@@ -182,14 +150,9 @@ int __cdecl Hook_ProcessGameInputs() {
             input_source = "CLIENT_KEYBOARD";
         }
         
-        // CRITICAL: Apply CSS input filtering during character select to prevent desyncs
-        if (FM2K::State::g_game_state_machine.GetCurrentPhase() == FM2K::State::GamePhase::CHARACTER_SELECT) {
-            uint8_t player_num = ::is_host ? 1 : 2;
-            uint32_t filtered_input = FM2K::CSS::g_css_sync.ValidateAndFilterCSSInput(local_input, player_num, g_frame_counter);
-            local_input = (uint8_t)(filtered_input & 0xFF);
-        }
         
-        // Simplified input sending without excessive logging
+        // CSS input filtering disabled for performance
+        
         
         gekko_add_local_input(gekko_session, local_player_handle, &local_input);
         
@@ -205,11 +168,10 @@ int __cdecl Hook_ProcessGameInputs() {
             auto event = session_events[i];
             if (event->type == DesyncDetected) {
                 auto desync = event->data.desynced;
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DESYNC: frame %d, remote handle %d, local checksum %u, remote checksum %u", 
-                           desync.frame, desync.remote_handle, desync.local_checksum, desync.remote_checksum);
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DESYNC: frame %d", desync.frame);
             } else if (event->type == PlayerDisconnected) {
                 auto disco = event->data.disconnected;
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "DISCONNECT: player handle %d", disco.handle);
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "DISCONNECT: %d", disco.handle);
             }
         }
         
@@ -227,13 +189,6 @@ int __cdecl Hook_ProcessGameInputs() {
                     uint8_t received_p1 = update->data.adv.inputs[0];
                     uint8_t received_p2 = update->data.adv.inputs[1];
                     
-                    // Only log ADVANCE_EVENT_RAW for non-zero inputs or occasionally
-                    static uint32_t advance_log_count = 0;
-                    if ((received_p1 != 0 || received_p2 != 0) && (++advance_log_count % 200 == 0)) {
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                                   "ADVANCE_EVENT_RAW: Frame %u - GekkoNet delivered P1=0x%02X, P2=0x%02X (orig_player=%d, is_host=%s)", 
-                                   update->data.adv.frame, received_p1, received_p2, original_player_index, is_host ? "YES" : "NO");
-                    }
                     
                     // Always apply the synchronized inputs first.
                     networked_p1_input = received_p1;
@@ -245,18 +200,14 @@ int __cdecl Hook_ProcessGameInputs() {
                     // Check if the remote player sent a confirmation signal.
                     uint8_t remote_input = is_host ? networked_p2_input : networked_p1_input;
                     if (remote_input == 0xFF) {
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ADVANCE EVENT: Remote player sent 0xFF confirmation signal");
                         FM2K::CSS::g_css_sync.ReceiveRemoteConfirmation();
                         
-                        // IMPORTANT: Filter out 0xFF from normal gameplay inputs
-                        // Replace 0xFF with 0x00 to prevent invalid game inputs
+                        // Filter out 0xFF from normal gameplay inputs
                         if (is_host) {
                             networked_p2_input = 0x00;
                         } else {
                             networked_p1_input = 0x00;
                         }
-                        
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ADVANCE EVENT: Filtered out 0xFF confirmation signal for gameplay");
                     }
 
                     // Simplified advance event processing
@@ -278,99 +229,17 @@ int __cdecl Hook_ProcessGameInputs() {
                 }
                     
                 case SaveEvent: {
-                    // CCCaster Hybrid Approach: Only save rollback states during battle, not CSS
-                    auto current_phase = FM2K::State::g_game_state_machine.GetCurrentPhase();
-                    auto strategy = FM2K::State::g_game_state_machine.GetSyncStrategy();
-
-                    if (current_phase == FM2K::State::GamePhase::CHARACTER_SELECT) {
-                        // CCCaster approach: No state saves during CSS - use minimal dummy save
-                        // Only log occasionally to reduce spam
-                        if (update->data.save.frame % 100 == 0) {
-                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SaveEvent: CSS Skip (no rollback saves during character select) at frame %u", update->data.save.frame);
-                        }
-                        if (update->data.save.state_len) *update->data.save.state_len = 8;
-                        if (update->data.save.checksum) *update->data.save.checksum = 0xC5500000 + update->data.save.frame;
-                        if (update->data.save.state) {
-                            memset(update->data.save.state, 0xCC, 8);  // CSS marker
-                        }
-                    } else if (strategy == FM2K::State::SyncStrategy::ROLLBACK) {
-                        // Additional safety checks before object scanning
-                        auto& state_machine = FM2K::State::g_game_state_machine;
-                        bool safe_to_scan = true;
-                        
-                        // Validate we're truly in stable battle state
-                        if (state_machine.IsInBattleStabilization()) {
-                            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "SaveEvent: Still in battle stabilization, deferring object scanning");
-                            safe_to_scan = false;
-                        }
-                        
-                        // Ensure enough frames have passed since battle start
-                        uint32_t frames_in_battle = state_machine.GetFramesInBattle();
-                        if (frames_in_battle < 10) {
-                            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "SaveEvent: Too early in battle (%u frames), deferring object scanning", frames_in_battle);
-                            safe_to_scan = false;
-                        }
-                        
-                        // TEMPORARY: Disable all object scanning during battle to prevent crashes
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SaveEvent: Battle minimal save (object scanning disabled) at frame %u (%u frames in battle)", update->data.save.frame, frames_in_battle);
-                        if (update->data.save.state_len) *update->data.save.state_len = 8;
-                        if (update->data.save.checksum) *update->data.save.checksum = 0xBABE0000 + update->data.save.frame;
-                        if (update->data.save.state) {
-                            memset(update->data.save.state, 0xBB, 8);  // Battle minimal marker
-                        }
-                        break; // Skip object scanning entirely
-                    } else {
-                        // We are in lockstep (menus, CSS, or transition). Perform a minimal "dummy" save.
-                        // GekkoNet requires a state buffer, but its contents don't matter for lockstep.
-                        // Only log lockstep saves periodically to reduce spam
-                        static uint32_t last_lockstep_log_frame = 0;
-                        if (update->data.save.frame - last_lockstep_log_frame >= 300) { // Log every 300 frames (5 seconds at 60fps)
-                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SaveEvent: Lockstep (Minimal) Save at frame %u", update->data.save.frame);
-                            last_lockstep_log_frame = update->data.save.frame;
-                        }
-                        if (update->data.save.state_len) *update->data.save.state_len = 8; // A small, non-zero size.
-                        if (update->data.save.checksum) *update->data.save.checksum = 0xDEADBEEF + update->data.save.frame;
-                        if (update->data.save.state) {
-                            // Fill with a placeholder value for clarity in debugging.
-                            memset(update->data.save.state, 0xAA, 8);
-                        }
+                    // PERFORMANCE: Minimal save states only - no object scanning
+                    if (update->data.save.state_len) *update->data.save.state_len = 8;
+                    if (update->data.save.checksum) *update->data.save.checksum = 0xDEADBEEF + update->data.save.frame;
+                    if (update->data.save.state) {
+                        memset(update->data.save.state, 0xAA, 8);
                     }
                     break;
                 }
                     
                 case LoadEvent: {
-                    // CCCaster Hybrid Approach: Only load rollback states during battle, not CSS
-                    auto current_phase = FM2K::State::g_game_state_machine.GetCurrentPhase();
-                    auto strategy = FM2K::State::g_game_state_machine.GetSyncStrategy();
-
-                    if (current_phase == FM2K::State::GamePhase::CHARACTER_SELECT) {
-                        // CCCaster approach: No state loads during CSS - ignore rollback loads
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LoadEvent: CSS Skip (no rollback loads during character select) to frame %u", update->data.load.frame);
-                    } else if (strategy == FM2K::State::SyncStrategy::ROLLBACK) {
-                        // Additional safety checks before object pool restoration
-                        auto& state_machine = FM2K::State::g_game_state_machine;
-                        bool safe_to_load = true;
-                        
-                        // Validate we're truly in stable battle state  
-                        if (state_machine.IsInBattleStabilization()) {
-                            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "LoadEvent: Still in battle stabilization, deferring object restoration");
-                            safe_to_load = false;
-                        }
-                        
-                        // Ensure enough frames have passed since battle start
-                        uint32_t frames_in_battle = state_machine.GetFramesInBattle();
-                        if (frames_in_battle < 10) {
-                            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "LoadEvent: Too early in battle (%u frames), deferring object restoration", frames_in_battle);
-                            safe_to_load = false;
-                        }
-                        
-                        // TEMPORARY: Disable all object restoration during battle to prevent crashes
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LoadEvent: Skipping rollback load (object restoration disabled) to frame %u (%u frames in battle)", update->data.load.frame, frames_in_battle);
-                        break; // Skip object restoration entirely
-                    } else {
-                        // In lockstep mode, we NEVER load state. The game progresses naturally.
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LoadEvent: Ignored during Lockstep frame %u", update->data.load.frame);
-                    }
+                    // PERFORMANCE: Skip all loads - lockstep mode
                     break;
                 }
             }
@@ -381,16 +250,11 @@ int __cdecl Hook_ProcessGameInputs() {
 }
 
 int __cdecl Hook_UpdateGameState() {
-    // Monitor game state transitions for rollback management
-    MonitorGameStateTransitions();
-    
-    // TEMPORARILY DISABLED: Boot analysis (causing console spam and crashes)
-    // Track boot sequence objects during early frames
-    // static uint32_t update_count = 0;
-    // update_count++;
-    // if (update_count <= 10 || (update_count % 100 == 0 && update_count <= 1000)) {
-    //     FM2K::BootAnalysis::AnalyzeBootSequenceObject();
-    // }
+    // Only monitor state transitions every 30 frames
+    static uint32_t state_check_counter = 0;
+    if (++state_check_counter % 30 == 0) {
+        MonitorGameStateTransitions();
+    }
     
     // Original logic for GekkoNet session management
     if (gekko_initialized && !gekko_session_started) {

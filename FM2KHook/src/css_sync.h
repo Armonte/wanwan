@@ -38,6 +38,11 @@ public:
     // Validate and filter CSS input (CCCaster-style) - PUBLIC for hooks.cpp
     uint32_t ValidateAndFilterCSSInput(uint32_t raw_input, uint8_t player, uint32_t css_frames);
     
+    // TCP cursor synchronization methods
+    void InitializeTCPCursorSync();
+    void UpdateTCPCursorSync();
+    void ShutdownTCPCursorSync();
+    
 private:
     // Read current CSS state from memory
     State::CharacterSelectState ReadCurrentState();
@@ -85,7 +90,7 @@ private:
     
     // CCCaster-style frame tracking for input filtering
     uint32_t css_frame_count_;
-    uint32_t last_input_frame_;
+    // last_input_frame_ removed - now using stateless filtering for rollback compatibility
     
     // Network message types for CSS
     struct CSSStateMessage {

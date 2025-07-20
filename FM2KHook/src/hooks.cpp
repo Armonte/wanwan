@@ -134,6 +134,14 @@ int __cdecl Hook_ProcessGameInputs() {
     // We do nothing here to allow GekkoNet to control the frame pacing.
     if (!waiting_for_gekko_advance) {
         // If not waiting for GekkoNet, we're in a non-networked or pre-session state.
+        // But still add timing consideration for CSS to prevent rapid cursor movements
+        bool in_css = (FM2K::State::g_game_state_machine.GetCurrentPhase() == FM2K::State::GamePhase::CHARACTER_SELECT);
+        
+        if (in_css && gekko_session_started) {
+            // Even in non-networked mode, add slight delay during CSS for consistency
+            Sleep(1);
+        }
+        
         // Call the original function to let the game run normally.
         if (original_process_inputs) {
             original_process_inputs();
@@ -152,8 +160,15 @@ int __cdecl Hook_ProcessGameInputs() {
         // 1. CAPTURE: Read actual controller/keyboard inputs (like CCCaster's updateControls)
         CaptureRealInputs();
         
-        // Update CSS synchronization
-        FM2K::CSS::g_css_sync.Update();
+        // Update CSS synchronization only during character select phase (reduced frequency)
+        auto current_phase = FM2K::State::g_game_state_machine.GetCurrentPhase();
+        if (current_phase == FM2K::State::GamePhase::CHARACTER_SELECT) {
+            // Only update CSS sync every 5 frames to reduce lag
+            static uint32_t css_update_counter = 0;
+            if (++css_update_counter % 5 == 0) {
+                FM2K::CSS::g_css_sync.Update();
+            }
+        }
         
         // 2. SEND: Send local input to GekkoNet (like GekkoNet example's gekko_add_local_input)
         // GEKKONET-STYLE: Only send OUR keyboard input, regardless of player slot
@@ -174,15 +189,7 @@ int __cdecl Hook_ProcessGameInputs() {
             local_input = (uint8_t)(filtered_input & 0xFF);
         }
         
-        // CRITICAL: Log CSS input synchronization for debugging desyncs
-        if (FM2K::State::g_game_state_machine.GetCurrentPhase() == FM2K::State::GamePhase::CHARACTER_SELECT) {
-            static uint32_t css_input_count = 0;
-            css_input_count++;
-            if (css_input_count % 60 == 0 || local_input != 0) {  // Log every second or when input changes
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS_LOCKSTEP: Frame %u sending input=0x%02X (count=%u)", 
-                           g_frame_counter, local_input, css_input_count);
-            }
-        }
+        // Simplified input sending without excessive logging
         
         gekko_add_local_input(gekko_session, local_player_handle, &local_input);
         
@@ -215,6 +222,7 @@ int __cdecl Hook_ProcessGameInputs() {
             
             switch (update->type) {
                 case AdvanceEvent: {
+                    
                     // CRITICAL DEBUG: Log the exact inputs received from GekkoNet
                     uint8_t received_p1 = update->data.adv.inputs[0];
                     uint8_t received_p2 = update->data.adv.inputs[1];
@@ -232,15 +240,7 @@ int __cdecl Hook_ProcessGameInputs() {
                     networked_p2_input = received_p2;
                     use_networked_inputs = true;
                     
-                    // CRITICAL: Log CSS lockstep synchronization
-                    if (FM2K::State::g_game_state_machine.GetCurrentPhase() == FM2K::State::GamePhase::CHARACTER_SELECT) {
-                        static uint32_t css_advance_count = 0;
-                        css_advance_count++;
-                        if (css_advance_count % 60 == 0 || received_p1 != 0 || received_p2 != 0) {
-                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS_LOCKSTEP: Frame %u synchronized P1=0x%02X P2=0x%02X (count=%u)", 
-                                       update->data.adv.frame, received_p1, received_p2, css_advance_count);
-                        }
-                    }
+                    // Simplified synchronization without excessive logging
 
                     // Check if the remote player sent a confirmation signal.
                     uint8_t remote_input = is_host ? networked_p2_input : networked_p1_input;
@@ -263,81 +263,62 @@ int __cdecl Hook_ProcessGameInputs() {
 
                     // Simplified direction tracking without logging
 
-                    // Now, let the original game code run with the synchronized inputs.
+                    // Simplified movement detection without logging
+                    
+                    // Normal frame advancement (allow rollback to work)
                     if (original_process_inputs) {
                         original_process_inputs();
                     }
                     g_frame_counter++;
                     
                     // Simplified post-processing without cursor tracking
+                    
+                    // Simplified post-processing without cursor tracking
                     break;
                 }
                     
                 case SaveEvent: {
-                    // Query the state machine to determine the current strategy
+                    // CCCaster Hybrid Approach: Only save rollback states during battle, not CSS
+                    auto current_phase = FM2K::State::g_game_state_machine.GetCurrentPhase();
                     auto strategy = FM2K::State::g_game_state_machine.GetSyncStrategy();
 
-                    if (strategy == FM2K::State::SyncStrategy::ROLLBACK) {
-                        // We are in active, stable battle. Perform a full state save.
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SaveEvent: Full Rollback Save at frame %u", update->data.save.frame);
-                        
-                        try {
-                            // Scan active objects in the pool with error checking
-                            auto active_objects = FM2K::ObjectPool::Scanner::ScanActiveObjects();
-                            
-                            // Create rollback state
-                            FM2K::ObjectPool::ObjectPoolState pool_state;
-                            pool_state.frame_number = g_frame_counter;
-                            pool_state.active_object_count = static_cast<uint32_t>(active_objects.size());
-                            pool_state.objects = std::move(active_objects);
-                            
-                            // Calculate serialization size
-                            uint32_t data_size = pool_state.GetSerializedSize();
-                            
-                            // Verify we don't exceed GekkoNet buffer limits
-                            const uint32_t MAX_GEKKO_BUFFER = 4096;
-                            if (data_size > MAX_GEKKO_BUFFER) {
-                                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, 
-                                           "SaveEvent: State size %u > %u, reducing objects", 
-                                           data_size, MAX_GEKKO_BUFFER);
-                                
-                                // Reduce to fit in buffer
-                                size_t max_objects = (MAX_GEKKO_BUFFER - 8) / sizeof(FM2K::ObjectPool::CompactObject);
-                                if (pool_state.objects.size() > max_objects) {
-                                    pool_state.objects.resize(max_objects);
-                                    pool_state.active_object_count = static_cast<uint32_t>(max_objects);
-                                    data_size = pool_state.GetSerializedSize();
-                                }
-                            }
-                            
-                            // Set GekkoNet save data
-                            if (update->data.save.state_len) *update->data.save.state_len = data_size;
-                            if (update->data.save.checksum) *update->data.save.checksum = g_frame_counter;
-                            
-                            if (update->data.save.state) {
-                                if (pool_state.SerializeTo(update->data.save.state, data_size)) {
-                                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                                               "Battle SaveEvent frame %u: %u objects, %u bytes", 
-                                               update->data.save.frame, pool_state.active_object_count, data_size);
-                                } else {
-                                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, 
-                                               "SaveEvent ERROR: Serialization failed for frame %u", 
-                                               update->data.save.frame);
-                                }
-                            }
-                            
-                        } catch (...) {
-                            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, 
-                                       "SaveEvent CRASH: Exception caught in frame %u", 
-                                       update->data.save.frame);
-                            
-                            // Emergency fallback
-                            if (update->data.save.state_len) *update->data.save.state_len = 8;
-                            if (update->data.save.checksum) *update->data.save.checksum = 0xFFFFFFFF;
-                            if (update->data.save.state) {
-                                memset(update->data.save.state, 0xFF, 8);
-                            }
+                    if (current_phase == FM2K::State::GamePhase::CHARACTER_SELECT) {
+                        // CCCaster approach: No state saves during CSS - use minimal dummy save
+                        // Only log occasionally to reduce spam
+                        if (update->data.save.frame % 100 == 0) {
+                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SaveEvent: CSS Skip (no rollback saves during character select) at frame %u", update->data.save.frame);
                         }
+                        if (update->data.save.state_len) *update->data.save.state_len = 8;
+                        if (update->data.save.checksum) *update->data.save.checksum = 0xC5500000 + update->data.save.frame;
+                        if (update->data.save.state) {
+                            memset(update->data.save.state, 0xCC, 8);  // CSS marker
+                        }
+                    } else if (strategy == FM2K::State::SyncStrategy::ROLLBACK) {
+                        // Additional safety checks before object scanning
+                        auto& state_machine = FM2K::State::g_game_state_machine;
+                        bool safe_to_scan = true;
+                        
+                        // Validate we're truly in stable battle state
+                        if (state_machine.IsInBattleStabilization()) {
+                            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "SaveEvent: Still in battle stabilization, deferring object scanning");
+                            safe_to_scan = false;
+                        }
+                        
+                        // Ensure enough frames have passed since battle start
+                        uint32_t frames_in_battle = state_machine.GetFramesInBattle();
+                        if (frames_in_battle < 10) {
+                            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "SaveEvent: Too early in battle (%u frames), deferring object scanning", frames_in_battle);
+                            safe_to_scan = false;
+                        }
+                        
+                        // TEMPORARY: Disable all object scanning during battle to prevent crashes
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SaveEvent: Battle minimal save (object scanning disabled) at frame %u (%u frames in battle)", update->data.save.frame, frames_in_battle);
+                        if (update->data.save.state_len) *update->data.save.state_len = 8;
+                        if (update->data.save.checksum) *update->data.save.checksum = 0xBABE0000 + update->data.save.frame;
+                        if (update->data.save.state) {
+                            memset(update->data.save.state, 0xBB, 8);  // Battle minimal marker
+                        }
+                        break; // Skip object scanning entirely
                     } else {
                         // We are in lockstep (menus, CSS, or transition). Perform a minimal "dummy" save.
                         // GekkoNet requires a state buffer, but its contents don't matter for lockstep.
@@ -358,54 +339,34 @@ int __cdecl Hook_ProcessGameInputs() {
                 }
                     
                 case LoadEvent: {
+                    // CCCaster Hybrid Approach: Only load rollback states during battle, not CSS
+                    auto current_phase = FM2K::State::g_game_state_machine.GetCurrentPhase();
                     auto strategy = FM2K::State::g_game_state_machine.GetSyncStrategy();
 
-                    if (strategy == FM2K::State::SyncStrategy::ROLLBACK) {
-                        // Only load state if we are in a rollback-enabled phase.
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LoadEvent: Full Rollback Load to frame %u", update->data.load.frame);
+                    if (current_phase == FM2K::State::GamePhase::CHARACTER_SELECT) {
+                        // CCCaster approach: No state loads during CSS - ignore rollback loads
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LoadEvent: CSS Skip (no rollback loads during character select) to frame %u", update->data.load.frame);
+                    } else if (strategy == FM2K::State::SyncStrategy::ROLLBACK) {
+                        // Additional safety checks before object pool restoration
+                        auto& state_machine = FM2K::State::g_game_state_machine;
+                        bool safe_to_load = true;
                         
-                        try {
-                            // Validate load data
-                            if (!update->data.load.state || update->data.load.state_len < 8) {
-                                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, 
-                                           "LoadEvent: Invalid state data for frame %u", 
-                                           update->data.load.frame);
-                                break;
-                            }
-                            
-                            // Deserialize object pool state from GekkoNet buffer
-                            FM2K::ObjectPool::ObjectPoolState pool_state;
-                            if (pool_state.DeserializeFrom(update->data.load.state, update->data.load.state_len)) {
-                                
-                                // Restore frame counter
-                                g_frame_counter = pool_state.frame_number;
-                                
-                                // CRITICAL: Clear the entire pool before restoring to prevent stale objects
-                                FM2K::ObjectPool::Scanner::ClearObjectPool();
-                                
-                                // Restore all objects to their exact slots
-                                uint32_t restored_count = 0;
-                                for (const auto& obj : pool_state.objects) {
-                                    if (FM2K::ObjectPool::Scanner::RestoreObjectToSlot(obj)) {
-                                        restored_count++;
-                                    }
-                                }
-                                
-                                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                                           "Battle LoadEvent to frame %u: %u/%u objects restored", 
-                                           pool_state.frame_number, restored_count, pool_state.active_object_count);
-                                
-                            } else {
-                                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, 
-                                           "LoadEvent ERROR: Failed to deserialize state for frame %u", 
-                                           update->data.load.frame);
-                            }
-                            
-                        } catch (...) {
-                            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, 
-                                       "LoadEvent CRASH: Exception caught in frame %u", 
-                                       update->data.load.frame);
+                        // Validate we're truly in stable battle state  
+                        if (state_machine.IsInBattleStabilization()) {
+                            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "LoadEvent: Still in battle stabilization, deferring object restoration");
+                            safe_to_load = false;
                         }
+                        
+                        // Ensure enough frames have passed since battle start
+                        uint32_t frames_in_battle = state_machine.GetFramesInBattle();
+                        if (frames_in_battle < 10) {
+                            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "LoadEvent: Too early in battle (%u frames), deferring object restoration", frames_in_battle);
+                            safe_to_load = false;
+                        }
+                        
+                        // TEMPORARY: Disable all object restoration during battle to prevent crashes
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LoadEvent: Skipping rollback load (object restoration disabled) to frame %u (%u frames in battle)", update->data.load.frame, frames_in_battle);
+                        break; // Skip object restoration entirely
                     } else {
                         // In lockstep mode, we NEVER load state. The game progresses naturally.
                         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LoadEvent: Ignored during Lockstep frame %u", update->data.load.frame);

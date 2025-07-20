@@ -29,6 +29,7 @@ CharSelectSync::CharSelectSync()
     , last_sync_frame_(0)
     , confirmation_sent_(false)
     , confirmation_received_(false)
+    , handshake_completed_(false)
     , css_frame_count_(0)
     , last_input_frame_(0)
 {
@@ -126,8 +127,19 @@ void CharSelectSync::ForceResync() {
     desync_frames_ = 0;
 }
 
+void CharSelectSync::ResetForNewCSSSession() {
+    confirmation_sent_ = false;
+    confirmation_received_ = false;
+    handshake_completed_ = false;
+    css_frame_count_ = 0;
+    last_input_frame_ = 0;
+    in_sync_ = true;
+    desync_frames_ = 0;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Reset for new character select session");
+}
+
 void CharSelectSync::HandleCharacterConfirmation() {
-    if (!gekko_session_started) return;
+    if (!gekko_session_started || handshake_completed_) return;
 
     // Check if the local player has confirmed their selection
     bool local_player_confirmed = false;
@@ -149,9 +161,10 @@ void CharSelectSync::HandleCharacterConfirmation() {
         gekko_add_local_input(gekko_session, local_player_handle, &confirmation_input);
     }
 
-    // Check if handshake is complete
-    if (confirmation_sent_ && confirmation_received_) {
+    // Check if handshake is complete (only log once)
+    if (confirmation_sent_ && confirmation_received_ && !handshake_completed_) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Handshake complete! Both players confirmed.");
+        handshake_completed_ = true;
         // Transition to battle will be handled by game state machine
     }
 }

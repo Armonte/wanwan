@@ -32,6 +32,9 @@ public:
     // Force resync if needed (e.g., after network hiccup)
     void ForceResync();
     
+    // Reset CSS state when leaving character select
+    void ResetForNewCSSSession();
+    
     // Validate and filter CSS input (CCCaster-style) - PUBLIC for hooks.cpp
     uint32_t ValidateAndFilterCSSInput(uint32_t raw_input, uint8_t player, uint32_t css_frames);
     
@@ -78,6 +81,7 @@ private:
     // Confirmation tracking
     bool confirmation_sent_;
     bool confirmation_received_;
+    bool handshake_completed_;
     
     // CCCaster-style frame tracking for input filtering
     uint32_t css_frame_count_;

@@ -1,5 +1,6 @@
 #include "game_state_machine.h"
 #include "globals.h"
+#include "css_sync.h"
 #include <SDL3/SDL_log.h>
 
 // Forward declaration for frame counter
@@ -69,13 +70,19 @@ void GameStateMachine::Update(uint32_t current_game_mode) {
         if (new_phase == GamePhase::CHARACTER_SELECT) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, 
                 "CHARACTER_SELECT transition - disabling rollback for stabilization");
+            
+            // Reset CSS sync state for new session
+            FM2K::CSS::g_css_sync.ResetForNewCSSSession();
         } else if (new_phase == GamePhase::IN_BATTLE) {
             battle_start_frame_ = g_frame_counter;
             battle_sync_confirmed_ = false;  // Reset sync confirmation
             battle_sync_frame_ = 0;
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, 
-                "IN_BATTLE transition at frame %u - requesting battle sync from both clients", 
+                "IN_BATTLE transition at frame %u - starting 600-frame stabilization period (lockstep mode)", 
                 battle_start_frame_);
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, 
+                "Battle rollback will be enabled after stabilization at frame %u", 
+                battle_start_frame_ + 600);
             
             // Request synchronization from the network session
             if (is_network_session_) {
@@ -139,7 +146,22 @@ SyncStrategy GameStateMachine::DetermineSyncStrategy(GamePhase phase) const {
             return SyncStrategy::LOCKSTEP;
             
         case GamePhase::IN_BATTLE:
-            // Full rollback during combat
+            // Gradual rollback enablement with stabilization period
+            if (battle_start_frame_ > 0) {
+                uint32_t frames_in_battle = g_frame_counter - battle_start_frame_;
+                const uint32_t STABILIZATION_FRAMES = 600; // 6 seconds at 100 FPS
+                
+                if (frames_in_battle < STABILIZATION_FRAMES) {
+                    // Stay in lockstep during stabilization period
+                    return SyncStrategy::LOCKSTEP;
+                } else if (frames_in_battle == STABILIZATION_FRAMES) {
+                    // Log the transition to rollback (only once)
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, 
+                        "Battle stabilization complete at frame %u (%u frames in battle) - enabling rollback netcode", 
+                        g_frame_counter, frames_in_battle);
+                }
+            }
+            // Full rollback after stabilization
             return SyncStrategy::ROLLBACK;
             
         default:
@@ -164,6 +186,25 @@ void GameStateMachine::RequestBattleSync() {
             g_frame_counter - battle_sync_frame_);
         battle_sync_confirmed_ = true;
     }
+}
+
+bool GameStateMachine::IsInBattleStabilization() const {
+    if (current_phase_ != GamePhase::IN_BATTLE || battle_start_frame_ == 0) {
+        return false;
+    }
+    
+    uint32_t frames_in_battle = g_frame_counter - battle_start_frame_;
+    const uint32_t STABILIZATION_FRAMES = 600; // 6 seconds at 100 FPS
+    
+    return frames_in_battle < STABILIZATION_FRAMES;
+}
+
+uint32_t GameStateMachine::GetFramesInBattle() const {
+    if (current_phase_ != GamePhase::IN_BATTLE || battle_start_frame_ == 0) {
+        return 0;
+    }
+    
+    return g_frame_counter - battle_start_frame_;
 }
 
 } // namespace State

@@ -171,6 +171,10 @@ public:
     // Get the frame when battle started (for sync purposes)
     uint32_t GetBattleStartFrame() const { return battle_start_frame_; }
     
+    // Battle transition tracking
+    bool IsInBattleStabilization() const;
+    uint32_t GetFramesInBattle() const;
+    
     // Battle synchronization control
     void ConfirmBattleSync() { battle_sync_confirmed_ = true; }
     bool IsBattleSyncConfirmed() const { return battle_sync_confirmed_; }

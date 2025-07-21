@@ -1,5 +1,6 @@
 #include "FM2K_GameInstance.h"
 #include "FM2K_Integration.h"
+#include "FM2KHook/src/shared_mem.h"  // Use canonical SharedInputData definition
 // DLL injection approach - no direct hooks needed
 #include <SDL3/SDL.h>
 #include <algorithm>
@@ -10,72 +11,7 @@
 
 // Save state profile removed - now using optimized FastGameState system
 
-// Shared memory structure matching the DLL
-struct SharedInputData {
-    uint32_t frame_number;
-    uint16_t p1_input;
-    uint16_t p2_input;
-    bool valid;
-    
-    // Network configuration
-    bool is_online_mode;
-    bool is_host;
-    char remote_address[64];
-    uint16_t port;
-    uint8_t input_delay;
-    bool config_updated;
-    
-    // Debug commands from launcher
-    bool debug_save_state_requested;
-    bool debug_load_state_requested;
-    uint32_t debug_rollback_frames;
-    bool debug_rollback_requested;
-    uint32_t debug_command_id;  // Incremented for each command to ensure processing
-    
-    // Slot-based save/load system
-    bool debug_save_to_slot_requested;
-    bool debug_load_from_slot_requested;
-    uint32_t debug_target_slot;  // Which slot to save to / load from (0-7)
-    
-    // Auto-save configuration
-    bool auto_save_enabled;
-    uint32_t auto_save_interval_frames;  // How often to auto-save
-    // save_profile removed - now using optimized FastGameState system
-    
-    // Slot status feedback to UI
-    struct SlotInfo {
-        bool occupied;
-        uint32_t frame_number;
-        uint64_t timestamp_ms;
-        uint32_t checksum;
-        uint32_t state_size_kb;  // Size in KB for analysis
-        uint32_t save_time_us;   // Save time in microseconds
-        uint32_t load_time_us;   // Load time in microseconds
-    } slot_status[8];
-    
-    // Performance statistics
-    struct PerformanceStats {
-        uint32_t total_saves;
-        uint32_t total_loads;
-        uint32_t avg_save_time_us;
-        uint32_t avg_load_time_us;
-        uint32_t memory_usage_mb;
-    } perf_stats;
-    
-    // GekkoNet client role coordination (simplified)
-    uint8_t player_index;            // 0 for Player 1, 1 for Player 2
-    uint8_t session_role;            // 0 = Host, 1 = Guest
-    
-    // Production mode settings (added for enhanced debugging)
-    bool production_mode;                // Enable production mode (reduced logging)
-    bool enable_input_recording;         // Record inputs to file for testing
-    
-    // MinimalGameState testing mode
-    bool use_minimal_gamestate_testing;  // Enable 48-byte minimal state for GekkoNet testing
-    
-    // Configuration versioning to force hook to re-read settings
-    uint32_t config_version;  // Incremented each time configuration is updated
-};
+// SharedInputData struct now comes from FM2KHook/src/shared_mem.h
 
 namespace {
 
@@ -524,7 +460,7 @@ void FM2KGameInstance::InitializeSharedMemory() {
     // Create unique shared memory name using process ID
     std::string shared_memory_name = "FM2K_InputSharedMemory_" + std::to_string(process_id_);
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Waiting for hook DLL to create shared memory: %s", shared_memory_name.c_str());
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LAUNCHER: Opening shared memory with name: %s (PID=%lu)", shared_memory_name.c_str(), process_id_);
     
     // Retry opening shared memory for up to 2 seconds (hook DLL needs time to initialize)
     for (int attempt = 0; attempt < 40; attempt++) {
@@ -735,6 +671,9 @@ bool FM2KGameInstance::GetSlotStatus(uint32_t slot, SlotStatus& status) {
     status.state_size_kb = shared_data->slot_status[slot].state_size_kb;
     status.save_time_us = shared_data->slot_status[slot].save_time_us;
     status.load_time_us = shared_data->slot_status[slot].load_time_us;
+    status.active_object_count = shared_data->slot_status[slot].active_object_count;
+    
+    // Debug logging removed - slot status now working correctly
     
     return true;
 }

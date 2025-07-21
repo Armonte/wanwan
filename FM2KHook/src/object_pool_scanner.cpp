@@ -19,8 +19,8 @@ std::vector<CompactObject> Scanner::ScanActiveObjects() {
     
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Object pool base address 0x%08X is valid, starting scan...", OBJECT_POOL_BASE_ADDR);
     
-    // SAFETY: Limit scan to first 10 slots during initial debugging
-    uint16_t max_slots_to_scan = 10; // Was MAX_OBJECT_SLOTS (1024)
+    // Scan all slots to find active objects
+    uint16_t max_slots_to_scan = MAX_OBJECT_SLOTS; // Full scan of 1024 slots
     
     for (uint16_t slot = 0; slot < max_slots_to_scan; slot++) {
         SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Scanning slot %d...", slot);
@@ -43,16 +43,44 @@ std::vector<CompactObject> Scanner::ScanActiveObjects() {
         } else {
             SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Failed to read slot %d", slot);
         }
-        
-        // SAFETY: Limit active objects
-        if (active_objects.size() > 5) {
-            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Active object limit reached at slot %d, stopping", slot);
-            break;
-        }
     }
     
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Object scan completed: %zu active objects found", active_objects.size());
     return active_objects;
+}
+
+std::vector<DetailedObject> Scanner::ScanDetailedObjects() {
+    std::vector<DetailedObject> detailed_objects;
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Starting DETAILED object pool scan...");
+    
+    // SAFETY: Check if object pool base address is valid
+    if (IsBadReadPtr((void*)OBJECT_POOL_BASE_ADDR, OBJECT_SIZE_BYTES)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DETAILED SCAN: Object pool base address 0x%08X invalid", OBJECT_POOL_BASE_ADDR);
+        return detailed_objects;
+    }
+    
+    // Scan all slots for detailed analysis
+    for (uint16_t slot = 0; slot < MAX_OBJECT_SLOTS; slot++) {
+        DetailedObject obj;
+        if (ReadDetailedObjectData(slot, &obj)) {
+            if (obj.IsActive()) {
+                detailed_objects.push_back(obj);
+                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "DETAILED: Found active object at slot %d", slot);
+            }
+        }
+    }
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DETAILED scan completed: %zu active objects found", detailed_objects.size());
+    return detailed_objects;
+}
+
+DetailedObject Scanner::ReadDetailedObjectFromSlot(uint16_t slot) {
+    DetailedObject obj;
+    if (ReadDetailedObjectData(slot, &obj)) {
+        return obj;
+    }
+    return DetailedObject();  // Return empty object if read failed
 }
 
 uint32_t Scanner::GetActiveObjectCount() {
@@ -247,6 +275,157 @@ bool ObjectPoolState::DeserializeFrom(const uint8_t* buffer, uint32_t buffer_siz
     }
     
     return true;
+}
+
+bool Scanner::ReadDetailedObjectData(uint16_t slot, DetailedObject* obj) {
+    if (slot >= MAX_OBJECT_SLOTS || !obj) return false;
+    
+    uintptr_t slot_addr = GetSlotAddress(slot);
+    
+    // Initialize object
+    obj->slot_index = slot;
+    
+    // Read structured fields from known offsets
+    uint32_t* type_ptr = (uint32_t*)(slot_addr + 0x00);
+    uint32_t* id_ptr = (uint32_t*)(slot_addr + 0x04);
+    uint32_t* pos_x_ptr = (uint32_t*)(slot_addr + 0x08);
+    uint32_t* pos_y_ptr = (uint32_t*)(slot_addr + 0x0C);
+    uint32_t* vel_x_ptr = (uint32_t*)(slot_addr + 0x10);
+    uint32_t* vel_y_ptr = (uint32_t*)(slot_addr + 0x14);
+    uint32_t* unknown_18_ptr = (uint32_t*)(slot_addr + 0x18);
+    uint32_t* unknown_1C_ptr = (uint32_t*)(slot_addr + 0x1C);
+    uint32_t* unknown_20_ptr = (uint32_t*)(slot_addr + 0x20);
+    uint32_t* unknown_24_ptr = (uint32_t*)(slot_addr + 0x24);
+    uint32_t* unknown_28_ptr = (uint32_t*)(slot_addr + 0x28);
+    uint32_t* anim_state_ptr = (uint32_t*)(slot_addr + 0x2C);
+    uint32_t* health_ptr = (uint32_t*)(slot_addr + 0x30);
+    uint32_t* state_flags_ptr = (uint32_t*)(slot_addr + 0x34);
+    uint32_t* timer_ptr = (uint32_t*)(slot_addr + 0x38);
+    uint32_t* unknown_3C_ptr = (uint32_t*)(slot_addr + 0x3C);
+    
+    // Validate critical pointers
+    if (IsBadReadPtr(type_ptr, sizeof(uint32_t)) ||
+        IsBadReadPtr(id_ptr, sizeof(uint32_t)) ||
+        IsBadReadPtr((void*)slot_addr, OBJECT_SIZE_BYTES)) {
+        return false;
+    }
+    
+    // Read structured fields
+    obj->type = *type_ptr;
+    obj->id = *id_ptr;
+    obj->position_x = *pos_x_ptr;
+    obj->position_y = *pos_y_ptr;
+    obj->velocity_x = *vel_x_ptr;
+    obj->velocity_y = *vel_y_ptr;
+    obj->unknown_18 = *unknown_18_ptr;
+    obj->unknown_1C = *unknown_1C_ptr;
+    obj->unknown_20 = *unknown_20_ptr;
+    obj->unknown_24 = *unknown_24_ptr;
+    obj->unknown_28 = *unknown_28_ptr;
+    obj->animation_state = *anim_state_ptr;
+    obj->health_damage = *health_ptr;
+    obj->state_flags = *state_flags_ptr;
+    obj->timer_counter = *timer_ptr;
+    obj->unknown_3C = *unknown_3C_ptr;
+    
+    // Copy complete raw data for analysis
+    memcpy(obj->raw_data, (void*)slot_addr, OBJECT_SIZE_BYTES);
+    
+    return true;
+}
+
+void Scanner::LogDetailedObjectInfo(uint16_t slot) {
+    DetailedObject obj = ReadDetailedObjectFromSlot(slot);
+    if (!obj.IsActive()) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SLOT %u: INACTIVE", slot);
+        return;
+    }
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "=== DETAILED OBJECT ANALYSIS: SLOT %u ===", slot);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Type: %u (%s)", obj.type, obj.GetTypeDescription().c_str());
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ID: %u", obj.id);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Position: (%u, %u)", obj.position_x, obj.position_y);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Velocity: (%u, %u)", obj.velocity_x, obj.velocity_y);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Animation State: %u", obj.animation_state);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Health/Damage: %u", obj.health_damage);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "State Flags: 0x%08X", obj.state_flags);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Timer/Counter: %u", obj.timer_counter);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Unknown Fields: 0x%08X, 0x%08X, 0x%08X, 0x%08X, 0x%08X, 0x%08X", 
+               obj.unknown_18, obj.unknown_1C, obj.unknown_20, obj.unknown_24, obj.unknown_28, obj.unknown_3C);
+    
+    // Show first 64 bytes of raw data as hex dump
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Raw Data (first 64 bytes):");
+    std::string hex_dump = "";
+    for (int i = 0; i < 64 && i < 382; i++) {
+        char hex[4];
+        sprintf(hex, "%02X ", obj.raw_data[i]);
+        hex_dump += hex;
+        if ((i + 1) % 16 == 0) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  %04X: %s", i - 15, hex_dump.c_str());
+            hex_dump = "";
+        }
+    }
+    if (!hex_dump.empty()) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "  %04X: %s", (64 / 16) * 16, hex_dump.c_str());
+    }
+}
+
+void Scanner::LogAllActiveObjects() {
+    auto detailed_objects = ScanDetailedObjects();
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "=== COMPLETE ACTIVE OBJECT BREAKDOWN ===");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Found %zu active objects in pool", detailed_objects.size());
+    
+    for (const auto& obj : detailed_objects) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Slot %u: Type %u (%s), ID %u, Pos(%u,%u), Vel(%u,%u), Anim %u, Health %u, Flags 0x%08X", 
+                   obj.slot_index, obj.type, obj.GetTypeDescription().c_str(), obj.id, 
+                   obj.position_x, obj.position_y, obj.velocity_x, obj.velocity_y,
+                   obj.animation_state, obj.health_damage, obj.state_flags);
+    }
+}
+
+// DetailedObject method implementations (inside namespace)
+std::string DetailedObject::GetTypeDescription() const {
+    switch (type) {
+        case 0: return "INACTIVE";
+        case 1: return "SYSTEM";
+        case 2: return "MENU";
+        case 3: return "BACKGROUND";
+        case 4: return "CHARACTER";
+        case 5: return "PROJECTILE";
+        case 6: return "EFFECT";
+        case 7: return "UI_ELEMENT";
+        case 8: return "SOUND";
+        case 9: return "COLLISION";
+        case 10: return "TRIGGER";
+        default: return "UNKNOWN_TYPE_" + std::to_string(type);
+    }
+}
+
+std::string DetailedObject::GetDetailedDescription() const {
+    std::string desc = GetTypeDescription();
+    
+    if (HasPosition()) {
+        desc += " at (" + std::to_string(position_x) + "," + std::to_string(position_y) + ")";
+    }
+    
+    if (HasVelocity()) {
+        desc += " moving (" + std::to_string(velocity_x) + "," + std::to_string(velocity_y) + ")";
+    }
+    
+    if (animation_state != 0) {
+        desc += " anim:" + std::to_string(animation_state);
+    }
+    
+    if (health_damage != 0) {
+        desc += " hp:" + std::to_string(health_damage);
+    }
+    
+    if (state_flags != 0) {
+        desc += " flags:0x" + std::to_string(state_flags);
+    }
+    
+    return desc;
 }
 
 } // namespace ObjectPool

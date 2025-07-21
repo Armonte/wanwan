@@ -1,0 +1,1179 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="46">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>5</ID>
+      <Description>"mainmenu"</Description>
+      <GroupHeader>1</GroupHeader>
+      <CheatEntries>
+        <CheatEntry>
+          <ID>1</ID>
+          <Description>"g_menu_selection"</Description>
+          <VariableType>4 Bytes</VariableType>
+          <Address>WonderfulWorld_ver_0946.exe+24780</Address>
+        </CheatEntry>
+      </CheatEntries>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>6</ID>
+      <Description>"css"</Description>
+      <GroupHeader>1</GroupHeader>
+      <CheatEntries>
+        <CheatEntry>
+          <ID>7</ID>
+          <Description>"p1Cursor"</Description>
+          <GroupHeader>1</GroupHeader>
+          <CheatEntries>
+            <CheatEntry>
+              <ID>15</ID>
+              <Description>"p1Cursor"</Description>
+              <ShowAsHex>1</ShowAsHex>
+              <ShowAsSigned>0</ShowAsSigned>
+              <VariableType>8 Bytes</VariableType>
+              <Address>00424E50</Address>
+            </CheatEntry>
+            <CheatEntry>
+              <ID>3</ID>
+              <Description>"p1CharToDisplayAndLoad"</Description>
+              <VariableType>4 Bytes</VariableType>
+              <Address>WonderfulWorld_ver_0946.exe+70020</Address>
+            </CheatEntry>
+            <CheatEntry>
+              <ID>4</ID>
+              <Description>"u_p1_related"</Description>
+              <VariableType>4 Bytes</VariableType>
+              <Address>WonderfulWorld_ver_0946.exe+CF9E0</Address>
+            </CheatEntry>
+          </CheatEntries>
+        </CheatEntry>
+        <CheatEntry>
+          <ID>11</ID>
+          <Description>"p2Cursor"</Description>
+          <GroupHeader>1</GroupHeader>
+          <CheatEntries>
+            <CheatEntry>
+              <ID>17</ID>
+              <Description>"p2Cursor"</Description>
+              <ShowAsHex>1</ShowAsHex>
+              <ShowAsSigned>0</ShowAsSigned>
+              <VariableType>8 Bytes</VariableType>
+              <Address>WonderfulWorld_ver_0946.exe+24E58</Address>
+            </CheatEntry>
+            <CheatEntry>
+              <ID>9</ID>
+              <Description>"p2CharToDisplayAndLoad"</Description>
+              <VariableType>4 Bytes</VariableType>
+              <Address>WonderfulWorld_ver_0946.exe+70024</Address>
+            </CheatEntry>
+            <CheatEntry>
+              <ID>10</ID>
+              <Description>"u_p2_related"</Description>
+              <VariableType>4 Bytes</VariableType>
+              <Address>WonderfulWorld_ver_0946.exe+CF9E4</Address>
+            </CheatEntry>
+          </CheatEntries>
+        </CheatEntry>
+      </CheatEntries>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>35</ID>
+      <Description>"g_rand"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>41FB1C</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>18</ID>
+      <Description>"g_frame_skip_count(?)"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>004246F4</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>19</ID>
+      <Description>"g_hwnd_parent"</Description>
+      <ShowAsHex>1</ShowAsHex>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>004246F8</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>20</ID>
+      <Description>"g_object_count"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>004246FC</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>21</ID>
+      <Description>"g_frame_sync_flag"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>00424700</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>16</ID>
+      <Description>"flag"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>00424F08</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>33</ID>
+      <Description>"g_player_character_selection"</Description>
+      <ShowAsHex>1</ShowAsHex>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>470020</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>34</ID>
+      <Description>"g_iPlayer1_Color_Selection"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>00470024</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>26</ID>
+      <Description>"g_fm2k_game_mode"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>470040</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>23</ID>
+      <Description>"g_game_timer(?)"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>470044</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>24</ID>
+      <Description>"g_round_limit"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>470048</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>27</ID>
+      <Description>"g_round_state"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>47004C</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>25</ID>
+      <Description>"g_actual_wanwan_timer"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>470050</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>22</ID>
+      <Description>"g_game_mode(?)"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>00470054</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>28</ID>
+      <Description>"g_css_mode_rel"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>470058</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>29</ID>
+      <Description>"g_round_timer"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>00470060</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>30</ID>
+      <Description>"g_team_round_setting"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>470064</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>31</ID>
+      <Description>"g_round_setting"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>470068</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>32</ID>
+      <Description>"g_player_move_history"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>Array of byte</VariableType>
+      <ByteLength>16</ByteLength>
+      <Address>47006C</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>36</ID>
+      <Description>"No description"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004DFC6D</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>37</ID>
+      <Description>"No description"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>WonderfulWorld_ver_0946.exe+77030</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>38</ID>
+      <Description>"No description"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>WonderfulWorld_ver_0946.exe+EDCAC</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>39</ID>
+      <Description>"No description"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>4EDCC4</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>40</ID>
+      <Description>"No description"</Description>
+      <ShowAsHex>1</ShowAsHex>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>00470264</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>41</ID>
+      <Description>"No description"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>WonderfulWorld_ver_0946.exe+7019C</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>42</ID>
+      <Description>"g_game_paused"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>4701BC</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>43</ID>
+      <Description>"g_replay_mode"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>4701C0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>44</ID>
+      <Description>"g_hit_effect_target"</Description>
+      <ShowAsHex>1</ShowAsHex>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>4701C4</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>45</ID>
+      <Description>"No description"</Description>
+      <VariableType>4 Bytes</VariableType>
+      <Address>WonderfulWorld_ver_0946.exe+456FC</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>46</ID>
+      <Description>"No description"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>8 Bytes</VariableType>
+      <Address>WonderfulWorld_ver_0946.exe+47DD4</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>47</ID>
+      <Description>"Timer"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>0047DB94</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>48</ID>
+      <Description>"Coor X P1"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>004DFCC3</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>49</ID>
+      <Description>"Coor X P2"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>004EDD02</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>50</ID>
+      <Description>"Coor Y P1"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004DFCC7</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>51</ID>
+      <Description>"Coor Y P2"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004EDD06</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>52</ID>
+      <Description>"Map X Coor"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>00447F2C</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>53</ID>
+      <Description>"Map Y Coor"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>00447F30</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>54</ID>
+      <Description>"Char Var A"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004DFD17</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>55</ID>
+      <Description>"Char Var A P2"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004EDD56</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>56</ID>
+      <Description>"Char Var B"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004DFD19</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>57</ID>
+      <Description>"Char Var B P2"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004EDD58</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>58</ID>
+      <Description>"Char Var C"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004DFD1B</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>59</ID>
+      <Description>"Char Var C P2"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004EDD5A</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>60</ID>
+      <Description>"Char Var D"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004DFD1D</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>61</ID>
+      <Description>"Char Var D P2"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004EDD5C</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>62</ID>
+      <Description>"Char Var E"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004DFD1F</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>63</ID>
+      <Description>"Char Var E P2"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004EDD5E</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>64</ID>
+      <Description>"Char Var F"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004DFD21</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>65</ID>
+      <Description>"Char Var F P2"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004EDD60</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>66</ID>
+      <Description>"Char Var G"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004DFD23</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>67</ID>
+      <Description>"Char Var G P2"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004EDD62</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>68</ID>
+      <Description>"Char Var H"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004DFD25</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>69</ID>
+      <Description>"Char Var H P2"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004EDD64</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>70</ID>
+      <Description>"Char Var I"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004DFD27</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>71</ID>
+      <Description>"Char Var I P2"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004EDD66</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>72</ID>
+      <Description>"Char Var J"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004DFD29</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>73</ID>
+      <Description>"Char Var J P2"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004EDD68</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>74</ID>
+      <Description>"Char Var K"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004DFD2B</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>75</ID>
+      <Description>"Char Var K P2"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004EDD6A</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>76</ID>
+      <Description>"Char Var L"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004DFD2D</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>77</ID>
+      <Description>"Char Var L P2"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004EDD6C</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>78</ID>
+      <Description>"Char Var M"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004DFD2F</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>79</ID>
+      <Description>"Char Var M P2"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004EDD6E</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>80</ID>
+      <Description>"Char Var N"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004DFD31</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>81</ID>
+      <Description>"Char Var N P2"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004EDD70</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>82</ID>
+      <Description>"Char Var O"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004DFD33</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>83</ID>
+      <Description>"Char Var O P2"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004EDD72</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>84</ID>
+      <Description>"Char Var P"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004DFD35</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>85</ID>
+      <Description>"Char Var P P2"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004EDD74</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>86</ID>
+      <Description>"System Var A"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004456B0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>87</ID>
+      <Description>"System Var B"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004456B2</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>88</ID>
+      <Description>"System Var C"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004456B4</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>89</ID>
+      <Description>"System Var D"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004456B6</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>90</ID>
+      <Description>"system Var E"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004456B8</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>91</ID>
+      <Description>"System Var F"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004456BA</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>92</ID>
+      <Description>"System Var G"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004456BC</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>93</ID>
+      <Description>"System Var H"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004456BE</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>94</ID>
+      <Description>"System Var I"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004456C0</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>95</ID>
+      <Description>"system Var J"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004456C2</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>96</ID>
+      <Description>"System Var K"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004456C4</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>97</ID>
+      <Description>"System Var L"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004456C6</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>98</ID>
+      <Description>"System Var M"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004456C8</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>99</ID>
+      <Description>"System Var N"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004456CA</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>100</ID>
+      <Description>"System Var O"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004456CC</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>101</ID>
+      <Description>"system Var P"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004456CE</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>102</ID>
+      <Description>"Task Var A"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>00470311</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>103</ID>
+      <Description>"Task Var A P2"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>0047060D</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>104</ID>
+      <Description>"Task Var B"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>00470313</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>105</ID>
+      <Description>"Task Var B P2"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>0047060F</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>106</ID>
+      <Description>"Task Var C"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>00470315</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>107</ID>
+      <Description>"Task Var C P2"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>00470611</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>108</ID>
+      <Description>"Task Var D"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>00470317</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>109</ID>
+      <Description>"Task Var D P2"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>00470613</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>110</ID>
+      <Description>"Task Var E"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>00470319</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>111</ID>
+      <Description>"Task Var E P2"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>00470615</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>112</ID>
+      <Description>"Task Var F"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>0047031B</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>113</ID>
+      <Description>"Task Var F P2"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>00470617</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>114</ID>
+      <Description>"Task Var G"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>0047031D</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>115</ID>
+      <Description>"Task Var G P2"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>00470619</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>116</ID>
+      <Description>"Task Var H"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>0047031F</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>117</ID>
+      <Description>"Task Var H P2"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>0047061B</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>118</ID>
+      <Description>"Task Var I"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>00470321</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>119</ID>
+      <Description>"Task Var I P2"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>0047061D</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>120</ID>
+      <Description>"Task Var J"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>00470323</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>121</ID>
+      <Description>"Task Var J P2"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>0047061F</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>122</ID>
+      <Description>"Task Var K"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>00470325</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>123</ID>
+      <Description>"Task Var K P2"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>00470621</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>124</ID>
+      <Description>"Task Var L"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>00470327</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>125</ID>
+      <Description>"Task Var L P2"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>00470623</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>126</ID>
+      <Description>"Task Var M"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>00470329</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>127</ID>
+      <Description>"Task Var M P2"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>00470625</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>128</ID>
+      <Description>"Task Var N"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>0047032B</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>129</ID>
+      <Description>"Task Var N P2"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>00470627</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>130</ID>
+      <Description>"Task Var O"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>0047032D</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>131</ID>
+      <Description>"Task Var O P2"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>00470629</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>132</ID>
+      <Description>"Task Var P"</Description>
+      <ShowAsSigned>1</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>0047032F</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>133</ID>
+      <Description>"Task Var P P2"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>0047062B</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>134</ID>
+      <Description>"P1 HP"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>004DFC85</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>135</ID>
+      <Description>"P2 HP"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>004EDCC4</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>136</ID>
+      <Description>"P1 Super"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>004DFC9D</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>137</ID>
+      <Description>"P2 Super"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>004EDCDC</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>138</ID>
+      <Description>"P1 Special Stock"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>004DFC95</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>139</ID>
+      <Description>"P2 Special Stock"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>004EDCD4</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>140</ID>
+      <Description>"Round Number"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>4 Bytes</VariableType>
+      <Address>00470044</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>141</ID>
+      <Description>"P1 Parent X1"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>2 Bytes</VariableType>
+      <Address>004701EA</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>142</ID>
+      <Description>"P1 Parent X2"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>Byte</VariableType>
+      <Address>00473A9E</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>143</ID>
+      <Description>"P1 Parent X3"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>Byte</VariableType>
+      <Address>00473C1C</Address>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>144</ID>
+      <Description>"P1 Parent X4"</Description>
+      <ShowAsSigned>0</ShowAsSigned>
+      <VariableType>Byte</VariableType>
+      <Address>00474214</Address>
+    </CheatEntry>
+  </CheatEntries>
+  <CheatCodes>
+    <CodeEntry>
+      <Description>Change of call WonderfulWorld_ver_0946.exe+29C0</Description>
+      <AddressString>WonderfulWorld_ver_0946.exe+5783</AddressString>
+      <Before>
+        <Byte>E8</Byte>
+        <Byte>ED</Byte>
+        <Byte>F9</Byte>
+        <Byte>00</Byte>
+        <Byte>00</Byte>
+      </Before>
+      <Actual>
+        <Byte>E8</Byte>
+        <Byte>38</Byte>
+        <Byte>D2</Byte>
+        <Byte>FF</Byte>
+        <Byte>FF</Byte>
+      </Actual>
+      <After>
+        <Byte>E8</Byte>
+        <Byte>A3</Byte>
+        <Byte>EA</Byte>
+        <Byte>00</Byte>
+        <Byte>00</Byte>
+      </After>
+    </CodeEntry>
+    <CodeEntry>
+      <Description>Code :mov [WonderfulWorld_ver_0946.exe+246F4],edi nop frameskip falg</Description>
+      <AddressString>WonderfulWorld_ver_0946.exe+5BAE</AddressString>
+      <Before>
+        <Byte>0D</Byte>
+        <Byte>D4</Byte>
+        <Byte>7D</Byte>
+        <Byte>44</Byte>
+        <Byte>00</Byte>
+      </Before>
+      <Actual>
+        <Byte>89</Byte>
+        <Byte>3D</Byte>
+        <Byte>F4</Byte>
+        <Byte>46</Byte>
+        <Byte>42</Byte>
+        <Byte>00</Byte>
+      </Actual>
+      <After>
+        <Byte>EB</Byte>
+        <Byte>0B</Byte>
+        <Byte>BB</Byte>
+        <Byte>01</Byte>
+        <Byte>00</Byte>
+      </After>
+    </CodeEntry>
+    <CodeEntry>
+      <Description>Change of and eax,00007FFF</Description>
+      <AddressString>WonderfulWorld_ver_0946.exe+17A3A</AddressString>
+      <Before>
+        <Byte>41</Byte>
+        <Byte>00</Byte>
+        <Byte>C1</Byte>
+        <Byte>F8</Byte>
+        <Byte>10</Byte>
+      </Before>
+      <Actual>
+        <Byte>25</Byte>
+        <Byte>FF</Byte>
+        <Byte>7F</Byte>
+        <Byte>00</Byte>
+        <Byte>00</Byte>
+      </Actual>
+      <After>
+        <Byte>C3</Byte>
+        <Byte>55</Byte>
+        <Byte>8B</Byte>
+        <Byte>EC</Byte>
+        <Byte>6A</Byte>
+      </After>
+    </CodeEntry>
+    <CodeEntry>
+      <Description>Change of mov eax,[WonderfulWorld_ver_0946.exe+1FB1C]</Description>
+      <AddressString>WonderfulWorld_ver_0946.exe+17A22</AddressString>
+      <Before>
+        <Byte>8B</Byte>
+        <Byte>C6</Byte>
+        <Byte>5E</Byte>
+        <Byte>C9</Byte>
+        <Byte>C3</Byte>
+      </Before>
+      <Actual>
+        <Byte>A1</Byte>
+        <Byte>1C</Byte>
+        <Byte>FB</Byte>
+        <Byte>41</Byte>
+        <Byte>00</Byte>
+      </Actual>
+      <After>
+        <Byte>69</Byte>
+        <Byte>C0</Byte>
+        <Byte>FD</Byte>
+        <Byte>43</Byte>
+        <Byte>03</Byte>
+      </After>
+    </CodeEntry>
+    <CodeEntry>
+      <Description>Change of imul eax,eax,000343FD</Description>
+      <AddressString>WonderfulWorld_ver_0946.exe+17A27</AddressString>
+      <Before>
+        <Byte>90</Byte>
+        <Byte>90</Byte>
+        <Byte>90</Byte>
+        <Byte>90</Byte>
+        <Byte>90</Byte>
+      </Before>
+      <Actual>
+        <Byte>69</Byte>
+        <Byte>C0</Byte>
+        <Byte>FD</Byte>
+        <Byte>43</Byte>
+        <Byte>03</Byte>
+        <Byte>00</Byte>
+      </Actual>
+      <After>
+        <Byte>05</Byte>
+        <Byte>C3</Byte>
+        <Byte>9E</Byte>
+        <Byte>26</Byte>
+        <Byte>00</Byte>
+      </After>
+    </CodeEntry>
+    <CodeEntry>
+      <Description>Change of add eax,00269EC3</Description>
+      <AddressString>WonderfulWorld_ver_0946.exe+17A2D</AddressString>
+      <Before>
+        <Byte>90</Byte>
+        <Byte>90</Byte>
+        <Byte>90</Byte>
+        <Byte>90</Byte>
+        <Byte>90</Byte>
+      </Before>
+      <Actual>
+        <Byte>05</Byte>
+        <Byte>C3</Byte>
+        <Byte>9E</Byte>
+        <Byte>26</Byte>
+        <Byte>00</Byte>
+      </Actual>
+      <After>
+        <Byte>A3</Byte>
+        <Byte>1C</Byte>
+        <Byte>FB</Byte>
+        <Byte>41</Byte>
+        <Byte>00</Byte>
+      </After>
+    </CodeEntry>
+    <CodeEntry>
+      <Description>Change of mov [WonderfulWorld_ver_0946.exe+1FB1C],eax</Description>
+      <AddressString>WonderfulWorld_ver_0946.exe+17A32</AddressString>
+      <Before>
+        <Byte>90</Byte>
+        <Byte>90</Byte>
+        <Byte>90</Byte>
+        <Byte>90</Byte>
+        <Byte>90</Byte>
+      </Before>
+      <Actual>
+        <Byte>A3</Byte>
+        <Byte>1C</Byte>
+        <Byte>FB</Byte>
+        <Byte>41</Byte>
+        <Byte>00</Byte>
+      </Actual>
+      <After>
+        <Byte>C1</Byte>
+        <Byte>F8</Byte>
+        <Byte>10</Byte>
+        <Byte>90</Byte>
+        <Byte>90</Byte>
+      </After>
+    </CodeEntry>
+    <CodeEntry>
+      <Description>Change of sar eax,10</Description>
+      <AddressString>WonderfulWorld_ver_0946.exe+17A37</AddressString>
+      <Before>
+        <Byte>90</Byte>
+        <Byte>90</Byte>
+        <Byte>90</Byte>
+        <Byte>90</Byte>
+        <Byte>90</Byte>
+      </Before>
+      <Actual>
+        <Byte>C1</Byte>
+        <Byte>F8</Byte>
+        <Byte>10</Byte>
+      </Actual>
+      <After>
+        <Byte>90</Byte>
+        <Byte>90</Byte>
+        <Byte>90</Byte>
+        <Byte>90</Byte>
+        <Byte>90</Byte>
+      </After>
+    </CodeEntry>
+  </CheatCodes>
+  <UserdefinedSymbols/>
+</CheatTable>

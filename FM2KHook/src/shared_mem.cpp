@@ -23,18 +23,35 @@ static inline uint64_t get_microseconds() {
 bool InitializeSharedMemory() {
     DWORD process_id = GetCurrentProcessId();
     std::string shared_memory_name = "FM2K_InputSharedMemory_" + std::to_string(process_id);
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Creating shared memory with name: %s (PID=%lu)", shared_memory_name.c_str(), process_id);
 
-    shared_memory_handle = CreateFileMappingA(
-        INVALID_HANDLE_VALUE,
-        nullptr,
-        PAGE_READWRITE,
-        0,
-        sizeof(SharedInputData),
+    // First try to open existing shared memory (launcher creates it first)
+    shared_memory_handle = OpenFileMappingA(
+        FILE_MAP_ALL_ACCESS,
+        FALSE,
         shared_memory_name.c_str()
     );
+    
+    bool created_new = false;
+    if (shared_memory_handle == nullptr) {
+        // If it doesn't exist, create it
+        shared_memory_handle = CreateFileMappingA(
+            INVALID_HANDLE_VALUE,
+            nullptr,
+            PAGE_READWRITE,
+            0,
+            sizeof(SharedInputData),
+            shared_memory_name.c_str()
+        );
+        created_new = true;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Created NEW shared memory segment");
+    } else {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Opened EXISTING shared memory segment");
+    }
 
     if (shared_memory_handle == nullptr) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Failed to create shared memory");
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Failed to create/open shared memory");
         return false;
     }
 
@@ -54,11 +71,18 @@ bool InitializeSharedMemory() {
     }
 
     SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data);
-    memset(shared_data, 0, sizeof(SharedInputData));
     
-    // Initialize config version
-    shared_data->config_version = 1;
-    shared_data->player_index = player_index;
+    // Only zero out if we created brand new memory
+    if (created_new || shared_data->config_version == 0) {
+        memset(shared_data, 0, sizeof(SharedInputData));
+        shared_data->config_version = 1;
+        shared_data->player_index = player_index;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Initialized fresh shared memory segment");
+    } else {
+        // Just update our player index, preserve existing data
+        shared_data->player_index = player_index;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Connected to existing shared memory, preserving slot data");
+    }
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Shared memory initialized successfully");
     return true;

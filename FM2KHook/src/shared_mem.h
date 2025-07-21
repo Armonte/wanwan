@@ -2,6 +2,32 @@
 
 #include "common.h"
 
+// Save state data structure - SIMPLIFIED
+struct SaveStateData {
+    // Basic player state (CheatEngine verified)
+    uint32_t p1_hp;          // 0x004DFC85 - P1 HP
+    uint32_t p2_hp;          // 0x004EDCC4 - P2 HP
+    uint32_t p1_x;           // 0x004DFCC3 - P1 X coordinate
+    uint32_t p1_y;           // 0x004DFCC7 - P1 Y coordinate
+    uint32_t p2_x;           // 0x004EDD02 - P2 X coordinate
+    uint32_t p2_y;           // 0x004EDD06 - P2 Y coordinate
+    
+    // RNG seed for deterministic behavior
+    uint32_t rng_seed;       // 0x41FB1C - Critical for rollback
+    
+    // Timer
+    uint32_t game_timer;     // 0x470050 - Actual WanWan timer
+    
+    // Object pool (391KB - 1024 objects * 382 bytes each)
+    uint8_t object_pool[0x5F800]; // 0x4701E0 - Full object pool capture
+    
+    // Metadata
+    uint32_t frame_number;   // Frame when this state was saved
+    uint64_t timestamp_ms;   // When this save was created
+    bool valid;              // Is this save slot occupied
+    uint32_t checksum;       // Simple validation checksum
+};
+
 // Shared memory structure matching the launcher
 struct SharedInputData {
     uint32_t frame_number;
@@ -44,6 +70,7 @@ struct SharedInputData {
         uint32_t state_size_kb;
         uint32_t save_time_us;
         uint32_t load_time_us;
+        uint32_t active_object_count;  // Number of active objects saved
     } slot_status[8];
     
     struct PerformanceStats {
@@ -63,6 +90,9 @@ struct SharedInputData {
     
     uint8_t player_index;
     uint8_t session_role;
+    
+    // Dedicated save state storage (8 slots)
+    SaveStateData save_slots[8];
 };
 
 // Functions for managing shared memory

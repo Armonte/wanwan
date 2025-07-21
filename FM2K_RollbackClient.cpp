@@ -4,7 +4,6 @@
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_sdlrenderer3.h"
-#include "vendored/GekkoNet/GekkoLib/include/gekkonet.h"
 #include "MinHook.h"
 #include "FM2K_GameInstance.h"
 #include "FM2K_Integration.h"
@@ -515,8 +514,6 @@ FM2KLauncher::FM2KLauncher()
     client2_process_id_ = 0;
     
     // Initialize GekkoNet session management
-    gekko_session_ = nullptr;
-    gekko_initialized_ = false;
     
     // Load saved games directory (if any) so it can be used before Initialize() completes.
     games_root_path_ = Utils::LoadGamesRootPath();
@@ -741,6 +738,7 @@ bool FM2KLauncher::Initialize() {
                 status.state_size_kb = game_status.state_size_kb;
                 status.save_time_us = game_status.save_time_us;
                 status.load_time_us = game_status.load_time_us;
+                status.active_object_count = game_status.active_object_count;
                 return true;
             }
         }
@@ -749,11 +747,6 @@ bool FM2KLauncher::Initialize() {
     
     // Connect multi-client testing callbacks
     ui_->on_launch_local_client1 = [this](const std::string& game_path) -> bool {
-        // Start GekkoNet session if this is the first client
-        if (!gekko_initialized_ && !StartLocalSession()) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to start GekkoNet session");
-            return false;
-        }
         return LaunchLocalClient(game_path, true, 7000);  // Host on port 7000
     };
     
@@ -763,7 +756,6 @@ bool FM2KLauncher::Initialize() {
     
     ui_->on_terminate_all_clients = [this]() -> bool {
         bool success = TerminateAllClients();
-        StopLocalSession();  // Stop GekkoNet session when terminating clients
         return success;
     };
     
@@ -1007,8 +999,6 @@ void FM2KLauncher::Shutdown() {
     // Terminate any running test clients
     TerminateAllClients();
     
-    // Shutdown GekkoNet session
-    ShutdownGekkoSession();
     
     // Stop network and game first
     // DLL handles GekkoNet directly - no launcher-side session needed
@@ -1258,7 +1248,7 @@ void FM2KLauncher::StartOfflineSession() {
     NetworkConfig local_config;
     local_config.session_mode = SessionMode::LOCAL;
 
-    // Configure DLL for offline mode
+    // Configure DLL for offline mode - shared memory enabled for debugging features
     if (game_instance_) {
         game_instance_->SetNetworkConfig(false, false);
     }
@@ -1424,84 +1414,6 @@ bool FM2KLauncher::TerminateAllClients() {
     return success;
 }
 
-// GekkoNet session management implementation
-bool FM2KLauncher::InitializeGekkoSession() {
-    if (gekko_initialized_) {
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet session already initialized");
-        return true;
-    }
-    
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Initializing GekkoNet session for local multi-client testing");
-    
-    // Create GekkoNet session
-    if (!gekko_create(&gekko_session_)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to create GekkoNet session!");
-        return false;
-    }
-    
-    // Configure session for FM2K dual-client testing
-    gekko_config_.num_players = 2;
-    gekko_config_.max_spectators = 0;
-    gekko_config_.input_prediction_window = 0;  // 30ms prediction at 100 FPS
-    gekko_config_.spectator_delay = 0;
-    gekko_config_.input_size = sizeof(uint16_t);  // FM2K 11-bit input mask
-    gekko_config_.state_size = 50 * 1024;  // Start with MINIMAL profile size
-    gekko_config_.limited_saving = false;
-    gekko_config_.post_sync_joining = false;
-    gekko_config_.desync_detection = true;
-    
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet session configured: 2 players, %u byte states, 3-frame prediction", 
-                gekko_config_.state_size);
-    
-    gekko_initialized_ = true;
-    return true;
-}
-
-void FM2KLauncher::ShutdownGekkoSession() {
-    if (!gekko_initialized_) return;
-    
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Shutting down GekkoNet session");
-    
-    if (gekko_session_) {
-        gekko_destroy(gekko_session_);
-        gekko_session_ = nullptr;
-    }
-    
-    gekko_initialized_ = false;
-}
-
-bool FM2KLauncher::StartLocalSession() {
-    if (!gekko_initialized_) {
-        if (!InitializeGekkoSession()) {
-            return false;
-        }
-    }
-    
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Starting GekkoNet local session");
-    
-    // Start the session
-    gekko_start(gekko_session_, &gekko_config_);
-    
-    // Add two local players
-    // For local testing, both players are LocalPlayer type
-    int player1_handle = gekko_add_actor(gekko_session_, LocalPlayer, nullptr);
-    int player2_handle = gekko_add_actor(gekko_session_, LocalPlayer, nullptr);
-    
-    if (player1_handle < 0 || player2_handle < 0) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to add local players to GekkoNet session");
-        return false;
-    }
-    
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet local session started with players %d and %d", 
-                player1_handle, player2_handle);
-    
-    return true;
-}
-
-void FM2KLauncher::StopLocalSession() {
-    // TODO: Implement session stopping when GekkoNet provides the API
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Stopping GekkoNet local session");
-}
 
 bool FM2KLauncher::ReadRollbackStatsFromSharedMemory(RollbackStats& stats) {
     // Try to read from both client processes (prioritize the first active one)

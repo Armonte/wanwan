@@ -15,7 +15,6 @@
 LauncherUI::LauncherUI() 
     : games_{}
     , network_config_{} // Zero-initialize network config
-    , network_stats_{}  // Zero-initialize network stats
     , frames_ahead_(0.0f)
     , launcher_state_(LauncherState::GameSelection)
     , renderer_(nullptr)
@@ -362,23 +361,7 @@ void LauncherUI::ShowNetworkDiagnostics() {
     // Remove window creation - this is now rendered inline within the debug tools panel
     ImGui::Text("Network Performance:");
     
-    // Network quality indicator based on average ping
-    float quality = std::max(0.0f, std::min(1.0f, (100.0f - network_stats_.avg_ping) / 100.0f));
-    ImVec4 quality_color = ImVec4(1.0f - quality, quality, 0.0f, 1.0f);
-    
-    ImGui::Text("Connection Quality:");
-    ImGui::SameLine();
-    ImGui::TextColored(quality_color, "%.0f%%", quality * 100.0f);
-    
-    ImGui::Separator();
-    
-    // Detailed stats from GekkoNetworkStats
-    ImGui::Text("Avg Ping: %.2f ms", network_stats_.avg_ping);
-    ImGui::Spacing();
-    ImGui::Text("Last Ping: %u ms", network_stats_.last_ping);
-    ImGui::Spacing();
-    ImGui::Text("Jitter: %.2f ms", network_stats_.jitter);
-    ImGui::Spacing();
+    // Network diagnostics placeholder
     ImGui::Text("Frames Ahead: %.2f", frames_ahead_);
     
     // Rollback information
@@ -444,9 +427,6 @@ void LauncherUI::SetNetworkConfig(const NetworkConfig& config) {
     network_config_ = config;
 }
 
-void LauncherUI::SetNetworkStats(const GekkoNetworkStats& stats) {
-    network_stats_ = stats;
-}
 
 void LauncherUI::SetLauncherState(LauncherState state) {
     launcher_state_ = state;
@@ -856,11 +836,11 @@ void LauncherUI::RenderSaveStateTools() {
                         uint64_t time_diff = current_time - status.timestamp_ms;
                         
                         if (time_diff < 1000) {
-                            ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f), "F%u (now)", status.frame_number);
+                            ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f), "F%u (%u objs)", status.frame_number, status.active_object_count);
                         } else if (time_diff < 60000) {
-                            ImGui::TextColored(ImVec4(0.8f, 1.0f, 0.8f, 1.0f), "F%u (%.1fs ago)", status.frame_number, time_diff / 1000.0f);
+                            ImGui::TextColored(ImVec4(0.8f, 1.0f, 0.8f, 1.0f), "F%u (%u objs, %.1fs)", status.frame_number, status.active_object_count, time_diff / 1000.0f);
                         } else {
-                            ImGui::TextColored(ImVec4(0.6f, 0.8f, 0.6f, 1.0f), "F%u (%llus ago)", status.frame_number, time_diff / 1000);
+                            ImGui::TextColored(ImVec4(0.6f, 0.8f, 0.6f, 1.0f), "F%u (%u objs, %llus)", status.frame_number, status.active_object_count, time_diff / 1000);
                         }
                         
                         // Enhanced tooltip with performance data
@@ -870,6 +850,9 @@ void LauncherUI::RenderSaveStateTools() {
                         
                         if (status.state_size_kb > 0) {
                             tooltip += "\nSize: " + std::to_string(status.state_size_kb) + " KB";
+                        }
+                        if (status.active_object_count > 0) {
+                            tooltip += "\nObjects: " + std::to_string(status.active_object_count) + " active";
                         }
                         if (status.save_time_us > 0) {
                             tooltip += "\nSave time: " + std::to_string(status.save_time_us) + " μs";

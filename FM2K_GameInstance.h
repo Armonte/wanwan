@@ -116,6 +116,7 @@ public:
         uint32_t state_size_kb;
         uint32_t save_time_us;
         uint32_t load_time_us;
+        uint32_t active_object_count;
     };
     bool GetSlotStatus(uint32_t slot, SlotStatus& status);
 

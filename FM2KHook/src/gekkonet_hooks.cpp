@@ -3,6 +3,7 @@
 #include "logging.h"
 #include "gekkonet.h"
 #include "game_state_machine.h"
+#include "state_manager.h"  // For GameState
 #include <SDL3/SDL_log.h>
 #include <cstdint>
 #include <memory>
@@ -70,20 +71,17 @@ bool InitializeGekkoNet() {
     GekkoConfig config;
     config.num_players = 2;
     config.max_spectators = 0;
-    config.input_prediction_window = 0;  // ROLLBACK mode - test CSS with prediction frames
+    config.input_prediction_window = 10;  // ROLLBACK mode - test CSS with prediction frames
     // Previously was 0 (lockstep) - now testing rollback compatibility
     config.spectator_delay = 0;
     config.input_size = sizeof(uint8_t);
-    config.state_size = sizeof(uint32_t);
+    config.state_size = sizeof(FM2K::State::GameState);  // Use full GameState for proper save states
     config.limited_saving = false;
     config.post_sync_joining = false;
     config.desync_detection = true;
     
     gekko_start(gekko_session, &config);
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet session configured and started");
-    
-    gekko_net_adapter_set(gekko_session, gekko_default_adapter(local_port));
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Real UDP adapter set on port %u", local_port);
     
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Adding players - Player index: %u", player_index);
     
@@ -94,6 +92,13 @@ bool InitializeGekkoNet() {
     // Check for true offline mode (no networking at all)
     char* env_offline = getenv("FM2K_TRUE_OFFLINE");
     bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
+    
+    if (!is_true_offline) {
+        gekko_net_adapter_set(gekko_session, gekko_default_adapter(local_port));
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Real UDP adapter set on port %u", local_port);
+    } else {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: TRUE OFFLINE - No network adapter set");
+    }
     
     if (is_true_offline) {
         // TRUE OFFLINE MODE: Both players LocalPlayer, no network adapter

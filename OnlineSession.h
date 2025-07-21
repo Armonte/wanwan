@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ISession.h"
+#include "vendored/GekkoNet/GekkoLib/include/gekkonet.h"
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -11,7 +12,6 @@ struct NetworkConfig;
 namespace FM2K {
     
 }
-struct GekkoGameEvent;
 
 class OnlineSession : public ISession {
 public:

@@ -5,7 +5,6 @@
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_sdlrenderer3.h"
 
-#include "vendored/GekkoNet/GekkoLib/include/gekkonet.h"
 #include "MinHook.h"
 #include "ISession.h"
 
@@ -554,20 +553,11 @@ private:
     bool LaunchLocalClient(const std::string& game_path, bool is_host, int port);
     bool TerminateAllClients();
     
-    // GekkoNet session management
-    bool InitializeGekkoSession();
-    void ShutdownGekkoSession();
-    bool StartLocalSession();
-    void StopLocalSession();
     
     // Multi-client testing
     uint32_t client1_process_id_;
     uint32_t client2_process_id_;
     
-    // GekkoNet session management
-    GekkoSession* gekko_session_;
-    GekkoConfig gekko_config_;
-    bool gekko_initialized_;
     
     // Games directory (root where FM2K games are located)
     std::string games_root_path_;
@@ -630,6 +620,7 @@ public:
         uint32_t state_size_kb;
         uint32_t save_time_us;
         uint32_t load_time_us;
+        uint32_t active_object_count;
     };
     std::function<bool(uint32_t, SlotStatusInfo&)> on_get_slot_status;  // (slot, status_out)
     
@@ -668,7 +659,6 @@ public:
     // Data binding
     void SetGames(const std::vector<FM2K::FM2KGameInfo>& games);
     void SetNetworkConfig(const NetworkConfig& config);
-    void SetNetworkStats(const GekkoNetworkStats& stats);
     void SetLauncherState(LauncherState state);
     void SetFramesAhead(float frames_ahead);
     // Update scanning progress (0-1). Only meaningful while scanning flag is true.
@@ -684,7 +674,6 @@ private:
     // UI state
     std::vector<FM2K::FM2KGameInfo> games_;
     NetworkConfig network_config_;
-    GekkoNetworkStats network_stats_;
     float frames_ahead_;
     LauncherState launcher_state_;
     SDL_Renderer* renderer_;

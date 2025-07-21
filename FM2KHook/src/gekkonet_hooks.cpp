@@ -74,7 +74,7 @@ bool InitializeGekkoNet() {
     config.input_prediction_window = 10;  // ROLLBACK mode - test CSS with prediction frames
     // Previously was 0 (lockstep) - now testing rollback compatibility
     config.spectator_delay = 0;
-    config.input_size = sizeof(uint8_t);
+    config.input_size = sizeof(uint16_t);
     config.state_size = sizeof(FM2K::State::GameState);  // Use full GameState for proper save states
     config.limited_saving = false;
     config.post_sync_joining = false;

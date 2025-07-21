@@ -30,6 +30,9 @@ bool can_advance_frame = true;        // Allow frame advancement initially
 bool waiting_for_gekko_advance = false; // Not waiting initially
 bool gekko_frame_control_enabled = false; // Disabled by default, enable after GekkoNet starts
 
+// Frame stepping control
+bool frame_step_paused_global = false; // Global pause flag for frame stepping
+
 // Timeout mechanisms to prevent deadlocks
 uint32_t handshake_timeout_frames = 0;    // Timeout counter for network handshake
 uint32_t advance_timeout_frames = 0;      // Timeout counter for frame advance waits
@@ -40,6 +43,11 @@ ProcessGameInputsFunc original_process_inputs = nullptr;
 GetPlayerInputFunc original_get_player_input = nullptr;
 UpdateGameStateFunc original_update_game = nullptr;
 RunGameLoopFunc original_run_game_loop = nullptr;
+
+// Additional function pointers for main loop implementation
+RenderGameFunc original_render_game = nullptr;
+ProcessInputHistoryFunc original_process_input_history = nullptr;
+CheckGameContinueFunc original_check_game_continue = nullptr;
 
 // State manager variables
 uint32_t last_auto_save_frame = 0;

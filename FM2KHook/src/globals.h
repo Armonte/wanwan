@@ -83,6 +83,9 @@ extern bool can_advance_frame;        // Flag to control FM2K frame advancement
 extern bool waiting_for_gekko_advance; // True when waiting for GekkoNet AdvanceEvent
 extern bool gekko_frame_control_enabled; // True when GekkoNet should control frame advancement
 
+// Frame stepping control
+extern bool frame_step_paused_global; // Global pause flag for frame stepping
+
 // Timeout mechanisms to prevent deadlocks
 extern uint32_t handshake_timeout_frames;    // Timeout counter for network handshake
 extern uint32_t advance_timeout_frames;      // Timeout counter for frame advance waits
@@ -98,6 +101,15 @@ extern ProcessGameInputsFunc original_process_inputs;
 extern GetPlayerInputFunc original_get_player_input;
 extern UpdateGameStateFunc original_update_game;
 extern RunGameLoopFunc original_run_game_loop;
+
+// Additional function pointers for main loop implementation
+typedef void(__cdecl* RenderGameFunc)();
+typedef void(__cdecl* ProcessInputHistoryFunc)(uint32_t input_data);
+typedef int(__cdecl* CheckGameContinueFunc)();
+
+extern RenderGameFunc original_render_game;
+extern ProcessInputHistoryFunc original_process_input_history;
+extern CheckGameContinueFunc original_check_game_continue;
 
 // State manager variables
 extern uint32_t last_auto_save_frame;

@@ -12,6 +12,7 @@
 // #include "boot_object_analyzer.cpp"  // REMOVED: Performance optimization
 #include <windows.h>
 #include <mmsystem.h>
+#include <limits>
 
 // Global variables for manual save/load requests
 static bool manual_save_requested = false;
@@ -92,6 +93,19 @@ static void CheckForDebugCommands() {
         // TODO: Implement force rollback through GekkoNet
         shared_data->debug_rollback_frames = 0;
     }
+    
+    // Frame stepping is now handled in Hook_ProcessGameInputs()
+    
+    // Update enhanced action data for launcher (reduced frequency for performance)
+    static uint32_t last_action_update_frame = 0;
+    if (g_frame_counter - last_action_update_frame >= 60) {  // Update every 60 frames (0.6 seconds)
+        last_action_update_frame = g_frame_counter;
+        // Reduced logging frequency
+        if (g_frame_counter % 300 == 0) {  // Log every 3 seconds
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "HOOK: Updating enhanced action data at frame %u", g_frame_counter);
+        }
+        UpdateEnhancedActionData();
+    }
 }
 
 // New hook for boot-to-character-select hack
@@ -146,6 +160,84 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
 }
 
 int __cdecl Hook_ProcessGameInputs() {
+    // FRAME STEPPING: This is the main control point since it's called repeatedly in the game loop
+    // Get shared memory for frame stepping control
+    SharedInputData* shared_data = GetSharedMemory();
+    
+    // DEBUG: Log that input hook is being called
+    static uint32_t input_hook_call_count = 0;
+    input_hook_call_count++;
+    if (input_hook_call_count % 100 == 0) { // Log every 100 calls to avoid spam
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Called %u times, frame %u", input_hook_call_count, g_frame_counter);
+    }
+    
+    // Check for frame stepping commands
+    if (shared_data) {
+        // ONE-TIME-FIX: Handle the initial state where memset sets remaining_frames to 0.
+        // This state should mean "running indefinitely".
+        static bool initial_state_fixed = false;
+        if (!initial_state_fixed && !shared_data->frame_step_is_paused && shared_data->frame_step_remaining_frames == 0) {
+            shared_data->frame_step_remaining_frames = UINT32_MAX;
+            initial_state_fixed = true;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Corrected initial frame step state to RUNNING.");
+        }
+
+        // DEBUG: Log frame stepping state
+        if (shared_data->frame_step_pause_requested || 
+            shared_data->frame_step_resume_requested || 
+            shared_data->frame_step_single_requested || 
+            shared_data->frame_step_multi_count > 0) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Frame stepping command detected - pause=%d, resume=%d, single=%d, multi=%u", 
+                       shared_data->frame_step_pause_requested,
+                       shared_data->frame_step_resume_requested,
+                       shared_data->frame_step_single_requested,
+                       shared_data->frame_step_multi_count);
+        }
+        
+        // Always log single step requests for debugging
+        if (shared_data->frame_step_single_requested) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: SINGLE STEP REQUEST DETECTED at frame %u", g_frame_counter);
+        }
+        
+        // Handle frame stepping commands
+        if (shared_data->frame_step_pause_requested) {
+            frame_step_paused_global = true;
+            shared_data->frame_step_is_paused = true;
+            shared_data->frame_step_pause_requested = false;
+            shared_data->frame_step_remaining_frames = 0; // No stepping, just pause
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Frame stepping PAUSED at frame %u", g_frame_counter);
+        }
+        if (shared_data->frame_step_resume_requested) {
+            frame_step_paused_global = false;
+            shared_data->frame_step_is_paused = false;
+            shared_data->frame_step_resume_requested = false;
+            shared_data->frame_step_remaining_frames = UINT32_MAX; // Use sentinel for "running"
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Frame stepping RESUMED at frame %u", g_frame_counter);
+        }
+        if (shared_data->frame_step_single_requested) {
+            // Single step: run one frame then pause
+            shared_data->frame_step_single_requested = false;
+            frame_step_paused_global = false; // Allow one frame
+            shared_data->frame_step_is_paused = false;
+            shared_data->frame_step_remaining_frames = 1; // Allow exactly 1 frame
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: SINGLE STEP ENABLED - allowing 1 frame at frame %u", g_frame_counter);
+        }
+        // Multi-step disabled - focus on single step only
+        if (shared_data->frame_step_multi_count > 0) {
+            shared_data->frame_step_multi_count = 0;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Multi-step disabled - use single step instead");
+        }
+        
+        // If paused, block frame processing
+        if (frame_step_paused_global && shared_data->frame_step_is_paused) {
+            // Don't call original function - this effectively pauses the game
+            return 0; // Block frame processing completely
+        }
+        
+        // Handle frame stepping countdown AFTER processing the frame
+        // This ensures the frame actually gets processed before we count it down
+    }
+    
     // In lockstep/rollback mode, the game's frame advancement is handled inside the AdvanceEvent.
     // We do nothing here to allow GekkoNet to control the frame pacing.
     if (!waiting_for_gekko_advance) {
@@ -154,11 +246,28 @@ int __cdecl Hook_ProcessGameInputs() {
             original_process_inputs();
         }
         g_frame_counter++;
+        
+        // UNIFIED LOGIC: Handle frame stepping countdown. Re-pausing is now in the render hook.
+        if (shared_data && shared_data->frame_step_remaining_frames > 0 && shared_data->frame_step_remaining_frames != UINT32_MAX) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Frame ADVANCED to %u during stepping (normal path)", g_frame_counter);
+            shared_data->frame_step_remaining_frames--;
+            if (shared_data->frame_step_remaining_frames == 0) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Step processing complete for frame %u, will pause in render hook", g_frame_counter);
+            }
+        }
     }
     
     
-    // GekkoNet rollback control (only if session is active)
-    if (gekko_initialized && gekko_session && gekko_session_started) {
+    // GekkoNet rollback control (only if session is active and not paused)
+    bool gekko_should_process = true;
+    if (shared_data) {
+        gekko_should_process = !shared_data->frame_step_is_paused;
+        if (!gekko_should_process) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Frame stepping: PAUSING GekkoNet session at frame %u", g_frame_counter);
+        }
+    }
+    
+    if (gekko_initialized && gekko_session && gekko_session_started && gekko_should_process) {
         // ARCHITECTURE FIX: Proper input capture following CCCaster/GekkoNet pattern
         // 1. CAPTURE: Read actual controller/keyboard inputs (like CCCaster's updateControls)
         CaptureRealInputs();
@@ -167,6 +276,12 @@ int __cdecl Hook_ProcessGameInputs() {
         
         // 3. CHECK: Process debug commands from launcher via shared memory
         CheckForDebugCommands();
+        
+        // 3.1. UPDATE: Enhanced action data for launcher analysis (every 10 frames to reduce overhead)
+        if (g_frame_counter % 10 == 0) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "HOOK: Updating enhanced action data at frame %u", g_frame_counter);
+            UpdateEnhancedActionData();
+        }
         
         // 3.5. AUTO-SAVE: Check if auto-save should trigger
         SharedInputData* shared_data = GetSharedMemory();
@@ -260,10 +375,29 @@ int __cdecl Hook_ProcessGameInputs() {
                     // Simplified movement detection without logging
                     
                     // Normal frame advancement (allow rollback to work)
-                    if (original_process_inputs) {
-                        original_process_inputs();
+                    // Check if frame stepping is paused before advancing
+                    bool should_advance = true;
+                    if (shared_data) {
+                        should_advance = !shared_data->frame_step_is_paused;
                     }
-                    g_frame_counter++;
+                    
+                    if (should_advance) {
+                        if (original_process_inputs) {
+                            original_process_inputs();
+                        }
+                        g_frame_counter++;
+                        
+                        // UNIFIED LOGIC: Handle frame stepping countdown. Re-pausing is now in the render hook.
+                        if (shared_data && shared_data->frame_step_remaining_frames > 0 && shared_data->frame_step_remaining_frames != UINT32_MAX) {
+                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Frame ADVANCED to %u during stepping (GekkoNet path)", g_frame_counter);
+                            shared_data->frame_step_remaining_frames--;
+                            if (shared_data->frame_step_remaining_frames == 0) {
+                                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Step processing complete for frame %u, will pause in render hook", g_frame_counter);
+                            }
+                        }
+                    } else {
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Frame stepping: BLOCKING GekkoNet advance at frame %u", g_frame_counter);
+                    }
                     
                     // Simplified post-processing without cursor tracking
                     
@@ -540,12 +674,21 @@ int __cdecl Hook_ProcessGameInputs() {
             }
             manual_load_requested = false;
         }
+    } else if (gekko_initialized && gekko_session && gekko_session_started && !gekko_should_process) {
+        // GekkoNet is active but paused by frame stepping
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Frame stepping: PAUSING GekkoNet session at frame %u", g_frame_counter);
     }
     
     return 0; // Return 0 as the game's frame advancement is handled by GekkoNet
 }
 
 int __cdecl Hook_UpdateGameState() {
+    // FRAME STEPPING: Block game state updates when paused
+    SharedInputData* shared_data = GetSharedMemory();
+    if (shared_data && frame_step_paused_global && shared_data->frame_step_is_paused) {
+        return 0; // Block game state updates when paused
+    }
+    
     // Only monitor state transitions every 30 frames
     static uint32_t state_check_counter = 0;
     if (++state_check_counter % 30 == 0) {
@@ -563,8 +706,27 @@ int __cdecl Hook_UpdateGameState() {
     return 0;
 }
 
+// Render hook - allow rendering even when paused for visual feedback
+void __cdecl Hook_RenderGame() {
+    SharedInputData* shared_data = GetSharedMemory();
+    
+    // FRAME STEPPING: Re-pause after a step has finished.
+    // This is done in the render hook to ensure that the game state for the stepped frame
+    // has been fully updated before the pause is re-engaged.
+    if (shared_data && !shared_data->frame_step_is_paused && shared_data->frame_step_remaining_frames == 0) {
+        frame_step_paused_global = true;
+        shared_data->frame_step_is_paused = true;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RENDER HOOK: Step complete, PAUSING at frame %u", g_frame_counter);
+    }
+
+    // We always render to give visual feedback, even when paused.
+    if (original_render_game) {
+        original_render_game();
+    }
+}
+
 BOOL __cdecl Hook_RunGameLoop() {
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** REIMPLEMENTING FM2K MAIN LOOP WITH GEKKONET CONTROL ***");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** MAIN LOOP HOOK CALLED - REIMPLEMENTING FM2K MAIN LOOP WITH GEKKONET CONTROL ***");
     
     // Set character select mode flag after memory clearing
     uint8_t* char_select_mode_ptr = (uint8_t*)FM2K::State::Memory::CHARACTER_SELECT_MODE_ADDR;
@@ -643,14 +805,17 @@ BOOL __cdecl Hook_RunGameLoop() {
         return original_run_game_loop ? original_run_game_loop() : FALSE;
     }
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet connected! Calling original FM2K loop...");
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet connected! Using original main loop with frame stepping...");
     gekko_session_started = true;
     
-    // SIMPLE APPROACH: Just call the original run_game_loop
-    // Our Hook_ProcessGameInputs will handle the rollback logic
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Delegating to original FM2K main loop...");
-    
+    // SIMPLE APPROACH: Use the original main loop - frame stepping is now handled in the input hook
+    // This is safer than trying to replicate the entire main loop
     if (original_run_game_loop) {
+        // DEBUG: Log that main loop hook is being called (should only be once during initialization)
+        static uint32_t main_loop_call_count = 0;
+        main_loop_call_count++;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "MAIN LOOP: Hook called %u time(s) - frame stepping now handled in input hook", main_loop_call_count);
+        
         return original_run_game_loop();
     }
     
@@ -747,10 +912,35 @@ bool InitializeHooks() {
         return false;
     }
     
+    // Function pointers for main loop implementation (not used in current approach)
+    original_render_game = (RenderGameFunc)0x404DD0;
+    original_process_input_history = (ProcessInputHistoryFunc)0x4025A0;
+    original_check_game_continue = (CheckGameContinueFunc)0x402600;
+    
+    // Install render hook for frame stepping
+    void* renderFuncAddr = (void*)0x404DD0;
+    MH_STATUS status4 = MH_CreateHook(renderFuncAddr, (void*)Hook_RenderGame, (void**)&original_render_game);
+    if (status4 != MH_OK) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ERROR FM2K HOOK: Failed to create render hook: %d", status4);
+        MH_Uninitialize();
+        return false;
+    }
+    
+    MH_STATUS enable4 = MH_EnableHook(renderFuncAddr);
+    if (enable4 != MH_OK) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ERROR FM2K HOOK: Failed to enable render hook: %d", enable4);
+        MH_Uninitialize();
+        return false;
+    }
+    
     // Apply boot-to-character-select patches directly
     ApplyBootToCharacterSelectPatches();
     
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SUCCESS FM2K HOOK: BSNES-level architecture installed successfully!");
+    
+    // DEBUG: Test that hooks are working by logging when they're first called
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Waiting for first hook calls to verify installation...");
+    
     return true;
 }
 

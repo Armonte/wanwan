@@ -567,6 +567,50 @@ bool FM2KGameInstance::TriggerForceRollback(uint32_t frames) {
     return true;
 }
 
+// Frame stepping functions
+void FM2KGameInstance::SetFrameStepPause(bool pause) {
+    if (!shared_memory_data_) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not available for frame stepping");
+        return;
+    }
+    
+    SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
+    if (pause) {
+        shared_data->frame_step_pause_requested = true;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Frame stepping: Pause requested");
+    } else {
+        shared_data->frame_step_resume_requested = true;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Frame stepping: Resume requested");
+    }
+}
+
+void FM2KGameInstance::StepSingleFrame() {
+    if (!shared_memory_data_) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not available for frame stepping");
+        return;
+    }
+    
+    SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
+    shared_data->frame_step_single_requested = true;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Frame stepping: Single step requested");
+}
+
+void FM2KGameInstance::StepMultipleFrames(uint32_t frames) {
+    if (!shared_memory_data_) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Shared memory not available for frame stepping");
+        return;
+    }
+    
+    if (frames == 0) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Invalid frame step count: %u", frames);
+        return;
+    }
+    
+    SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_data_);
+    shared_data->frame_step_multi_count = frames;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Frame stepping: Multi-step requested (%u frames)", frames);
+}
+
 // Slot-based save/load functions
 bool FM2KGameInstance::TriggerSaveToSlot(uint32_t slot) {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GAME_INSTANCE: TriggerSaveToSlot called for slot %u", slot);

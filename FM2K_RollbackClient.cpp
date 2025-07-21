@@ -7,12 +7,13 @@
 #include "MinHook.h"
 #include "FM2K_GameInstance.h"
 #include "FM2K_Integration.h"
-#include "FM2K_SharedMemory.h"
+#include "FM2KHook/src/shared_mem.h"
 #include "LocalSession.h"
 #include "OnlineSession.h"
 
 #include <chrono>
 #include <string>
+#include <cstring>
 #include <vector>
 #include <iostream>
 #include <thread>
@@ -596,6 +597,31 @@ bool FM2KLauncher::Initialize() {
         return false;
     };
     
+    // Connect frame stepping callbacks
+    ui_->on_frame_step_pause = [this](bool pause) {
+        if (game_instance_) {
+            game_instance_->SetFrameStepPause(pause);
+        } else {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "No active game instance for frame stepping");
+        }
+    };
+    
+    ui_->on_frame_step_single = [this]() {
+        if (game_instance_) {
+            game_instance_->StepSingleFrame();
+        } else {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "No active game instance for frame stepping");
+        }
+    };
+    
+    ui_->on_frame_step_multi = [this](uint32_t frames) {
+        if (game_instance_) {
+            game_instance_->StepMultipleFrames(frames);
+        } else {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "No active game instance for frame stepping");
+        }
+    };
+    
     // Connect slot-based save/load callbacks
     ui_->on_debug_save_to_slot = [this](uint32_t slot) -> bool {
         if (game_instance_) {
@@ -743,6 +769,89 @@ bool FM2KLauncher::Initialize() {
             }
         }
         return false;
+    };
+    
+    // Connect enhanced actions callback for action analysis (FM2K "objects" are actually "actions")
+    ui_->on_get_enhanced_actions = [this]() -> std::vector<LauncherUI::EnhancedActionInfo> {
+        std::vector<LauncherUI::EnhancedActionInfo> enhanced_actions;
+        
+        if (!game_instance_) {
+            return enhanced_actions; // Return empty vector if no game instance
+        }
+        
+        // Get shared memory data from the active game instance
+        void* shared_memory_ptr = game_instance_->GetSharedMemoryData();
+        if (!shared_memory_ptr) {
+            return enhanced_actions; // Return empty vector if no shared memory
+        }
+        
+        SharedInputData* shared_data = static_cast<SharedInputData*>(shared_memory_ptr);
+        
+        // Debug: Log what the launcher is reading from shared memory (throttled)
+        static uint32_t debug_counter = 0;
+        if (debug_counter++ % 100 == 0) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LAUNCHER: Reading shared memory - updated=%s, count=%u", 
+                       shared_data->enhanced_actions_updated ? "true" : "false", 
+                       shared_data->enhanced_actions_count);
+        }
+        
+        // Check if we have action data (don't rely on updated flag due to race conditions)
+        if (shared_data->enhanced_actions_count == 0) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "LAUNCHER: No enhanced actions available - count=%u", 
+                       shared_data->enhanced_actions_count);
+            return enhanced_actions; // Return empty vector if no actions
+        }
+        
+        // Convert SharedInputData::EnhancedActionData to LauncherUI::EnhancedActionInfo
+        enhanced_actions.reserve(shared_data->enhanced_actions_count);
+        
+        // Throttled logging for conversion
+        if (debug_counter % 100 == 1) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LAUNCHER: Converting %u actions from shared memory", shared_data->enhanced_actions_count);
+        }
+        
+        for (uint32_t i = 0; i < shared_data->enhanced_actions_count; i++) {
+            const auto& shared_action = shared_data->enhanced_actions[i];
+            LauncherUI::EnhancedActionInfo ui_action;
+            
+            // Copy core action data
+            ui_action.slot_index = shared_action.slot_index;
+            ui_action.type = shared_action.type;
+            ui_action.id = shared_action.id;
+            ui_action.position_x = shared_action.position_x;
+            ui_action.position_y = shared_action.position_y;
+            ui_action.velocity_x = shared_action.velocity_x;
+            ui_action.velocity_y = shared_action.velocity_y;
+            ui_action.animation_state = shared_action.animation_state;
+            ui_action.health_damage = shared_action.health_damage;
+            ui_action.state_flags = shared_action.state_flags;
+            ui_action.timer_counter = shared_action.timer_counter;
+            
+            // Copy 2DFM integration data
+            ui_action.type_name = std::string(shared_action.type_name);
+            ui_action.action_name = std::string(shared_action.action_name);
+            ui_action.script_id = shared_action.script_id;
+            ui_action.animation_frame = shared_action.animation_frame;
+            
+            // Copy character-specific data
+            ui_action.character_name = std::string(shared_action.character_name);
+            ui_action.current_move = std::string(shared_action.current_move);
+            ui_action.facing_direction = shared_action.facing_direction;
+            ui_action.combo_count = shared_action.combo_count;
+            
+            // Copy raw action data
+            memcpy(ui_action.raw_data, shared_action.raw_data, 382);
+            
+            enhanced_actions.push_back(std::move(ui_action));
+        }
+        
+        // Don't reset updated flag - let hook manage it
+        
+        // Throttled success logging
+        if (debug_counter % 100 == 2) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LAUNCHER: Successfully converted %zu enhanced actions", enhanced_actions.size());
+        }
+        return enhanced_actions;
     };
     
     // Connect multi-client testing callbacks

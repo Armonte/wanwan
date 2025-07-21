@@ -606,6 +606,11 @@ public:
     std::function<bool()> on_debug_load_state;
     std::function<bool(uint32_t)> on_debug_force_rollback;
     
+    // Frame stepping controls
+    std::function<void(bool)> on_frame_step_pause;      // Pause/resume game execution
+    std::function<void()> on_frame_step_single;         // Step one frame
+    std::function<void(uint32_t)> on_frame_step_multi;   // Step multiple frames
+    
     // Slot-based save/load callbacks
     std::function<bool(uint32_t)> on_debug_save_to_slot;
     std::function<bool(uint32_t)> on_debug_load_from_slot;
@@ -630,6 +635,45 @@ public:
         uint32_t interval_frames;
     };
     std::function<bool(AutoSaveConfig&)> on_get_auto_save_config;  // Get current auto-save settings
+    
+    // Enhanced action inspection data structure (FM2K "objects" are actually "actions")
+    struct EnhancedActionInfo {
+        // Core action data from DetailedObject
+        uint16_t slot_index;
+        uint32_t type;
+        uint32_t id;
+        uint32_t position_x, position_y;
+        uint32_t velocity_x, velocity_y;
+        uint32_t animation_state;
+        uint32_t health_damage;
+        uint32_t state_flags;
+        uint32_t timer_counter;
+        
+        // 2DFM script integration
+        std::string type_name;              // Human readable action type name
+        std::string action_name;            // Current action being performed
+        uint32_t script_id;                 // Associated script ID
+        uint32_t animation_frame;           // Current animation frame
+        
+        // Character-specific data (for CHARACTER actions)
+        std::string character_name;         // Character performing the action
+        std::string current_move;           // Current move/technique name
+        uint32_t facing_direction;          // 0=left, 1=right
+        uint32_t combo_count;               // Hit combo counter
+        
+        // Raw memory for deep inspection
+        uint8_t raw_data[382];              // Complete action data
+        
+        // Analysis helpers
+        bool IsCharacter() const { return type == 4; }
+        bool IsProjectile() const { return type == 5; }
+        bool IsEffect() const { return type == 6; }
+        bool IsSystem() const { return type == 1; }
+        bool HasMovement() const { return velocity_x != 0 || velocity_y != 0; }
+    };
+    
+    // Action inspection callback - returns current active actions with enhanced data
+    std::function<std::vector<EnhancedActionInfo>()> on_get_enhanced_actions;
     
     // Debug and testing configuration callbacks
     std::function<bool(bool)> on_set_production_mode;              // Set production mode (reduced logging)
@@ -701,6 +745,8 @@ private:
     void RenderMultiClientTools();      // Multi-client testing tab
     void RenderNetworkTools();          // Network simulation tab
     void RenderPerformanceStats();      // Performance statistics tab
+    void RenderObjectAnalysis();        // Object inspection and analysis tab
+    void RenderSlotInspectionWindow();  // Save slot inspection popup window
     
     // Helper methods
     void ShowGameValidationStatus(const FM2K::FM2KGameInfo& game);
@@ -713,6 +759,10 @@ private:
 
     // int selected_game_index_ = -1; // -1 means no selection
     // bool scanning_games_ = false;  // True while background discovery is running
+    
+    // Save state inspection
+    int selected_inspection_slot_ = -1;
+    bool show_slot_inspection_ = false;
 
 private:
     void ApplyDarkCyanThemeStyle();

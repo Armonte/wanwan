@@ -10,6 +10,7 @@
 #include "vendored/GekkoNet/GekkoLib/include/gekkonet.h"
 #include <chrono>
 #include <ctime>
+#include <cmath>
 
 // LauncherUI Implementation
 LauncherUI::LauncherUI() 
@@ -37,11 +38,15 @@ LauncherUI::LauncherUI()
     on_debug_save_state = nullptr;
     on_debug_load_state = nullptr;
     on_debug_force_rollback = nullptr;
+    on_frame_step_pause = nullptr;
+    on_frame_step_single = nullptr;
+    on_frame_step_multi = nullptr;
     on_debug_save_to_slot = nullptr;
     on_debug_load_from_slot = nullptr;
     on_debug_auto_save_config = nullptr;
     on_get_slot_status = nullptr;
     on_get_auto_save_config = nullptr;
+    on_get_enhanced_actions = nullptr;
     on_set_production_mode = nullptr;
     on_set_input_recording = nullptr;
     on_set_minimal_gamestate_testing = nullptr;
@@ -701,7 +706,13 @@ void LauncherUI::RenderDebugTools() {
             ImGui::EndTabItem();
         }
         
-        // Tab 4: Performance Stats (existing, moved)
+        // Tab 4: Object Analysis (new)
+        if (ImGui::BeginTabItem("Objects")) {
+            RenderObjectAnalysis();
+            ImGui::EndTabItem();
+        }
+        
+        // Tab 5: Performance Stats (existing, moved)
         if (ImGui::BeginTabItem("Stats")) {
             RenderPerformanceStats();
             ImGui::EndTabItem();
@@ -709,6 +720,9 @@ void LauncherUI::RenderDebugTools() {
         
         ImGui::EndTabBar();
     }
+    
+    // Render save slot inspection window if requested
+    RenderSlotInspectionWindow();
 }
 
 void LauncherUI::RenderSaveStateTools() {
@@ -802,7 +816,7 @@ void LauncherUI::RenderSaveStateTools() {
     
     // Save Slots
     if (ImGui::CollapsingHeader("Save Slots", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Columns(4, "SaveSlots", true);
+        ImGui::Columns(5, "SaveSlots", true);
         ImGui::Text("Slot");
         ImGui::NextColumn();
         ImGui::Text("Status");
@@ -810,6 +824,8 @@ void LauncherUI::RenderSaveStateTools() {
         ImGui::Text("Save");
         ImGui::NextColumn();
         ImGui::Text("Load");
+        ImGui::NextColumn();
+        ImGui::Text("Inspect");
         ImGui::NextColumn();
         ImGui::Separator();
         
@@ -894,6 +910,27 @@ void LauncherUI::RenderSaveStateTools() {
                 } else {
                     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "UI: on_debug_load_from_slot callback is null!");
                 }
+            }
+            ImGui::NextColumn();
+            
+            // Inspect button
+            if (on_get_slot_status) {
+                SlotStatusInfo status;
+                if (on_get_slot_status(slot, status) && status.occupied) {
+                    if (ImGui::Button("Inspect")) {
+                        // Set the selected slot for inspection
+                        selected_inspection_slot_ = slot;
+                        show_slot_inspection_ = true;
+                    }
+                } else {
+                    ImGui::BeginDisabled();
+                    ImGui::Button("Inspect");
+                    ImGui::EndDisabled();
+                }
+            } else {
+                ImGui::BeginDisabled();
+                ImGui::Button("Inspect");
+                ImGui::EndDisabled();
             }
             ImGui::NextColumn();
             
@@ -1566,4 +1603,318 @@ void LauncherUI::ClearLog() {
     SDL_LockMutex(log_buffer_mutex_);
     log_buffer_.clear();
     SDL_UnlockMutex(log_buffer_mutex_);
+}
+
+void LauncherUI::RenderObjectAnalysis() {
+    ImGui::Text("FM2K Action Pool Analysis");
+    ImGui::Separator();
+    
+    // Frame Stepping Controls
+    ImGui::Text("Frame Stepping:");
+    static bool frame_stepping_paused = false;
+    
+    if (ImGui::Button(frame_stepping_paused ? "Resume Game" : "Pause Game")) {
+        frame_stepping_paused = !frame_stepping_paused;
+        if (on_frame_step_pause) {
+            on_frame_step_pause(frame_stepping_paused);
+        }
+    }
+    
+    ImGui::SameLine();
+    if (ImGui::Button("Step 1 Frame")) {
+        if (on_frame_step_single) {
+            on_frame_step_single();
+        }
+    }
+    
+    ImGui::SameLine();
+    if (ImGui::Button("Step 10 Frames")) {
+        if (on_frame_step_multi) {
+            on_frame_step_multi(10);
+        }
+    }
+    
+    ImGui::SameLine();
+    ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), 
+                      frame_stepping_paused ? "(Game Paused)" : "(Game Running)");
+    
+    ImGui::Separator();
+    
+    // Check if we have the callback connected
+    if (!on_get_enhanced_actions) {
+        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.0f, 1.0f), "Action analysis not available");
+        ImGui::BulletText("Connect to FM2K game session to enable action inspection");
+        return;
+    }
+    
+    // Refresh controls and timing
+    static auto last_refresh = std::chrono::steady_clock::now();
+    auto now = std::chrono::steady_clock::now();
+    
+    bool force_refresh = false;
+    if (ImGui::Button("Refresh Now")) {
+        force_refresh = true;
+    }
+    ImGui::SameLine();
+    
+    static bool auto_refresh = true;
+    ImGui::Checkbox("Auto-refresh (1 Hz)", &auto_refresh);
+    
+    // Only refresh automatically every second, not every frame
+    bool should_refresh = force_refresh || 
+                         (auto_refresh && 
+                          std::chrono::duration_cast<std::chrono::milliseconds>(now - last_refresh).count() > 1000);
+    
+    // Get current action data (FM2K "objects" are actually "actions" in 2DFM editor)
+    static std::vector<EnhancedActionInfo> cached_actions;
+    
+    if (should_refresh) {
+        cached_actions = on_get_enhanced_actions();
+        last_refresh = now;
+    }
+    
+    auto& enhanced_actions = cached_actions;
+    
+    ImGui::Separator();
+    
+    // Overview statistics
+    ImGui::Text("Live Action Analysis:");
+    ImGui::Separator();
+    
+    uint32_t character_count = 0, projectile_count = 0, effect_count = 0, system_count = 0, other_count = 0;
+    for (const auto& action : enhanced_actions) {
+        if (action.IsCharacter()) character_count++;
+        else if (action.IsProjectile()) projectile_count++;
+        else if (action.IsEffect()) effect_count++;
+        else if (action.IsSystem()) system_count++;
+        else other_count++;
+    }
+    
+    ImGui::Text("Total Active Actions: %zu", enhanced_actions.size());
+    ImGui::BulletText("Characters: %u", character_count);
+    ImGui::BulletText("Projectiles: %u", projectile_count);
+    ImGui::BulletText("Effects: %u", effect_count);
+    ImGui::BulletText("System: %u", system_count);
+    if (other_count > 0) {
+        ImGui::BulletText("Other: %u", other_count);
+    }
+    
+    ImGui::Separator();
+    
+    // Action list with detailed inspection
+    if (enhanced_actions.empty()) {
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "No active actions detected");
+        return;
+    }
+    
+    // Scrollable region for action list
+    if (ImGui::BeginChild("ActionList", ImVec2(0, -1), true)) {
+        
+        for (const auto& action : enhanced_actions) {
+            // Create a tree node for each action
+            char action_label[256];
+            snprintf(action_label, sizeof(action_label), "[Slot %u] %s (ID: %u)", 
+                     action.slot_index, action.type_name.c_str(), action.id);
+            
+            if (ImGui::TreeNode(action_label)) {
+                
+                // Basic action info
+                if (ImGui::CollapsingHeader("Basic Properties", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    ImGui::Text("Slot Index: %u", action.slot_index);
+                    ImGui::Text("Type: %u (%s)", action.type, action.type_name.c_str());
+                    ImGui::Text("Action ID: %u", action.id);
+                    ImGui::Text("Position: (%u, %u)", action.position_x, action.position_y);
+                    if (action.HasMovement()) {
+                        ImGui::Text("Velocity: (%u, %u)", action.velocity_x, action.velocity_y);
+                    } else {
+                        ImGui::TextDisabled("Velocity: (0, 0) - Static");
+                    }
+                    ImGui::Text("Animation State: %u", action.animation_state);
+                    ImGui::Text("Health/Damage: %u", action.health_damage);
+                    ImGui::Text("State Flags: 0x%08X", action.state_flags);
+                    ImGui::Text("Timer/Counter: %u", action.timer_counter);
+                }
+                
+                // Type-specific analysis
+                if (action.IsCharacter()) {
+                    if (ImGui::CollapsingHeader("Character Data")) {
+                        if (!action.character_name.empty()) {
+                            ImGui::Text("Character: %s", action.character_name.c_str());
+                        }
+                        if (!action.current_move.empty()) {
+                            ImGui::Text("Current Move: %s", action.current_move.c_str());
+                        }
+                        ImGui::Text("Facing: %s", action.facing_direction == 0 ? "Left" : "Right");
+                        if (action.combo_count > 0) {
+                            ImGui::Text("Combo Count: %u", action.combo_count);
+                        }
+                    }
+                } else if (action.IsProjectile()) {
+                    if (ImGui::CollapsingHeader("Projectile Data")) {
+                        ImGui::Text("Movement: %s", action.HasMovement() ? "Active" : "Static");
+                        if (action.HasMovement()) {
+                            float speed = sqrt(action.velocity_x * action.velocity_x + action.velocity_y * action.velocity_y);
+                            ImGui::Text("Speed: %.1f units", speed);
+                        }
+                    }
+                } else if (action.IsEffect()) {
+                    if (ImGui::CollapsingHeader("Effect Data")) {
+                        ImGui::Text("Animation Frame: %u", action.animation_frame);
+                        ImGui::Text("Effect Timer: %u", action.timer_counter);
+                    }
+                }
+                
+                // Script/Action data
+                if (ImGui::CollapsingHeader("Script Data")) {
+                    if (action.script_id > 0) {
+                        ImGui::Text("Script ID: %u", action.script_id);
+                    } else {
+                        ImGui::TextDisabled("Script ID: None");
+                    }
+                    if (!action.action_name.empty()) {
+                        ImGui::Text("Action: %s", action.action_name.c_str());
+                    } else {
+                        ImGui::TextDisabled("Action: Unknown");
+                    }
+                    if (action.animation_frame > 0) {
+                        ImGui::Text("Animation Frame: %u", action.animation_frame);
+                    }
+                }
+                
+                // Raw memory inspection
+                if (ImGui::CollapsingHeader("Raw Memory")) {
+                    ImGui::Text("Complete Action Data (382 bytes):");
+                    
+                    // Display first 128 bytes as hex dump
+                    for (int row = 0; row < 8; row++) {
+                        ImGui::Text("%04X:", row * 16);
+                        ImGui::SameLine();
+                        
+                        // Hex bytes
+                        for (int col = 0; col < 16; col++) {
+                            int byte_idx = row * 16 + col;
+                            if (byte_idx < 382) {
+                                ImGui::SameLine();
+                                ImGui::Text("%02X", action.raw_data[byte_idx]);
+                            }
+                        }
+                        
+                        // ASCII representation
+                        ImGui::SameLine();
+                        ImGui::Text(" |");
+                        for (int col = 0; col < 16; col++) {
+                            int byte_idx = row * 16 + col;
+                            if (byte_idx < 382) {
+                                char c = action.raw_data[byte_idx];
+                                ImGui::SameLine();
+                                ImGui::Text("%c", (c >= 32 && c <= 126) ? c : '.');
+                            }
+                        }
+                        ImGui::SameLine();
+                        ImGui::Text("|");
+                    }
+                    
+                    if (ImGui::Button("Show Full Memory Dump")) {
+                        // TODO: Implement detailed memory viewer popup
+                    }
+                }
+                
+                ImGui::TreePop();
+            }
+        }
+    }
+    ImGui::EndChild();
+}
+
+void LauncherUI::RenderSlotInspectionWindow() {
+    if (!show_slot_inspection_ || selected_inspection_slot_ < 0 || selected_inspection_slot_ >= 8) {
+        return;
+    }
+    
+    // Create a modal popup window for slot inspection
+    ImGui::SetNextWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Save State Inspector", &show_slot_inspection_, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Inspecting Save Slot %d", selected_inspection_slot_);
+        ImGui::Separator();
+        
+        // Get slot status first
+        if (on_get_slot_status) {
+            SlotStatusInfo status;
+            if (on_get_slot_status(selected_inspection_slot_, status) && status.occupied) {
+                // Show slot metadata
+                ImGui::Text("Slot Metadata:");
+                ImGui::BulletText("Frame: %u", status.frame_number);
+                ImGui::BulletText("Objects: %u active", status.active_object_count);
+                ImGui::BulletText("Size: %u KB", status.state_size_kb);
+                ImGui::BulletText("Checksum: 0x%08X", status.checksum);
+                
+                if (status.save_time_us > 0) {
+                    ImGui::BulletText("Save time: %u μs", status.save_time_us);
+                }
+                if (status.load_time_us > 0) {
+                    ImGui::BulletText("Last load time: %u μs", status.load_time_us);
+                }
+                
+                // Calculate and show timestamp
+                uint64_t current_time = SDL_GetTicks();
+                uint64_t time_diff = current_time - status.timestamp_ms;
+                ImGui::BulletText("Saved: %.1f seconds ago", time_diff / 1000.0f);
+                
+                ImGui::Separator();
+                
+                // Action/Object breakdown
+                ImGui::Text("Saved Objects Analysis:");
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f), "ℹ This shows objects that were active when the state was saved");
+                ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "  For live object analysis, use the 'Objects' tab");
+                
+                ImGui::Separator();
+                
+                // Show basic object count info from save state
+                if (status.active_object_count > 0) {
+                    ImGui::Text("Objects in this save state:");
+                    ImGui::BulletText("Total active objects: %u", status.active_object_count);
+                    ImGui::BulletText("Object pool size: 391 KB (1024 slots × 382 bytes)");
+                    ImGui::BulletText("Memory efficiency: %.1f%% used", (status.active_object_count * 100.0f) / 1024.0f);
+                    
+                    ImGui::Separator();
+                    ImGui::TextColored(ImVec4(0.7f, 0.9f, 0.7f, 1.0f), "💡 To inspect individual objects:");
+                    ImGui::BulletText("1. Load this save state");
+                    ImGui::BulletText("2. Go to the 'Objects' tab for live analysis");
+                    ImGui::BulletText("3. Use the enhanced 2DFM script analysis features");
+                    
+                } else {
+                    ImGui::Text("No active objects in this save state");
+                    ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "This may indicate:");
+                    ImGui::BulletText("Empty game state (menu/loading screen)");
+                    ImGui::BulletText("Objects not properly detected during save");
+                    ImGui::BulletText("Game in transitional state");
+                }
+                
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "Slot %d is empty or unreadable", selected_inspection_slot_);
+            }
+        } else {
+            ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.5f, 1.0f), "Cannot inspect slot - no connection to game");
+        }
+        
+        ImGui::Separator();
+        
+        // Action buttons
+        if (ImGui::Button("Load This State")) {
+            if (on_debug_load_from_slot) {
+                bool success = on_debug_load_from_slot(selected_inspection_slot_);
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Slot inspector: Load from slot %d %s", 
+                           selected_inspection_slot_, success ? "triggered" : "failed");
+                if (success) {
+                    show_slot_inspection_ = false; // Close inspector after load
+                }
+            }
+        }
+        
+        ImGui::SameLine();
+        if (ImGui::Button("Close")) {
+            show_slot_inspection_ = false;
+        }
+    }
+    ImGui::End();
 } 

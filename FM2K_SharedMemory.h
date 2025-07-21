@@ -80,4 +80,51 @@ struct SharedInputData {
     // GekkoNet client role coordination (simplified)
     uint8_t player_index;            // 0 for Player 1, 1 for Player 2
     uint8_t session_role;            // 0 = Host, 1 = Guest
+    
+    // Configuration settings
+    bool use_minimal_gamestate_testing;  // Enable minimal game state testing mode
+    uint32_t config_version;            // Configuration version for compatibility
+    
+    // Enhanced action analysis data (must be at end for backwards compatibility)
+    struct EnhancedActionData {
+        // Core action data
+        uint16_t slot_index;
+        uint32_t type;              
+        uint32_t id;                
+        uint32_t position_x, position_y;
+        uint32_t velocity_x, velocity_y;
+        uint32_t animation_state;   
+        uint32_t health_damage;
+        uint32_t state_flags;
+        uint32_t timer_counter;
+        
+        // Enhanced 2DFM integration data
+        char type_name[32];         
+        char action_name[64];       
+        uint32_t script_id;         
+        uint32_t animation_frame;   
+        
+        // 2DFM script system analysis
+        uint32_t script_command_type;  
+        uint32_t script_special_flag;  
+        char script_command_name[32];  
+        uint32_t render_layer;         
+        uint32_t management_number;    
+        uint32_t object_flags;         
+        char layer_description[32];    
+        
+        // Character-specific data (for CHARACTER actions)
+        char character_name[32];    
+        char current_move[64];      
+        uint32_t facing_direction;  
+        uint32_t combo_count;       
+        
+        // Raw action data for deep inspection
+        uint8_t raw_data[382];      
+    };
+    
+    // Action analysis buffer (up to 64 active actions at once)
+    uint32_t enhanced_actions_count;
+    bool enhanced_actions_updated;
+    EnhancedActionData enhanced_actions[64];
 };

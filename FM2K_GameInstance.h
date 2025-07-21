@@ -80,6 +80,11 @@ public:
     bool TriggerManualLoadState();
     bool TriggerForceRollback(uint32_t frames);
     
+    // Frame stepping functions
+    void SetFrameStepPause(bool pause);
+    void StepSingleFrame();
+    void StepMultipleFrames(uint32_t frames);
+    
     // Slot-based save/load functions
     bool TriggerSaveToSlot(uint32_t slot);
     bool TriggerLoadFromSlot(uint32_t slot);
@@ -97,6 +102,9 @@ public:
     // Debug and testing configuration
     bool SetProductionMode(bool enabled);
     bool SetInputRecording(bool enabled);
+    
+    // Shared memory access
+    void* GetSharedMemoryData() const { return shared_memory_data_; }
     bool SetMinimalGameStateTesting(bool enabled);
     
     // Save state profile removed - now using optimized FastGameState system

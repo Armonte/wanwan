@@ -17,6 +17,8 @@
 // Global variables for manual save/load requests
 static bool manual_save_requested = false;
 static bool manual_load_requested = false;
+static uint32_t target_save_slot = 0;
+static uint32_t target_load_slot = 0;
 
 // Auto-save tracking (separate from globals.h version)
 static uint32_t hook_last_auto_save_frame = 0;
@@ -74,11 +76,12 @@ static void ProcessManualSaveLoadRequests() {
     
     // Handle manual save request
     if (manual_save_requested) {
-        uint32_t target_slot = shared_data->debug_target_slot;
+        // Use hotkey target slot if available, otherwise fall back to launcher slot
+        uint32_t target_slot = (target_save_slot < 8) ? target_save_slot : shared_data->debug_target_slot;
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Processing save state request for slot %u", target_slot);
         
         if (target_slot < 8) {
-            // SIMPLE save state - just what we need
+            // COMPREHENSIVE save state - all variables from CheatEngine table
             
             // Player state addresses (CheatEngine verified)
             uint32_t* p1_hp_ptr = (uint32_t*)0x004DFC85;
@@ -88,17 +91,66 @@ static void ProcessManualSaveLoadRequests() {
             uint32_t* p2_x_ptr = (uint32_t*)0x004EDD02;
             uint16_t* p2_y_ptr = (uint16_t*)0x004EDD06;
             
+            // Player meter/super/stock
+            uint32_t* p1_super_ptr = (uint32_t*)0x004DFC9D;
+            uint32_t* p2_super_ptr = (uint32_t*)0x004EDCDC;
+            uint32_t* p1_special_stock_ptr = (uint32_t*)0x004DFC95;
+            uint32_t* p2_special_stock_ptr = (uint32_t*)0x004EDCD4;
+            uint32_t* p1_rounds_won_ptr = (uint32_t*)0x004DFC6D;
+            uint32_t* p2_rounds_won_ptr = (uint32_t*)0x004EDCAC;
+            
             // RNG seed
             uint32_t* rng_seed_ptr = (uint32_t*)0x41FB1C;
             
-            // Timer
+            // Timers
             uint32_t* timer_ptr = (uint32_t*)0x470050;
+            uint32_t* round_timer_ptr = (uint32_t*)0x00470060;
+            uint32_t* round_state_ptr = (uint32_t*)0x47004C;
+            uint32_t* round_limit_ptr = (uint32_t*)0x470048;
+            uint32_t* round_setting_ptr = (uint32_t*)0x470068;
+            
+            // Game modes and flags
+            uint32_t* fm2k_game_mode_ptr = (uint32_t*)0x470040;
+            uint16_t* game_mode_ptr = (uint16_t*)0x00470054;
+            uint32_t* game_paused_ptr = (uint32_t*)0x4701BC;
+            uint32_t* replay_mode_ptr = (uint32_t*)0x4701C0;
+            
+            // Camera position
+            uint32_t* camera_x_ptr = (uint32_t*)0x00447F2C;
+            uint32_t* camera_y_ptr = (uint32_t*)0x00447F30;
+            
+            // Character variables base addresses
+            int16_t* p1_char_vars_ptr = (int16_t*)0x004DFD17;
+            int16_t* p2_char_vars_ptr = (int16_t*)0x004EDD56;
+            
+            // System variables base address
+            int16_t* sys_vars_ptr = (int16_t*)0x004456B0;
+            
+            // Task variables base addresses
+            uint16_t* p1_task_vars_ptr = (uint16_t*)0x00470311;
+            uint16_t* p2_task_vars_ptr = (uint16_t*)0x0047060D;
+            
+            // Move history
+            uint8_t* move_history_ptr = (uint8_t*)0x47006C;
+            
+            // Additional state
+            uint32_t* object_count_ptr = (uint32_t*)0x004246FC;
+            uint32_t* frame_sync_flag_ptr = (uint32_t*)0x00424700;
+            uint32_t* hit_effect_target_ptr = (uint32_t*)0x4701C4;
+            
+            // Character selection
+            uint32_t* menu_selection_ptr = (uint32_t*)0x424780;
+            uint64_t* p1_css_cursor_ptr = (uint64_t*)0x00424E50;
+            uint64_t* p2_css_cursor_ptr = (uint64_t*)0x00424E58;
+            uint32_t* p1_char_to_load_ptr = (uint32_t*)0x470020;
+            uint32_t* p2_char_to_load_ptr = (uint32_t*)0x470024;
+            uint32_t* p1_color_selection_ptr = (uint32_t*)0x00470024;
             
             // Object pool (391KB)
             uint8_t* object_pool_ptr = (uint8_t*)0x4701E0;
             const size_t object_pool_size = 0x5F800;
             
-            // Check if addresses are valid
+            // Check if addresses are valid (simplified - just check key pointers)
             bool addresses_valid = (!IsBadReadPtr(p1_hp_ptr, sizeof(uint32_t)) && 
                                   !IsBadReadPtr(p2_hp_ptr, sizeof(uint32_t)) &&
                                   !IsBadReadPtr(p1_x_ptr, sizeof(uint32_t)) && 
@@ -107,7 +159,13 @@ static void ProcessManualSaveLoadRequests() {
                                   !IsBadReadPtr(p2_y_ptr, sizeof(uint16_t)) &&
                                   !IsBadReadPtr(rng_seed_ptr, sizeof(uint32_t)) &&
                                   !IsBadReadPtr(timer_ptr, sizeof(uint32_t)) &&
-                                  !IsBadReadPtr(object_pool_ptr, object_pool_size));
+                                  !IsBadReadPtr(object_pool_ptr, object_pool_size) &&
+                                  !IsBadReadPtr(p1_char_vars_ptr, sizeof(int16_t) * 16) &&
+                                  !IsBadReadPtr(p2_char_vars_ptr, sizeof(int16_t) * 16) &&
+                                  !IsBadReadPtr(sys_vars_ptr, sizeof(int16_t) * 16) &&
+                                  !IsBadReadPtr(p1_task_vars_ptr, sizeof(uint16_t) * 16) &&
+                                  !IsBadReadPtr(p2_task_vars_ptr, sizeof(uint16_t) * 16) &&
+                                  !IsBadReadPtr(move_history_ptr, 16));
             
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SAVE MEMORY CHECK: addresses_valid=%s", addresses_valid ? "true" : "false");
             
@@ -122,11 +180,62 @@ static void ProcessManualSaveLoadRequests() {
                 save_slot->p2_x = *p2_x_ptr;
                 save_slot->p2_y = *p2_y_ptr;
                 
+                // Save player meter/super/stock
+                save_slot->p1_super = *p1_super_ptr;
+                save_slot->p2_super = *p2_super_ptr;
+                save_slot->p1_special_stock = *p1_special_stock_ptr;
+                save_slot->p2_special_stock = *p2_special_stock_ptr;
+                save_slot->p1_rounds_won = *p1_rounds_won_ptr;
+                save_slot->p2_rounds_won = *p2_rounds_won_ptr;
+                
                 // Save RNG seed
                 save_slot->rng_seed = *rng_seed_ptr;
                 
-                // Save timer
+                // Save timers
                 save_slot->game_timer = *timer_ptr;
+                save_slot->round_timer = *round_timer_ptr;
+                save_slot->round_state = *round_state_ptr;
+                save_slot->round_limit = *round_limit_ptr;
+                save_slot->round_setting = *round_setting_ptr;
+                
+                // Save game modes and flags
+                save_slot->fm2k_game_mode = *fm2k_game_mode_ptr;
+                save_slot->game_mode = *game_mode_ptr;
+                save_slot->game_paused = *game_paused_ptr;
+                save_slot->replay_mode = *replay_mode_ptr;
+                
+                // Save camera position
+                save_slot->camera_x = *camera_x_ptr;
+                save_slot->camera_y = *camera_y_ptr;
+                
+                // Save character variables (16 vars per player)
+                memcpy(save_slot->p1_char_vars, p1_char_vars_ptr, sizeof(int16_t) * 16);
+                memcpy(save_slot->p2_char_vars, p2_char_vars_ptr, sizeof(int16_t) * 16);
+                
+                // Save system variables (14 signed + 2 unsigned)
+                memcpy(save_slot->sys_vars, sys_vars_ptr, sizeof(int16_t) * 14);
+                save_slot->sys_vars_unsigned[0] = *(uint16_t*)(sys_vars_ptr + 14);
+                save_slot->sys_vars_unsigned[1] = *(uint16_t*)(sys_vars_ptr + 15);
+                
+                // Save task variables (16 per player)
+                memcpy(save_slot->p1_task_vars, p1_task_vars_ptr, sizeof(uint16_t) * 16);
+                memcpy(save_slot->p2_task_vars, p2_task_vars_ptr, sizeof(uint16_t) * 16);
+                
+                // Save move history
+                memcpy(save_slot->player_move_history, move_history_ptr, 16);
+                
+                // Save additional state
+                save_slot->object_count = *object_count_ptr;
+                save_slot->frame_sync_flag = *frame_sync_flag_ptr;
+                save_slot->hit_effect_target = *hit_effect_target_ptr;
+                
+                // Save character selection state
+                save_slot->menu_selection = *menu_selection_ptr;
+                save_slot->p1_css_cursor = *p1_css_cursor_ptr;
+                save_slot->p2_css_cursor = *p2_css_cursor_ptr;
+                save_slot->p1_char_to_load = *p1_char_to_load_ptr;
+                save_slot->p2_char_to_load = *p2_char_to_load_ptr;
+                save_slot->p1_color_selection = *p1_color_selection_ptr;
                 
                 // Save entire object pool (391KB)
                 memcpy(save_slot->object_pool, object_pool_ptr, object_pool_size);
@@ -224,17 +333,19 @@ static void ProcessManualSaveLoadRequests() {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Save failed - invalid slot %u", target_slot);
         }
         manual_save_requested = false;
+        target_save_slot = 0; // Reset hotkey target slot
     }
     
     // Handle manual load request
     if (manual_load_requested) {
-        uint32_t target_slot = shared_data->debug_target_slot;
+        // Use hotkey target slot if available, otherwise fall back to launcher slot
+        uint32_t target_slot = (target_load_slot < 8) ? target_load_slot : shared_data->debug_target_slot;
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LOAD START: Processing load state request for slot %u", target_slot);
         
         if (target_slot < 8 && shared_data->save_slots[target_slot].valid) {
             SaveStateData* save_slot = &shared_data->save_slots[target_slot];
             
-            // SIMPLE load state - just what we need
+            // COMPREHENSIVE load state - all variables from CheatEngine table
             
             // Player state addresses
             uint32_t* p1_hp_ptr = (uint32_t*)0x004DFC85;
@@ -244,11 +355,60 @@ static void ProcessManualSaveLoadRequests() {
             uint32_t* p2_x_ptr = (uint32_t*)0x004EDD02;
             uint16_t* p2_y_ptr = (uint16_t*)0x004EDD06;
             
+            // Player meter/super/stock
+            uint32_t* p1_super_ptr = (uint32_t*)0x004DFC9D;
+            uint32_t* p2_super_ptr = (uint32_t*)0x004EDCDC;
+            uint32_t* p1_special_stock_ptr = (uint32_t*)0x004DFC95;
+            uint32_t* p2_special_stock_ptr = (uint32_t*)0x004EDCD4;
+            uint32_t* p1_rounds_won_ptr = (uint32_t*)0x004DFC6D;
+            uint32_t* p2_rounds_won_ptr = (uint32_t*)0x004EDCAC;
+            
             // RNG seed
             uint32_t* rng_seed_ptr = (uint32_t*)0x41FB1C;
             
-            // Timer
+            // Timers
             uint32_t* timer_ptr = (uint32_t*)0x470050;
+            uint32_t* round_timer_ptr = (uint32_t*)0x00470060;
+            uint32_t* round_state_ptr = (uint32_t*)0x47004C;
+            uint32_t* round_limit_ptr = (uint32_t*)0x470048;
+            uint32_t* round_setting_ptr = (uint32_t*)0x470068;
+            
+            // Game modes and flags
+            uint32_t* fm2k_game_mode_ptr = (uint32_t*)0x470040;
+            uint16_t* game_mode_ptr = (uint16_t*)0x00470054;
+            uint32_t* game_paused_ptr = (uint32_t*)0x4701BC;
+            uint32_t* replay_mode_ptr = (uint32_t*)0x4701C0;
+            
+            // Camera position
+            uint32_t* camera_x_ptr = (uint32_t*)0x00447F2C;
+            uint32_t* camera_y_ptr = (uint32_t*)0x00447F30;
+            
+            // Character variables base addresses
+            int16_t* p1_char_vars_ptr = (int16_t*)0x004DFD17;
+            int16_t* p2_char_vars_ptr = (int16_t*)0x004EDD56;
+            
+            // System variables base address
+            int16_t* sys_vars_ptr = (int16_t*)0x004456B0;
+            
+            // Task variables base addresses
+            uint16_t* p1_task_vars_ptr = (uint16_t*)0x00470311;
+            uint16_t* p2_task_vars_ptr = (uint16_t*)0x0047060D;
+            
+            // Move history
+            uint8_t* move_history_ptr = (uint8_t*)0x47006C;
+            
+            // Additional state
+            uint32_t* object_count_ptr = (uint32_t*)0x004246FC;
+            uint32_t* frame_sync_flag_ptr = (uint32_t*)0x00424700;
+            uint32_t* hit_effect_target_ptr = (uint32_t*)0x4701C4;
+            
+            // Character selection
+            uint32_t* menu_selection_ptr = (uint32_t*)0x424780;
+            uint64_t* p1_css_cursor_ptr = (uint64_t*)0x00424E50;
+            uint64_t* p2_css_cursor_ptr = (uint64_t*)0x00424E58;
+            uint32_t* p1_char_to_load_ptr = (uint32_t*)0x470020;
+            uint32_t* p2_char_to_load_ptr = (uint32_t*)0x470024;
+            uint32_t* p1_color_selection_ptr = (uint32_t*)0x00470024;
             
             // Object pool (391KB)
             uint8_t* object_pool_ptr = (uint8_t*)0x4701E0;
@@ -262,22 +422,79 @@ static void ProcessManualSaveLoadRequests() {
                                      !IsBadWritePtr(p2_y_ptr, sizeof(uint16_t)) &&
                                      !IsBadWritePtr(rng_seed_ptr, sizeof(uint32_t)) &&
                                      !IsBadWritePtr(timer_ptr, sizeof(uint32_t)) &&
-                                     !IsBadWritePtr(object_pool_ptr, object_pool_size));
+                                     !IsBadWritePtr(object_pool_ptr, object_pool_size) &&
+                                     !IsBadWritePtr(p1_char_vars_ptr, sizeof(int16_t) * 16) &&
+                                     !IsBadWritePtr(p2_char_vars_ptr, sizeof(int16_t) * 16) &&
+                                     !IsBadWritePtr(sys_vars_ptr, sizeof(int16_t) * 16) &&
+                                     !IsBadWritePtr(p1_task_vars_ptr, sizeof(uint16_t) * 16) &&
+                                     !IsBadWritePtr(p2_task_vars_ptr, sizeof(uint16_t) * 16) &&
+                                     !IsBadWritePtr(move_history_ptr, 16));
             
             if (addresses_writable) {
                 // Restore player state
                 *p1_hp_ptr = save_slot->p1_hp;
                 *p2_hp_ptr = save_slot->p2_hp;
                 *p1_x_ptr = save_slot->p1_x;
-                *p1_y_ptr = (uint16_t)save_slot->p1_y;
+                *p1_y_ptr = save_slot->p1_y;
                 *p2_x_ptr = save_slot->p2_x;
-                *p2_y_ptr = (uint16_t)save_slot->p2_y;
+                *p2_y_ptr = save_slot->p2_y;
+                
+                // Restore player meter/super/stock
+                *p1_super_ptr = save_slot->p1_super;
+                *p2_super_ptr = save_slot->p2_super;
+                *p1_special_stock_ptr = save_slot->p1_special_stock;
+                *p2_special_stock_ptr = save_slot->p2_special_stock;
+                *p1_rounds_won_ptr = save_slot->p1_rounds_won;
+                *p2_rounds_won_ptr = save_slot->p2_rounds_won;
                 
                 // Restore RNG seed
                 *rng_seed_ptr = save_slot->rng_seed;
                 
-                // Restore timer
+                // Restore timers
                 *timer_ptr = save_slot->game_timer;
+                *round_timer_ptr = save_slot->round_timer;
+                *round_state_ptr = save_slot->round_state;
+                *round_limit_ptr = save_slot->round_limit;
+                *round_setting_ptr = save_slot->round_setting;
+                
+                // Restore game modes and flags
+                *fm2k_game_mode_ptr = save_slot->fm2k_game_mode;
+                *game_mode_ptr = save_slot->game_mode;
+                *game_paused_ptr = save_slot->game_paused;
+                *replay_mode_ptr = save_slot->replay_mode;
+                
+                // Restore camera position
+                *camera_x_ptr = save_slot->camera_x;
+                *camera_y_ptr = save_slot->camera_y;
+                
+                // Restore character variables (16 vars per player)
+                memcpy(p1_char_vars_ptr, save_slot->p1_char_vars, sizeof(int16_t) * 16);
+                memcpy(p2_char_vars_ptr, save_slot->p2_char_vars, sizeof(int16_t) * 16);
+                
+                // Restore system variables (14 signed + 2 unsigned)
+                memcpy(sys_vars_ptr, save_slot->sys_vars, sizeof(int16_t) * 14);
+                *(uint16_t*)(sys_vars_ptr + 14) = save_slot->sys_vars_unsigned[0];
+                *(uint16_t*)(sys_vars_ptr + 15) = save_slot->sys_vars_unsigned[1];
+                
+                // Restore task variables (16 per player)
+                memcpy(p1_task_vars_ptr, save_slot->p1_task_vars, sizeof(uint16_t) * 16);
+                memcpy(p2_task_vars_ptr, save_slot->p2_task_vars, sizeof(uint16_t) * 16);
+                
+                // Restore move history
+                memcpy(move_history_ptr, save_slot->player_move_history, 16);
+                
+                // Restore additional state
+                *object_count_ptr = save_slot->object_count;
+                *frame_sync_flag_ptr = save_slot->frame_sync_flag;
+                *hit_effect_target_ptr = save_slot->hit_effect_target;
+                
+                // Restore character selection state
+                *menu_selection_ptr = save_slot->menu_selection;
+                *p1_css_cursor_ptr = save_slot->p1_css_cursor;
+                *p2_css_cursor_ptr = save_slot->p2_css_cursor;
+                *p1_char_to_load_ptr = save_slot->p1_char_to_load;
+                *p2_char_to_load_ptr = save_slot->p2_char_to_load;
+                *p1_color_selection_ptr = save_slot->p1_color_selection;
                 
                 // Restore entire object pool (391KB)
                 memcpy(object_pool_ptr, save_slot->object_pool, object_pool_size);
@@ -294,6 +511,7 @@ static void ProcessManualSaveLoadRequests() {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Load failed - slot %u is empty", target_slot);
         }
         manual_load_requested = false;
+        target_load_slot = 0; // Reset hotkey target slot
     }
 }
 
@@ -338,6 +556,81 @@ static void CheckForDebugCommands() {
         }
         UpdateEnhancedActionData();
     }
+}
+
+// Keyboard hotkey handler for save states and frame stepping
+static void CheckForHotkeys() {
+    SharedInputData* shared_data = GetSharedMemory();
+    if (!shared_data) {
+        return; // No shared memory available
+    }
+    
+    static bool keys_pressed[256] = {false}; // Track key press states to avoid repeats
+    
+    // Check for save state hotkeys: Shift+1-8
+    bool shift_pressed = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+    if (shift_pressed) {
+        for (int i = 0; i < 8; i++) {
+            int vk_key = '1' + i; // VK codes for 1-8
+            bool key_currently_pressed = (GetAsyncKeyState(vk_key) & 0x8000) != 0;
+            
+            if (key_currently_pressed && !keys_pressed[vk_key]) {
+                // Save to slot i
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Hotkey: Save to slot %d", i);
+                if (!manual_save_requested) {
+                    manual_save_requested = true;
+                    target_save_slot = i;
+                }
+            }
+            keys_pressed[vk_key] = key_currently_pressed;
+        }
+    }
+    
+    // Check for load state hotkeys: 1-8 (without Shift)
+    if (!shift_pressed) {
+        for (int i = 0; i < 8; i++) {
+            int vk_key = '1' + i; // VK codes for 1-8
+            bool key_currently_pressed = (GetAsyncKeyState(vk_key) & 0x8000) != 0;
+            
+            if (key_currently_pressed && !keys_pressed[vk_key]) {
+                // Load from slot i
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Hotkey: Load from slot %d", i);
+                if (!manual_load_requested) {
+                    manual_load_requested = true;
+                    target_load_slot = i;
+                }
+            }
+            keys_pressed[vk_key] = key_currently_pressed;
+        }
+    }
+    
+    // Check for pause/resume hotkey: 0
+    bool key_0_pressed = (GetAsyncKeyState('0') & 0x8000) != 0;
+    if (key_0_pressed && !keys_pressed['0']) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Hotkey: Toggle pause/resume");
+        if (shared_data->frame_step_is_paused) {
+            shared_data->frame_step_resume_requested = true;
+        } else {
+            shared_data->frame_step_pause_requested = true;
+        }
+    }
+    keys_pressed['0'] = key_0_pressed;
+    
+    // Check for single step hotkeys: - and +/=
+    bool key_minus_pressed = (GetAsyncKeyState(VK_OEM_MINUS) & 0x8000) != 0; // - key
+    bool key_plus_pressed = (GetAsyncKeyState(VK_OEM_PLUS) & 0x8000) != 0;   // +/= key
+    
+    if (key_minus_pressed && !keys_pressed[VK_OEM_MINUS]) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Hotkey: Single step advance");
+        shared_data->frame_step_single_requested = true;
+    }
+    keys_pressed[VK_OEM_MINUS] = key_minus_pressed;
+    
+    if (key_plus_pressed && !keys_pressed[VK_OEM_PLUS]) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Hotkey: Single step advance");  
+        shared_data->frame_step_single_requested = true;
+    }
+    keys_pressed[VK_OEM_PLUS] = key_plus_pressed;
 }
 
 // New hook for boot-to-character-select hack
@@ -406,6 +699,7 @@ int __cdecl Hook_ProcessGameInputs() {
     // ARCHITECTURE FIX: Process debug commands (including save/load) BEFORE the pause check
     // This allows save/load to work even when the game is paused
     CheckForDebugCommands();
+    CheckForHotkeys(); // Check for keyboard hotkeys for save/load and frame stepping
     ProcessManualSaveLoadRequests();
     
     // Check for frame stepping commands

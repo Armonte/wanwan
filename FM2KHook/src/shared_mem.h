@@ -9,30 +9,80 @@ namespace ObjectPool {
 }
 }
 
-// Save state data structure - SIMPLIFIED
+// Save state data structure - COMPREHENSIVE
 struct SaveStateData {
     // Basic player state (CheatEngine verified)
-    uint32_t p1_hp;          // 0x004DFC85 - P1 HP
-    uint32_t p2_hp;          // 0x004EDCC4 - P2 HP
-    uint32_t p1_x;           // 0x004DFCC3 - P1 X coordinate
-    uint32_t p1_y;           // 0x004DFCC7 - P1 Y coordinate
-    uint32_t p2_x;           // 0x004EDD02 - P2 X coordinate
-    uint32_t p2_y;           // 0x004EDD06 - P2 Y coordinate
+    uint32_t p1_hp;                    // 0x004DFC85 - P1 HP
+    uint32_t p2_hp;                    // 0x004EDCC4 - P2 HP
+    uint32_t p1_x;                     // 0x004DFCC3 - P1 X coordinate
+    uint16_t p1_y;                     // 0x004DFCC7 - P1 Y coordinate (2 bytes)
+    uint32_t p2_x;                     // 0x004EDD02 - P2 X coordinate
+    uint16_t p2_y;                     // 0x004EDD06 - P2 Y coordinate (2 bytes)
+    
+    // Player meter/super/stock
+    uint32_t p1_super;                 // 0x004DFC9D - P1 Super
+    uint32_t p2_super;                 // 0x004EDCDC - P2 Super
+    uint32_t p1_special_stock;         // 0x004DFC95 - P1 Special Stock
+    uint32_t p2_special_stock;         // 0x004EDCD4 - P2 Special Stock
+    uint32_t p1_rounds_won;            // 0x004DFC6D - P1 Rounds Won
+    uint32_t p2_rounds_won;            // 0x004EDCAC - P2 Rounds Won
     
     // RNG seed for deterministic behavior
-    uint32_t rng_seed;       // 0x41FB1C - Critical for rollback
+    uint32_t rng_seed;                 // 0x41FB1C - Critical for rollback
     
-    // Timer
-    uint32_t game_timer;     // 0x470050 - Actual WanWan timer
+    // Timers and state
+    uint32_t game_timer;               // 0x470050 - g_actual_wanwan_timer
+    uint32_t round_timer;              // 0x00470060 - g_round_timer
+    uint32_t round_state;              // 0x47004C - g_round_state
+    uint32_t round_limit;              // 0x470048 - g_round_limit
+    uint32_t round_setting;            // 0x470068 - g_round_setting
+    
+    // Game modes and flags
+    uint32_t fm2k_game_mode;           // 0x470040 - g_fm2k_game_mode
+    uint16_t game_mode;                // 0x00470054 - g_game_mode
+    uint32_t game_paused;              // 0x4701BC - g_game_paused
+    uint32_t replay_mode;              // 0x4701C0 - g_replay_mode
+    
+    // Camera position
+    uint32_t camera_x;                 // 0x00447F2C - g_camera_x (Map X Coor)
+    uint32_t camera_y;                 // 0x00447F30 - g_camera_y (Map Y Coor)
+    
+    // Character variables (A-P for each player)
+    int16_t p1_char_vars[16];          // 0x004DFD17-0x004DFD35
+    int16_t p2_char_vars[16];          // 0x004EDD56-0x004EDD74
+    
+    // System variables (A-P)
+    int16_t sys_vars[14];              // 0x004456B0-0x004456CA (A-N signed)
+    uint16_t sys_vars_unsigned[2];     // 0x004456CC-0x004456CE (O-P unsigned)
+    
+    // Task variables (A-P for each player)
+    uint16_t p1_task_vars[16];         // 0x00470311-0x0047032F (mostly unsigned, P is signed)
+    uint16_t p2_task_vars[16];         // 0x0047060D-0x0047062B
+    
+    // Move history
+    uint8_t player_move_history[16];   // 0x47006C - g_player_move_history
     
     // Object pool (391KB - 1024 objects * 382 bytes each)
-    uint8_t object_pool[0x5F800]; // 0x4701E0 - Full object pool capture
+    uint8_t object_pool[0x5F800];      // 0x4701E0 - Full object pool capture
+    
+    // Additional state
+    uint32_t object_count;             // 0x004246FC - g_object_count
+    uint32_t frame_sync_flag;          // 0x00424700 - g_frame_sync_flag
+    uint32_t hit_effect_target;        // 0x4701C4 - g_hit_effect_target
+    
+    // Character selection state
+    uint32_t menu_selection;           // 0x424780 - g_menu_selection
+    uint64_t p1_css_cursor;            // 0x00424E50 - p1Cursor (8 bytes)
+    uint64_t p2_css_cursor;            // 0x00424E58 - p2Cursor (8 bytes)
+    uint32_t p1_char_to_load;          // 0x470020 - p1CharToDisplayAndLoad
+    uint32_t p2_char_to_load;          // 0x470024 - p2CharToDisplayAndLoad
+    uint32_t p1_color_selection;       // 0x00470024 - g_iPlayer1_Color_Selection
     
     // Metadata
-    uint32_t frame_number;   // Frame when this state was saved
-    uint64_t timestamp_ms;   // When this save was created
-    bool valid;              // Is this save slot occupied
-    uint32_t checksum;       // Simple validation checksum
+    uint32_t frame_number;             // Frame when this state was saved
+    uint64_t timestamp_ms;             // When this save was created
+    bool valid;                        // Is this save slot occupied
+    uint32_t checksum;                 // Simple validation checksum
 };
 
 // Shared memory structure matching the launcher

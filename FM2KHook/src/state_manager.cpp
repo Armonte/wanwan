@@ -331,12 +331,13 @@ bool SaveCoreStateBasic(GameState* state, uint32_t frame_number) {
     
     // Save Character Select Menu State (CRITICAL for CSS synchronization) 
     if (!IsBadReadPtr(menu_selection_ptr, sizeof(uint32_t))) { state->core.menu_selection = *menu_selection_ptr; } else { state->core.menu_selection = 0; }
-    if (!IsBadReadPtr(p1_css_cursor_x_ptr, sizeof(uint32_t))) { state->core.p1_css_cursor_x = *p1_css_cursor_x_ptr; } else { state->core.p1_css_cursor_x = 0; }
-    if (!IsBadReadPtr(p1_css_cursor_y_ptr, sizeof(uint32_t))) { state->core.p1_css_cursor_y = *p1_css_cursor_y_ptr; } else { state->core.p1_css_cursor_y = 0; }
-    if (!IsBadReadPtr(p2_css_cursor_x_ptr, sizeof(uint32_t))) { state->core.p2_css_cursor_x = *p2_css_cursor_x_ptr; } else { state->core.p2_css_cursor_x = 0; }
-    if (!IsBadReadPtr(p2_css_cursor_y_ptr, sizeof(uint32_t))) { state->core.p2_css_cursor_y = *p2_css_cursor_y_ptr; } else { state->core.p2_css_cursor_y = 0; }
-    if (!IsBadReadPtr(p1_selected_char_ptr, sizeof(uint32_t))) { state->core.p1_selected_char = *p1_selected_char_ptr; } else { state->core.p1_selected_char = 0; }
-    if (!IsBadReadPtr(p2_selected_char_ptr, sizeof(uint32_t))) { state->core.p2_selected_char = *p2_selected_char_ptr; } else { state->core.p2_selected_char = 0; }
+    // Use the new 64-bit cursor fields
+    uint64_t* p1_css_cursor_64_ptr = (uint64_t*)0x00424E50;
+    uint64_t* p2_css_cursor_64_ptr = (uint64_t*)0x00424E58;
+    if (!IsBadReadPtr(p1_css_cursor_64_ptr, sizeof(uint64_t))) { state->core.p1_css_cursor = *p1_css_cursor_64_ptr; } else { state->core.p1_css_cursor = 0; }
+    if (!IsBadReadPtr(p2_css_cursor_64_ptr, sizeof(uint64_t))) { state->core.p2_css_cursor = *p2_css_cursor_64_ptr; } else { state->core.p2_css_cursor = 0; }
+    if (!IsBadReadPtr(p1_selected_char_ptr, sizeof(uint32_t))) { state->core.p1_char_to_load = *p1_selected_char_ptr; } else { state->core.p1_char_to_load = 0; }
+    if (!IsBadReadPtr(p2_selected_char_ptr, sizeof(uint32_t))) { state->core.p2_char_to_load = *p2_selected_char_ptr; } else { state->core.p2_char_to_load = 0; }
     if (!IsBadReadPtr(p1_char_related_ptr, sizeof(uint32_t))) { state->core.p1_char_related = *p1_char_related_ptr; } else { state->core.p1_char_related = 0; }
     if (!IsBadReadPtr(p2_char_related_ptr, sizeof(uint32_t))) { state->core.p2_char_related = *p2_char_related_ptr; } else { state->core.p2_char_related = 0; }
     
@@ -366,12 +367,10 @@ bool RestoreStateFromStruct(const GameState* state, uint32_t target_frame) {
     
     // Character Select Menu State pointers (critical for CSS synchronization)
     uint32_t* menu_selection_ptr = (uint32_t*)Memory::MENU_SELECTION_ADDR;
-    uint32_t* p1_css_cursor_x_ptr = (uint32_t*)Memory::P1_CSS_CURSOR_X_ADDR;
-    uint32_t* p1_css_cursor_y_ptr = (uint32_t*)Memory::P1_CSS_CURSOR_Y_ADDR;
-    uint32_t* p2_css_cursor_x_ptr = (uint32_t*)Memory::P2_CSS_CURSOR_X_ADDR;
-    uint32_t* p2_css_cursor_y_ptr = (uint32_t*)Memory::P2_CSS_CURSOR_Y_ADDR;
-    uint32_t* p1_selected_char_ptr = (uint32_t*)Memory::P1_SELECTED_CHAR_ADDR;
-    uint32_t* p2_selected_char_ptr = (uint32_t*)Memory::P2_SELECTED_CHAR_ADDR;
+    uint64_t* p1_css_cursor_ptr = (uint64_t*)Memory::P1_CSS_CURSOR_X_ADDR;  // 0x00424E50 - 8 bytes
+    uint64_t* p2_css_cursor_ptr = (uint64_t*)Memory::P2_CSS_CURSOR_X_ADDR;  // 0x00424E58 - 8 bytes  
+    uint32_t* p1_char_to_load_ptr = (uint32_t*)Memory::P1_SELECTED_CHAR_ADDR;
+    uint32_t* p2_char_to_load_ptr = (uint32_t*)Memory::P2_SELECTED_CHAR_ADDR;
     uint32_t* p1_char_related_ptr = (uint32_t*)Memory::P1_CHAR_RELATED_ADDR;
     uint32_t* p2_char_related_ptr = (uint32_t*)Memory::P2_CHAR_RELATED_ADDR;
 
@@ -407,12 +406,10 @@ bool RestoreStateFromStruct(const GameState* state, uint32_t target_frame) {
     
     // Restore Character Select Menu State (CRITICAL for CSS synchronization)
     if (!IsBadWritePtr(menu_selection_ptr, sizeof(uint32_t))) { *menu_selection_ptr = state->core.menu_selection; }
-    if (!IsBadWritePtr(p1_css_cursor_x_ptr, sizeof(uint32_t))) { *p1_css_cursor_x_ptr = state->core.p1_css_cursor_x; }
-    if (!IsBadWritePtr(p1_css_cursor_y_ptr, sizeof(uint32_t))) { *p1_css_cursor_y_ptr = state->core.p1_css_cursor_y; }
-    if (!IsBadWritePtr(p2_css_cursor_x_ptr, sizeof(uint32_t))) { *p2_css_cursor_x_ptr = state->core.p2_css_cursor_x; }
-    if (!IsBadWritePtr(p2_css_cursor_y_ptr, sizeof(uint32_t))) { *p2_css_cursor_y_ptr = state->core.p2_css_cursor_y; }
-    if (!IsBadWritePtr(p1_selected_char_ptr, sizeof(uint32_t))) { *p1_selected_char_ptr = state->core.p1_selected_char; }
-    if (!IsBadWritePtr(p2_selected_char_ptr, sizeof(uint32_t))) { *p2_selected_char_ptr = state->core.p2_selected_char; }
+    if (!IsBadWritePtr(p1_css_cursor_ptr, sizeof(uint64_t))) { *p1_css_cursor_ptr = state->core.p1_css_cursor; }
+    if (!IsBadWritePtr(p2_css_cursor_ptr, sizeof(uint64_t))) { *p2_css_cursor_ptr = state->core.p2_css_cursor; }
+    if (!IsBadWritePtr(p1_char_to_load_ptr, sizeof(uint32_t))) { *p1_char_to_load_ptr = state->core.p1_char_to_load; }
+    if (!IsBadWritePtr(p2_char_to_load_ptr, sizeof(uint32_t))) { *p2_char_to_load_ptr = state->core.p2_char_to_load; }
     if (!IsBadWritePtr(p1_char_related_ptr, sizeof(uint32_t))) { *p1_char_related_ptr = state->core.p1_char_related; }
     if (!IsBadWritePtr(p2_char_related_ptr, sizeof(uint32_t))) { *p2_char_related_ptr = state->core.p2_char_related; }
 

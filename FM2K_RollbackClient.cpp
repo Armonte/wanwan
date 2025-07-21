@@ -768,9 +768,13 @@ bool FM2KLauncher::Initialize() {
     };
     
     ui_->on_get_client_status = [this](uint32_t& client1_pid, uint32_t& client2_pid) -> bool {
-        client1_pid = (client1_instance_ && client1_instance_->IsRunning()) ? client1_instance_->GetProcessId() : 0;
-        client2_pid = (client2_instance_ && client2_instance_->IsRunning()) ? client2_instance_->GetProcessId() : 0;
-        return true;
+        bool client1_running = (client1_instance_ && client1_instance_->IsRunning());
+        bool client2_running = (client2_instance_ && client2_instance_->IsRunning());
+        
+        client1_pid = client1_running ? client1_instance_->GetProcessId() : 0;
+        client2_pid = client2_running ? client2_instance_->GetProcessId() : 0;
+        
+        return client1_running || client2_running;  // Return true only if any clients are running
     };
     
     // Network simulation callbacks removed - not connected to LocalNetworkAdapter
@@ -1227,8 +1231,27 @@ void FM2KLauncher::StartOfflineSession() {
         return;
     }
 
-    if (!LaunchGame(selected_game_)) {
+    // Terminate existing game if running
+    if (game_instance_ && game_instance_->IsRunning()) {
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Terminating existing game instance before new launch");
+        game_instance_->Terminate();
+    }
+    
+    // Create new game instance
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Creating new FM2KGameInstance for offline session");
+    game_instance_ = std::make_unique<FM2KGameInstance>();
+    
+    // Set environment variables for true offline mode
+    game_instance_->SetEnvironmentVariable("FM2K_TRUE_OFFLINE", "1");
+    game_instance_->SetEnvironmentVariable("FM2K_PLAYER_INDEX", "0");  // Always P1 for offline
+    game_instance_->SetEnvironmentVariable("FM2K_PRODUCTION_MODE", "0");  // Debug mode for now
+    game_instance_->SetEnvironmentVariable("FM2K_INPUT_RECORDING", "1");  // Enable input recording
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Set FM2K_TRUE_OFFLINE=1 for pure offline session");
+
+    if (!game_instance_->Launch(selected_game_.exe_path)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to launch game for offline session.");
+        game_instance_.reset();
         return;
     }
 

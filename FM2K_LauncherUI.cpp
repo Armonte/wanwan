@@ -598,20 +598,89 @@ void LauncherUI::RenderSessionControls() {
             ImGui::BeginDisabled();
         }
 
-        if (ImGui::Button("Start Offline Session", ImVec2(-1, 0))) {
+        ImGui::Text("Single Player Sessions:");
+        ImGui::Separator();
+        
+        if (ImGui::Button("True Offline (Local Only)", ImVec2(-1, 0))) {
             if (on_offline_session_start) {
                 on_offline_session_start();
             }
         }
-        ImGui::SetItemTooltip("Launch the selected game for local offline play");
+        ImGui::SetItemTooltip("Pure offline play - both players controlled locally, no networking");
 
-        if (ImGui::Button("Start Online Session", ImVec2(-1, 0))) {
+        if (ImGui::Button("Online Session", ImVec2(-1, 0))) {
             if (on_online_session_start) {
                 on_online_session_start(network_config_);
             }
         }
-        ImGui::SetItemTooltip("Launch an online session using the configuration below");
+        ImGui::SetItemTooltip("Network play using the configuration below");
 
+        ImGui::Spacing();
+        ImGui::Text("Local Testing:");
+        ImGui::Separator();
+        
+        // Get client status for dual client button
+        uint32_t client1_pid = 0, client2_pid = 0;
+        bool clients_running = false;
+        if (on_get_client_status) {
+            clients_running = on_get_client_status(client1_pid, client2_pid);
+        }
+        
+        if (clients_running) {
+            ImGui::BeginDisabled();
+        }
+        
+        if (ImGui::Button("Launch Dual Clients (Localhost)", ImVec2(-1, 0))) {
+            if (on_launch_local_client1 && on_launch_local_client2 && game_selected) {
+                const auto& selected_game = games_[selected_game_index_];
+                
+                // Create client 2 path by replacing directory name with "2" suffix
+                std::filesystem::path original_path(selected_game.exe_path);
+                std::filesystem::path original_dir = original_path.parent_path();
+                std::filesystem::path exe_name = original_path.filename();
+                
+                std::string new_dir_name = original_dir.filename().string() + "2";
+                std::filesystem::path parent_dir = original_dir.parent_path();
+                std::filesystem::path client2_dir = parent_dir / new_dir_name;
+                std::filesystem::path client2_path = client2_dir / exe_name;
+                
+                // Check if client2 directory exists
+                if (!std::filesystem::exists(client2_dir)) {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Client 2 directory not found: %s", client2_dir.string().c_str());
+                    return;
+                }
+                
+                // Launch both clients
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Starting dual clients...");
+                bool success1 = on_launch_local_client1(selected_game.exe_path);
+                
+                if (success1) {
+                    bool success2 = on_launch_local_client2(client2_path.string());
+                    if (!success2) {
+                        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to launch Client 2");
+                    }
+                }
+            }
+        }
+        
+        if (clients_running) {
+            ImGui::EndDisabled();
+        }
+        
+        ImGui::SetItemTooltip("Launch two separate game instances connected via localhost for network testing");
+        
+        if (clients_running) {
+            ImGui::Text("Clients running (PID: %u, %u)", client1_pid, client2_pid);
+            if (ImGui::Button("Terminate All Clients", ImVec2(-1, 0))) {
+                if (on_terminate_all_clients) {
+                    on_terminate_all_clients();
+                }
+            }
+        }
+        
+        ImGui::Spacing();
+        ImGui::Separator();
+        
         if (ImGui::Button("Stop Session", ImVec2(-1, 0))) {
             if (on_session_stop) {
                 on_session_stop();

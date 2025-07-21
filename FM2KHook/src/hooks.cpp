@@ -41,9 +41,20 @@ void WriteMemorySafe(uintptr_t address, T value) {
     *(T*)address = value;
 }
 
-// Direct input passthrough - network format matches game format for low 8 bits
+// Proper input bit mapping
 static inline uint32_t ConvertNetworkInputToGameFormat(uint32_t network_input) {
-    return network_input & 0xFF;
+    uint32_t game_input = 0;
+    
+    if (network_input & 0x01) game_input |= 0x001;  // LEFT
+    if (network_input & 0x02) game_input |= 0x002;  // RIGHT
+    if (network_input & 0x04) game_input |= 0x004;  // UP
+    if (network_input & 0x08) game_input |= 0x008;  // DOWN
+    if (network_input & 0x10) game_input |= 0x010;  // BUTTON1
+    if (network_input & 0x20) game_input |= 0x020;  // BUTTON2
+    if (network_input & 0x40) game_input |= 0x040;  // BUTTON3
+    if (network_input & 0x80) game_input |= 0x080;  // BUTTON4
+    
+    return game_input;
 }
 
 // New hook for boot-to-character-select hack
@@ -74,47 +85,26 @@ void ApplyBootToCharacterSelectPatches() {
 
 // Hook implementations
 int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
-    // CRITICAL FIX: Both clients read P1 controls locally, but map to their network slot
-    // This matches fighting game conventions - everyone uses same local controls (WASD/arrow keys)
+    // SIMPLIFIED: Always read local inputs, let GekkoNet handle synchronization
+    int original_input = original_get_player_input ? original_get_player_input(player_id, input_type) : 0;
     
-    int original_input = 0;
-    
+    // Store both inputs locally (following LocalSessionExample pattern)
     if (player_id == 0) {
-        // P1 slot
-        if (::is_host) {
-            // Host: Read keyboard for P1, store in live_p1_input
-            original_input = original_get_player_input ? original_get_player_input(0, input_type) : 0;
-            live_p1_input = original_input;
-        } else {
-            // Client: P1 slot gets 0 (remote player), keyboard goes to live_p2_input
-            original_input = original_get_player_input ? original_get_player_input(0, input_type) : 0;
-            
-            live_p2_input = original_input;  // Store for network transmission
-            original_input = 0;  // FM2K P1 slot gets 0 (remote player)
-        }
+        live_p1_input = original_input;
     } else if (player_id == 1) {
-        // P2 slot
-        if (::is_host) {
-            // Host: P2 slot gets 0 (remote player input comes from network)
-            original_input = 0;
-        } else {
-            // Client: P2 slot gets local keyboard input (already captured above)
-            original_input = live_p2_input;  // Use already captured input
-        }
+        live_p2_input = original_input;
     }
     
-    // Simplified hook without excessive logging
-    
-    // Fast path for networked inputs
+    // Use networked inputs if available
     if (use_networked_inputs && gekko_initialized && gekko_session) {
         if (player_id == 0) {
-            return networked_p1_input & 0xFF;
+            return ConvertNetworkInputToGameFormat(networked_p1_input);
         } else if (player_id == 1) {
-            return networked_p2_input & 0xFF;
+            return ConvertNetworkInputToGameFormat(networked_p2_input);
         }
     }
     
-    // Fall back to original input (like dllmain_orig.cpp)
+    // Fall back to original input
     return original_input;
 }
 
@@ -138,23 +128,24 @@ int __cdecl Hook_ProcessGameInputs() {
         
         // CSS sync disabled for performance
         
-        // 2. SEND: Send local input to GekkoNet (like GekkoNet example's gekko_add_local_input)
-        // GEKKONET-STYLE: Only send OUR keyboard input, regardless of player slot
-        uint8_t local_input;
-        const char* input_source;
-        if (::is_host) {
-            local_input = (uint8_t)(live_p1_input & 0xFF); // Host's keyboard input
-            input_source = "HOST_KEYBOARD";
+        // 2. SEND: Input sending depends on session type
+        if (is_local_session) {
+            // LOCAL SESSION: Send BOTH player inputs (LocalSessionExample pattern)
+            uint8_t p1_input = (uint8_t)(live_p1_input & 0xFF);
+            uint8_t p2_input = (uint8_t)(live_p2_input & 0xFF);
+            
+            gekko_add_local_input(gekko_session, p1_player_handle, &p1_input);
+            gekko_add_local_input(gekko_session, p2_player_handle, &p2_input);
         } else {
-            local_input = (uint8_t)(live_p2_input & 0xFF); // Client's keyboard input  
-            input_source = "CLIENT_KEYBOARD";
+            // ONLINE SESSION: Send only local player input (OnlineSession pattern)
+            uint8_t local_input;
+            if (::is_host) {
+                local_input = (uint8_t)(live_p1_input & 0xFF); // Host sends P1 input
+            } else {
+                local_input = (uint8_t)(live_p2_input & 0xFF); // Client sends P2 input
+            }
+            gekko_add_local_input(gekko_session, local_player_handle, &local_input);
         }
-        
-        
-        // CSS input filtering disabled for performance
-        
-        
-        gekko_add_local_input(gekko_session, local_player_handle, &local_input);
         
         // Simplified input timing without logging
         

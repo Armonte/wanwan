@@ -91,27 +91,47 @@ bool InitializeGekkoNet() {
     original_player_index = player_index;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Setting original_player_index=%d", original_player_index);
     
-    // EXACT GEKKONET REFERENCE PATTERN: Order-dependent actor addition
-    // The reference example shows this is the correct way to do it
-    // EXACT WORKING PATTERN from dllmain_orig.cpp - REASSIGN player_index like OnlineSession reference
-    if (player_index == 0) {
-        // add local player - REASSIGN player_index to handle like OnlineSession line 219
-        player_index = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
-        local_player_handle = player_index;  // HOST: should be handle 0
-        // add remote player
-        auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), (unsigned int)remote_address.size() };
-        gekko_add_actor(gekko_session, RemotePlayer, &remote);
+    // Check for true offline mode (no networking at all)
+    char* env_offline = getenv("FM2K_TRUE_OFFLINE");
+    bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
+    
+    if (is_true_offline) {
+        // TRUE OFFLINE MODE: Both players LocalPlayer, no network adapter
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Setting up TRUE OFFLINE session (no networking)");
         
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: HOST - original_player=%d, LOCAL handle: %d", original_player_index, local_player_handle);
+        p1_player_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
+        p2_player_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
+        
+        // No network adapter for true offline
+        is_local_session = true;
+        local_player_handle = p1_player_handle;
+        
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: TRUE OFFLINE - P1 handle: %d, P2 handle: %d", p1_player_handle, p2_player_handle);
     } else {
-        // add remote player
-        auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), (unsigned int)remote_address.size() };
-        gekko_add_actor(gekko_session, RemotePlayer, &remote);
-        // add local player - REASSIGN player_index to handle like OnlineSession line 228
-        player_index = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
-        local_player_handle = player_index;  // CLIENT: should be handle 1
+        // ONLINE SESSION PATTERN: One LocalPlayer, one RemotePlayer (includes localhost testing)
+        bool is_localhost_test = (remote_address.find("127.0.0.1") != std::string::npos);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Setting up %s session", 
+                   is_localhost_test ? "LOCALHOST TESTING" : "ONLINE");
         
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: CLIENT - original_player=%d, LOCAL handle: %d", original_player_index, local_player_handle);
+        if (player_index == 0) {
+            // add local player - REASSIGN player_index to handle like OnlineSession line 219
+            player_index = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
+            local_player_handle = player_index;  // HOST: should be handle 0
+            // add remote player
+            auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), (unsigned int)remote_address.size() };
+            gekko_add_actor(gekko_session, RemotePlayer, &remote);
+            
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: HOST - original_player=%d, LOCAL handle: %d", original_player_index, local_player_handle);
+        } else {
+            // add remote player
+            auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), (unsigned int)remote_address.size() };
+            gekko_add_actor(gekko_session, RemotePlayer, &remote);
+            // add local player - REASSIGN player_index to handle like OnlineSession line 228
+            player_index = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
+            local_player_handle = player_index;  // CLIENT: should be handle 1
+            
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: CLIENT - original_player=%d, LOCAL handle: %d", original_player_index, local_player_handle);
+        }
     }
     
     if (local_player_handle < 0) {

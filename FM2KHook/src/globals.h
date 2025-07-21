@@ -62,6 +62,9 @@ extern bool is_host;
 extern uint8_t player_index;
 extern uint8_t original_player_index;  // Store original before reassignment
 extern int local_player_handle;
+extern int p1_player_handle;  // Handle for P1 (local session)
+extern int p2_player_handle;  // Handle for P2 (local session)
+extern bool is_local_session;  // True for offline mode
 extern bool use_minimal_gamestate_testing;
 extern bool production_mode;
 

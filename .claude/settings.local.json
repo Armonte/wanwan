@@ -32,7 +32,9 @@
       "mcp__github_com_mrexodia_ida-pro-mcp__set_function_prototype",
       "mcp__github_com_mrexodia_ida-pro-mcp__rename_local_variable",
       "mcp__github_com_mrexodia_ida-pro-mcp__rename_global_variable",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(sed:*)",
+      "Bash(awk:*)"
     ],
     "deny": []
   }

@@ -9,6 +9,9 @@ bool is_host = false;
 uint8_t player_index = 0;
 uint8_t original_player_index = 0;  // Store original before reassignment
 int local_player_handle = -1;
+int p1_player_handle = -1;  // Handle for P1 (local session)
+int p2_player_handle = -1;  // Handle for P2 (local session)
+bool is_local_session = false;  // True for offline mode
 bool use_minimal_gamestate_testing = false;
 bool production_mode = false;
 

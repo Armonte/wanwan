@@ -81,7 +81,9 @@ bool InitializeGekkoNet() {
     
     // Set network adapter BEFORE adding players (following OnlineSession example)
     if (!is_true_offline) {
-        gekko_net_adapter_set(gekko_session, gekko_default_adapter(local_port));
+        auto adapter = gekko_default_adapter(local_port);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Creating UDP adapter for port %u - adapter ptr: %p", local_port, adapter);
+        gekko_net_adapter_set(gekko_session, adapter);
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Real UDP adapter set on port %u", local_port);
     } else {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: TRUE OFFLINE - No network adapter set");
@@ -171,85 +173,20 @@ bool AllPlayersValid() {
         return false;
     }
     
+    // SIMPLIFIED APPROACH: Follow OnlineSession example - skip handshake waiting
+    // The working example starts immediately and handles events during gameplay
     if (!gekko_session_started) {
-        // CRITICAL: Increment handshake timeout to prevent infinite blocking
-        handshake_timeout_frames++;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: IMMEDIATE START - Following OnlineSession example pattern");
+        gekko_session_started = true;
         
-        // ESCAPE MECHANISM: After 10 seconds (1000 frames at 100fps), force session start
-        if (handshake_timeout_frames > 1000) {
-            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: TIMEOUT - Forcing session start after %u frames to prevent deadlock", handshake_timeout_frames);
-            gekko_session_started = true;
-            
-            // Enable frame control even on timeout to maintain consistency
-            gekko_frame_control_enabled = true;
-            can_advance_frame = false;
-            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: FRAME CONTROL ENABLED (timeout) - FM2K now waits for AdvanceEvent");
-            
-            return true;
-        }
+        // Enable frame control immediately
+        gekko_frame_control_enabled = true;
+        can_advance_frame = false;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: FRAME CONTROL ENABLED - FM2K now waits for AdvanceEvent to progress frames");
         
-        gekko_network_poll(gekko_session);
-        
-        // Call both session events AND update session (BSNES pattern)
-        int session_event_count = 0;
-        auto session_events = gekko_session_events(gekko_session, &session_event_count);
-        
-        int update_count = 0;
-        auto updates = gekko_update_session(gekko_session, &update_count);
-        
-        bool session_started_event_found = false;
-        for (int i = 0; i < session_event_count; i++) {
-            auto event = session_events[i];
-            
-            // Skip empty events (-1)
-            if (event->type == -1) {
-                continue;
-            }
-            
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Session Event: %d", event->type);
-            
-            if (event->type == SessionStarted) {
-                session_started_event_found = true;
-            } else if (event->type == DesyncDetected) {
-                auto desync = event->data.desynced;
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "=== DESYNC DETECTED ===");
-                // ... (rest of desync logging)
-                GenerateDesyncReport(desync.frame, desync.local_checksum, desync.remote_checksum);
-            } else if (event->type == PlayerDisconnected) {
-                auto disco = event->data.disconnected;
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Player disconnected: %d", disco.handle);
-            } else if (event->type == PlayerConnected) {
-                auto connected = event->data.connected;
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Player connected: %d", connected.handle);
-            }
-        }
-        
-        if (session_event_count == 0) {
-            static int no_events_counter = 0;
-            if (++no_events_counter % 300 == 0) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: No session events received yet - still waiting for network handshake... (attempt %d, timeout in %u frames)", 
-                           no_events_counter, 1000 - handshake_timeout_frames);
-            }
-        }
-        
-        if (session_started_event_found) {
-            gekko_session_started = true;
-            handshake_timeout_frames = 0; // Reset timeout on success
-            
-            // ENABLE THORN'S FRAMESTEP PATTERN - GekkoNet now controls FM2K frame advancement
-            gekko_frame_control_enabled = true;
-            can_advance_frame = false; // Start blocking immediately
-            
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SESSION STARTED - All players connected and synchronized! (BSNES AllPlayersValid pattern)");
-            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: FRAME CONTROL ENABLED - FM2K now waits for AdvanceEvent to progress frames");
-            return true;
-        }
-        
-        return false;
+        return true;
     }
     
-    // Track when players are valid for timeout purposes
-    last_valid_players_frame = g_frame_counter;
     return true;
 }
 

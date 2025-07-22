@@ -19,7 +19,7 @@ bool InitializeGekkoNet() {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** REIMPLEMENTING FM2K MAIN LOOP WITH GEKKONET CONTROL ***");
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Initializing GgekkoNet...");
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** INITIALIZING GEKKONET WITH ROLLBACK NETCODE (3-Frame Prediction) ***");
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: CSS PROTECTED BY ENHANCED INPUT FILTERING");
+    // CSS filtering removed for simplified input handling
     
     static uint16_t local_port = 7000;
     static std::string remote_address = "127.0.0.1:7001";
@@ -109,9 +109,10 @@ bool InitializeGekkoNet() {
         
         // No network adapter for true offline
         is_local_session = true;
-        local_player_handle = p1_player_handle;
+        // For offline mode, set local_player_handle based on original_player_index
+        local_player_handle = (original_player_index == 0) ? p1_player_handle : p2_player_handle;
         
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: TRUE OFFLINE - P1 handle: %d, P2 handle: %d", p1_player_handle, p2_player_handle);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: TRUE OFFLINE - P1 handle: %d, P2 handle: %d, local_player_handle: %d", p1_player_handle, p2_player_handle, local_player_handle);
     } else {
         // ONLINE SESSION PATTERN: One LocalPlayer, one RemotePlayer (includes localhost testing)
         bool is_localhost_test = (remote_address.find("127.0.0.1") != std::string::npos);

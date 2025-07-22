@@ -5,7 +5,7 @@
 #include "logging.h"
 #include "shared_mem.h"
 #include "game_state_machine.h"
-#include "css_sync.h"
+// #include "css_sync.h"  // Removed CSS filtering
 #include "object_tracker.h"
 #include "object_analysis.h"
 #include "object_pool_scanner.h"
@@ -55,14 +55,17 @@ void WriteMemorySafe(uintptr_t address, T value) {
 static inline uint32_t ConvertNetworkInputToGameFormat(uint32_t network_input) {
     uint32_t game_input = 0;
     
-    if (network_input & 0x01) game_input |= 0x001;  // LEFT
-    if (network_input & 0x02) game_input |= 0x002;  // RIGHT
-    if (network_input & 0x04) game_input |= 0x004;  // UP
-    if (network_input & 0x08) game_input |= 0x008;  // DOWN
-    if (network_input & 0x10) game_input |= 0x010;  // BUTTON1
-    if (network_input & 0x20) game_input |= 0x020;  // BUTTON2
-    if (network_input & 0x40) game_input |= 0x040;  // BUTTON3
-    if (network_input & 0x80) game_input |= 0x080;  // BUTTON4
+    if (network_input & 0x001) game_input |= 0x001;  // LEFT
+    if (network_input & 0x002) game_input |= 0x002;  // RIGHT
+    if (network_input & 0x004) game_input |= 0x004;  // UP
+    if (network_input & 0x008) game_input |= 0x008;  // DOWN
+    if (network_input & 0x010) game_input |= 0x010;  // BUTTON1
+    if (network_input & 0x020) game_input |= 0x020;  // BUTTON2
+    if (network_input & 0x040) game_input |= 0x040;  // BUTTON3
+    if (network_input & 0x080) game_input |= 0x080;  // BUTTON4
+    if (network_input & 0x100) game_input |= 0x100;  // BUTTON5
+    if (network_input & 0x200) game_input |= 0x200;  // BUTTON6
+    if (network_input & 0x400) game_input |= 0x400;  // BUTTON7 (7th button at bit 1024)
     
     return game_input;
 }
@@ -803,7 +806,7 @@ int __cdecl Hook_ProcessGameInputs() {
         // 1. CAPTURE: Read actual controller/keyboard inputs (like CCCaster's updateControls)
         CaptureRealInputs();
         
-        // CSS sync disabled for performance
+        // CSS sync removed completely
         
         // 3. CHECK: Debug commands are now processed before the pause check
         
@@ -828,18 +831,18 @@ int __cdecl Hook_ProcessGameInputs() {
         // 4. SEND: Input sending depends on session type
         if (is_local_session) {
             // LOCAL SESSION: Send BOTH player inputs (LocalSessionExample pattern)
-            uint8_t p1_input = (uint8_t)(live_p1_input & 0xFF);
-            uint8_t p2_input = (uint8_t)(live_p2_input & 0xFF);
+            uint16_t p1_input = (uint16_t)(live_p1_input & 0x7FF);  // Support 11 bits (0x400 + lower bits)
+            uint16_t p2_input = (uint16_t)(live_p2_input & 0x7FF);  // Support 11 bits (0x400 + lower bits)
             
             gekko_add_local_input(gekko_session, p1_player_handle, &p1_input);
             gekko_add_local_input(gekko_session, p2_player_handle, &p2_input);
         } else {
             // ONLINE SESSION: Send only local player input (OnlineSession pattern)
-            uint8_t local_input;
+            uint16_t local_input;
             if (::is_host) {
-                local_input = (uint8_t)(live_p1_input & 0xFF); // Host sends P1 input
+                local_input = (uint16_t)(live_p1_input & 0x7FF); // Host sends P1 input (11 bits)
             } else {
-                local_input = (uint8_t)(live_p2_input & 0xFF); // Client sends P2 input
+                local_input = (uint16_t)(live_p2_input & 0x7FF); // Client sends P2 input (11 bits)
             }
             gekko_add_local_input(gekko_session, local_player_handle, &local_input);
         }
@@ -874,8 +877,8 @@ int __cdecl Hook_ProcessGameInputs() {
                 case AdvanceEvent: {
                     
                     // CRITICAL DEBUG: Log the exact inputs received from GekkoNet
-                    uint8_t received_p1 = update->data.adv.inputs[0];
-                    uint8_t received_p2 = update->data.adv.inputs[1];
+                    uint16_t received_p1 = ((uint16_t*)update->data.adv.inputs)[0];
+                    uint16_t received_p2 = ((uint16_t*)update->data.adv.inputs)[1];
                     
                     
                     // Always apply the synchronized inputs first.
@@ -884,19 +887,6 @@ int __cdecl Hook_ProcessGameInputs() {
                     use_networked_inputs = true;
                     
                     // Simplified synchronization without excessive logging
-
-                    // Check if the remote player sent a confirmation signal.
-                    uint8_t remote_input = is_host ? networked_p2_input : networked_p1_input;
-                    if (remote_input == 0xFF) {
-                        FM2K::CSS::g_css_sync.ReceiveRemoteConfirmation();
-                        
-                        // Filter out 0xFF from normal gameplay inputs
-                        if (is_host) {
-                            networked_p2_input = 0x00;
-                        } else {
-                            networked_p1_input = 0x00;
-                        }
-                    }
 
                     // Simplified advance event processing
 

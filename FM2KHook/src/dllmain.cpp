@@ -22,6 +22,13 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** DLL_PROCESS_ATTACH - Starting initialization ***");
             
+            // CRITICAL: Read player index from environment BEFORE initializing logging
+            char* env_player = getenv("FM2K_PLAYER_INDEX");
+            if (env_player) {
+                ::player_index = static_cast<uint8_t>(atoi(env_player));
+                ::is_host = (::player_index == 0);
+            }
+            
             InitializeFileLogging();
             
             // Check if this is true offline mode - safe to enable shared memory for single client
@@ -42,7 +49,13 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             }
             
             FM2K::State::InitializeStateManager();
-            ConfigureNetworkMode(false, false);
+            // Don't call ConfigureNetworkMode here - it would override the correct is_host value
+            // ConfigureNetworkMode(false, false); // REMOVED: This was setting is_host=false for all clients
+            
+            // Log the network configuration that was set based on player_index
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Network mode configured - Online: NO, Host: %s", 
+                       ::is_host ? "YES" : "NO");
+            
             InitializeInputRecording();
             
             if (!InitializeHooks()) {

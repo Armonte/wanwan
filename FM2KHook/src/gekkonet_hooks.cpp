@@ -24,20 +24,12 @@ bool InitializeGekkoNet() {
     static uint16_t local_port = 7000;
     static std::string remote_address = "127.0.0.1:7001";
     
-    char* env_player = getenv("FM2K_PLAYER_INDEX");
+    // Player index and is_host should already be set by dllmain.cpp
+    // Just read the environment variables for network configuration
     char* env_port = getenv("FM2K_LOCAL_PORT");
     char* env_remote = getenv("FM2K_REMOTE_ADDR");
     
-    if (env_player) {
-        player_index = static_cast<uint8_t>(atoi(env_player));
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Environment FM2K_PLAYER_INDEX=%s → player_index=%d", env_player, player_index);
-    } else {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: ERROR - FM2K_PLAYER_INDEX environment variable not set!");
-    }
-    
-    ::player_index = player_index;
-    ::is_host = (player_index == 0);
-    InitializeFileLogging();
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Using player_index=%d (already set by DllMain)", ::player_index);
     
     char* env_input_recording = getenv("FM2K_INPUT_RECORDING");
     if (env_input_recording && strcmp(env_input_recording, "1") == 0) {
@@ -83,22 +75,23 @@ bool InitializeGekkoNet() {
     gekko_start(gekko_session, &config);
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet session configured and started");
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Adding players - Player index: %u", player_index);
-    
-    // CRITICAL: Store original player index before reassignment
-    original_player_index = player_index;
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Setting original_player_index=%d", original_player_index);
-    
     // Check for true offline mode (no networking at all)
     char* env_offline = getenv("FM2K_TRUE_OFFLINE");
     bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
     
+    // Set network adapter BEFORE adding players (following OnlineSession example)
     if (!is_true_offline) {
         gekko_net_adapter_set(gekko_session, gekko_default_adapter(local_port));
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Real UDP adapter set on port %u", local_port);
     } else {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: TRUE OFFLINE - No network adapter set");
     }
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Adding players - Player index: %u", player_index);
+    
+    // CRITICAL: Store original player index before reassignment
+    original_player_index = player_index;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Setting original_player_index=%d", original_player_index);
     
     if (is_true_offline) {
         // TRUE OFFLINE MODE: Both players LocalPlayer, no network adapter
@@ -120,23 +113,27 @@ bool InitializeGekkoNet() {
                    is_localhost_test ? "LOCALHOST TESTING" : "ONLINE");
         
         if (player_index == 0) {
-            // add local player - REASSIGN player_index to handle like OnlineSession line 219
-            player_index = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
-            local_player_handle = player_index;  // HOST: should be handle 0
-            // add remote player
-            auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), (unsigned int)remote_address.size() };
-            gekko_add_actor(gekko_session, RemotePlayer, &remote);
+            // HOST: add local player first (gets handle 0)
+            local_player_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
+            p1_player_handle = local_player_handle;  // HOST controls P1
             
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: HOST - original_player=%d, LOCAL handle: %d", original_player_index, local_player_handle);
+            // add remote player (gets handle 1)
+            auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), (unsigned int)remote_address.size() };
+            p2_player_handle = gekko_add_actor(gekko_session, RemotePlayer, &remote);
+            
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: HOST - player_index=%d, LOCAL handle: %d (P1), REMOTE handle: %d (P2)", 
+                       player_index, local_player_handle, p2_player_handle);
         } else {
-            // add remote player
+            // CLIENT: add remote player first (gets handle 0)
             auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), (unsigned int)remote_address.size() };
-            gekko_add_actor(gekko_session, RemotePlayer, &remote);
-            // add local player - REASSIGN player_index to handle like OnlineSession line 228
-            player_index = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
-            local_player_handle = player_index;  // CLIENT: should be handle 1
+            p1_player_handle = gekko_add_actor(gekko_session, RemotePlayer, &remote);
             
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: CLIENT - original_player=%d, LOCAL handle: %d", original_player_index, local_player_handle);
+            // add local player (gets handle 1)
+            local_player_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
+            p2_player_handle = local_player_handle;  // CLIENT controls P2
+            
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: CLIENT - player_index=%d, REMOTE handle: %d (P1), LOCAL handle: %d (P2)", 
+                       player_index, p1_player_handle, local_player_handle);
         }
     }
     
@@ -147,9 +144,13 @@ bool InitializeGekkoNet() {
         return false;
     }
     
-    gekko_set_local_delay(gekko_session, local_player_handle, 1);  // Match launcher: 1 frame delay
-    
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Set input delay to 1 frame for local player handle %d", local_player_handle);
+    // Only set delay for online sessions, not true offline mode
+    if (!is_true_offline) {
+        gekko_set_local_delay(gekko_session, local_player_handle, 1);  // Match launcher: 1 frame delay
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Set input delay to 1 frame for local player handle %d", local_player_handle);
+    } else {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: TRUE OFFLINE - No input delay set (both players equal)");
+    }
     
     gekko_initialized = true;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet initialization complete with real UDP networking!");
@@ -189,12 +190,21 @@ bool AllPlayersValid() {
         
         gekko_network_poll(gekko_session);
         
+        // Call both session events AND update session (BSNES pattern)
         int session_event_count = 0;
         auto session_events = gekko_session_events(gekko_session, &session_event_count);
+        
+        int update_count = 0;
+        auto updates = gekko_update_session(gekko_session, &update_count);
         
         bool session_started_event_found = false;
         for (int i = 0; i < session_event_count; i++) {
             auto event = session_events[i];
+            
+            // Skip empty events (-1)
+            if (event->type == -1) {
+                continue;
+            }
             
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Session Event: %d", event->type);
             

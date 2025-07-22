@@ -13,6 +13,7 @@
 #include <windows.h>
 #include <mmsystem.h>
 #include <limits>
+#include <exception>
 
 // Global variables for manual save/load requests
 static bool manual_save_requested = false;
@@ -660,6 +661,7 @@ void ApplyBootToCharacterSelectPatches() {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Failed to make memory writable at 0x409CD9");
         }
     }
+    
 }
 
 // Hook implementations
@@ -691,6 +693,52 @@ int __cdecl Hook_ProcessGameInputs() {
     // FRAME STEPPING: This is the main control point since it's called repeatedly in the game loop
     // Get shared memory for frame stepping control
     SharedInputData* shared_data = GetSharedMemory();
+    
+    // Initialize GekkoNet on first input hook call (safer than main loop hook)
+    if (!gekko_initialized) {
+        static bool initialization_attempted = false;
+        if (!initialization_attempted) {
+            initialization_attempted = true;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: First call - initializing GekkoNet...");
+            
+            if (InitializeGekkoNet()) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: GekkoNet initialized successfully from input hook");
+            } else {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: GekkoNet initialization failed");
+            }
+        }
+    }
+    
+    // Wait for GekkoNet connection (moved from main loop hook)
+    if (gekko_initialized && gekko_session && !gekko_session_started) {
+        // Check if this is true offline mode - no network handshake needed
+        char* env_offline = getenv("FM2K_TRUE_OFFLINE");
+        bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
+        
+        if (is_true_offline) {
+            // TRUE OFFLINE: No network handshake needed, start immediately
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: TRUE OFFLINE mode - starting session immediately (no network handshake)");
+            gekko_session_started = true;
+        } else {
+            // ONLINE/LOCALHOST: Wait for network handshake
+            static uint32_t connection_attempts = 0;
+            static uint32_t last_log_attempt = 0;
+            
+            // AllPlayersValid() handles all the polling and event processing
+            if (!AllPlayersValid()) {
+                connection_attempts++;
+                
+                // Log every 50 attempts for faster feedback (was 100)
+                if (connection_attempts - last_log_attempt >= 50) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Waiting for GekkoNet connection... attempt %u (player_index=%d, is_host=%s)", 
+                               connection_attempts, ::player_index, ::is_host ? "YES" : "NO");
+                    last_log_attempt = connection_attempts;
+                }
+            } else {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: GekkoNet connected! Session ready.");
+            }
+        }
+    }
     
     // DEBUG: Log that input hook is being called
     static uint32_t input_hook_call_count = 0;
@@ -1015,9 +1063,10 @@ void __cdecl Hook_RenderGame() {
 }
 
 BOOL __cdecl Hook_RunGameLoop() {
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** MAIN LOOP HOOK CALLED - REIMPLEMENTING FM2K MAIN LOOP WITH GEKKONET CONTROL ***");
+    // MINIMAL IMPLEMENTATION: Just set CSS flag and call original (no complex logic to avoid crashes)
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Main loop hook called - setting CSS flag after memory clearing");
     
-    // Set character select mode flag after memory clearing
+    // Set character select mode flag after memory clearing (this is why we need the main loop hook)
     uint8_t* char_select_mode_ptr = (uint8_t*)FM2K::State::Memory::CHARACTER_SELECT_MODE_ADDR;
     if (!IsBadReadPtr(char_select_mode_ptr, sizeof(uint8_t))) {
         DWORD old_protect;
@@ -1028,87 +1077,8 @@ BOOL __cdecl Hook_RunGameLoop() {
         }
     }
     
-    if (!gekko_initialized) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Initializing GekkoNet...");
-        if (!InitializeGekkoNet()) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet failed, using original loop");
-            return original_run_game_loop ? original_run_game_loop() : FALSE;
-        }
-        
-        // TEMPORARILY DISABLED: Object tracker initialization (debugging crashes)
-        // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Initializing adaptive object tracker...");
-        // FM2K::ObjectTracking::g_object_tracker.Initialize();
-        
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet and object tracking initialized!");
-    }
-    
-    // FM2K timing variables (from IDA analysis of run_game_loop at 0x405AD0)
-    uint32_t* g_frame_time_ms = (uint32_t*)0x447EE4;        // Fixed 10ms (100 FPS)
-    uint32_t* g_last_frame_time = (uint32_t*)0x447EE8;      // Last frame timestamp
-    uint32_t* g_frame_sync_flag = (uint32_t*)0x447EEC;      // Frame sync state
-    uint32_t* g_frame_time_delta = (uint32_t*)0x447EF0;     // Frame timing delta
-    uint32_t* g_frame_skip_count = (uint32_t*)0x447EF4;     // Frame skip counter
-    
-    // EXACT FM2K INITIALIZATION (from decompiled run_game_loop)
-    *g_frame_time_ms = 10;                                  // Initialize game loop timing - Fixed 100 FPS (10ms per frame)
-    *g_last_frame_time = timeGetTime();
-    
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Running initial 8 warmup frames...");
-    int init_loop_count = 8;                                // Initial game state warmup - Run 8 frames of game logic
-    do {
-        if (original_update_game) {
-            original_update_game();                         // update_game_state() call
-        }
-        --init_loop_count;
-    } while (init_loop_count);
-    
-    *g_last_frame_time = timeGetTime();
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Warmup complete, starting GekkoNet-controlled main loop...");
-    
-    // Wait for GekkoNet connection before starting main game loop
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Waiting for GekkoNet connection...");
-    uint32_t connection_attempts = 0;
-    while (!AllPlayersValid() && connection_attempts < 1500) {  // 15 second timeout
-        gekko_network_poll(gekko_session);
-        int temp_count = 0;
-        gekko_update_session(gekko_session, &temp_count);
-        
-        // Process Windows messages during connection
-        MSG msg;
-        while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-            if (msg.message == WM_QUIT) return TRUE;
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
-        }
-        
-        Sleep(10);
-        connection_attempts++;
-        
-        if (connection_attempts % 100 == 0) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Connection attempt %u/1500...", connection_attempts);
-        }
-    }
-    
-    if (!AllPlayersValid()) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Connection timeout! Falling back to original loop.");
-        return original_run_game_loop ? original_run_game_loop() : FALSE;
-    }
-    
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet connected! Using original main loop with frame stepping...");
-    gekko_session_started = true;
-    
-    // SIMPLE APPROACH: Use the original main loop - frame stepping is now handled in the input hook
-    // This is safer than trying to replicate the entire main loop
-    if (original_run_game_loop) {
-        // DEBUG: Log that main loop hook is being called (should only be once during initialization)
-        static uint32_t main_loop_call_count = 0;
-        main_loop_call_count++;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "MAIN LOOP: Hook called %u time(s) - frame stepping now handled in input hook", main_loop_call_count);
-        
-        return original_run_game_loop();
-    }
-    
-    return FALSE;
+    // Call original function immediately (no complex reimplementation)
+    return original_run_game_loop ? original_run_game_loop() : FALSE;
 }
 
 bool InitializeHooks() {
@@ -1186,6 +1156,7 @@ bool InitializeHooks() {
         return false;
     }
     
+    // Re-enable main loop hook for CSS flag setting (after game memzeros)
     void* runGameLoopFuncAddr = (void*)FM2K::State::Memory::RUN_GAME_LOOP_ADDR;
     MH_STATUS status3 = MH_CreateHook(runGameLoopFuncAddr, (void*)Hook_RunGameLoop, (void**)&original_run_game_loop);
     if (status3 != MH_OK) {
@@ -1194,6 +1165,7 @@ bool InitializeHooks() {
         return false;
     }
     
+    // Enable main loop hook for CSS flag setting
     MH_STATUS enable3 = MH_EnableHook(runGameLoopFuncAddr);
     if (enable3 != MH_OK) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ERROR FM2K HOOK: Failed to enable run_game_loop hook: %d", enable3);

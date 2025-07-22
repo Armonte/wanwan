@@ -1,6 +1,6 @@
 #include "game_state_machine.h"
 #include "globals.h"
-#include "css_sync.h"
+// #include "css_sync.h"  // Removed CSS filtering
 #include <SDL3/SDL_log.h>
 
 // Forward declaration for frame counter
@@ -71,8 +71,7 @@ void GameStateMachine::Update(uint32_t current_game_mode) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, 
                 "CHARACTER_SELECT transition - disabling rollback for stabilization");
             
-            // Reset CSS sync state for new session
-            FM2K::CSS::g_css_sync.ResetForNewCSSSession();
+            // CSS sync removed
         } else if (new_phase == GamePhase::IN_BATTLE) {
             battle_start_frame_ = g_frame_counter;
             battle_sync_confirmed_ = false;  // Reset sync confirmation

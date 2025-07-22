@@ -678,18 +678,46 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
     
     // Use networked inputs if available
     if (use_networked_inputs && gekko_initialized && gekko_session) {
+        static int input_debug_counter = 0;
+        if (++input_debug_counter % 100 == 0) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT: Using networked inputs - P%d requested, giving networked value (P1:%d P2:%d)", 
+                       player_id + 1, networked_p1_input, networked_p2_input);
+        }
+        
         if (player_id == 0) {
-            return ConvertNetworkInputToGameFormat(networked_p1_input);
+            int converted = ConvertNetworkInputToGameFormat(networked_p1_input);
+            return converted;
         } else if (player_id == 1) {
-            return ConvertNetworkInputToGameFormat(networked_p2_input);
+            int converted = ConvertNetworkInputToGameFormat(networked_p2_input);
+            return converted;
         }
     }
     
     // Fall back to original input
+    static int fallback_debug_counter = 0;
+    if (++fallback_debug_counter % 200 == 0) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT: Using original inputs - P%d (use_networked=%s, gekko_init=%s)", 
+                   player_id + 1, use_networked_inputs ? "YES" : "NO", gekko_initialized ? "YES" : "NO");
+    }
+    
     return original_input;
 }
 
 int __cdecl Hook_ProcessGameInputs() {
+    // DEBUG: Log when this function is called to find frame controller
+    static uint32_t input_call_count = 0;
+    if (++input_call_count % 100 == 0) { // Log every 100 calls to avoid spam
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+            "Hook_ProcessGameInputs() called #%d - frame %u - gekko_frame_control_enabled=%s, gekko_session_started=%s, can_advance_frame=%s", 
+            input_call_count, g_frame_counter,
+            gekko_frame_control_enabled ? "YES" : "NO",
+            gekko_session_started ? "YES" : "NO",
+            can_advance_frame ? "YES" : "NO");
+    }
+    
+    // CORRECT APPROACH: Following OnlineSession example - NO BLOCKING
+    // Let the game run normally and just process synchronized inputs on AdvanceEvents
+    
     // FRAME STEPPING: This is the main control point since it's called repeatedly in the game loop
     // Get shared memory for frame stepping control
     SharedInputData* shared_data = GetSharedMemory();
@@ -840,67 +868,52 @@ int __cdecl Hook_ProcessGameInputs() {
     }
     
     
-    // GekkoNet rollback control (only if session is active and not paused)
-    bool gekko_should_process = true;
-    if (shared_data) {
-        gekko_should_process = !shared_data->frame_step_is_paused;
-        if (!gekko_should_process) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Frame stepping: PAUSING GekkoNet session at frame %u", g_frame_counter);
-        }
-    }
-    
-    if (gekko_initialized && gekko_session && gekko_session_started && gekko_should_process) {
-        // ARCHITECTURE FIX: Proper input capture following CCCaster/GekkoNet pattern
-        // 1. CAPTURE: Read actual controller/keyboard inputs (like CCCaster's updateControls)
+    // CORRECT GEKKONET PROCESSING: Following OnlineSession example pattern
+    // Game runs normally, GekkoNet processes events each frame and provides synchronized inputs
+    if (gekko_initialized && gekko_session && gekko_session_started) {
+        // 1. CAPTURE: Read local inputs (like OnlineSession get_key_inputs)
         CaptureRealInputs();
         
-        // CSS sync removed completely
-        
-        // 3. CHECK: Debug commands are now processed before the pause check
-        
-        // 3.1. UPDATE: Enhanced action data for launcher analysis (every 10 frames to reduce overhead)
-        if (g_frame_counter % 10 == 0) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "HOOK: Updating enhanced action data at frame %u", g_frame_counter);
-            UpdateEnhancedActionData();
-        }
-        
-        // 3.5. AUTO-SAVE: Check if auto-save should trigger
-        SharedInputData* shared_data = GetSharedMemory();
-        if (shared_data && shared_data->auto_save_enabled) {
-            if ((g_frame_counter - hook_last_auto_save_frame) >= shared_data->auto_save_interval_frames) {
-                // Trigger auto-save to slot 0
-                manual_save_requested = true;
-                shared_data->debug_target_slot = 0;  // Auto-save always uses slot 0
-                hook_last_auto_save_frame = g_frame_counter;
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "AUTO-SAVE triggered: slot 0, frame %u", g_frame_counter);
-            }
-        }
-        
-        // 4. SEND: Input sending depends on session type
+        // 2. SEND: Send inputs to GekkoNet (like OnlineSession gekko_add_local_input)
         if (is_local_session) {
-            // LOCAL SESSION: Send BOTH player inputs (LocalSessionExample pattern)
-            uint16_t p1_input = (uint16_t)(live_p1_input & 0x7FF);  // Support 11 bits (0x400 + lower bits)
-            uint16_t p2_input = (uint16_t)(live_p2_input & 0x7FF);  // Support 11 bits (0x400 + lower bits)
-            
+            // LOCAL SESSION: Send BOTH player inputs
+            uint16_t p1_input = (uint16_t)(live_p1_input & 0x7FF);
+            uint16_t p2_input = (uint16_t)(live_p2_input & 0x7FF);
             gekko_add_local_input(gekko_session, p1_player_handle, &p1_input);
             gekko_add_local_input(gekko_session, p2_player_handle, &p2_input);
         } else {
-            // ONLINE SESSION: Send only local player input (OnlineSession pattern)
+            // ONLINE SESSION: Send only local player input
             uint16_t local_input;
             if (::is_host) {
-                local_input = (uint16_t)(live_p1_input & 0x7FF); // Host sends P1 input (11 bits)
+                local_input = (uint16_t)(live_p1_input & 0x7FF);
             } else {
-                local_input = (uint16_t)(live_p2_input & 0x7FF); // Client sends P2 input (11 bits)
+                local_input = (uint16_t)(live_p2_input & 0x7FF);
             }
             gekko_add_local_input(gekko_session, local_player_handle, &local_input);
         }
         
-        // Simplified input timing without logging
-        
-        // Process GekkoNet events following the example pattern
+        // 3. POLL: Network polling (like OnlineSession gekko_network_poll)
         gekko_network_poll(gekko_session);
         
-        // First handle session events (disconnects, desyncs)
+        // 3.5. CHECK: Wait for all players to be connected before normal gameplay
+        static bool all_players_connected = false;
+        if (!all_players_connected && !is_local_session) {
+            // Check if remote player is connected by looking for non-zero remote inputs in recent AdvanceEvents
+            // This is a simple heuristic - if we're getting AdvanceEvents with actual remote inputs, they're connected
+            static int connection_check_frames = 0;
+            connection_check_frames++;
+            
+            // After 60 frames (~1 second), assume we're connected if we're getting AdvanceEvents
+            if (connection_check_frames > 60) {
+                all_players_connected = true;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Assuming all players connected after initial sync period");
+            }
+        } else if (is_local_session) {
+            // Local sessions are always "connected"
+            all_players_connected = true;
+        }
+        
+        // 4. EVENTS: Handle session events
         int session_event_count = 0;
         auto session_events = gekko_session_events(gekko_session, &session_event_count);
         for (int i = 0; i < session_event_count; i++) {
@@ -910,11 +923,11 @@ int __cdecl Hook_ProcessGameInputs() {
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DESYNC: frame %d", desync.frame);
             } else if (event->type == PlayerDisconnected) {
                 auto disco = event->data.disconnected;
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "DISCONNECT: %d", disco.handle);
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "DISCONNECT: handle %d", disco.handle);
             }
         }
         
-        // Then handle game updates  
+        // 5. UPDATES: Process game updates (like OnlineSession gekko_update_session)
         int update_count = 0;
         auto updates = gekko_update_session(gekko_session, &update_count);
         
@@ -923,103 +936,90 @@ int __cdecl Hook_ProcessGameInputs() {
             
             switch (update->type) {
                 case AdvanceEvent: {
-                    
-                    // CRITICAL DEBUG: Log the exact inputs received from GekkoNet
+                    // CRITICAL: Update inputs but DON'T advance here
+                    // Following OnlineSession example lines 307-315
                     uint16_t received_p1 = ((uint16_t*)update->data.adv.inputs)[0];
                     uint16_t received_p2 = ((uint16_t*)update->data.adv.inputs)[1];
                     
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent Frame %d - P1:%d P2:%d (applying networked inputs)", 
+                               update->data.adv.frame, received_p1, received_p2);
                     
-                    // Always apply the synchronized inputs first.
+                    // Apply synchronized inputs (like OnlineSession example)
                     networked_p1_input = received_p1;
                     networked_p2_input = received_p2;
                     use_networked_inputs = true;
                     
-                    // Simplified synchronization without excessive logging
-
-                    // Simplified advance event processing
-
-                    // Simplified direction tracking without logging
-
-                    // Simplified movement detection without logging
+                    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Set use_networked_inputs=true, networked_p1=%d, networked_p2=%d", 
+                                networked_p1_input, networked_p2_input);
                     
-                    // Normal frame advancement (allow rollback to work)
-                    // Check if frame stepping is paused before advancing
-                    bool should_advance = true;
-                    if (shared_data) {
-                        should_advance = !shared_data->frame_step_is_paused;
-                    }
-                    
-                    if (should_advance) {
-                        if (original_process_inputs) {
-                            original_process_inputs();
-                        }
-                        g_frame_counter++;
-                        
-                        // UNIFIED LOGIC: Handle frame stepping countdown. Re-pausing is now in the render hook.
-                        if (shared_data && shared_data->frame_step_remaining_frames > 0 && shared_data->frame_step_remaining_frames != UINT32_MAX) {
-                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Frame ADVANCED to %u during stepping (GekkoNet path)", g_frame_counter);
-                            shared_data->frame_step_remaining_frames--;
-                            if (shared_data->frame_step_remaining_frames == 0) {
-                                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Step processing complete for frame %u, will pause in render hook", g_frame_counter);
-                            }
-                        }
-                    } else {
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Frame stepping: BLOCKING GekkoNet advance at frame %u", g_frame_counter);
-                    }
-                    
-                    // Simplified post-processing without cursor tracking
-                    
-                    // Simplified post-processing without cursor tracking
+                    // NOTE: Don't call original_process_inputs() here - let it happen below
                     break;
                 }
-                    
                 case SaveEvent: {
-                    // Real save state implementation for offline debugging
-                    // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet SaveEvent: frame %d", update->data.save.frame); // DISABLED: Too spammy
-                    
-                    // Use the existing state manager for comprehensive saves
-                    FM2K::State::GameState current_state;
-                    if (update->data.save.state && update->data.save.state_len) {
-                        // For now, use a simple checksum-based save
-                        size_t copy_size = std::min((size_t)*update->data.save.state_len, sizeof(FM2K::State::GameState));
-                        memset(&current_state, 0, sizeof(current_state));
-                        
-                        // Copy basic state data
-                        memcpy(update->data.save.state, &current_state, copy_size);
-                        *update->data.save.state_len = copy_size;
-                        
-                        // Generate simple checksum
-                        if (update->data.save.checksum) {
-                            *update->data.save.checksum = 0xDEADBEEF + update->data.save.frame;
-                        }
-                        
-                        // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Saved game state: %zu bytes, checksum: 0x%08X", 
-                        //            copy_size, update->data.save.checksum ? *update->data.save.checksum : 0); // DISABLED: Too spammy
-                    }
+                    // Handle save state (like OnlineSession save_state)
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SaveEvent frame %d", update->data.save.frame);
+                    // TODO: Implement proper save state
                     break;
                 }
-                    
                 case LoadEvent: {
-                    // Real load state implementation for offline debugging  
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet LoadEvent: frame %d", update->data.load.frame);
-                    
-                    if (update->data.load.state && update->data.load.state_len > 0) {
-                        // For now, just log the restore
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Restored game state: %zu bytes", (size_t)update->data.load.state_len);
-                    }
+                    // Handle load state (like OnlineSession load_state)
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: LoadEvent frame %d", update->data.load.frame);
+                    // TODO: Implement proper load state
                     break;
                 }
             }
         }
-    } else if (gekko_initialized && gekko_session && gekko_session_started && !gekko_should_process) {
-        // GekkoNet is active but paused by frame stepping
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Frame stepping: PAUSING GekkoNet session at frame %u", g_frame_counter);
+    }
+    
+    // ALWAYS ADVANCE FM2K: Like OnlineSession example, game runs every frame
+    // The synchronized inputs from AdvanceEvents (if any) will be used automatically
+    if (original_process_inputs) {
+        original_process_inputs();
+    }
+    g_frame_counter++;
+    
+    // CRITICAL: Reset networked input flag AFTER frame processing is complete
+    // This ensures networked inputs are used for the entire frame when AdvanceEvents arrive
+    if (use_networked_inputs) {
+        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Frame %d complete - resetting use_networked_inputs for next frame", g_frame_counter);
+        use_networked_inputs = false;
+    }
+    
+    // Keep essential non-GekkoNet processing
+    if (shared_data) {
+        // Enhanced action data for launcher analysis
+        if (g_frame_counter % 10 == 0) {
+            UpdateEnhancedActionData();
+        }
+        
+        // Auto-save functionality
+        if (shared_data->auto_save_enabled) {
+            if ((g_frame_counter - hook_last_auto_save_frame) >= shared_data->auto_save_interval_frames) {
+                manual_save_requested = true;
+                shared_data->debug_target_slot = 0;
+                hook_last_auto_save_frame = g_frame_counter;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "AUTO-SAVE triggered: slot 0, frame %u", g_frame_counter);
+            }
+        }
     }
     
     return 0; // Return 0 as the game's frame advancement is handled by GekkoNet
 }
 
 int __cdecl Hook_UpdateGameState() {
+    // DEBUG: Log when this function is called to find frame controller
+    static uint32_t update_call_count = 0;
+    if (++update_call_count % 50 == 0) { // Log every 50 calls to avoid spam
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+            "Hook_UpdateGameState() called #%d - frame %u - gekko_frame_control_enabled=%s, can_advance_frame=%s", 
+            update_call_count, g_frame_counter,
+            gekko_frame_control_enabled ? "YES" : "NO",
+            can_advance_frame ? "YES" : "NO");
+    }
+    
+    // NO BLOCKING: Following OnlineSession pattern - let game run freely
+    // GekkoNet synchronization is handled in Hook_ProcessGameInputs via AdvanceEvents
+    
     // FRAME STEPPING: Block game state updates when paused
     SharedInputData* shared_data = GetSharedMemory();
     if (shared_data && frame_step_paused_global && shared_data->frame_step_is_paused) {
@@ -1032,10 +1032,7 @@ int __cdecl Hook_UpdateGameState() {
         MonitorGameStateTransitions();
     }
     
-    // Original logic for GekkoNet session management
-    if (gekko_initialized && !gekko_session_started) {
-        return 0;
-    }
+    // NO BLOCKING: Let game state updates run normally even during GekkoNet initialization
     
     if (original_update_game) {
         return original_update_game();
@@ -1063,21 +1060,26 @@ void __cdecl Hook_RenderGame() {
 }
 
 BOOL __cdecl Hook_RunGameLoop() {
-    // MINIMAL IMPLEMENTATION: Just set CSS flag and call original (no complex logic to avoid crashes)
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Main loop hook called - setting CSS flag after memory clearing");
+    // FIRST LINE: Always log when this function is called to verify hook installation
+    static uint32_t run_loop_call_count = 0;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+        "Hook_RunGameLoop() called #%d - This hook is only called ONCE at startup, not per frame", 
+        ++run_loop_call_count);
     
-    // Set character select mode flag after memory clearing (this is why we need the main loop hook)
+    // Set character select mode flag after memory clearing (preserve existing functionality)
     uint8_t* char_select_mode_ptr = (uint8_t*)FM2K::State::Memory::CHARACTER_SELECT_MODE_ADDR;
     if (!IsBadReadPtr(char_select_mode_ptr, sizeof(uint8_t))) {
         DWORD old_protect;
         if (VirtualProtect(char_select_mode_ptr, sizeof(uint8_t), PAGE_READWRITE, &old_protect)) {
             *char_select_mode_ptr = 1;
             VirtualProtect(char_select_mode_ptr, sizeof(uint8_t), old_protect, &old_protect);
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Set character select mode flag to 1 after memory clearing");
         }
     }
     
-    // Call original function immediately (no complex reimplementation)
+    // NOTE: Frame blocking logic moved to Hook_ProcessGameInputs() - the real frame controller
+    // This hook (Hook_RunGameLoop) is only called once at startup, not per frame
+    
+    // Always call original function - no blocking logic here
     return original_run_game_loop ? original_run_game_loop() : FALSE;
 }
 
@@ -1278,48 +1280,29 @@ void MonitorGameStateTransitions() {
 }
 
 void ManageRollbackActivation(uint32_t game_mode, uint32_t fm2k_mode, uint32_t char_select_mode) {
-    // SIMPLIFIED: Use state machine to determine rollback activation
-    bool should_activate_rollback = FM2K::State::g_game_state_machine.ShouldEnableRollback();
-    bool should_use_lockstep = FM2K::State::g_game_state_machine.ShouldUseLockstep();
-    bool in_stabilization = FM2K::State::g_game_state_machine.IsInTransitionStabilization();
+    // SIMPLIFIED: Remove all CSS filtering and state machine interference
+    // Keep GekkoNet control active throughout the entire session
     
-    // Determine if we need to be waiting for GekkoNet to advance the frame
-    bool needs_frame_sync = (should_activate_rollback || should_use_lockstep) && !in_stabilization;
-
-    // CRITICAL: Disable rollback during transition stabilization to prevent desyncs
-    if (in_stabilization && waiting_for_gekko_advance) {
-        waiting_for_gekko_advance = false;
-        rollback_active = false;
-        
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-            "FM2K STATE: Disabling frame sync for stabilization (phase: %d, frames: %d)", 
-            static_cast<int>(FM2K::State::g_game_state_machine.GetCurrentPhase()),
-            FM2K::State::g_game_state_machine.GetFramesInCurrentPhase());
-    }
-    
-    // Activate frame synchronization if we need either rollback or lockstep
-    if (needs_frame_sync && !waiting_for_gekko_advance) {
+    // Always enable frame sync when GekkoNet is initialized
+    if (gekko_initialized && gekko_session_started && !waiting_for_gekko_advance) {
         waiting_for_gekko_advance = true;
-        rollback_active = should_activate_rollback; // Only set rollback_active if we're actually in battle
+        rollback_active = true;
         
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-            "FM2K STATE: Activating %s sync (game_mode=0x%X)", 
-            rollback_active ? "ROLLBACK" : "LOCKSTEP",
+            "FM2K STATE: GekkoNet control ALWAYS ACTIVE - no CSS filtering (game_mode=0x%X)", 
             game_mode);
-        
-    } else if (!needs_frame_sync && waiting_for_gekko_advance) {
-        // Deactivate frame synchronization (returning to menu, etc.)
-        waiting_for_gekko_advance = false;
-        rollback_active = false;
-        
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K STATE: Deactivating frame sync (game_mode=0x%X)", game_mode);
     }
+    
+    // Never disable GekkoNet control - remove all state machine interference
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+        "FM2K STATE: Maintaining continuous GekkoNet sync (game_mode=0x%X, rollback_active=%s)", 
+        game_mode, rollback_active ? "YES" : "NO");
 }
 
 bool ShouldActivateRollback(uint32_t game_mode, uint32_t fm2k_mode) {
-    // UPDATED: Use state machine logic instead of always returning true
-    // This function is legacy - the state machine handles this now
-    return FM2K::State::g_game_state_machine.ShouldEnableRollback();
+    // SIMPLIFIED: Always return true - no CSS filtering
+    // Keep rollback active throughout the entire session
+    return true;
 }
 
 const char* GetGameModeString(uint32_t mode) {

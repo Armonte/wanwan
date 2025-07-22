@@ -865,6 +865,9 @@ int __cdecl Hook_ProcessGameInputs() {
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Step processing complete for frame %u, will pause in render hook", g_frame_counter);
             }
         }
+        
+        // CRITICAL: Early return to prevent double frame execution
+        return 0;
     }
     
     
@@ -897,20 +900,38 @@ int __cdecl Hook_ProcessGameInputs() {
         
         // 3.5. CHECK: Wait for all players to be connected before normal gameplay
         static bool all_players_connected = false;
-        if (!all_players_connected && !is_local_session) {
-            // Check if remote player is connected by looking for non-zero remote inputs in recent AdvanceEvents
-            // This is a simple heuristic - if we're getting AdvanceEvents with actual remote inputs, they're connected
-            static int connection_check_frames = 0;
-            connection_check_frames++;
+        static bool waiting_for_connection = true;
+        
+        if (!all_players_connected && !is_local_session && waiting_for_connection) {
+            // BLOCK P1 from running game loop until P2 connects
+            // Check if we're getting actual network communication (AdvanceEvents)
+            int update_count_check = 0;
+            auto updates_check = gekko_update_session(gekko_session, &update_count_check);
             
-            // After 60 frames (~1 second), assume we're connected if we're getting AdvanceEvents
-            if (connection_check_frames > 60) {
+            bool got_advance_events = false;
+            for (int i = 0; i < update_count_check; i++) {
+                if (updates_check[i]->type == AdvanceEvent) {
+                    got_advance_events = true;
+                    break;
+                }
+            }
+            
+            if (got_advance_events) {
                 all_players_connected = true;
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Assuming all players connected after initial sync period");
+                waiting_for_connection = false;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: All players connected - starting synchronized gameplay");
+            } else {
+                // BLOCK: Don't advance FM2K until P2 connects
+                static int wait_log_counter = 0;
+                if (++wait_log_counter % 120 == 0) {  // Log every 2 seconds
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: P1 waiting for P2 to connect...");
+                }
+                return 0; // Don't advance FM2K - block until P2 connects
             }
         } else if (is_local_session) {
             // Local sessions are always "connected"
             all_players_connected = true;
+            waiting_for_connection = false;
         }
         
         // 4. EVENTS: Handle session events
@@ -941,29 +962,30 @@ int __cdecl Hook_ProcessGameInputs() {
                     uint16_t received_p1 = ((uint16_t*)update->data.adv.inputs)[0];
                     uint16_t received_p2 = ((uint16_t*)update->data.adv.inputs)[1];
                     
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent Frame %d - P1:%d P2:%d (applying networked inputs)", 
-                               update->data.adv.frame, received_p1, received_p2);
+                    // Reduced logging - only log every 60 frames to avoid performance issues
+                    static int advance_log_counter = 0;
+                    if (++advance_log_counter % 60 == 0) {
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent Frame %d - P1:%d P2:%d", 
+                                   update->data.adv.frame, received_p1, received_p2);
+                    }
                     
                     // Apply synchronized inputs (like OnlineSession example)
                     networked_p1_input = received_p1;
                     networked_p2_input = received_p2;
                     use_networked_inputs = true;
                     
-                    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Set use_networked_inputs=true, networked_p1=%d, networked_p2=%d", 
-                                networked_p1_input, networked_p2_input);
+                    // Debug logging removed for performance
                     
                     // NOTE: Don't call original_process_inputs() here - let it happen below
                     break;
                 }
                 case SaveEvent: {
-                    // Handle save state (like OnlineSession save_state)
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SaveEvent frame %d", update->data.save.frame);
+                    // Handle save state (like OnlineSession save_state) - no logging for performance
                     // TODO: Implement proper save state
                     break;
                 }
                 case LoadEvent: {
-                    // Handle load state (like OnlineSession load_state)
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: LoadEvent frame %d", update->data.load.frame);
+                    // Handle load state (like OnlineSession load_state) - no logging for performance
                     // TODO: Implement proper load state
                     break;
                 }
@@ -978,11 +1000,19 @@ int __cdecl Hook_ProcessGameInputs() {
     }
     g_frame_counter++;
     
+    // Handle frame stepping countdown for GekkoNet path
+    if (shared_data && shared_data->frame_step_remaining_frames > 0 && shared_data->frame_step_remaining_frames != UINT32_MAX) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Frame ADVANCED to %u during stepping (GekkoNet path)", g_frame_counter);
+        shared_data->frame_step_remaining_frames--;
+        if (shared_data->frame_step_remaining_frames == 0) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Step processing complete for frame %u, will pause in render hook", g_frame_counter);
+        }
+    }
+    
     // CRITICAL: Reset networked input flag AFTER frame processing is complete
     // This ensures networked inputs are used for the entire frame when AdvanceEvents arrive
     if (use_networked_inputs) {
-        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Frame %d complete - resetting use_networked_inputs for next frame", g_frame_counter);
-        use_networked_inputs = false;
+        use_networked_inputs = false;  // No logging for performance
     }
     
     // Keep essential non-GekkoNet processing

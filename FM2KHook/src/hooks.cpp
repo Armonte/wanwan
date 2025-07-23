@@ -26,45 +26,16 @@ static uint32_t hook_last_auto_save_frame = 0;
 
 // ARCHITECTURE FIX: Real input capture following CCCaster/GekkoNet pattern
 static void CaptureRealInputs() {
-    // DIRECT INPUT CAPTURE: Read inputs directly from hardware to eliminate frame delay
-    // This captures inputs BEFORE the game processes them, not after
+    // TIMING FIX: Use 2DFM input system but capture at END of input processing
+    // This should eliminate the 1-frame delay by matching the game's input timing
     
-    uint32_t p1_input = 0;
-    uint32_t p2_input = 0;
-    
-    // Player 1 controls (2DFM configured keys)
-    // Directions: T=up, B=down, F=left, H=right
-    if (GetAsyncKeyState('F') & 0x8000) p1_input |= 0x001;         // LEFT
-    if (GetAsyncKeyState('H') & 0x8000) p1_input |= 0x002;         // RIGHT  
-    if (GetAsyncKeyState('T') & 0x8000) p1_input |= 0x004;         // UP
-    if (GetAsyncKeyState('B') & 0x8000) p1_input |= 0x008;         // DOWN
-    // Buttons 1-7: A, S, D, Q, W, E + ESC
-    if (GetAsyncKeyState('A') & 0x8000) p1_input |= 0x010;         // BUTTON1
-    if (GetAsyncKeyState('S') & 0x8000) p1_input |= 0x020;         // BUTTON2
-    if (GetAsyncKeyState('D') & 0x8000) p1_input |= 0x040;         // BUTTON3
-    if (GetAsyncKeyState('Q') & 0x8000) p1_input |= 0x080;         // BUTTON4
-    if (GetAsyncKeyState('W') & 0x8000) p1_input |= 0x100;         // BUTTON5
-    if (GetAsyncKeyState('E') & 0x8000) p1_input |= 0x200;         // BUTTON6
-    if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) p1_input |= 0x400;   // BUTTON7 (ESC/PAUSE)
-    
-    // Player 2 controls (2DFM configured keys)
-    // Directions: Numpad 4=left, 6=right, 8=up, 2=down
-    if (GetAsyncKeyState(VK_NUMPAD4) & 0x8000) p2_input |= 0x001; // LEFT
-    if (GetAsyncKeyState(VK_NUMPAD6) & 0x8000) p2_input |= 0x002; // RIGHT
-    if (GetAsyncKeyState(VK_NUMPAD8) & 0x8000) p2_input |= 0x004; // UP
-    if (GetAsyncKeyState(VK_NUMPAD2) & 0x8000) p2_input |= 0x008; // DOWN
-    // Buttons 1-7: J, K, L, I, O, P + ESC
-    if (GetAsyncKeyState('J') & 0x8000) p2_input |= 0x010;         // BUTTON1
-    if (GetAsyncKeyState('K') & 0x8000) p2_input |= 0x020;         // BUTTON2
-    if (GetAsyncKeyState('L') & 0x8000) p2_input |= 0x040;         // BUTTON3
-    if (GetAsyncKeyState('I') & 0x8000) p2_input |= 0x080;         // BUTTON4
-    if (GetAsyncKeyState('O') & 0x8000) p2_input |= 0x100;         // BUTTON5
-    if (GetAsyncKeyState('P') & 0x8000) p2_input |= 0x200;         // BUTTON6
-    if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) p2_input |= 0x400;   // BUTTON7 (ESC/PAUSE)
-    
-    // Store captured inputs for this frame
-    live_p1_input = p1_input;
-    live_p2_input = p2_input;
+    if (original_get_player_input) {
+        live_p1_input = original_get_player_input(0, 0);  // Player 1 with 2DFM controls
+        live_p2_input = original_get_player_input(1, 0);  // Player 2 with 2DFM controls
+    } else {
+        live_p1_input = 0;
+        live_p2_input = 0;
+    }
 }
 
 // Use global function pointers from globals.h
@@ -745,7 +716,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
 }
 
 int __cdecl Hook_ProcessGameInputs() {
-    // CRITICAL: Capture inputs IMMEDIATELY at frame start for zero-delay frame stepping
+    // ZERO DELAY FIX: Capture inputs at absolute beginning before any processing
     CaptureRealInputs();
     
     // DEBUG: Log when this function is called to find frame controller
@@ -883,10 +854,14 @@ int __cdecl Hook_ProcessGameInputs() {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Multi-step disabled - use single step instead");
         }
         
-        // If paused, block frame processing
+        // If paused, keep input system alive but don't advance game
         if (frame_step_paused_global && shared_data->frame_step_is_paused) {
-            // Don't call original function - this effectively pauses the game
-            return 0; // Block frame processing completely
+            // CRITICAL FIX: Call original_process_inputs to keep input system alive
+            // but don't advance frame counter or game state
+            if (original_process_inputs) {
+                original_process_inputs(); // Keep input system current
+            }
+            return 0; // Block frame advancement but not input processing
         }
         
         // Handle frame stepping countdown AFTER processing the frame
@@ -921,8 +896,6 @@ int __cdecl Hook_ProcessGameInputs() {
     // CORRECT GEKKONET PROCESSING: Following OnlineSession example pattern
     // Game runs normally, GekkoNet processes events each frame and provides synchronized inputs
     if (gekko_initialized && gekko_session && gekko_session_started) {
-        // 1. CAPTURE: Inputs already captured at frame start for zero delay
-        // CaptureRealInputs(); // Moved to beginning of function
         
         // 2. SEND: Send inputs to GekkoNet (like OnlineSession gekko_add_local_input)
         if (is_local_session) {
@@ -1081,6 +1054,8 @@ int __cdecl Hook_ProcessGameInputs() {
             }
         }
     }
+    
+    // Input capture moved to AdvanceEvent processing for GekkoNet timing
     
     return 0; // Return 0 as the game's frame advancement is handled by GekkoNet
 }

@@ -3,6 +3,7 @@
 #include "common.h"
 #include "state_manager.h" // For GameState and MinimalGameState
 #include "gekkonet.h"
+#include "simple_css_sync.h"
 
 // Key FM2K addresses
 namespace FM2K::State::Memory {
@@ -87,6 +88,10 @@ extern bool gekko_frame_control_enabled; // True when GekkoNet should control fr
 extern bool frame_step_paused_global; // Global pause flag for frame stepping
 extern bool block_input_buffer_update; // Block input history buffer updates during pause
 
+// CSS synchronization
+extern SimpleCSSSync* css_sync;        // CSS synchronization instance
+extern bool css_mode_active;           // True when in character select (fm2k_mode == 2000)
+
 // Timeout mechanisms to prevent deadlocks
 extern uint32_t handshake_timeout_frames;    // Timeout counter for network handshake
 extern uint32_t advance_timeout_frames;      // Timeout counter for frame advance waits
@@ -131,4 +136,23 @@ void LogMinimalGameStateDesync(uint32_t desync_frame, uint32_t local_checksum, u
 void MonitorGameStateTransitions();
 void ManageRollbackActivation(uint32_t game_mode, uint32_t fm2k_mode, uint32_t char_select_mode);
 bool ShouldActivateRollback(uint32_t game_mode, uint32_t fm2k_mode);
-const char* GetGameModeString(uint32_t mode); 
+const char* GetGameModeString(uint32_t mode);
+
+// CSS management functions
+void HandleCSSModeTransition(uint32_t old_mode, uint32_t new_mode);
+void InitializeCSSSync();
+void ShutdownCSSSync();
+
+// Input injection system for CSS color selection
+struct DelayedInput {
+    uint16_t input_value;
+    uint8_t frames_remaining;
+    bool active;
+};
+
+extern DelayedInput css_delayed_inputs[2]; // P1, P2
+
+void ProcessCSSDelayedInputs();
+void QueueCSSDelayedInput(int player, uint16_t input, uint8_t delay_frames = 1);
+uint8_t ExtractColorButton(uint16_t input_flags);
+void InjectPlayerInput(int player, uint16_t input_value); 

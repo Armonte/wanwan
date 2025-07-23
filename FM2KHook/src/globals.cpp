@@ -59,4 +59,8 @@ uint32_t current_game_mode = 0xFFFFFFFF;
 uint32_t current_fm2k_mode = 0xFFFFFFFF;
 uint32_t current_char_select_mode = 0xFFFFFFFF;
 bool rollback_active = false;
-bool game_state_initialized = false; 
+bool game_state_initialized = false;
+
+// CSS synchronization
+SimpleCSSSync* css_sync = nullptr;
+bool css_mode_active = false; 

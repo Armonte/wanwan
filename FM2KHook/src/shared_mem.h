@@ -119,6 +119,7 @@ struct SharedInputData {
     uint32_t frame_step_multi_count;
     bool frame_step_is_paused;
     uint32_t frame_step_remaining_frames; // Number of frames to allow before pausing again
+    bool frame_step_needs_input_refresh;  // Flag to refresh inputs right before frame execution
     
     bool production_mode;
     bool enable_input_recording;

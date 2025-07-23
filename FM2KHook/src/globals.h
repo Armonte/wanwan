@@ -85,6 +85,7 @@ extern bool gekko_frame_control_enabled; // True when GekkoNet should control fr
 
 // Frame stepping control
 extern bool frame_step_paused_global; // Global pause flag for frame stepping
+extern bool block_input_buffer_update; // Block input history buffer updates during pause
 
 // Timeout mechanisms to prevent deadlocks
 extern uint32_t handshake_timeout_frames;    // Timeout counter for network handshake

@@ -24,6 +24,46 @@ static uint32_t target_load_slot = 0;
 // Auto-save tracking (separate from globals.h version)
 static uint32_t hook_last_auto_save_frame = 0;
 
+// Input buffer write patches for motion input preservation
+static bool buffer_writes_patched = false;
+static uint8_t original_bytes_1[7] = {0};
+static uint8_t original_bytes_2[7] = {0};
+
+static void PatchInputBufferWrites(bool block) {
+    // Addresses where process_game_inputs writes to input history buffer
+    uint8_t* write_addr_1 = (uint8_t*)0x41472E;
+    uint8_t* write_addr_2 = (uint8_t*)0x41474F;
+    
+    if (block && !buffer_writes_patched) {
+        // Save original bytes
+        memcpy(original_bytes_1, write_addr_1, 7);
+        memcpy(original_bytes_2, write_addr_2, 7);
+        
+        // Make memory writable
+        DWORD old_protect;
+        VirtualProtect(write_addr_1, 7, PAGE_EXECUTE_READWRITE, &old_protect);
+        VirtualProtect(write_addr_2, 7, PAGE_EXECUTE_READWRITE, &old_protect);
+        
+        // Patch to NOPs
+        memset(write_addr_1, 0x90, 7); // NOP the mov instruction
+        memset(write_addr_2, 0x90, 7); // NOP the mov instruction
+        
+        buffer_writes_patched = true;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FRAME STEP: Patched input buffer writes - motion inputs preserved");
+    } else if (!block && buffer_writes_patched) {
+        // Restore original bytes
+        DWORD old_protect;
+        VirtualProtect(write_addr_1, 7, PAGE_EXECUTE_READWRITE, &old_protect);
+        VirtualProtect(write_addr_2, 7, PAGE_EXECUTE_READWRITE, &old_protect);
+        
+        memcpy(write_addr_1, original_bytes_1, 7);
+        memcpy(write_addr_2, original_bytes_2, 7);
+        
+        buffer_writes_patched = false;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FRAME STEP: Restored input buffer writes - normal operation");
+    }
+}
+
 // ARCHITECTURE FIX: Real input capture following CCCaster/GekkoNet pattern
 static void CaptureRealInputs() {
     // In online mode, we only read the input for the local player.
@@ -757,27 +797,9 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
 int __cdecl Hook_ProcessGameInputs() {
     // Moved CaptureRealInputs() to after pause logic to prevent button consumption
     
-    // Always capture local inputs first.
-    CaptureRealInputs();
-
     // Check for true offline mode
     char* env_offline = getenv("FM2K_TRUE_OFFLINE");
     bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
-
-    // If GekkoNet is running and NOT in true offline mode, send local inputs immediately.
-    // This is crucial for the initial handshake to complete.
-    if (!is_true_offline && gekko_initialized && gekko_session) {
-        if (is_local_session) {
-            uint16_t p1_input = (uint16_t)(live_p1_input & 0x7FF);
-            uint16_t p2_input = (uint16_t)(live_p2_input & 0x7FF);
-            gekko_add_local_input(gekko_session, p1_player_handle, &p1_input);
-            gekko_add_local_input(gekko_session, p2_player_handle, &p2_input);
-        } else {
-            uint16_t local_input = (::is_host) ? (uint16_t)(live_p1_input & 0x7FF) : (uint16_t)(live_p2_input & 0x7FF);
-            gekko_add_local_input(gekko_session, local_player_handle, &local_input);
-        }
-        gekko_network_poll(gekko_session);
-    }
 
     // 3.5. CHECK: Wait for all players to be connected before normal gameplay
     // Skip this check for true offline mode (GekkoNet not even initialized) - no network synchronization needed
@@ -895,6 +917,7 @@ int __cdecl Hook_ProcessGameInputs() {
             frame_step_paused_global = false; // Allow one frame
             shared_data->frame_step_is_paused = false;
             shared_data->frame_step_remaining_frames = 1; // Allow exactly 1 frame
+            shared_data->frame_step_needs_input_refresh = true; // Capture fresh inputs right before execution
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: SINGLE STEP ENABLED - allowing 1 frame at frame %u", g_frame_counter);
         }
         // Multi-step disabled - focus on single step only
@@ -903,15 +926,53 @@ int __cdecl Hook_ProcessGameInputs() {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Multi-step disabled - use single step instead");
         }
         
-        // If paused, completely freeze game logic including input processing
+        // If paused, keep input system alive but preserve motion input buffer SURGICALLY
         if (frame_step_paused_global && shared_data->frame_step_is_paused) {
-            // CRITICAL FIX: Don't call original_process_inputs during pause
-            // This prevents input buffer from being constantly overwritten and preserves motion input sequences
-            static uint32_t pause_log_counter = 0;
-            if (++pause_log_counter % 300 == 1) { // Log once every 5 seconds at 60 FPS
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FRAME STEP: Game logic paused - input buffer preserved for motion inputs");
+            // SURGICAL APPROACH: Keep input system alive but prevent frame counter advancement
+            
+            // Save critical state that original_process_inputs modifies
+            uint32_t* frame_counter_ptr = (uint32_t*)0x447EE0;  // g_frame_counter
+            uint32_t* p1_history_ptr = (uint32_t*)0x4280E0;     // g_player_input_history  
+            uint32_t* p2_history_ptr = (uint32_t*)0x4284E0;     // g_p2_input_history (assuming offset)
+            
+            uint32_t saved_frame_counter = 0;
+            uint32_t saved_p1_history = 0;
+            uint32_t saved_p2_history = 0;
+            
+            if (!IsBadReadPtr(frame_counter_ptr, sizeof(uint32_t))) {
+                saved_frame_counter = *frame_counter_ptr;
+                
+                // Save the input history entries that would be overwritten
+                uint32_t next_frame_index = (saved_frame_counter + 1) & 0x3FF;
+                if (!IsBadReadPtr(p1_history_ptr + next_frame_index, sizeof(uint32_t))) {
+                    saved_p1_history = p1_history_ptr[next_frame_index];
+                }
+                if (!IsBadReadPtr(p2_history_ptr + next_frame_index, sizeof(uint32_t))) {
+                    saved_p2_history = p2_history_ptr[next_frame_index];
+                }
             }
-            return 0; // Complete freeze - no game logic advancement
+            
+            // Update input system to keep it alive
+            CaptureRealInputs();
+            if (original_process_inputs) {
+                original_process_inputs();
+            }
+            
+            // Restore the critical state to preserve motion inputs
+            if (!IsBadWritePtr(frame_counter_ptr, sizeof(uint32_t))) {
+                *frame_counter_ptr = saved_frame_counter;  // Undo frame counter advance
+                
+                // Restore the input history entries
+                uint32_t next_frame_index = (saved_frame_counter + 1) & 0x3FF;
+                if (!IsBadWritePtr(p1_history_ptr + next_frame_index, sizeof(uint32_t))) {
+                    p1_history_ptr[next_frame_index] = saved_p1_history;
+                }
+                if (!IsBadWritePtr(p2_history_ptr + next_frame_index, sizeof(uint32_t))) {
+                    p2_history_ptr[next_frame_index] = saved_p2_history;
+                }
+            }
+            
+            return 0; // Block game advancement but keep inputs fresh
         }
         
         // CRITICAL: Inputs are now captured at the top of the function.
@@ -920,16 +981,62 @@ int __cdecl Hook_ProcessGameInputs() {
         // This ensures the frame actually gets processed before we count it down
     }
     
+    // Normal input capture - but skip if we're going to do fresh capture right before execution
+    if (!shared_data || !shared_data->frame_step_needs_input_refresh) {
+        CaptureRealInputs();
+    } else {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Skipping normal capture, will do fresh capture before execution at frame %u", g_frame_counter);
+    }
+    
     // In lockstep/rollback mode, the game's frame advancement is handled inside the AdvanceEvent.
     // We do nothing here to allow GekkoNet to control the frame pacing.
     // EXCEPT in true offline mode (GekkoNet not initialized) - run normally without GekkoNet control
     if (!waiting_for_gekko_advance || is_true_offline) {
+        // Send inputs to GekkoNet if needed (inputs already captured at function start)
+        if (!is_true_offline && gekko_initialized && gekko_session) {
+            if (is_local_session) {
+                uint16_t p1_input = (uint16_t)(live_p1_input & 0x7FF);
+                uint16_t p2_input = (uint16_t)(live_p2_input & 0x7FF);
+                gekko_add_local_input(gekko_session, p1_player_handle, &p1_input);
+                gekko_add_local_input(gekko_session, p2_player_handle, &p2_input);
+            } else {
+                uint16_t local_input = (::is_host) ? (uint16_t)(live_p1_input & 0x7FF) : (uint16_t)(live_p2_input & 0x7FF);
+                gekko_add_local_input(gekko_session, local_player_handle, &local_input);
+            }
+            gekko_network_poll(gekko_session);
+        }
+        
         // FIXED: Increment frame counter BEFORE processing to fix 1-frame input delay
         g_frame_counter++;
         
-        // Call the original function to let the game run normally.
-        if (original_process_inputs) {
-            original_process_inputs();
+        // RADICAL SOLUTION: Call original_process_inputs TWICE on step frames to eliminate delay
+        if (shared_data && shared_data->frame_step_needs_input_refresh) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: DOUBLE CALL to eliminate 1-frame delay at frame %u", g_frame_counter);
+            
+            // Capture fresh inputs with detailed logging
+            uint32_t old_p1 = live_p1_input;
+            uint32_t old_p2 = live_p2_input;
+            CaptureRealInputs();
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Step capture - P1: 0x%03X->0x%03X, P2: 0x%03X->0x%03X", 
+                       old_p1, live_p1_input, old_p2, live_p2_input);
+            
+            // First call: This "primes" the input system with current inputs
+            if (original_process_inputs) {
+                original_process_inputs();
+            }
+            
+            // Second call: This ensures the inputs are processed for THIS frame, not next
+            if (original_process_inputs) {
+                original_process_inputs();
+            }
+            
+            shared_data->frame_step_needs_input_refresh = false;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Double call complete - inputs should be immediate");
+        } else {
+            // Normal single call
+            if (original_process_inputs) {
+                original_process_inputs();
+            }
         }
         
         // UNIFIED LOGIC: Handle frame stepping countdown. Re-pausing is now in the render hook.
@@ -1092,10 +1199,16 @@ int __cdecl Hook_UpdateGameState() {
     // NO BLOCKING: Following OnlineSession pattern - let game run freely
     // GekkoNet synchronization is handled in Hook_ProcessGameInputs via AdvanceEvents
     
-    // FRAME STEPPING: Block game state updates when paused
+    // FRAME STEPPING: Block game state updates when paused, BUT completely bypass hook during step frames
     SharedInputData* shared_data = GetSharedMemory();
     if (shared_data && frame_step_paused_global && shared_data->frame_step_is_paused) {
-        return 0; // Block game state updates when paused
+        return 0; // Block game state updates when truly paused
+    }
+    
+    // BYPASS HOOK ENTIRELY during step frames - let original function run without interference
+    if (shared_data && shared_data->frame_step_remaining_frames > 0 && shared_data->frame_step_remaining_frames != UINT32_MAX) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "UPDATE HOOK: BYPASSING hook during step frame %u - calling original directly", g_frame_counter);
+        return original_update_game ? original_update_game() : 0;
     }
     
     // Only monitor state transitions every 30 frames

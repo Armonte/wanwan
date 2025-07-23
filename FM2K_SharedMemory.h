@@ -85,6 +85,15 @@ struct SharedInputData {
     bool use_minimal_gamestate_testing;  // Enable minimal game state testing mode
     uint32_t config_version;            // Configuration version for compatibility
     
+    // Frame stepping controls
+    bool frame_step_pause_requested;
+    bool frame_step_resume_requested;
+    bool frame_step_single_requested;
+    uint32_t frame_step_multi_count;
+    bool frame_step_is_paused;
+    uint32_t frame_step_remaining_frames; // Number of frames to allow before pausing again
+    bool frame_step_needs_input_refresh;  // Flag to refresh inputs right before frame execution
+    
     // Enhanced action analysis data (must be at end for backwards compatibility)
     struct EnhancedActionData {
         // Core action data

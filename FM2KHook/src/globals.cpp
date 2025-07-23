@@ -32,6 +32,7 @@ bool gekko_frame_control_enabled = false; // Disabled by default, enable after G
 
 // Frame stepping control
 bool frame_step_paused_global = false; // Global pause flag for frame stepping
+bool block_input_buffer_update = false; // Block input history buffer updates during pause
 
 // Timeout mechanisms to prevent deadlocks
 uint32_t handshake_timeout_frames = 0;    // Timeout counter for network handshake

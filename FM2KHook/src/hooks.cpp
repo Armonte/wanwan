@@ -1000,7 +1000,7 @@ int __cdecl Hook_ProcessGameInputs() {
         
         // Handle remote player's button injection
         const auto& remote_state = css_sync->GetRemoteState();
-        uint8_t remote_button = is_host ? remote_state.p2_color_button : remote_state.p1_color_button;
+        uint16_t remote_button = is_host ? remote_state.p2_color_button : remote_state.p1_color_button;
         int remote_player_index = is_host ? 1 : 0;
         
         if (remote_button != 0) {
@@ -1121,10 +1121,10 @@ int __cdecl Hook_ProcessGameInputs() {
                 uint16_t local_input = (local_player_index == 0) ? live_p1_input : live_p2_input;
                 
                 // Capture any button in the selection range (0x3F0 mask covers all selection buttons)
-                uint8_t selection_button = 0;
-                if (local_input & 0x3F0) {  // Any button that can select character/color
+                uint16_t selection_button = 0;
+                if (local_input & 0x3F0) {  // Any button that can select character/color (A-F)
                     // Find which specific button was pressed
-                    for (int i = 4; i <= 10; i++) {  // Bits 4-10 cover the selection buttons
+                    for (int i = 4; i <= 9; i++) {  // Bits 4-9 cover buttons A-F
                         if (local_input & (1 << i)) {
                             selection_button = (1 << i);
                             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Player pressed selection button 0x%X", selection_button);
@@ -1684,6 +1684,15 @@ void HandleCSSModeTransition(uint32_t old_mode, uint32_t new_mode) {
 }
 
 void InitializeCSSSync() {
+    // Check if we're in true offline mode
+    char* env_offline = getenv("FM2K_TRUE_OFFLINE");
+    bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
+    
+    if (is_true_offline) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Skipping sync initialization in offline mode");
+        return;
+    }
+    
     if (css_sync) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "CSS: Sync already initialized, shutting down first");
         ShutdownCSSSync();
@@ -1775,14 +1784,14 @@ void QueueCSSDelayedInput(int player, uint16_t input, uint8_t delay_frames) {
     }
 }
 
-uint8_t ExtractColorButton(uint16_t input_flags) {
-    // Extract color button from input flags (0x3F0 mask covers 0x20, 0x40, 0x80, 0x100, 0x200, 0x400)
-    if (input_flags & 0x20) return 0x20;   // Color 1
-    if (input_flags & 0x40) return 0x40;   // Color 2  
-    if (input_flags & 0x80) return 0x80;   // Color 3
-    if (input_flags & 0x100) return 0x100; // Color 4
-    if (input_flags & 0x200) return 0x200; // Color 5
-    if (input_flags & 0x400) return 0x400; // Color 6 (if available)
+uint16_t ExtractColorButton(uint16_t input_flags) {
+    // Extract color button from input flags (0x3F0 mask covers 0x010-0x200)
+    if (input_flags & 0x010) return 0x010;   // Button A (bit 4)
+    if (input_flags & 0x020) return 0x020;   // Button B (bit 5)
+    if (input_flags & 0x040) return 0x040;   // Button C (bit 6)
+    if (input_flags & 0x080) return 0x080;   // Button D (bit 7)
+    if (input_flags & 0x100) return 0x100;   // Button E (bit 8)
+    if (input_flags & 0x200) return 0x200;   // Button F (bit 9)
     return 0x00; // No color button pressed
 }
 

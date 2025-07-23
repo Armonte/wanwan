@@ -731,6 +731,37 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
 int __cdecl Hook_ProcessGameInputs() {
     // Moved CaptureRealInputs() to after pause logic to prevent button consumption
     
+    // Always capture local inputs first.
+    CaptureRealInputs();
+
+    // If GekkoNet is running, send local inputs immediately.
+    // This is crucial for the initial handshake to complete.
+    if (gekko_initialized && gekko_session) {
+        if (is_local_session) {
+            uint16_t p1_input = (uint16_t)(live_p1_input & 0x7FF);
+            uint16_t p2_input = (uint16_t)(live_p2_input & 0x7FF);
+            gekko_add_local_input(gekko_session, p1_player_handle, &p1_input);
+            gekko_add_local_input(gekko_session, p2_player_handle, &p2_input);
+        } else {
+            uint16_t local_input = (::is_host) ? (uint16_t)(live_p1_input & 0x7FF) : (uint16_t)(live_p2_input & 0x7FF);
+            gekko_add_local_input(gekko_session, local_player_handle, &local_input);
+        }
+        gekko_network_poll(gekko_session);
+    }
+    
+    // Now, check if the session is ready. This call will also poll the network.
+    if (gekko_initialized && gekko_session && !AllPlayersValid()) {
+        static uint32_t wait_log_counter = 0;
+        if (++wait_log_counter % 120 == 0) { // Log every ~2 seconds
+             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Waiting for all players to connect...");
+        }
+        // Even while waiting, we must call the original input function to keep the game responsive.
+        if(original_process_inputs) {
+            original_process_inputs();
+        }
+        return 0; // Block further game logic until synchronized.
+    }
+
     // DEBUG: Log when this function is called to find frame controller
     static uint32_t input_call_count = 0;
     if (++input_call_count % 100 == 0) { // Log every 100 calls to avoid spam
@@ -764,36 +795,7 @@ int __cdecl Hook_ProcessGameInputs() {
         }
     }
     
-    // Wait for GekkoNet connection (moved from main loop hook)
-    if (gekko_initialized && gekko_session && !gekko_session_started) {
-        // Check if this is true offline mode - no network handshake needed
-        char* env_offline = getenv("FM2K_TRUE_OFFLINE");
-        bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
-        
-        if (is_true_offline) {
-            // TRUE OFFLINE: No network handshake needed, start immediately
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: TRUE OFFLINE mode - starting session immediately (no network handshake)");
-            gekko_session_started = true;
-        } else {
-            // ONLINE/LOCALHOST: Wait for network handshake
-            static uint32_t connection_attempts = 0;
-            static uint32_t last_log_attempt = 0;
-            
-            // AllPlayersValid() handles all the polling and event processing
-            if (!AllPlayersValid()) {
-                connection_attempts++;
-                
-                // Log every 50 attempts for faster feedback (was 100)
-                if (connection_attempts - last_log_attempt >= 50) {
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Waiting for GekkoNet connection... attempt %u (player_index=%d, is_host=%s)", 
-                               connection_attempts, ::player_index, ::is_host ? "YES" : "NO");
-                    last_log_attempt = connection_attempts;
-                }
-            } else {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: GekkoNet connected! Session ready.");
-            }
-        }
-    }
+    // Wait for GekkoNet connection (moved from main loop hook) - REMOVED, handled by AllPlayersValid() now
     
     // DEBUG: Log that input hook is being called
     static uint32_t input_hook_call_count = 0;
@@ -876,8 +878,7 @@ int __cdecl Hook_ProcessGameInputs() {
             return 0; // Block frame advancement but not input processing
         }
         
-        // CRITICAL: Capture inputs AFTER pause logic to prevent button consumption
-        CaptureRealInputs();
+        // CRITICAL: Inputs are now captured at the top of the function.
         
         // Handle frame stepping countdown AFTER processing the frame
         // This ensures the frame actually gets processed before we count it down
@@ -912,26 +913,7 @@ int __cdecl Hook_ProcessGameInputs() {
     // Game runs normally, GekkoNet processes events each frame and provides synchronized inputs
     if (gekko_initialized && gekko_session && gekko_session_started) {
         
-        // 2. SEND: Send inputs to GekkoNet (like OnlineSession gekko_add_local_input)
-        if (is_local_session) {
-            // LOCAL SESSION: Send BOTH player inputs
-            uint16_t p1_input = (uint16_t)(live_p1_input & 0x7FF);
-            uint16_t p2_input = (uint16_t)(live_p2_input & 0x7FF);
-            gekko_add_local_input(gekko_session, p1_player_handle, &p1_input);
-            gekko_add_local_input(gekko_session, p2_player_handle, &p2_input);
-        } else {
-            // ONLINE SESSION: Send only local player input
-            uint16_t local_input;
-            if (::is_host) {
-                local_input = (uint16_t)(live_p1_input & 0x7FF);
-            } else {
-                local_input = (uint16_t)(live_p2_input & 0x7FF);
-            }
-            gekko_add_local_input(gekko_session, local_player_handle, &local_input);
-        }
-        
-        // 3. POLL: Network polling (like OnlineSession gekko_network_poll)
-        gekko_network_poll(gekko_session);
+        // Inputs are now sent at the top of the function, before the waiting logic.
         
         // 3.5. CHECK: Wait for all players to be connected before normal gameplay
         static bool all_players_connected = false;
@@ -1076,6 +1058,14 @@ int __cdecl Hook_ProcessGameInputs() {
 }
 
 int __cdecl Hook_UpdateGameState() {
+    // Check for GekkoNet session readiness.
+    // If not ready, block this part of the game loop to prevent desync.
+    // We check the 'gekko_session_started' flag, which is set by the input hook.
+    // This prevents polling the network twice per frame.
+    if (gekko_initialized && gekko_session && !gekko_session_started) {
+        return 0; // Block game state updates
+    }
+
     // DEBUG: Log when this function is called to find frame controller
     static uint32_t update_call_count = 0;
     update_call_count++; // Still increment counter even if not logging

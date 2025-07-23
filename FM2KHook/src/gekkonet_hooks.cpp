@@ -172,22 +172,36 @@ bool AllPlayersValid() {
     if (!gekko_session || !gekko_initialized) {
         return false;
     }
-    
-    // SIMPLIFIED APPROACH: Follow OnlineSession example - skip handshake waiting
-    // The working example starts immediately and handles events during gameplay
-    if (!gekko_session_started) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: IMMEDIATE START - Following OnlineSession example pattern");
-        gekko_session_started = true;
-        
-        // Enable frame control immediately
-        gekko_frame_control_enabled = true;
-        can_advance_frame = false;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: FRAME CONTROL ENABLED - FM2K now waits for AdvanceEvent to progress frames");
-        
+
+    // If session is already started, we're good.
+    if (gekko_session_started) {
         return true;
     }
-    
-    return true;
+
+    // For online sessions, check for AdvanceEvents to confirm connection.
+    // This is the real handshake.
+    int update_count_check = 0;
+    auto updates_check = gekko_update_session(gekko_session, &update_count_check);
+
+    bool got_advance_events = false;
+    for (int i = 0; i < update_count_check; i++) {
+        if (updates_check[i]->type == AdvanceEvent) {
+            got_advance_events = true;
+            break;
+        }
+    }
+
+    if (got_advance_events) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: First AdvanceEvent received. All players are now valid.");
+        gekko_session_started = true;
+        gekko_frame_control_enabled = true;
+        can_advance_frame = false; // This variable seems unused, but we'll keep the pattern.
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: FRAME CONTROL ENABLED");
+        return true;
+    }
+
+    // Not yet connected and validated.
+    return false;
 }
 
 void ConfigureNetworkMode(bool online_mode, bool host_mode) {

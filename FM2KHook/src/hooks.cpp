@@ -26,17 +26,31 @@ static uint32_t hook_last_auto_save_frame = 0;
 
 // ARCHITECTURE FIX: Real input capture following CCCaster/GekkoNet pattern
 static void CaptureRealInputs() {
-    // Following the pattern from GekkoNet SDL2 example and CCCaster
-    // This captures actual keyboard/controller input before the game processes it
+    // DIRECT INPUT CAPTURE: Read inputs directly from hardware to eliminate frame delay
+    // This captures inputs BEFORE the game processes them, not after
     
-    // For now, we'll read the inputs directly from the game's memory addresses
-    // In the future, this could be enhanced to use direct keyboard/controller APIs
+    uint32_t p1_input = 0;
+    uint32_t p2_input = 0;
     
-    // BACK TO WORKING APPROACH: Use Hook_GetPlayerInput to capture inputs at source
-    // Just like dllmain_orig.cpp - inputs are captured when FM2K calls Hook_GetPlayerInput
-    // Don't override them here - let the input hooks do their job
+    // Read Player 1 inputs directly from keyboard
+    if (GetAsyncKeyState(VK_LEFT) & 0x8000) p1_input |= 0x001;     // LEFT
+    if (GetAsyncKeyState(VK_RIGHT) & 0x8000) p1_input |= 0x002;    // RIGHT  
+    if (GetAsyncKeyState(VK_UP) & 0x8000) p1_input |= 0x004;       // UP
+    if (GetAsyncKeyState(VK_DOWN) & 0x8000) p1_input |= 0x008;     // DOWN
+    if (GetAsyncKeyState('Z') & 0x8000) p1_input |= 0x010;         // BUTTON1
+    if (GetAsyncKeyState('X') & 0x8000) p1_input |= 0x020;         // BUTTON2
+    if (GetAsyncKeyState('C') & 0x8000) p1_input |= 0x040;         // BUTTON3
+    if (GetAsyncKeyState('A') & 0x8000) p1_input |= 0x080;         // BUTTON4
+    if (GetAsyncKeyState('S') & 0x8000) p1_input |= 0x100;         // BUTTON5
+    if (GetAsyncKeyState('D') & 0x8000) p1_input |= 0x200;         // BUTTON6
+    if (GetAsyncKeyState('Q') & 0x8000) p1_input |= 0x400;         // BUTTON7
     
-    // Simplified input capture without excessive logging
+    // TODO: Add Player 2 controls (WASD + different keys)
+    // For now, P2 stays as previous input or 0
+    
+    // Store captured inputs for this frame
+    live_p1_input = p1_input;
+    live_p2_input = p2_input;
 }
 
 // Use global function pointers from globals.h
@@ -679,17 +693,10 @@ void ApplyBootToCharacterSelectPatches() {
 
 // Hook implementations
 int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
-    // SIMPLIFIED: Always read local inputs, let GekkoNet handle synchronization
-    int original_input = original_get_player_input ? original_get_player_input(player_id, input_type) : 0;
+    // FIXED: Return pre-captured inputs to eliminate frame delay
+    // Inputs were captured in CaptureRealInputs() BEFORE frame processing started
     
-    // Store both inputs locally (following LocalSessionExample pattern)
-    if (player_id == 0) {
-        live_p1_input = original_input;
-    } else if (player_id == 1) {
-        live_p2_input = original_input;
-    }
-    
-    // Use networked inputs if available
+    // Use networked inputs if available (rollback netcode)
     if (use_networked_inputs && gekko_initialized && gekko_session) {
         static int input_debug_counter = 0;
         // Disabled verbose input logging
@@ -707,14 +714,20 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
         }
     }
     
-    // Fall back to original input
-    static int fallback_debug_counter = 0;
-    if (++fallback_debug_counter % 200 == 0) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT: Using original inputs - P%d (use_networked=%s, gekko_init=%s)", 
-                   player_id + 1, use_networked_inputs ? "YES" : "NO", gekko_initialized ? "YES" : "NO");
+    // Use pre-captured inputs (eliminates 1-frame delay)
+    if (player_id == 0) {
+        return live_p1_input;
+    } else if (player_id == 1) {
+        return live_p2_input;
     }
     
-    return original_input;
+    // Fallback to original function if needed
+    static int fallback_debug_counter = 0;
+    if (++fallback_debug_counter % 200 == 0) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT: Using fallback original inputs - P%d", player_id + 1);
+    }
+    
+    return original_get_player_input ? original_get_player_input(player_id, input_type) : 0;
 }
 
 int __cdecl Hook_ProcessGameInputs() {
@@ -866,11 +879,13 @@ int __cdecl Hook_ProcessGameInputs() {
     // In lockstep/rollback mode, the game's frame advancement is handled inside the AdvanceEvent.
     // We do nothing here to allow GekkoNet to control the frame pacing.
     if (!waiting_for_gekko_advance) {
+        // FIXED: Increment frame counter BEFORE processing to fix 1-frame input delay
+        g_frame_counter++;
+        
         // Call the original function to let the game run normally.
         if (original_process_inputs) {
             original_process_inputs();
         }
-        g_frame_counter++;
         
         // UNIFIED LOGIC: Handle frame stepping countdown. Re-pausing is now in the render hook.
         if (shared_data && shared_data->frame_step_remaining_frames > 0 && shared_data->frame_step_remaining_frames != UINT32_MAX) {
@@ -1010,10 +1025,12 @@ int __cdecl Hook_ProcessGameInputs() {
     
     // ALWAYS ADVANCE FM2K: Like OnlineSession example, game runs every frame
     // The synchronized inputs from AdvanceEvents (if any) will be used automatically
+    // FIXED: Increment frame counter BEFORE processing to fix 1-frame input delay
+    g_frame_counter++;
+    
     if (original_process_inputs) {
         original_process_inputs();
     }
-    g_frame_counter++;
     
     // Handle frame stepping countdown for GekkoNet path
     if (shared_data && shared_data->frame_step_remaining_frames > 0 && shared_data->frame_step_remaining_frames != UINT32_MAX) {

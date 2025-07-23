@@ -32,21 +32,35 @@ static void CaptureRealInputs() {
     uint32_t p1_input = 0;
     uint32_t p2_input = 0;
     
-    // Read Player 1 inputs directly from keyboard
-    if (GetAsyncKeyState(VK_LEFT) & 0x8000) p1_input |= 0x001;     // LEFT
-    if (GetAsyncKeyState(VK_RIGHT) & 0x8000) p1_input |= 0x002;    // RIGHT  
-    if (GetAsyncKeyState(VK_UP) & 0x8000) p1_input |= 0x004;       // UP
-    if (GetAsyncKeyState(VK_DOWN) & 0x8000) p1_input |= 0x008;     // DOWN
-    if (GetAsyncKeyState('Z') & 0x8000) p1_input |= 0x010;         // BUTTON1
-    if (GetAsyncKeyState('X') & 0x8000) p1_input |= 0x020;         // BUTTON2
-    if (GetAsyncKeyState('C') & 0x8000) p1_input |= 0x040;         // BUTTON3
-    if (GetAsyncKeyState('A') & 0x8000) p1_input |= 0x080;         // BUTTON4
-    if (GetAsyncKeyState('S') & 0x8000) p1_input |= 0x100;         // BUTTON5
-    if (GetAsyncKeyState('D') & 0x8000) p1_input |= 0x200;         // BUTTON6
-    if (GetAsyncKeyState('Q') & 0x8000) p1_input |= 0x400;         // BUTTON7
+    // Player 1 controls (2DFM configured keys)
+    // Directions: T=up, B=down, F=left, H=right
+    if (GetAsyncKeyState('F') & 0x8000) p1_input |= 0x001;         // LEFT
+    if (GetAsyncKeyState('H') & 0x8000) p1_input |= 0x002;         // RIGHT  
+    if (GetAsyncKeyState('T') & 0x8000) p1_input |= 0x004;         // UP
+    if (GetAsyncKeyState('B') & 0x8000) p1_input |= 0x008;         // DOWN
+    // Buttons 1-7: A, S, D, Q, W, E + ESC
+    if (GetAsyncKeyState('A') & 0x8000) p1_input |= 0x010;         // BUTTON1
+    if (GetAsyncKeyState('S') & 0x8000) p1_input |= 0x020;         // BUTTON2
+    if (GetAsyncKeyState('D') & 0x8000) p1_input |= 0x040;         // BUTTON3
+    if (GetAsyncKeyState('Q') & 0x8000) p1_input |= 0x080;         // BUTTON4
+    if (GetAsyncKeyState('W') & 0x8000) p1_input |= 0x100;         // BUTTON5
+    if (GetAsyncKeyState('E') & 0x8000) p1_input |= 0x200;         // BUTTON6
+    if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) p1_input |= 0x400;   // BUTTON7 (ESC/PAUSE)
     
-    // TODO: Add Player 2 controls (WASD + different keys)
-    // For now, P2 stays as previous input or 0
+    // Player 2 controls (2DFM configured keys)
+    // Directions: Numpad 4=left, 6=right, 8=up, 2=down
+    if (GetAsyncKeyState(VK_NUMPAD4) & 0x8000) p2_input |= 0x001; // LEFT
+    if (GetAsyncKeyState(VK_NUMPAD6) & 0x8000) p2_input |= 0x002; // RIGHT
+    if (GetAsyncKeyState(VK_NUMPAD8) & 0x8000) p2_input |= 0x004; // UP
+    if (GetAsyncKeyState(VK_NUMPAD2) & 0x8000) p2_input |= 0x008; // DOWN
+    // Buttons 1-7: J, K, L, I, O, P + ESC
+    if (GetAsyncKeyState('J') & 0x8000) p2_input |= 0x010;         // BUTTON1
+    if (GetAsyncKeyState('K') & 0x8000) p2_input |= 0x020;         // BUTTON2
+    if (GetAsyncKeyState('L') & 0x8000) p2_input |= 0x040;         // BUTTON3
+    if (GetAsyncKeyState('I') & 0x8000) p2_input |= 0x080;         // BUTTON4
+    if (GetAsyncKeyState('O') & 0x8000) p2_input |= 0x100;         // BUTTON5
+    if (GetAsyncKeyState('P') & 0x8000) p2_input |= 0x200;         // BUTTON6
+    if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) p2_input |= 0x400;   // BUTTON7 (ESC/PAUSE)
     
     // Store captured inputs for this frame
     live_p1_input = p1_input;
@@ -731,6 +745,9 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
 }
 
 int __cdecl Hook_ProcessGameInputs() {
+    // CRITICAL: Capture inputs IMMEDIATELY at frame start for zero-delay frame stepping
+    CaptureRealInputs();
+    
     // DEBUG: Log when this function is called to find frame controller
     static uint32_t input_call_count = 0;
     if (++input_call_count % 100 == 0) { // Log every 100 calls to avoid spam
@@ -904,8 +921,8 @@ int __cdecl Hook_ProcessGameInputs() {
     // CORRECT GEKKONET PROCESSING: Following OnlineSession example pattern
     // Game runs normally, GekkoNet processes events each frame and provides synchronized inputs
     if (gekko_initialized && gekko_session && gekko_session_started) {
-        // 1. CAPTURE: Read local inputs (like OnlineSession get_key_inputs)
-        CaptureRealInputs();
+        // 1. CAPTURE: Inputs already captured at frame start for zero delay
+        // CaptureRealInputs(); // Moved to beginning of function
         
         // 2. SEND: Send inputs to GekkoNet (like OnlineSession gekko_add_local_input)
         if (is_local_session) {

@@ -1492,11 +1492,10 @@ bool FM2KLauncher::LaunchLocalClient(const std::string& game_path, bool is_host,
     // CRITICAL: Force identical RNG seed for both clients to prevent desync
     (*target_instance)->SetEnvironmentVariable("FM2K_FORCE_RNG_SEED", "12345678");  // Fixed seed for testing
     
-    // Add startup delay for timing synchronization
+    // Launch clients simultaneously - no delay needed
+    // The GekkoNet synchronization will handle timing differences
     if (!is_host) {
-        // Guest client waits 500ms to reduce timing differences
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Guest client waiting 500ms for timing synchronization...");
-        SDL_Delay(500);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Guest client launching immediately (no delay)");
     }
     
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launching FM2K game with OnlineSession-style config: %s", actual_game_path.c_str());

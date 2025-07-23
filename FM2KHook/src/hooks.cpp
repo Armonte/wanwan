@@ -26,28 +26,49 @@ static uint32_t hook_last_auto_save_frame = 0;
 
 // ARCHITECTURE FIX: Real input capture following CCCaster/GekkoNet pattern
 static void CaptureRealInputs() {
-    // PURE 2DFM: Use game's input system for everything (directions + buttons)
-    
+    // In online mode, we only read the input for the local player.
+    // In true offline (local VS) mode, we read both.
+    char* env_offline = getenv("FM2K_TRUE_OFFLINE");
+    bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
+
     if (original_get_player_input) {
-        live_p1_input = original_get_player_input(0, 0);  // Player 1 with 2DFM controls
-        live_p2_input = original_get_player_input(1, 0);  // Player 2 with 2DFM controls
-        
-        // FIX: Swap P2 left/right bits (bits 0 and 1)
-        uint32_t p2_left = (live_p2_input & 0x001);   // Extract left bit
-        uint32_t p2_right = (live_p2_input & 0x002);  // Extract right bit
-        live_p2_input &= ~0x003;                       // Clear both bits
-        live_p2_input |= (p2_left << 1);               // Put left bit in right position
-        live_p2_input |= (p2_right >> 1);              // Put right bit in left position
-        
-        // Debug logging for button issues
-        static uint32_t debug_counter = 0;
-        if (debug_counter++ % 60 == 0) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "2DFM INPUT: P1=0x%03X P2=0x%03X", 
-                       live_p1_input & 0x7FF, live_p2_input & 0x7FF);
+        if (is_true_offline) {
+            // TRUE OFFLINE: Read both players from local hardware.
+            live_p1_input = original_get_player_input(0, 0);
+            live_p2_input = original_get_player_input(1, 0);
+        } else {
+            // ONLINE: Both host and client read their local controls from the P1 slot.
+            // The netcode layer (GekkoNet) will map this to the correct player in-game.
+            uint32_t local_hardware_input = original_get_player_input(0, 0);
+
+            if (::is_host) {
+                live_p1_input = local_hardware_input;
+                live_p2_input = 0;
+            } else {
+                live_p1_input = 0;
+                // The client's local input becomes P2's input in the session.
+                live_p2_input = local_hardware_input;
+            }
         }
+
+        // The P2 left/right bit swap is a hardware/engine quirk, apply it whenever P2 input is generated.
+        // This needs to happen for the client's input as it will control the P2 character.
+        uint32_t p2_left = (live_p2_input & 0x001);
+        uint32_t p2_right = (live_p2_input & 0x002);
+        live_p2_input &= ~0x003;
+        live_p2_input |= (p2_left << 1);
+        live_p2_input |= (p2_right >> 1);
+
     } else {
         live_p1_input = 0;
         live_p2_input = 0;
+    }
+
+    // Debug logging for button issues
+    static uint32_t debug_counter = 0;
+    if (debug_counter++ % 60 == 0) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "2DFM INPUT: P1=0x%03X P2=0x%03X",
+                   live_p1_input & 0x7FF, live_p2_input & 0x7FF);
     }
 }
 
@@ -694,8 +715,12 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
     // FIXED: Return pre-captured inputs to eliminate frame delay
     // Inputs were captured in CaptureRealInputs() BEFORE frame processing started
     
-    // Use networked inputs if available (rollback netcode)
-    if (use_networked_inputs && gekko_initialized && gekko_session) {
+    // Check for true offline mode
+    char* env_offline = getenv("FM2K_TRUE_OFFLINE");
+    bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
+    
+    // Use networked inputs if available (rollback netcode) - but NOT for true offline
+    if (!is_true_offline && use_networked_inputs && gekko_initialized && gekko_session) {
         static int input_debug_counter = 0;
         // Disabled verbose input logging
         // if (++input_debug_counter % 100 == 0) {
@@ -734,9 +759,13 @@ int __cdecl Hook_ProcessGameInputs() {
     // Always capture local inputs first.
     CaptureRealInputs();
 
-    // If GekkoNet is running, send local inputs immediately.
+    // Check for true offline mode
+    char* env_offline = getenv("FM2K_TRUE_OFFLINE");
+    bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
+
+    // If GekkoNet is running and NOT in true offline mode, send local inputs immediately.
     // This is crucial for the initial handshake to complete.
-    if (gekko_initialized && gekko_session) {
+    if (!is_true_offline && gekko_initialized && gekko_session) {
         if (is_local_session) {
             uint16_t p1_input = (uint16_t)(live_p1_input & 0x7FF);
             uint16_t p2_input = (uint16_t)(live_p2_input & 0x7FF);
@@ -748,17 +777,15 @@ int __cdecl Hook_ProcessGameInputs() {
         }
         gekko_network_poll(gekko_session);
     }
-    
-    // Now, check if the session is ready. This call will also poll the network.
-    if (gekko_initialized && gekko_session && !AllPlayersValid()) {
+
+    // 3.5. CHECK: Wait for all players to be connected before normal gameplay
+    // Skip this check for true offline mode (GekkoNet not even initialized) - no network synchronization needed
+    if (!is_true_offline && gekko_initialized && gekko_session && !AllPlayersValid()) {
         static uint32_t wait_log_counter = 0;
         if (++wait_log_counter % 120 == 0) { // Log every ~2 seconds
              SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Waiting for all players to connect...");
         }
-        // Even while waiting, we must call the original input function to keep the game responsive.
-        if(original_process_inputs) {
-            original_process_inputs();
-        }
+        // Do NOT call original_process_inputs here. We must freeze the game state completely.
         return 0; // Block further game logic until synchronized.
     }
 
@@ -781,7 +808,8 @@ int __cdecl Hook_ProcessGameInputs() {
     SharedInputData* shared_data = GetSharedMemory();
     
     // Initialize GekkoNet on first input hook call (safer than main loop hook)
-    if (!gekko_initialized) {
+    // Skip GekkoNet initialization entirely for true offline mode
+    if (!gekko_initialized && !is_true_offline) {
         static bool initialization_attempted = false;
         if (!initialization_attempted) {
             initialization_attempted = true;
@@ -792,6 +820,12 @@ int __cdecl Hook_ProcessGameInputs() {
             } else {
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: GekkoNet initialization failed");
             }
+        }
+    } else if (is_true_offline) {
+        static bool offline_log_shown = false;
+        if (!offline_log_shown) {
+            offline_log_shown = true;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: TRUE OFFLINE mode - skipping GekkoNet initialization completely");
         }
     }
     
@@ -886,7 +920,8 @@ int __cdecl Hook_ProcessGameInputs() {
     
     // In lockstep/rollback mode, the game's frame advancement is handled inside the AdvanceEvent.
     // We do nothing here to allow GekkoNet to control the frame pacing.
-    if (!waiting_for_gekko_advance) {
+    // EXCEPT in true offline mode (GekkoNet not initialized) - run normally without GekkoNet control
+    if (!waiting_for_gekko_advance || is_true_offline) {
         // FIXED: Increment frame counter BEFORE processing to fix 1-frame input delay
         g_frame_counter++;
         
@@ -911,46 +946,13 @@ int __cdecl Hook_ProcessGameInputs() {
     
     // CORRECT GEKKONET PROCESSING: Following OnlineSession example pattern
     // Game runs normally, GekkoNet processes events each frame and provides synchronized inputs
-    if (gekko_initialized && gekko_session && gekko_session_started) {
+    // Skip this for true offline mode (GekkoNet not initialized) - no GekkoNet processing needed
+    if (!is_true_offline && gekko_initialized && gekko_session && gekko_session_started) {
         
         // Inputs are now sent at the top of the function, before the waiting logic.
         
         // 3.5. CHECK: Wait for all players to be connected before normal gameplay
-        static bool all_players_connected = false;
-        static bool waiting_for_connection = true;
-        
-        if (!all_players_connected && !is_local_session && waiting_for_connection) {
-            // BLOCK P1 from running game loop until P2 connects
-            // Check if we're getting actual network communication (AdvanceEvents)
-            int update_count_check = 0;
-            auto updates_check = gekko_update_session(gekko_session, &update_count_check);
-            
-            bool got_advance_events = false;
-            for (int i = 0; i < update_count_check; i++) {
-                if (updates_check[i]->type == AdvanceEvent) {
-                    got_advance_events = true;
-                    break;
-                }
-            }
-            
-            if (got_advance_events) {
-                all_players_connected = true;
-                waiting_for_connection = false;
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: All players connected - starting synchronized gameplay");
-            } else {
-                // BLOCK: Don't advance FM2K until P2 connects
-                static int wait_log_counter = 0;
-                if (++wait_log_counter % 120 == 0) {  // Log every 2 seconds
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: P1 waiting for P2 to connect...");
-                }
-                return 0; // Don't advance FM2K - block until P2 connects
-            }
-        } else if (is_local_session) {
-            // Local sessions are always "connected"
-            all_players_connected = true;
-            waiting_for_connection = false;
-        }
-        
+    
         // 4. EVENTS: Handle session events
         int session_event_count = 0;
         auto session_events = gekko_session_events(gekko_session, &session_event_count);
@@ -969,54 +971,61 @@ int __cdecl Hook_ProcessGameInputs() {
         int update_count = 0;
         auto updates = gekko_update_session(gekko_session, &update_count);
         
+        bool frame_advanced = false;
         for (int i = 0; i < update_count; i++) {
             auto update = updates[i];
             
             switch (update->type) {
                 case AdvanceEvent: {
-                    // CRITICAL: Update inputs but DON'T advance here
-                    // Following OnlineSession example lines 307-315
+                    // This is the authoritative event that drives the game forward.
                     uint16_t received_p1 = ((uint16_t*)update->data.adv.inputs)[0];
                     uint16_t received_p2 = ((uint16_t*)update->data.adv.inputs)[1];
                     
-                    // Reduced logging - only log every 60 frames to avoid performance issues
+                    // Log the received inputs to confirm network traffic.
                     static int advance_log_counter = 0;
-                    if (++advance_log_counter % 600 == 0) { // Log every 600 frames (~6 seconds) instead of 60
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent Frame %d - P1:%d P2:%d", 
+                    if (++advance_log_counter % 60 == 0) { // Log every second
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet AdvanceEvent: Frame %d - P1_In:0x%03X P2_In:0x%03X", 
                                    update->data.adv.frame, received_p1, received_p2);
                     }
                     
-                    // Apply synchronized inputs (like OnlineSession example)
-                    networked_p1_input = received_p1;
-                    networked_p2_input = received_p2;
-                    use_networked_inputs = true;
-                    
-                    // Debug logging removed for performance
-                    
-                    // NOTE: Don't call original_process_inputs() here - let it happen below
+                    // CRITICAL FIX: Overwrite the live inputs with the synchronized values from GekkoNet.
+                    // The game will now run this frame using these inputs.
+                    live_p1_input = ConvertNetworkInputToGameFormat(received_p1);
+                    live_p2_input = ConvertNetworkInputToGameFormat(received_p2);
+
+                    // We must now advance the game state using these inputs.
+                    g_frame_counter++;
+                    if (original_process_inputs) {
+                        original_process_inputs();
+                    }
+                    frame_advanced = true;
+
                     break;
                 }
                 case SaveEvent: {
-                    // Handle save state (like OnlineSession save_state) - no logging for performance
                     // TODO: Implement proper save state
                     break;
                 }
                 case LoadEvent: {
-                    // Handle load state (like OnlineSession load_state) - no logging for performance
                     // TODO: Implement proper load state
                     break;
                 }
             }
         }
+        
+        // If GekkoNet didn't advance the frame (e.g., waiting for remote input),
+        // we must not advance it ourselves. Return here to keep the state frozen.
+        if (!frame_advanced) {
+            return 0;
+        }
     }
     
-    // ALWAYS ADVANCE FM2K: Like OnlineSession example, game runs every frame
-    // The synchronized inputs from AdvanceEvents (if any) will be used automatically
-    // FIXED: Increment frame counter BEFORE processing to fix 1-frame input delay
-    g_frame_counter++;
-    
-    if (original_process_inputs) {
-        original_process_inputs();
+    // Fallback for non-GekkoNet mode (e.g., true offline)
+    if (!gekko_session_started) {
+        g_frame_counter++;
+        if (original_process_inputs) {
+            original_process_inputs();
+        }
     }
     
     // Handle frame stepping countdown for GekkoNet path

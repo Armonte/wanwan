@@ -36,7 +36,8 @@
       "Bash(sed:*)",
       "Bash(awk:*)",
       "mcp__github_com_mrexodia_ida-pro-mcp__get_xrefs_to_field",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Bash(git log:*)"
     ],
     "deny": []
   }

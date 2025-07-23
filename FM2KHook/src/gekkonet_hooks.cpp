@@ -178,6 +178,15 @@ bool AllPlayersValid() {
         return true;
     }
 
+    // For TRUE OFFLINE sessions with local players, immediately mark as valid
+    if (is_local_session) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: TRUE OFFLINE mode - both players are local, no handshake needed");
+        gekko_session_started = true;
+        gekko_frame_control_enabled = true;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: FRAME CONTROL ENABLED (offline mode)");
+        return true;
+    }
+
     // For online sessions, check for AdvanceEvents to confirm connection.
     // This is the real handshake.
     int update_count_check = 0;

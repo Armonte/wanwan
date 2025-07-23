@@ -753,6 +753,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
     return original_get_player_input ? original_get_player_input(player_id, input_type) : 0;
 }
 
+
 int __cdecl Hook_ProcessGameInputs() {
     // Moved CaptureRealInputs() to after pause logic to prevent button consumption
     
@@ -902,14 +903,15 @@ int __cdecl Hook_ProcessGameInputs() {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Multi-step disabled - use single step instead");
         }
         
-        // If paused, keep input system alive but don't advance game
+        // If paused, completely freeze game logic including input processing
         if (frame_step_paused_global && shared_data->frame_step_is_paused) {
-            // CRITICAL FIX: Call original_process_inputs to keep input system alive
-            // but don't advance frame counter or game state
-            if (original_process_inputs) {
-                original_process_inputs(); // Keep input system current
+            // CRITICAL FIX: Don't call original_process_inputs during pause
+            // This prevents input buffer from being constantly overwritten and preserves motion input sequences
+            static uint32_t pause_log_counter = 0;
+            if (++pause_log_counter % 300 == 1) { // Log once every 5 seconds at 60 FPS
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FRAME STEP: Game logic paused - input buffer preserved for motion inputs");
             }
-            return 0; // Block frame advancement but not input processing
+            return 0; // Complete freeze - no game logic advancement
         }
         
         // CRITICAL: Inputs are now captured at the top of the function.

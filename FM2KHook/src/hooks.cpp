@@ -32,6 +32,13 @@ static void CaptureRealInputs() {
         live_p1_input = original_get_player_input(0, 0);  // Player 1 with 2DFM controls
         live_p2_input = original_get_player_input(1, 0);  // Player 2 with 2DFM controls
         
+        // FIX: Swap P2 left/right bits (bits 0 and 1)
+        uint32_t p2_left = (live_p2_input & 0x001);   // Extract left bit
+        uint32_t p2_right = (live_p2_input & 0x002);  // Extract right bit
+        live_p2_input &= ~0x003;                       // Clear both bits
+        live_p2_input |= (p2_left << 1);               // Put left bit in right position
+        live_p2_input |= (p2_right >> 1);              // Put right bit in left position
+        
         // Debug logging for button issues
         static uint32_t debug_counter = 0;
         if (debug_counter++ % 60 == 0) {

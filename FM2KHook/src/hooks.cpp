@@ -26,12 +26,18 @@ static uint32_t hook_last_auto_save_frame = 0;
 
 // ARCHITECTURE FIX: Real input capture following CCCaster/GekkoNet pattern
 static void CaptureRealInputs() {
-    // TIMING FIX: Use 2DFM input system but capture at END of input processing
-    // This should eliminate the 1-frame delay by matching the game's input timing
+    // PURE 2DFM: Use game's input system for everything (directions + buttons)
     
     if (original_get_player_input) {
         live_p1_input = original_get_player_input(0, 0);  // Player 1 with 2DFM controls
         live_p2_input = original_get_player_input(1, 0);  // Player 2 with 2DFM controls
+        
+        // Debug logging for button issues
+        static uint32_t debug_counter = 0;
+        if (debug_counter++ % 60 == 0) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "2DFM INPUT: P1=0x%03X P2=0x%03X", 
+                       live_p1_input & 0x7FF, live_p2_input & 0x7FF);
+        }
     } else {
         live_p1_input = 0;
         live_p2_input = 0;
@@ -716,8 +722,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
 }
 
 int __cdecl Hook_ProcessGameInputs() {
-    // ZERO DELAY FIX: Capture inputs at absolute beginning before any processing
-    CaptureRealInputs();
+    // Moved CaptureRealInputs() to after pause logic to prevent button consumption
     
     // DEBUG: Log when this function is called to find frame controller
     static uint32_t input_call_count = 0;
@@ -863,6 +868,9 @@ int __cdecl Hook_ProcessGameInputs() {
             }
             return 0; // Block frame advancement but not input processing
         }
+        
+        // CRITICAL: Capture inputs AFTER pause logic to prevent button consumption
+        CaptureRealInputs();
         
         // Handle frame stepping countdown AFTER processing the frame
         // This ensures the frame actually gets processed before we count it down

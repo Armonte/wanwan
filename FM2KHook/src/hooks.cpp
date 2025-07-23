@@ -635,6 +635,19 @@ static void CheckForHotkeys() {
         shared_data->frame_step_single_requested = true;
     }
     keys_pressed[VK_OEM_PLUS] = key_plus_pressed;
+    
+    // Check for F5 key to toggle hitjudge flag
+    bool key_f5_pressed = (GetAsyncKeyState(VK_F5) & 0x8000) != 0;
+    if (key_f5_pressed && !keys_pressed[VK_F5]) {
+        // Toggle hitjudge flag at 0x42470C
+        uint8_t* hitjudge_flag = (uint8_t*)0x42470C;
+        uint8_t current_value = *hitjudge_flag;
+        uint8_t new_value = current_value ? 0 : 1;
+        *hitjudge_flag = new_value;
+        
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Hotkey F5: Toggled hitjudge flag from %d to %d", current_value, new_value);
+    }
+    keys_pressed[VK_F5] = key_f5_pressed;
 }
 
 // New hook for boot-to-character-select hack
@@ -679,10 +692,11 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
     // Use networked inputs if available
     if (use_networked_inputs && gekko_initialized && gekko_session) {
         static int input_debug_counter = 0;
-        if (++input_debug_counter % 100 == 0) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT: Using networked inputs - P%d requested, giving networked value (P1:%d P2:%d)", 
-                       player_id + 1, networked_p1_input, networked_p2_input);
-        }
+        // Disabled verbose input logging
+        // if (++input_debug_counter % 100 == 0) {
+        //     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT: Using networked inputs - P%d requested, giving networked value (P1:%d P2:%d)", 
+        //                player_id + 1, networked_p1_input, networked_p2_input);
+        // }
         
         if (player_id == 0) {
             int converted = ConvertNetworkInputToGameFormat(networked_p1_input);
@@ -771,9 +785,10 @@ int __cdecl Hook_ProcessGameInputs() {
     // DEBUG: Log that input hook is being called
     static uint32_t input_hook_call_count = 0;
     input_hook_call_count++;
-    if (input_hook_call_count % 100 == 0) { // Log every 100 calls to avoid spam
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Called %u times, frame %u", input_hook_call_count, g_frame_counter);
-    }
+    // Disabled verbose input hook logging
+    // if (input_hook_call_count % 100 == 0) { // Log every 100 calls to avoid spam
+    //     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Called %u times, frame %u", input_hook_call_count, g_frame_counter);
+    // }
     
     // ARCHITECTURE FIX: Process debug commands (including save/load) BEFORE the pause check
     // This allows save/load to work even when the game is paused
@@ -964,7 +979,7 @@ int __cdecl Hook_ProcessGameInputs() {
                     
                     // Reduced logging - only log every 60 frames to avoid performance issues
                     static int advance_log_counter = 0;
-                    if (++advance_log_counter % 60 == 0) {
+                    if (++advance_log_counter % 600 == 0) { // Log every 600 frames (~6 seconds) instead of 60
                         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent Frame %d - P1:%d P2:%d", 
                                    update->data.adv.frame, received_p1, received_p2);
                     }
@@ -1039,13 +1054,15 @@ int __cdecl Hook_ProcessGameInputs() {
 int __cdecl Hook_UpdateGameState() {
     // DEBUG: Log when this function is called to find frame controller
     static uint32_t update_call_count = 0;
-    if (++update_call_count % 50 == 0) { // Log every 50 calls to avoid spam
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-            "Hook_UpdateGameState() called #%d - frame %u - gekko_frame_control_enabled=%s, can_advance_frame=%s", 
-            update_call_count, g_frame_counter,
-            gekko_frame_control_enabled ? "YES" : "NO",
-            can_advance_frame ? "YES" : "NO");
-    }
+    update_call_count++; // Still increment counter even if not logging
+    // Disabled verbose update logging
+    // if (++update_call_count % 50 == 0) { // Log every 50 calls to avoid spam
+    //     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+    //         "Hook_UpdateGameState() called #%d - frame %u - gekko_frame_control_enabled=%s, can_advance_frame=%s", 
+    //         update_call_count, g_frame_counter,
+    //         gekko_frame_control_enabled ? "YES" : "NO",
+    //         can_advance_frame ? "YES" : "NO");
+    // }
     
     // NO BLOCKING: Following OnlineSession pattern - let game run freely
     // GekkoNet synchronization is handled in Hook_ProcessGameInputs via AdvanceEvents

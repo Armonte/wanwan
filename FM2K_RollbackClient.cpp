@@ -885,7 +885,7 @@ bool FM2KLauncher::Initialize() {
         return ReadRollbackStatsFromSharedMemory(stats);
     };
     
-    // If no games directory stored, default to <base>/games before first discovery
+    // If no games directory stored, default to launcher's directory
     if (games_root_path_.empty()) {
         std::string base_path;
         if (const char *sdl_base = SDL_GetBasePath()) {
@@ -896,10 +896,11 @@ bool FM2KLauncher::Initialize() {
             base_path = cwd ? cwd : "";
             if (cwd) SDL_free(const_cast<char*>(cwd));
         }
-        if (!base_path.empty() && base_path.back() != '/' && base_path.back() != '\\') {
-            base_path += '/';
+        // Remove trailing slash if present (we want the directory itself, not a subdirectory)
+        if (!base_path.empty() && (base_path.back() == '/' || base_path.back() == '\\')) {
+            base_path.pop_back();
         }
-        games_root_path_ = base_path + "games";
+        games_root_path_ = base_path;
     }
     
     // Kick-off background discovery so the UI stays responsive. The results
@@ -1174,14 +1175,16 @@ void FM2KLauncher::StartAsyncDiscovery() {
 
 static SDL_EnumerationResult DirectoryEnumerator(void* userdata, const char* origdir, const char* name) {
     auto* games = static_cast<std::vector<FM2K::FM2KGameInfo>*>(userdata);
-    char* path = nullptr;
-    if (SDL_asprintf(&path, "%s\\%s", origdir, name) < 0 || !path) {
-        return SDL_ENUM_FAILURE; // Allocation failed, stop with failure.
+    
+    // Build path using forward slashes to avoid double backslash issues
+    std::string dir_str = origdir;
+    if (!dir_str.empty() && dir_str.back() != '/' && dir_str.back() != '\\') {
+        dir_str += '/';
     }
+    std::string full_path = dir_str + name;
 
     SDL_PathInfo info;
-    if (!SDL_GetPathInfo(path, &info)) {
-        SDL_free(path);
+    if (!SDL_GetPathInfo(full_path.c_str(), &info)) {
         return SDL_ENUM_CONTINUE; // Cannot stat, but continue to next.
     }
 
@@ -1189,7 +1192,7 @@ static SDL_EnumerationResult DirectoryEnumerator(void* userdata, const char* ori
         if (SDL_strcmp(name, ".") != 0 && SDL_strcmp(name, "..") != 0) {
             // For directories, look for KGT files directly inside
             int count = 0;
-            char **list = SDL_GlobDirectory(path, "*.kgt", /*flags=*/0, &count);
+            char **list = SDL_GlobDirectory(full_path.c_str(), "*.kgt", /*flags=*/0, &count);
             
             if (list) {
                 for (int i = 0; i < count; ++i) {
@@ -1199,37 +1202,30 @@ static SDL_EnumerationResult DirectoryEnumerator(void* userdata, const char* ori
                     if (!kgt_name) kgt_name = SDL_strrchr(list[i], '\\');
                     kgt_name = kgt_name ? kgt_name + 1 : list[i];  // Skip the slash
                     
-                    char* exe_path = nullptr;
-                    char* kgt_path = nullptr;
-                    if (SDL_asprintf(&exe_path, "%s\\%.*s.exe", path,
-                                   (int)(SDL_strlen(kgt_name) - 4), // Length without .kgt
-                                   kgt_name) < 0 || !exe_path) {
-                        continue; // Skip if allocation fails
+                    // Build paths using string concatenation with forward slashes
+                    char* exe_name = nullptr;
+                    if (SDL_asprintf(&exe_name, "%.*s.exe", (int)(SDL_strlen(kgt_name) - 4), kgt_name) < 0 || !exe_name) {
+                        continue;
                     }
                     
-                    if (SDL_asprintf(&kgt_path, "%s\\%s", path, kgt_name) < 0 || !kgt_path) {
-                        SDL_free(exe_path);
-                        continue; // Skip if allocation fails
-                    }
+                    std::string exe_path = full_path + "/" + exe_name;
+                    std::string kgt_path = full_path + "/" + kgt_name;
+                    SDL_free(exe_name);
 
                     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Found KGT in '%s': '%s', checking for EXE: '%s'", 
-                                name, kgt_path, exe_path);
+                                name, kgt_path.c_str(), exe_path.c_str());
 
-                    if (SDL_GetPathInfo(exe_path, nullptr)) {
+                    if (SDL_GetPathInfo(exe_path.c_str(), nullptr)) {
                         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Found valid game pair in '%s': EXE='%s', KGT='%s'", 
-                                  name, exe_path, kgt_path);
+                                  name, exe_path.c_str(), kgt_path.c_str());
                         games->emplace_back(FM2K::FM2KGameInfo{exe_path, kgt_path, 0, true});
                     }
-                    
-                    SDL_free(exe_path);
-                    SDL_free(kgt_path);
                 }
                 SDL_free(list);
             }
         }
     }
 
-    SDL_free(path);
     return SDL_ENUM_CONTINUE; // Continue enumeration
 }
 
@@ -1249,6 +1245,41 @@ std::vector<FM2K::FM2KGameInfo> FM2KLauncher::DiscoverGames() {
         return games;
     }
 
+    // First, check for KGT files in the root directory itself
+    int count = 0;
+    char **list = SDL_GlobDirectory(games_root.c_str(), "*.kgt", /*flags=*/0, &count);
+    
+    if (list) {
+        for (int i = 0; i < count; ++i) {
+            if (!list[i]) continue;
+            
+            const char* kgt_name = SDL_strrchr(list[i], '/');
+            if (!kgt_name) kgt_name = SDL_strrchr(list[i], '\\');
+            kgt_name = kgt_name ? kgt_name + 1 : list[i];  // Skip the slash
+            
+            // Build paths for the root directory
+            char* exe_name = nullptr;
+            if (SDL_asprintf(&exe_name, "%.*s.exe", (int)(SDL_strlen(kgt_name) - 4), kgt_name) < 0 || !exe_name) {
+                continue;
+            }
+            
+            std::string exe_path = games_root + "/" + exe_name;
+            std::string kgt_path = games_root + "/" + kgt_name;
+            SDL_free(exe_name);
+            
+            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Found KGT in root: '%s', checking for EXE: '%s'", 
+                        kgt_path.c_str(), exe_path.c_str());
+
+            if (SDL_GetPathInfo(exe_path.c_str(), nullptr)) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Found valid game pair in root: EXE='%s', KGT='%s'", 
+                          exe_path.c_str(), kgt_path.c_str());
+                games.emplace_back(FM2K::FM2KGameInfo{exe_path, kgt_path, 0, true});
+            }
+        }
+        SDL_free(list);
+    }
+
+    // Then scan subdirectories
     DiscoverGamesRecursive(games_root, games);
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DiscoverGames: %d game(s) found under '%s'", (int)games.size(), games_root.c_str());

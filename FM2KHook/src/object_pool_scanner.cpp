@@ -9,7 +9,7 @@ namespace ObjectPool {
 std::vector<CompactObject> Scanner::ScanActiveObjects() {
     std::vector<CompactObject> active_objects;
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Starting object pool scan...");
+    // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Starting object pool scan...");
     
     // SAFETY: Check if object pool base address is valid
     if (IsBadReadPtr((void*)OBJECT_POOL_BASE_ADDR, OBJECT_SIZE_BYTES)) {
@@ -17,7 +17,7 @@ std::vector<CompactObject> Scanner::ScanActiveObjects() {
         return active_objects;
     }
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Object pool base address 0x%08X is valid, starting scan...", OBJECT_POOL_BASE_ADDR);
+    // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Object pool base address 0x%08X is valid, starting scan...", OBJECT_POOL_BASE_ADDR);
     
     // Scan all slots to find active objects
     uint16_t max_slots_to_scan = MAX_OBJECT_SLOTS; // Full scan of 1024 slots
@@ -45,14 +45,14 @@ std::vector<CompactObject> Scanner::ScanActiveObjects() {
         }
     }
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Object scan completed: %zu active objects found", active_objects.size());
+    // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Object scan completed: %zu active objects found", active_objects.size());
     return active_objects;
 }
 
 std::vector<DetailedObject> Scanner::ScanDetailedObjects() {
     std::vector<DetailedObject> detailed_objects;
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Starting DETAILED object pool scan...");
+    // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Starting DETAILED object pool scan...");
     
     // SAFETY: Check if object pool base address is valid
     if (IsBadReadPtr((void*)OBJECT_POOL_BASE_ADDR, OBJECT_SIZE_BYTES)) {
@@ -71,7 +71,7 @@ std::vector<DetailedObject> Scanner::ScanDetailedObjects() {
         }
     }
     
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DETAILED scan completed: %zu active objects found", detailed_objects.size());
+    // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DETAILED scan completed: %zu active objects found", detailed_objects.size());
     return detailed_objects;
 }
 

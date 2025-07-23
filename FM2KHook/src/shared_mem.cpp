@@ -170,11 +170,11 @@ void UpdateEnhancedActionData() {
     // Mark as updated for launcher
     shared_data->enhanced_actions_updated = true;
     
-    // Reduced debug logging (only log occasionally)
-    static uint32_t log_counter = 0;
-    if (log_counter++ % 10 == 0) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "UpdateEnhancedActionData: Updated shared memory with %u actions", count);
-    }
+    // Disabled verbose logging
+    // static uint32_t log_counter = 0;
+    // if (log_counter++ % 10 == 0) {
+    //     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "UpdateEnhancedActionData: Updated shared memory with %u actions", count);
+    // }
 }
 
 void PopulateEnhancedActionInfo(const FM2K::ObjectPool::DetailedObject& detailed_obj, SharedInputData::EnhancedActionData& enhanced_action) {

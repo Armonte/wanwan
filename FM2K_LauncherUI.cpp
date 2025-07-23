@@ -220,16 +220,25 @@ void LauncherUI::RenderMenuBar() {
 void LauncherUI::RenderGameSelection() {
     ImGui::Text("Games Folder");
     static char path_buf[512] = {0};
-    if (games_root_path_.c_str() != path_buf) {
+    static bool initialized = false;
+    
+    // Only initialize the buffer once, not every frame
+    if (!initialized) {
         SDL_strlcpy(path_buf, games_root_path_.c_str(), sizeof(path_buf));
+        initialized = true;
     }
     
     // Create a focus scope for the input group
     ImGui::PushID("GamesFolder");
-    ImGui::InputText("##GamesFolder", path_buf, sizeof(path_buf));
+    
+    // Check if input text has changed
+    bool path_changed = ImGui::InputText("##GamesFolder", path_buf, sizeof(path_buf));
+    
     ImGui::SameLine();
-    if (ImGui::Button("Set")) {
+    if (ImGui::Button("Set") || (path_changed && ImGui::IsKeyPressed(ImGuiKey_Enter))) {
         if (on_games_folder_set) {
+            // Update our internal path to match what user typed
+            games_root_path_ = path_buf;
             on_games_folder_set(path_buf);
         }
     }

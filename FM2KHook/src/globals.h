@@ -154,5 +154,5 @@ extern DelayedInput css_delayed_inputs[2]; // P1, P2
 
 void ProcessCSSDelayedInputs();
 void QueueCSSDelayedInput(int player, uint16_t input, uint8_t delay_frames = 1);
-uint8_t ExtractColorButton(uint16_t input_flags);
+uint16_t ExtractColorButton(uint16_t input_flags);
 void InjectPlayerInput(int player, uint16_t input_value); 

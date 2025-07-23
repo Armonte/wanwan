@@ -104,7 +104,7 @@ bool SimpleCSSSync::Initialize(bool is_host, uint16_t base_port, const char* rem
     return true;
 }
 
-void SimpleCSSSync::UpdateLocalState(uint8_t cursor_x, uint8_t cursor_y, uint8_t confirmed, uint8_t color_button) {
+void SimpleCSSSync::UpdateLocalState(uint8_t cursor_x, uint8_t cursor_y, uint8_t confirmed, uint16_t color_button) {
     // Update appropriate player based on our role
     if (is_host_) {
         local_state_.p1_cursor_x = cursor_x;

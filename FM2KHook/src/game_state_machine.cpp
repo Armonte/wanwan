@@ -1,6 +1,5 @@
 #include "game_state_machine.h"
 #include "globals.h"
-// #include "css_sync.h"  // Removed CSS filtering
 #include <SDL3/SDL_log.h>
 
 // Forward declaration for frame counter

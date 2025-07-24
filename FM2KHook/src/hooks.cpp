@@ -5,7 +5,6 @@
 #include "logging.h"
 #include "shared_mem.h"
 #include "game_state_machine.h"
-// #include "css_sync.h"  // Removed CSS filtering
 #include "object_tracker.h"
 #include "object_analysis.h"
 #include "object_pool_scanner.h"
@@ -1301,57 +1300,9 @@ int __cdecl Hook_ProcessGameInputs() {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Skipping normal capture, will do fresh capture before execution at frame %u", g_frame_counter);
     }
     
-    // CSS button injection - do this AFTER input capture to add remote buttons
-    if (css_mode_active && css_sync) {
-        static int css_log_counter = 0;
-        if (++css_log_counter % 300 == 0) { // Log every 5 seconds instead of every frame
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: css_mode_active=YES, css_sync=%p, IsConnected=%s", 
-                       css_sync, css_sync && css_sync->IsConnected() ? "YES" : "NO");
-        }
-                   
-        if (css_sync->IsConnected()) {
-        // Receive CSS updates
-        css_sync->ReceiveUpdate();
-        
-        // Handle remote player's button injection
-        const auto& remote_state = css_sync->GetRemoteState();
-        uint16_t remote_button = is_host ? remote_state.p2_color_button : remote_state.p1_color_button;
-        int remote_player_index = is_host ? 1 : 0;
-        
-        if (remote_button != 0) {
-            // Simply OR the button into the appropriate player's input
-            if (remote_player_index == 0) {
-                live_p1_input |= (uint32_t)remote_button;
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Injected remote button 0x%X into P1 (result: 0x%03X)", 
-                           remote_button, live_p1_input & 0x7FF);
-            } else {
-                live_p2_input |= (uint32_t)remote_button;
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Injected remote button 0x%X into P2 (result: 0x%03X)", 
-                           remote_button, live_p2_input & 0x7FF);
-            }
-            
-            // Clear the button state so we don't inject it again next frame
-            css_sync->ClearRemoteButton();
-        }
-        }
-    }
     
     // TRUE OFFLINE MODE: Handle completely without GekkoNet
     if (is_true_offline) {
-        // CSS SYNC: Handle CSS mode differently from battle mode  
-        if (css_mode_active && css_sync) {
-            // CSS mode: Use CSS sync instead of GekkoNet
-            // TODO: Read cursor position from memory and send CSS updates
-            if (css_sync->IsConnected()) {
-                css_sync->SendUpdate();
-                css_sync->ReceiveUpdate();
-                
-                // Check if both players are ready to transition to battle
-                if (css_sync->BothPlayersReady()) {
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Both players ready - waiting for mode transition");
-                }
-            }
-        }
         
         // FIXED: Increment frame counter BEFORE processing to fix 1-frame input delay
         g_frame_counter++;
@@ -1405,223 +1356,23 @@ int __cdecl Hook_ProcessGameInputs() {
     // Skip this for true offline mode (GekkoNet not initialized) - no GekkoNet processing needed
     if (!is_true_offline && gekko_initialized && gekko_session) {
         
-        // CSS MODE vs BATTLE MODE: Different input handling
-        if (css_mode_active && css_sync) {
-            static int css_mode_log = 0;
-            if (++css_mode_log % 60 == 0) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: In CSS mode handling section, css_sync=%p", css_sync);
-            }
-            // CSS MODE: Use local inputs + CSS state sync
-            // NOTE: Button injection already happened earlier in ProcessGameInputs
-            
-            // Process any delayed input injections first
+        // Send inputs to GekkoNet for all modes (CSS and battle)
+        if (css_mode_active) {
+            // CSS MODE: Process delayed inputs but send actual inputs to GekkoNet
             ProcessCSSDelayedInputs();
-            
-            if (css_sync->IsConnected()) {
-                static int css_check_counter = 0;
-                if (++css_check_counter % 60 == 0) {
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Mode active, sync connected, processing CSS state");
-                }
-                
-                // Read local player's cursor position and confirmation from memory
-                uint32_t* cursor_x_addr = (uint32_t*)(is_host ? 
-                    FM2K::State::Memory::P1_CSS_CURSOR_X_ADDR : 
-                    FM2K::State::Memory::P2_CSS_CURSOR_X_ADDR);  // HOST reads P1, CLIENT reads P2
-                uint32_t* cursor_y_addr = (uint32_t*)(is_host ? 
-                    FM2K::State::Memory::P1_CSS_CURSOR_Y_ADDR : 
-                    FM2K::State::Memory::P2_CSS_CURSOR_Y_ADDR);
-                uint32_t* confirmed_addr = (uint32_t*)(is_host ? 
-                    FM2K::State::Memory::P1_CSS_CONFIRMED_ADDR : 
-                    FM2K::State::Memory::P2_CSS_CONFIRMED_ADDR);
-                
-                // Safely read CSS state (u32 -> u8 for cursors)
-                uint8_t cursor_x = 0, cursor_y = 0, confirmed = 0;
-                
-                if (!IsBadReadPtr(cursor_x_addr, sizeof(uint32_t))) cursor_x = (uint8_t)(*cursor_x_addr & 0xFF);
-                if (!IsBadReadPtr(cursor_y_addr, sizeof(uint32_t))) cursor_y = (uint8_t)(*cursor_y_addr & 0xFF);
-                
-                // Debug: Log what we're reading from confirmation address
-                uint32_t raw_confirmed_value = 0xDEADBEEF;
-                if (!IsBadReadPtr(confirmed_addr, sizeof(uint32_t))) {
-                    raw_confirmed_value = *confirmed_addr;
-                    confirmed = (raw_confirmed_value != 0 && raw_confirmed_value != 0xFFFFFFFF) ? 1 : 0;
-                    
-                    static int confirm_debug_counter = 0;
-                    static uint32_t last_logged_value = 0xDEADBEEF;
-                    // Only log when value changes or every 30 seconds
-                    if (raw_confirmed_value != last_logged_value || ++confirm_debug_counter % 3000 == 0) {
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                            "CSS CONFIRM DEBUG: %s reading confirmation from 0x%X - raw value=0x%X, confirmed=%d", 
-                            is_host ? "HOST" : "CLIENT", 
-                            (unsigned int)confirmed_addr,
-                            raw_confirmed_value, 
-                            confirmed);
-                        last_logged_value = raw_confirmed_value;
-                    }
-                }
-                
-                // Capture ANY button press (not just color buttons) for character selection
-                int local_player_index = is_host ? 0 : 1;
-                uint16_t local_input = (local_player_index == 0) ? live_p1_input : live_p2_input;
-                
-                // Debug: Log raw input values
-                static int input_debug_counter = 0;
-                if (local_input != 0 || ++input_debug_counter % 300 == 0) { // Log on input or every 5 seconds
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS INPUT DEBUG: %s raw input=0x%X", 
-                        is_host ? "HOST" : "CLIENT", local_input);
-                }
-                
-                // Capture any button in the selection range (0x3F0 mask covers all selection buttons)
-                uint16_t selection_button = 0;
-                if (local_input & 0x3F0) {  // Any button that can select character/color (A-F)
-                    // Find which specific button was pressed
-                    for (int i = 4; i <= 9; i++) {  // Bits 4-9 cover buttons A-F
-                        if (local_input & (1 << i)) {
-                            selection_button = (1 << i);
-                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: %s pressed selection button 0x%X (raw input: 0x%X)", 
-                                is_host ? "HOST" : "CLIENT", selection_button, local_input);
-                            break; // Only capture first button found
-                        }
-                    }
-                }
-                
-                // Debug: Log what local cursor data we're reading and sending
-                static int local_cursor_debug_counter = 0;
-                if (++local_cursor_debug_counter % 180 == 0) { // Log every 3 seconds
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                        "CSS LOCAL DEBUG: %s reading local cursor - X=%d, Y=%d, Button=0x%X (sending as %s data)", 
-                        is_host ? "HOST" : "CLIENT", 
-                        cursor_x, cursor_y, selection_button,
-                        is_host ? "P1" : "P2");
-                }
-                
-                // Update CSS sync with local state (including selection button)
-                css_sync->UpdateLocalState(cursor_x, cursor_y, confirmed, selection_button);
-                
-                if (confirmed != 0) {
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                        "CSS: %s detected local confirmation=%d, sending to remote", 
-                        is_host ? "HOST" : "CLIENT", confirmed);
-                }
-                
-                // Debug log CSS state
-                static int css_log_counter = 0;
-                if (++css_log_counter % 60 == 0) { // Log every second
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Local state - X:%d Y:%d Button:0x%X", 
-                               cursor_x, cursor_y, selection_button);
-                }
-                
-                css_sync->SendUpdate();
-                // NOTE: ReceiveUpdate already happened in ProcessGameInputs
-                
-                // Write remote player's CSS state to memory
-                const auto& remote_state = css_sync->GetRemoteState();
-                
-                uint32_t* remote_cursor_x_addr = (uint32_t*)(is_host ? 
-                    FM2K::State::Memory::P2_CSS_CURSOR_X_ADDR : 
-                    FM2K::State::Memory::P1_CSS_CURSOR_X_ADDR);
-                uint32_t* remote_cursor_y_addr = (uint32_t*)(is_host ? 
-                    FM2K::State::Memory::P2_CSS_CURSOR_Y_ADDR : 
-                    FM2K::State::Memory::P1_CSS_CURSOR_Y_ADDR);
-                uint32_t* remote_confirmed_addr = (uint32_t*)(is_host ? 
-                    FM2K::State::Memory::P2_CSS_CONFIRMED_ADDR : 
-                    FM2K::State::Memory::P1_CSS_CONFIRMED_ADDR);
-                
-                // Debug: Log what cursor data we're receiving and writing
-                uint8_t received_x = is_host ? remote_state.p2_cursor_x : remote_state.p1_cursor_x;
-                uint8_t received_y = is_host ? remote_state.p2_cursor_y : remote_state.p1_cursor_y;
-                
-                static int cursor_debug_counter = 0;
-                if (++cursor_debug_counter % 180 == 0) { // Log every 3 seconds instead of every frame
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                        "CSS CURSOR DEBUG: %s received cursor data - X=%d, Y=%d (writing to %s cursor addresses)", 
-                        is_host ? "HOST" : "CLIENT", 
-                        received_x, received_y,
-                        is_host ? "P2" : "P1");
-                }
-                
-                // Safely write remote CSS state to memory (u8 -> u32)
-                if (!IsBadWritePtr(remote_cursor_x_addr, sizeof(uint32_t))) {
-                    *remote_cursor_x_addr = (uint32_t)received_x;
-                }
-                if (!IsBadWritePtr(remote_cursor_y_addr, sizeof(uint32_t))) {
-                    *remote_cursor_y_addr = (uint32_t)received_y;
-                }
-                // Write remote confirmation state to memory
-                uint8_t received_confirmed = is_host ? remote_state.p2_confirmed : remote_state.p1_confirmed;
-                
-                // Debug: Always log confirmation writes
-                static int write_confirm_debug_counter = 0;
-                if (received_confirmed != 0 || ++write_confirm_debug_counter % 300 == 0) {
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                        "CSS WRITE CONFIRM DEBUG: %s attempting to write confirmation=%d to address 0x%X", 
-                        is_host ? "HOST" : "CLIENT", 
-                        received_confirmed,
-                        (unsigned int)remote_confirmed_addr);
-                }
-                
-                if (!IsBadWritePtr(remote_confirmed_addr, sizeof(uint32_t))) {
-                    *remote_confirmed_addr = (uint32_t)received_confirmed;
-                    
-                    if (received_confirmed != 0) {
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                            "CSS: %s WROTE remote confirmation=%d to %s memory at 0x%X", 
-                            is_host ? "HOST" : "CLIENT", 
-                            received_confirmed,
-                            is_host ? "P2" : "P1",
-                            (unsigned int)remote_confirmed_addr);
-                    }
-                }
-                
-                // NOTE: Button injection already happened in ProcessGameInputs
-                // No need to inject again here
-                
-                // Check if both players are ready for battle transition
-                if (css_sync->BothPlayersReady()) {
-                    static bool ready_logged = false;
-                    if (!ready_logged) {
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Both players confirmed - ready for battle transition");
-                        ready_logged = true;
-                    }
-                }
-                
-                // Log CSS state every few frames for debugging
-                static uint32_t css_state_log_counter = 0;
-                if (++css_state_log_counter % 120 == 0) { // Every 2 seconds
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Local(%u,%u) conf=%u btn=0x%X | Remote(%u,%u) conf=%u btn=0x%X", 
-                        cursor_x, cursor_y, confirmed, selection_button,
-                        (is_host ? remote_state.p2_cursor_x : remote_state.p1_cursor_x),
-                        (is_host ? remote_state.p2_cursor_y : remote_state.p1_cursor_y),
-                        (is_host ? remote_state.p2_confirmed : remote_state.p1_confirmed),
-                        (is_host ? remote_state.p2_color_button : remote_state.p1_color_button));
-                }
-            }
-            
-            // Send dummy inputs to GekkoNet during CSS to keep it running
-            // We use 0 inputs since CSS is handled separately via TCP
-            if (is_local_session) {
-                uint16_t dummy_input = 0;
-                gekko_add_local_input(gekko_session, p1_player_handle, &dummy_input);
-                gekko_add_local_input(gekko_session, p2_player_handle, &dummy_input);
-            } else {
-                uint16_t dummy_input = 0;
-                gekko_add_local_input(gekko_session, local_player_handle, &dummy_input);
-            }
-            gekko_network_poll(gekko_session);
-            
-        } else {
-            // BATTLE MODE: Send inputs to GekkoNet for networked synchronization
-            if (is_local_session) {
-                uint16_t p1_input = (uint16_t)(live_p1_input & 0x7FF);
-                uint16_t p2_input = (uint16_t)(live_p2_input & 0x7FF);
-                gekko_add_local_input(gekko_session, p1_player_handle, &p1_input);
-                gekko_add_local_input(gekko_session, p2_player_handle, &p2_input);
-            } else {
-                uint16_t local_input = (::is_host) ? (uint16_t)(live_p1_input & 0x7FF) : (uint16_t)(live_p2_input & 0x7FF);
-                gekko_add_local_input(gekko_session, local_player_handle, &local_input);
-            }
-            gekko_network_poll(gekko_session);
         }
+        
+        // Always send actual inputs to GekkoNet
+        if (is_local_session) {
+            uint16_t p1_input = (uint16_t)(live_p1_input & 0x7FF);
+            uint16_t p2_input = (uint16_t)(live_p2_input & 0x7FF);
+            gekko_add_local_input(gekko_session, p1_player_handle, &p1_input);
+            gekko_add_local_input(gekko_session, p2_player_handle, &p2_input);
+        } else {
+            uint16_t local_input = (::is_host) ? (uint16_t)(live_p1_input & 0x7FF) : (uint16_t)(live_p2_input & 0x7FF);
+            gekko_add_local_input(gekko_session, local_player_handle, &local_input);
+        }
+        gekko_network_poll(gekko_session);
         
         // SECOND: Process GekkoNet events (always process to keep session alive)
         if (gekko_session_started) {
@@ -2253,15 +2004,12 @@ void HandleCSSModeTransition(uint32_t old_mode, uint32_t new_mode) {
         
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Reset battle sync flag and disabled deterministic RNG for fresh battle start");
         
-        InitializeCSSSync();
         
     } else if (was_css && !is_css) {
         // Leaving CSS mode  
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Leaving character select mode (game_mode: 0x%08X)", new_mode);
         css_mode_active = false;
         
-        // Shutdown CSS sync
-        ShutdownCSSSync();
         
         if (new_mode >= 3000 && new_mode < 4000) {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Transitioning to battle - enabling networked inputs");
@@ -2323,80 +2071,6 @@ void HandleCSSModeTransition(uint32_t old_mode, uint32_t new_mode) {
     }
 }
 
-void InitializeCSSSync() {
-    // Check if we're in true offline mode
-    char* env_offline = getenv("FM2K_TRUE_OFFLINE");
-    bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
-    
-    if (is_true_offline) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Skipping sync initialization in offline mode");
-        return;
-    }
-    
-    if (css_sync) {
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "CSS: Sync already initialized, shutting down first");
-        ShutdownCSSSync();
-    }
-    
-    // Get network config from environment (same as GekkoNet)
-    char* env_port = getenv("FM2K_LOCAL_PORT");
-    char* env_remote = getenv("FM2K_REMOTE_ADDR");
-    
-    uint16_t host_base_port = 7000;  // Always use HOST's base port for CSS
-    std::string remote_ip_str = "127.0.0.1";
-    
-    // For CSS sync, we need the HOST's port, not the local port
-    if (is_host) {
-        // HOST: Use local port as base
-        if (env_port) {
-            host_base_port = static_cast<uint16_t>(atoi(env_port));
-        }
-    } else {
-        // CLIENT: Extract HOST's port from remote address
-        if (env_remote) {
-            std::string remote_str(env_remote);
-            size_t colon_pos = remote_str.find(':');
-            if (colon_pos != std::string::npos) {
-                remote_ip_str = remote_str.substr(0, colon_pos);
-                host_base_port = static_cast<uint16_t>(atoi(remote_str.substr(colon_pos + 1).c_str()));
-            } else {
-                remote_ip_str = remote_str;
-            }
-        }
-    }
-    
-    css_sync = new SimpleCSSSync();
-    
-    // Use same host/client logic as GekkoNet
-    bool is_css_host = is_host;  // Use existing host flag
-    
-    // Add delay for client to ensure server starts first
-    if (!is_css_host) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: CLIENT waiting 500ms for HOST to start server...");
-        SDL_Delay(500);
-    }
-    
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Initializing %s on port %u", 
-        is_css_host ? "HOST" : "CLIENT", host_base_port + 200);
-    
-    if (css_sync->Initialize(is_css_host, host_base_port, remote_ip_str.c_str())) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Sync initialized successfully as %s", 
-            is_css_host ? "HOST" : "CLIENT");
-    } else {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "CSS: Failed to initialize sync");
-        delete css_sync;
-        css_sync = nullptr;
-    }
-}
-
-void ShutdownCSSSync() {
-    if (css_sync) {
-        css_sync->Shutdown();
-        delete css_sync;
-        css_sync = nullptr;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Sync shutdown complete");
-    }
-}
 
 // CSS Input Injection System Implementation
 void ProcessCSSDelayedInputs() {

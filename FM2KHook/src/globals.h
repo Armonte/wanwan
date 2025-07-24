@@ -3,7 +3,6 @@
 #include "common.h"
 #include "state_manager.h" // For GameState and MinimalGameState
 #include "gekkonet.h"
-#include "simple_css_sync.h"
 
 // Key FM2K addresses
 namespace FM2K::State::Memory {
@@ -88,8 +87,6 @@ extern bool gekko_frame_control_enabled; // True when GekkoNet should control fr
 extern bool frame_step_paused_global; // Global pause flag for frame stepping
 extern bool block_input_buffer_update; // Block input history buffer updates during pause
 
-// CSS synchronization
-extern SimpleCSSSync* css_sync;        // CSS synchronization instance
 extern bool css_mode_active;           // True when in character select (fm2k_mode == 2000)
 
 // Timeout mechanisms to prevent deadlocks
@@ -137,11 +134,8 @@ void MonitorGameStateTransitions();
 void ManageRollbackActivation(uint32_t game_mode, uint32_t fm2k_mode, uint32_t char_select_mode);
 bool ShouldActivateRollback(uint32_t game_mode, uint32_t fm2k_mode);
 const char* GetGameModeString(uint32_t mode);
-
-// CSS management functions
 void HandleCSSModeTransition(uint32_t old_mode, uint32_t new_mode);
-void InitializeCSSSync();
-void ShutdownCSSSync();
+
 
 // Input injection system for CSS color selection
 struct DelayedInput {

@@ -4,7 +4,6 @@
 #include "state_manager.h"
 #include "logging.h"
 #include "shared_mem.h"
-#include "game_state_machine.h"
 #include "object_tracker.h"
 #include "object_analysis.h"
 #include "object_pool_scanner.h"
@@ -96,10 +95,18 @@ static void CaptureRealInputs() {
             if (::is_host) {
                 live_p1_input = local_hardware_input;
                 live_p2_input = 0;
+                if (local_hardware_input != 0) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT CAPTURE: Host P1 input=0x%03X (is_host=%s, player_index=%d)", 
+                               local_hardware_input, ::is_host ? "YES" : "NO", ::player_index);
+                }
             } else {
                 live_p1_input = 0;
                 // The client's local input becomes P2's input in the session.
                 live_p2_input = local_hardware_input;
+                if (local_hardware_input != 0) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT CAPTURE: Client P2 input=0x%03X (is_host=%s, player_index=%d)", 
+                               local_hardware_input, ::is_host ? "YES" : "NO", ::player_index);
+                }
             }
         }
 
@@ -188,7 +195,11 @@ static bool SaveCompleteGameState(SaveStateData* save_data, uint32_t frame_numbe
 // Load complete game state from a SaveStateData structure (for GekkoNet rollback)
 static bool LoadCompleteGameState(const SaveStateData* save_data) {
     if (!save_data || !save_data->valid) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "LoadCompleteGameState: Invalid save_data pointer or data not valid");
+        // TEMPORARY: Reduce spam during input sync stabilization (following BSNES minimal approach)
+        static uint32_t error_count = 0;
+        if (++error_count <= 5) { // Only log first 5 errors
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "LoadCompleteGameState: Rollback disabled - focusing on input sync first (BSNES approach)");
+        }
         return false;
     }
     
@@ -887,11 +898,10 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
     // Use networked inputs if available (rollback netcode) - but NOT for true offline
     if (!is_true_offline && use_networked_inputs && gekko_initialized && gekko_session) {
         static int input_debug_counter = 0;
-        // Disabled verbose input logging
-        // if (++input_debug_counter % 100 == 0) {
-        //     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT: Using networked inputs - P%d requested, giving networked value (P1:%d P2:%d)", 
-        //                player_id + 1, networked_p1_input, networked_p2_input);
-        // }
+        if (++input_debug_counter % 10 == 0) { // Log every 10 calls to see if this path is taken
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT: Using networked inputs - P%d requested, giving networked value (P1:0x%03X P2:0x%03X)", 
+                       player_id + 1, networked_p1_input, networked_p2_input);
+        }
         
         if (player_id == 0) {
             int converted = ConvertNetworkInputToGameFormat(networked_p1_input);
@@ -939,6 +949,9 @@ int __cdecl Hook_ProcessGameInputs() {
     // Check for true offline mode
     char* env_offline = getenv("FM2K_TRUE_OFFLINE");
     bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
+    
+    // Track if we advanced frame via AdvanceEvent (to avoid double calling original_process_inputs)
+    bool frame_advanced = false;
 
     // CRITICAL FIX: Send inputs during handshake (like BSNES)
     // Must capture and send inputs BEFORE AllPlayersValid() check to establish connection
@@ -946,17 +959,59 @@ int __cdecl Hook_ProcessGameInputs() {
         // Always capture real inputs, even during handshake
         CaptureRealInputs();
         
-        // Send inputs to GekkoNet during handshake to establish connection
-        if (is_local_session) {
-            // Send real inputs to GekkoNet for synchronization
-            uint16_t p1_input = (uint16_t)(live_p1_input & 0x7FF);
-            uint16_t p2_input = (uint16_t)(live_p2_input & 0x7FF);
-            gekko_add_local_input(gekko_session, p1_player_handle, &p1_input);
-            gekko_add_local_input(gekko_session, p2_player_handle, &p2_input);
+        // Reset networked input flag each frame - will be set to true by AdvanceEvent if needed
+        use_networked_inputs = false;
+        
+        // BSNES PHILOSOPHY: "Keep it simple" - Send inputs once per frame like BSNES does
+        // Use FM2K's frame counter (g_frame_counter) instead of arbitrary call counting
+        // This aligns exactly with BSNES approach: inputs sent once per emulator frame
+        static uint32_t last_sent_frame = UINT32_MAX;
+        uint32_t current_frame = *(uint32_t*)0x4456FC; // g_negate_interpolation_value_frame_counter (render frame counter)
+        
+        bool should_send_input = false;
+        if (!gekko_session_started) {
+            // During handshake: Send inputs until connected, but only once per frame
+            if (current_frame != last_sent_frame) {
+                should_send_input = true;
+            }
         } else {
-            // Online mode: send local player's input
-            uint16_t local_input = (::is_host) ? (uint16_t)(live_p1_input & 0x7FF) : (uint16_t)(live_p2_input & 0x7FF);
-            gekko_add_local_input(gekko_session, local_player_handle, &local_input);
+            // During gameplay: Send inputs exactly once per frame (like BSNES netplayRun())
+            if (current_frame != last_sent_frame) {
+                should_send_input = true;
+            }
+        }
+        
+        if (should_send_input) {
+            
+            if (is_local_session) {
+                // Local session: Send both players' inputs
+                uint16_t p1_input = (uint16_t)(live_p1_input & 0x7FF);
+                uint16_t p2_input = (uint16_t)(live_p2_input & 0x7FF);
+                gekko_add_local_input(gekko_session, p1_player_handle, &p1_input);
+                gekko_add_local_input(gekko_session, p2_player_handle, &p2_input);
+            } else {
+                // Online session: Each client sends only their player's input
+                if (::player_index == 0) {
+                    // Player 1 sends only P1 input
+                    uint16_t p1_input = (uint16_t)(live_p1_input & 0x7FF);
+                    gekko_add_local_input(gekko_session, local_player_handle, &p1_input);
+                    if (p1_input != 0 || !gekko_session_started) {
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT SEND: P1 F%d sending input=0x%03X to handle=%d", 
+                                   current_frame, p1_input, local_player_handle);
+                    }
+                } else {
+                    // Player 2 sends only P2 input  
+                    uint16_t p2_input = (uint16_t)(live_p2_input & 0x7FF);
+                    gekko_add_local_input(gekko_session, local_player_handle, &p2_input);
+                    if (p2_input != 0 || !gekko_session_started) {
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT SEND: P2 F%d sending input=0x%03X to handle=%d", 
+                                   current_frame, p2_input, local_player_handle);
+                    }
+                }
+            }
+            
+            // Update frame tracking to prevent sending again this frame
+            last_sent_frame = current_frame;
         }
         
         // Now check if all players are connected
@@ -972,12 +1027,14 @@ int __cdecl Hook_ProcessGameInputs() {
         }
     }
 
-    // DEBUG: Log when this function is called to find frame controller
+    // DEBUG: Log frame counters to understand the difference
     static uint32_t input_call_count = 0;
     if (++input_call_count % 100 == 0) { // Log every 100 calls to avoid spam
+        uint32_t input_buffer_frame = *(uint32_t*)0x004EF1A4; // Input buffer circular index
+        uint32_t render_frame = *(uint32_t*)0x4456FC; // Render frame counter
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-            "Hook_ProcessGameInputs() called #%d - frame %u - gekko_frame_control_enabled=%s, gekko_session_started=%s, can_advance_frame=%s", 
-            input_call_count, g_frame_counter,
+            "Hook_ProcessGameInputs() called #%d - input_buffer_frame=%u, render_frame=%u - gekko_frame_control_enabled=%s, gekko_session_started=%s, can_advance_frame=%s", 
+            input_call_count, input_buffer_frame, render_frame,
             gekko_frame_control_enabled ? "YES" : "NO",
             gekko_session_started ? "YES" : "NO",
             can_advance_frame ? "YES" : "NO");
@@ -1214,8 +1271,6 @@ int __cdecl Hook_ProcessGameInputs() {
         // Process GekkoNet events and advance frame (like bsnes-netplay)
         gekko_network_poll(gekko_session);
         
-        bool frame_advanced = false;
-        
         // Process session events (like bsnes-netplay)
         int session_event_count = 0;
         auto session_events = gekko_session_events(gekko_session, &session_event_count);
@@ -1248,16 +1303,27 @@ int __cdecl Hook_ProcessGameInputs() {
                         uint16_t received_p1 = ((uint16_t*)update->data.adv.inputs)[0];
                         uint16_t received_p2 = ((uint16_t*)update->data.adv.inputs)[1];
                         
-                        // ALWAYS overwrite the live inputs with the synchronized values from GekkoNet
-                        live_p1_input = ConvertNetworkInputToGameFormat(received_p1);
-                        live_p2_input = ConvertNetworkInputToGameFormat(received_p2);
-
-                        // Advance the game state using these inputs
-                        g_frame_counter++;
-                        if (original_process_inputs) {
-                            original_process_inputs();
+                        static uint32_t debug_count = 0;
+                        if (++debug_count % 300 == 0) { // Log every 5 seconds
+                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT DEBUG: AdvanceEvent received inputs[0]=0x%03X, inputs[1]=0x%03X", 
+                                        received_p1, received_p2);
                         }
-                        frame_advanced = true;
+                        
+                        // BSNES APPROACH: Simple direct mapping - inputs[0]=P1, inputs[1]=P2
+                        // Set networked inputs (used by Hook_GetPlayerInput when use_networked_inputs=true)
+                        networked_p1_input = received_p1;
+                        networked_p2_input = received_p2;
+                        use_networked_inputs = true;
+                        
+                        static uint32_t debug_networked_count = 0;
+                        if (++debug_networked_count % 50 == 0) { // Log every 50 AdvanceEvents
+                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "NETWORKED INPUT SET: P1=0x%03X, P2=0x%03X, use_networked_inputs=true", 
+                                       networked_p1_input, networked_p2_input);
+                        }
+
+                        // CRITICAL: Set frame_advanced=true to prevent calling original_process_inputs()
+                        // which would overwrite the networked inputs with hardware inputs
+                        frame_advanced = true;  // Prevent double call to original_process_inputs()
                         break;
                     }
                     case SaveEvent: {
@@ -1321,7 +1387,13 @@ int __cdecl Hook_ProcessGameInputs() {
         }
     }
     
-    return 0;
+    // CRITICAL FIX: Only call original function when we have networked inputs from AdvanceEvent
+    // Like BSNES: AdvanceEvent triggers emulator->run() with synchronized inputs
+    if (frame_advanced && original_process_inputs) {
+        return original_process_inputs();
+    }
+    
+    return 0; // Return 0 if no AdvanceEvent received or no original function
 }
 
 int __cdecl Hook_UpdateGameState() {
@@ -1588,11 +1660,7 @@ void MonitorGameStateTransitions() {
     if (!IsBadReadPtr(char_select_ptr, sizeof(uint32_t))) {
         new_char_select = *char_select_ptr;
     }
-    
-    // Update the game state machine with current mode
-    if (new_game_mode != 0xFFFFFFFF) {
-        FM2K::State::g_game_state_machine.Update(new_game_mode);
-    }
+
     
     // Check for state transitions and log them
     bool state_changed = false;
@@ -1623,10 +1691,7 @@ void MonitorGameStateTransitions() {
         state_changed = true;
     }
     
-    // Manage rollback activation based on state changes
-    if (state_changed) {
-        ManageRollbackActivation(new_game_mode, new_fm2k_mode, new_char_select);
-    }
+
     
     // Mark as initialized after first read
     if (!game_state_initialized) {
@@ -1636,25 +1701,7 @@ void MonitorGameStateTransitions() {
     }
 }
 
-void ManageRollbackActivation(uint32_t game_mode, uint32_t fm2k_mode, uint32_t char_select_mode) {
-    // SIMPLIFIED: Remove all CSS filtering and state machine interference
-    // Keep GekkoNet control active throughout the entire session
-    
-    // Always enable frame sync when GekkoNet is initialized
-    if (gekko_initialized && gekko_session_started && !waiting_for_gekko_advance) {
-        waiting_for_gekko_advance = true;
-        rollback_active = true;
-        
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-            "FM2K STATE: GekkoNet control ALWAYS ACTIVE - no CSS filtering (game_mode=0x%X)", 
-            game_mode);
-    }
-    
-    // Never disable GekkoNet control - remove all state machine interference
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-        "FM2K STATE: Maintaining continuous GekkoNet sync (game_mode=0x%X, rollback_active=%s)", 
-        game_mode, rollback_active ? "YES" : "NO");
-}
+
 
 bool ShouldActivateRollback(uint32_t game_mode, uint32_t fm2k_mode) {
     // SIMPLIFIED: Always return true - no CSS filtering

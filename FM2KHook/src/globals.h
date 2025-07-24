@@ -131,7 +131,6 @@ void LogMinimalGameStateDesync(uint32_t desync_frame, uint32_t local_checksum, u
 
 // Game state management functions
 void MonitorGameStateTransitions();
-void ManageRollbackActivation(uint32_t game_mode, uint32_t fm2k_mode, uint32_t char_select_mode);
 bool ShouldActivateRollback(uint32_t game_mode, uint32_t fm2k_mode);
 const char* GetGameModeString(uint32_t mode);
 //void HandleCSSModeTransition(uint32_t old_mode, uint32_t new_mode);

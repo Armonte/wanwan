@@ -2,7 +2,6 @@
 #include "globals.h"
 #include "logging.h"
 #include "gekkonet.h"
-#include "game_state_machine.h"
 #include "state_manager.h"  // For GameState
 #include <SDL3/SDL_log.h>
 #include <cstdint>
@@ -13,12 +12,10 @@
 
 bool InitializeGekkoNet() {
     // Set network session flag in the game state machine
-    FM2K::State::g_game_state_machine.SetNetworkSession(true);
 
     // Logging for network session initialization
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** REIMPLEMENTING FM2K MAIN LOOP WITH GEKKONET CONTROL ***");
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Initializing GgekkoNet...");
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: *** INITIALIZING GEKKONET WITH ROLLBACK NETCODE (3-Frame Prediction) ***");
     // CSS filtering removed for simplified input handling
     
     static uint16_t local_port = 7000;
@@ -86,24 +83,41 @@ bool InitializeGekkoNet() {
     bool is_online_session = !remote_address.empty();
     
     if (is_online_session) {
-        // Online session: Add local player and remote player
-        local_player_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
+        // Online session: Ensure Player 1 gets handle 0, Player 2 gets handle 1
+        // This matches BSNES approach where inputs[0]=P1, inputs[1]=P2
         
-        // Add remote player with address
         GekkoNetAddress remote_addr;
         remote_addr.data = (void*)remote_address.c_str();
         remote_addr.size = remote_address.length();
         
-        int remote_handle = gekko_add_actor(gekko_session, RemotePlayer, &remote_addr);
-        
-        if (local_player_handle == -1 || remote_handle == -1) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Failed to add players - Local: %d, Remote: %d", 
+        if (::player_index == 0) {
+            // Player 1 (host): Add self first (gets handle 0), then remote (gets handle 1)
+            local_player_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
+            int remote_handle = gekko_add_actor(gekko_session, RemotePlayer, &remote_addr);
+            
+            if (local_player_handle == -1 || remote_handle == -1) {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: P1 failed to add players - Local: %d, Remote: %d", 
+                            local_player_handle, remote_handle);
+                return false;
+            }
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: P1 added - local_handle=%d (P1), remote_handle=%d (P2)", 
                         local_player_handle, remote_handle);
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Connection failed to %s", remote_address.c_str());
-            return false;
+        } else {
+            // Player 2 (client): Add remote first (gets handle 0), then self (gets handle 1) 
+            int remote_handle = gekko_add_actor(gekko_session, RemotePlayer, &remote_addr);
+            local_player_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
+            
+            if (local_player_handle == -1 || remote_handle == -1) {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: P2 failed to add players - Remote: %d, Local: %d", 
+                            remote_handle, local_player_handle);
+                return false;
+            }
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: P2 added - remote_handle=%d (P1), local_handle=%d (P2)", 
+                        remote_handle, local_player_handle);
         }
         
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Added local=%d, remote=%d", local_player_handle, remote_handle);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Player %d controls handle %d", 
+                    ::player_index == 0 ? 1 : 2, local_player_handle);
         
         // Set online mode flags
         is_online_mode = true;

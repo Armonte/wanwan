@@ -112,11 +112,6 @@ static void CaptureRealInputs() {
 
         // The P2 left/right bit swap is a hardware/engine quirk, apply it whenever P2 input is generated.
         // This needs to happen for the client's input as it will control the P2 character.
-        uint32_t p2_left = (live_p2_input & 0x001);
-        uint32_t p2_right = (live_p2_input & 0x002);
-        live_p2_input &= ~0x003;
-        live_p2_input |= (p2_left << 1);
-        live_p2_input |= (p2_right >> 1);
 
     } else {
         live_p1_input = 0;

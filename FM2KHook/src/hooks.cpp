@@ -180,6 +180,39 @@ static uint16_t PollSDLKeyboard() {
     return input;
 }
 
+// Our simplified get_player_input replacement - no joystick, just keyboard
+int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
+    static uint32_t call_count = 0;
+    
+    // Get our Windows keyboard input - replicate original function behavior
+    int input_mask = 0;
+    
+    // Directional inputs (same bit pattern as original)
+    if (GetAsyncKeyState(VK_DOWN) & 0x8000)   input_mask |= 0x008;
+    if (GetAsyncKeyState(VK_UP) & 0x8000)     input_mask |= 0x004;
+    if (GetAsyncKeyState(VK_LEFT) & 0x8000)   input_mask |= 0x001;
+    if (GetAsyncKeyState(VK_RIGHT) & 0x8000)  input_mask |= 0x002;
+    
+    // Button inputs (same bit pattern as original)
+    if (GetAsyncKeyState('Z') & 0x8000)       input_mask |= 0x010;
+    if (GetAsyncKeyState('X') & 0x8000)       input_mask |= 0x020;
+    if (GetAsyncKeyState('C') & 0x8000)       input_mask |= 0x040;
+    if (GetAsyncKeyState('A') & 0x8000)       input_mask |= 0x080;
+    if (GetAsyncKeyState('S') & 0x8000)       input_mask |= 0x100;
+    if (GetAsyncKeyState('D') & 0x8000)       input_mask |= 0x200;
+    if (GetAsyncKeyState('Q') & 0x8000)       input_mask |= 0x400;
+    
+    // Debug logging
+    if (++call_count % 100 == 0 || input_mask != 0) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Hook_GetPlayerInput: player=%d, type=%d, mask=0x%03X", 
+                   player_id, input_type, input_mask);
+    }
+    
+    // Just return the input mask like the original function
+    // Let process_game_inputs handle writing to the arrays
+    return input_mask;
+}
+
 // Use global function pointers from globals.h
 
 // Direct memory access - addresses are known to be valid
@@ -930,52 +963,6 @@ void ApplyBootToCharacterSelectPatches() {
 }
 
 // Hook implementations
-int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
-    // FIXED: Return pre-captured inputs to eliminate frame delay
-    // Inputs were captured in CaptureRealInputs() BEFORE frame processing started
-    
-    static int call_count = 0;
-    if (++call_count % 100 == 0) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Hook_GetPlayerInput: player=%d, type=%d, p1=0x%03X, p2=0x%03X",
-                   player_id, input_type, live_p1_input & 0x7FF, live_p2_input & 0x7FF);
-    }
-    
-    // Check for true offline mode
-    char* env_offline = getenv("FM2K_TRUE_OFFLINE");
-    bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
-    
-    // Use networked inputs if available (rollback netcode) - but NOT for true offline
-    if (!is_true_offline && use_networked_inputs && gekko_initialized && gekko_session) {
-        static int input_debug_counter = 0;
-        if (++input_debug_counter % 10 == 0) { // Log every 10 calls to see if this path is taken
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT: Using networked inputs - P%d requested, giving networked value (P1:0x%03X P2:0x%03X)", 
-                       player_id + 1, networked_p1_input, networked_p2_input);
-        }
-        
-        if (player_id == 0) {
-            int converted = ConvertNetworkInputToGameFormat(networked_p1_input);
-            return converted;
-        } else if (player_id == 1) {
-            int converted = ConvertNetworkInputToGameFormat(networked_p2_input);
-            return converted;
-        }
-    }
-    
-    // Use pre-captured inputs (eliminates 1-frame delay)
-    if (player_id == 0) {
-        return live_p1_input;
-    } else if (player_id == 1) {
-        return live_p2_input;
-    }
-    
-    // Fallback to original function if needed
-    static int fallback_debug_counter = 0;
-    if (++fallback_debug_counter % 200 == 0) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT: Using fallback original inputs - P%d", player_id + 1);
-    }
-    
-    return original_get_player_input ? original_get_player_input(player_id, input_type) : 0;
-}
 
 // Hook for game_rand function to ensure deterministic RNG
 uint32_t __cdecl Hook_GameRand() {
@@ -997,47 +984,164 @@ uint32_t __cdecl Hook_GameRand() {
 // NEW GEKKONET INTEGRATION: Complete replacement for process_game_inputs
 // Follows BSNES-netplay pattern: GekkoNet for input sync + FM2K's processing logic
 int __cdecl FM2K_ProcessGameInputs_GekkoNet() {
-    // HYBRID APPROACH: Call original first, then inject our inputs
+    // COMPLETE REIMPLEMENTATION: Following exact original algorithm from analysis
     static uint32_t call_count = 0;
     if (++call_count <= 3 || call_count % 100 == 0) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "HYBRID APPROACH called #%d", call_count);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "COMPLETE REIMPL called #%d", call_count);
     }
     
-    // Step 1: Call original function to set up all memory correctly
-    int original_result = original_process_inputs ? original_process_inputs() : 32;
+    // ===== PHASE 1: Input Capture Phase (exactly like original) =====
     
-    // Step 2: Inject our Windows input into the processed result
+    // 1. Keyboard State Capture (0x4146d9) - CRITICAL for graphics!
+    static BYTE KeyState[256];
+    GetKeyboardState(KeyState);
+    
+    // 2. Frame Counter Management (0x4146f4) - USE GAME'S REAL FRAME COUNTER!
+    uint32_t* game_frame_counter_ptr = (uint32_t*)0x447ee0;
+    uint32_t current_frame = (*game_frame_counter_ptr + 1) & 0x3FF; // Read game's counter and increment
+    *game_frame_counter_ptr = current_frame; // Write back to game's counter
+    g_frame_counter = current_frame; // Also update our local copy for logging
+    
+    // 3. Input Buffer Initialization (0x4146fb)
+    uint32_t* g_p1_input = (uint32_t*)0x4259c0;      // g_p1_input[8] 
+    uint32_t* g_p2_input_ptr = (uint32_t*)0x4259c4;   // g_p2_input
+    uint32_t* g_player_input_history = (uint32_t*)0x4280e0; // Input history[1024]
+    uint32_t* g_p2_input_history = (uint32_t*)0x4290e0;     // P2 history[1024]
+    
+    memset(g_p1_input, 0, 0x20u); // Clear P1 input buffer (32 bytes)
+    
+    // 4. Game Mode Input Handling (0x414710) - REPLACE get_player_input with Windows
+    uint32_t g_game_mode = *(uint32_t*)0x447EDC; // Game mode address
+    uint8_t g_character_select_mode_flag = *(uint8_t*)0x447EE8; // Character select flag
+    
+    // BACK TO WORKING APPROACH: Our own GetAsyncKeyState input detection
     uint16_t win_input = 0;
-    if (GetAsyncKeyState(VK_LEFT) & 0x8000)   win_input |= 0x001;
-    if (GetAsyncKeyState(VK_RIGHT) & 0x8000)  win_input |= 0x002;
-    if (GetAsyncKeyState(VK_UP) & 0x8000)     win_input |= 0x004;
-    if (GetAsyncKeyState(VK_DOWN) & 0x8000)   win_input |= 0x008;
-    if (GetAsyncKeyState('Z') & 0x8000)       win_input |= 0x010;
-    if (GetAsyncKeyState('X') & 0x8000)       win_input |= 0x020;
+    if (GetAsyncKeyState(VK_LEFT) & 0x8000)   win_input |= 0x001;  // LEFT
+    if (GetAsyncKeyState(VK_RIGHT) & 0x8000)  win_input |= 0x002;  // RIGHT
+    if (GetAsyncKeyState(VK_UP) & 0x8000)     win_input |= 0x004;  // UP
+    if (GetAsyncKeyState(VK_DOWN) & 0x8000)   win_input |= 0x008;  // DOWN
+    if (GetAsyncKeyState('Z') & 0x8000)       win_input |= 0x010;  // BUTTON1
+    if (GetAsyncKeyState('X') & 0x8000)       win_input |= 0x020;  // BUTTON2
+    if (GetAsyncKeyState('C') & 0x8000)       win_input |= 0x040;  // BUTTON3
+    if (GetAsyncKeyState('A') & 0x8000)       win_input |= 0x080;  // BUTTON4
+    if (GetAsyncKeyState('S') & 0x8000)       win_input |= 0x100;  // BUTTON5
+    if (GetAsyncKeyState('D') & 0x8000)       win_input |= 0x200;  // BUTTON6
     
-    if (win_input != 0) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "HYBRID: Injecting WIN input 0x%03X after original", win_input);
-        
-        // Inject into the input buffer AFTER original processing
-        uint32_t* g_p1_input = (uint32_t*)0x4259c0;
+    if (g_game_mode < 3000 || g_character_select_mode_flag) {
+        // Versus mode 
+        g_p1_input[0] = win_input;  // P1 gets our Windows input
+        g_player_input_history[g_frame_counter] = win_input;
+        *g_p2_input_ptr = 0; // P2 gets no input for now
+        g_p2_input_history[g_frame_counter] = 0;
+    } else {
+        // Story mode
         g_p1_input[0] = win_input;
-        
-        // Also inject into wherever the original stored final outputs
-        // Try multiple possible addresses for final processed input
-        *(uint32_t*)0x4259E0 = win_input; // Try this address
-        *(uint32_t*)0x4259E4 = win_input; // Try this address  
-        *(uint32_t*)0x4259E8 = win_input; // Try this address
-        *(uint32_t*)0x447f40 = win_input; // Try this address from analysis
-        
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "HYBRID: Wrote 0x%03X to multiple addresses", win_input);
+        g_player_input_history[g_frame_counter] = win_input;
     }
     
-    if (call_count % 300 == 0 || win_input != 0) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "HYBRID COMPLETE: Frame %u - WIN=0x%03X", 
-                   g_frame_counter, win_input);
+    // ===== PHASE 2: Input Processing Phase - FULL REPEAT LOGIC =====
+    
+    // Static local arrays for repeat logic state
+    static uint32_t g_prev_input_state[8] = {0};         // Previous frame input states
+    static uint32_t g_input_repeat_state[8] = {0};       // Current repeat states
+    static uint32_t g_input_repeat_timer[8] = {0};       // Timers for repeat logic
+    
+    // CRITICAL: Use actual game memory addresses that CSS reads from!
+    uint32_t* g_player_input_processed = (uint32_t*)0x447f40;  // g_player_input_processed[8] array
+    uint32_t* g_player_input_changes = (uint32_t*)0x447f60;    // g_player_input_changes[8] array (estimated)
+    
+    // Configuration values (typical fighting game values)
+    const uint32_t g_input_initial_delay = 15;  // Initial delay frames
+    const uint32_t g_input_repeat_delay = 4;    // Repeat delay frames
+    
+    uint32_t accumulated_raw_input = 0;
+    uint32_t accumulated_just_pressed = 0;
+    uint32_t accumulated_processed_input = 0;
+    
+    // Process all 8 input devices with repeat logic (exactly like original)
+    for (int device_index = 0; device_index < 8; device_index++) {
+        uint32_t current_raw_input = g_p1_input[device_index];
+        uint32_t previous_raw_input = g_prev_input_state[device_index];
+        
+        // Update previous input state for next frame
+        g_prev_input_state[device_index] = current_raw_input;
+        
+        // Detect input changes (just-pressed buttons)
+        uint32_t current_input_changes = current_raw_input & (previous_raw_input ^ current_raw_input);
+        g_player_input_changes[device_index] = current_input_changes;
+        
+        uint32_t current_processed_input;
+        
+        // REPEAT LOGIC: Check if input is held (same as previous repeat state)
+        if (current_raw_input && current_raw_input == g_input_repeat_state[device_index]) {
+            // Held input - use repeat logic
+            uint32_t repeat_timer_remaining = g_input_repeat_timer[device_index] - 1;
+            g_input_repeat_timer[device_index] = repeat_timer_remaining;
+            
+            if (repeat_timer_remaining) {
+                // Timer not expired - suppress input
+                current_processed_input = 0;
+            } else {
+                // Timer expired - allow input and reset to repeat delay
+                current_processed_input = current_raw_input;
+                g_input_repeat_timer[device_index] = g_input_repeat_delay;
+            }
+        } else {
+            // New input detected - set initial delay
+            current_processed_input = current_raw_input; // Allow new input immediately
+            g_input_repeat_timer[device_index] = g_input_initial_delay;
+            
+            // Bit filtering: Filter out specific bits if previously held
+            uint32_t previous_repeat_state = g_input_repeat_state[device_index];
+            if ((previous_repeat_state & 3) != 0) {
+                // Filter out bits 0-1 if previously held
+                current_processed_input &= 0xFFFFFFFC;
+            }
+            if ((previous_repeat_state & 0xC) != 0) {
+                // Filter out bits 2-3 if previously held  
+                current_processed_input &= 0xFFFFFFF3;
+            }
+            
+            // Update repeat state for next frame
+            g_input_repeat_state[device_index] = current_raw_input;
+        }
+        
+        g_player_input_processed[device_index] = current_processed_input;
+        
+        // Accumulate inputs from all devices
+        accumulated_raw_input |= current_raw_input;
+        accumulated_just_pressed |= current_input_changes;
+        accumulated_processed_input |= current_processed_input;
+        
+        // Debug: Log when we actually allow input through repeat logic
+        if (device_index == 0 && current_processed_input != 0) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "REPEAT LOGIC: Device %d - raw=0x%03X processed=0x%03X", 
+                       device_index, current_raw_input, current_processed_input);
+        }
     }
     
-    return original_result;
+    // ===== PHASE 3: Output Phase (using CORRECT global addresses found via MCP) =====
+    
+    // Store final results in the REAL global variables that the game actually reads!
+    *(uint32_t*)0x4cfa04 = accumulated_raw_input;       // g_combined_raw_input (REAL ADDRESS!)
+    *(uint32_t*)0x4d1c20 = accumulated_processed_input; // g_combined_processed_input (REAL ADDRESS!)
+    
+    // CRITICAL: Write to the ACTUAL global arrays the game reads
+    // g_player_input_processed and g_player_input_changes are already pointing to the right addresses
+    // No need to memcpy since we wrote directly to memory addresses
+    
+    // Debug: Log actual addresses we're writing to
+    if (accumulated_processed_input != 0) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "OUTPUT DEBUG: Writing 0x%03X to addresses 0x4cfa04, 0x4d1c20, 0x447f40[0]", 
+                   accumulated_processed_input);
+    }
+    
+    if (call_count % 300 == 0 || accumulated_processed_input != 0) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "COMPLETE REIMPL: Frame %u - Raw=0x%03X Processed=0x%03X JustPressed=0x%03X", 
+                   g_frame_counter, accumulated_raw_input, accumulated_processed_input, accumulated_just_pressed);
+    }
+    
+    return 32; // device_index * 4 (8 devices * 4 bytes)
     
     // OLD COMPLEX CODE DISABLED FOR TESTING
     /*
@@ -1728,9 +1832,7 @@ void __cdecl Hook_RenderGame() {
 
     // We always render to give visual feedback, even when paused.
     if (original_render_game) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RENDER HOOK: Calling original_render_game() at 0x%p", (void*)original_render_game);
         original_render_game();
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RENDER HOOK: original_render_game() returned");
     } else {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "RENDER HOOK: ERROR - original_render_game is NULL!");
     }
@@ -1891,6 +1993,7 @@ bool InitializeHooks() {
     }
     
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SUCCESS FM2K HOOK: game_rand hook installed for deterministic RNG");
+    
     
     // Apply boot-to-character-select patches directly
     ApplyBootToCharacterSelectPatches();

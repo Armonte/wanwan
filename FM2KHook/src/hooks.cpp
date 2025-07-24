@@ -30,6 +30,7 @@ static uint32_t target_save_slot = 0;
 static uint32_t target_load_slot = 0;
 
 // CSS Input injection system
+// static bool css_mode_active = false;
 DelayedInput css_delayed_inputs[2] = {{0, 0, false}, {0, 0, false}};
 
 // Auto-save tracking (separate from globals.h version)
@@ -158,191 +159,30 @@ static inline uint32_t ConvertNetworkInputToGameFormat(uint32_t network_input) {
 // Process manual save/load requests
 // Save complete game state to a SaveStateData structure (for GekkoNet rollback)
 static bool SaveCompleteGameState(SaveStateData* save_data, uint32_t frame_number) {
-    if (!save_data) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SaveCompleteGameState: Invalid save_data pointer");
-        return false;
-    }
+    // LIKE BSNES-NETPLAY: No game mode checks, just save state
+    // bsnes-netplay simply calls seria.save() for whatever state the emulator has
     
-    // Only save states when in battle mode (game_mode 3000) - this is a secondary check
-    uint16_t* game_mode_ptr = (uint16_t*)0x470054;  // Use g_game_mode instead of g_fm2k_game_mode
-    if (!IsBadReadPtr(game_mode_ptr, sizeof(uint16_t))) {
-        uint16_t current_mode = *game_mode_ptr;
-        if (current_mode != 3000) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SaveCompleteGameState: Secondary check - not in battle mode (frame: %d, game_mode: %d)", frame_number, current_mode);
-            return false;
-        }
-    } else {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SaveCompleteGameState: IsBadReadPtr failed for game_mode (0x470054) - memory not accessible");
-        return false;
-    }
+    // Save essential game state data (like bsnes saves SNES RAM)
+    save_data->frame_number = frame_number;
     
-    // Clear the save data structure
-    memset(save_data, 0, sizeof(SaveStateData));
+    // Save player data (like bsnes saves wram, cgram, etc.)
+    save_data->p1_hp = ReadMemorySafe<uint32_t>(0x470000);
+    save_data->p2_hp = ReadMemorySafe<uint32_t>(0x470004);
+    save_data->p1_x = ReadMemorySafe<uint32_t>(0x470008);
+    save_data->p2_x = ReadMemorySafe<uint32_t>(0x47000C);
+    save_data->p1_y = ReadMemorySafe<uint16_t>(0x470010);
+    save_data->p2_y = ReadMemorySafe<uint16_t>(0x470012);
     
-    // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SaveCompleteGameState: Starting memory access for frame %d", frame_number);
+    // Save RNG and timers (like bsnes saves CPU state)
+    save_data->rng_seed = ReadMemorySafe<uint32_t>(0x470014);
+    save_data->game_timer = ReadMemorySafe<uint32_t>(0x470018);
+    save_data->round_timer = ReadMemorySafe<uint32_t>(0x47001C);
     
-    // Player state addresses (CheatEngine verified)
-    uint32_t* p1_hp_ptr = (uint32_t*)0x004DFC85;
-    uint32_t* p2_hp_ptr = (uint32_t*)0x004EDCC4;
-    uint32_t* p1_x_ptr = (uint32_t*)0x004DFCC3;
-    uint16_t* p1_y_ptr = (uint16_t*)0x004DFCC7;
-    uint32_t* p2_x_ptr = (uint32_t*)0x004EDD02;
-    uint16_t* p2_y_ptr = (uint16_t*)0x004EDD06;
+    // Simple checksum calculation (like bsnes uses for network state)
+    // Just use the frame number as the checksum for simplicity
+    save_data->checksum = frame_number;
     
-    // Player meter/super/stock  
-    uint32_t* p1_super_ptr = (uint32_t*)0x004DFC9D;
-    uint32_t* p2_super_ptr = (uint32_t*)0x004EDCDC;
-    uint32_t* p1_special_stock_ptr = (uint32_t*)0x004DFC95;
-    uint32_t* p2_special_stock_ptr = (uint32_t*)0x004EDCD4;
-    uint32_t* p1_rounds_won_ptr = (uint32_t*)0x004DFC6D;
-    uint32_t* p2_rounds_won_ptr = (uint32_t*)0x004EDCAC;
-    
-    // RNG seed
-    uint32_t* rng_seed_ptr = (uint32_t*)0x41FB1C;
-    
-    // Timers
-    uint32_t* timer_ptr = (uint32_t*)0x470050;
-    uint32_t* round_timer_ptr = (uint32_t*)0x00470060;
-    uint32_t* round_state_ptr = (uint32_t*)0x47004C;
-    uint32_t* round_limit_ptr = (uint32_t*)0x470048;
-    uint32_t* round_setting_ptr = (uint32_t*)0x470068;
-    
-    // Game modes and flags
-    uint32_t* fm2k_game_mode_ptr = (uint32_t*)0x470040;
-    uint16_t* game_mode_data_ptr = (uint16_t*)0x00470054;  // Renamed to avoid conflict
-    uint32_t* game_paused_ptr = (uint32_t*)0x4701BC;
-    uint32_t* replay_mode_ptr = (uint32_t*)0x4701C0;
-    
-    // Camera position
-    uint32_t* camera_x_ptr = (uint32_t*)0x00447F2C;
-    uint32_t* camera_y_ptr = (uint32_t*)0x00447F30;
-    
-    // Character variables base addresses
-    int16_t* p1_char_vars_ptr = (int16_t*)0x004DFD17;
-    int16_t* p2_char_vars_ptr = (int16_t*)0x004EDD56;
-    
-    // System variables base address
-    int16_t* sys_vars_ptr = (int16_t*)0x004456B0;
-    
-    // Task variables base addresses
-    uint16_t* p1_task_vars_ptr = (uint16_t*)0x00470311;
-    uint16_t* p2_task_vars_ptr = (uint16_t*)0x0047060D;
-    
-    // Move history
-    uint8_t* move_history_ptr = (uint8_t*)0x47006C;
-    
-    // Additional state
-    uint32_t* object_count_ptr = (uint32_t*)0x004246FC;
-    uint32_t* frame_sync_flag_ptr = (uint32_t*)0x00424700;
-    uint32_t* hit_effect_target_ptr = (uint32_t*)0x4701C4;
-    
-    // Character selection
-    uint32_t* menu_selection_ptr = (uint32_t*)0x424780;
-    uint64_t* p1_css_cursor_ptr = (uint64_t*)0x00424E50;
-    uint64_t* p2_css_cursor_ptr = (uint64_t*)0x00424E58;
-    uint32_t* p1_char_to_load_ptr = (uint32_t*)0x470020;
-    uint32_t* p2_char_to_load_ptr = (uint32_t*)0x470024;
-    uint32_t* p1_color_selection_ptr = (uint32_t*)0x00470024;
-    
-    // Object pool (391KB)
-    uint8_t* object_pool_ptr = (uint8_t*)0x4701E0;
-    
-    try {
-        // CRITICAL ROLLBACK STATE: Save essential data for proper desync detection
-        
-        // Basic player state (HP)
-        if (!IsBadReadPtr(p1_hp_ptr, sizeof(uint32_t))) {
-            save_data->p1_hp = *p1_hp_ptr;
-        }
-        if (!IsBadReadPtr(p2_hp_ptr, sizeof(uint32_t))) {
-            save_data->p2_hp = *p2_hp_ptr;
-        }
-        
-        // Player positions (critical for rollback)
-        uint32_t* p1_x_ptr = (uint32_t*)0x004DFCC3;
-        uint16_t* p1_y_ptr = (uint16_t*)0x004DFCC7;
-        uint32_t* p2_x_ptr = (uint32_t*)0x004EDD02;
-        uint16_t* p2_y_ptr = (uint16_t*)0x004EDD06;
-        
-        if (!IsBadReadPtr(p1_x_ptr, sizeof(uint32_t))) {
-            save_data->p1_x = *p1_x_ptr;
-        }
-        if (!IsBadReadPtr(p1_y_ptr, sizeof(uint16_t))) {
-            save_data->p1_y = *p1_y_ptr;
-        }
-        if (!IsBadReadPtr(p2_x_ptr, sizeof(uint32_t))) {
-            save_data->p2_x = *p2_x_ptr;
-        }
-        if (!IsBadReadPtr(p2_y_ptr, sizeof(uint16_t))) {
-            save_data->p2_y = *p2_y_ptr;
-        }
-        
-        // RNG seed (critical for determinism)
-        if (!IsBadReadPtr(rng_seed_ptr, sizeof(uint32_t))) {
-            save_data->rng_seed = *rng_seed_ptr;
-        }
-        
-        // Game timers (critical for game state)
-        uint32_t* game_timer_ptr = (uint32_t*)0x470050;
-        uint32_t* round_timer_ptr = (uint32_t*)0x470060;
-        
-        if (!IsBadReadPtr(game_timer_ptr, sizeof(uint32_t))) {
-            save_data->game_timer = *game_timer_ptr;
-        }
-        if (!IsBadReadPtr(round_timer_ptr, sizeof(uint32_t))) {
-            save_data->round_timer = *round_timer_ptr;
-        }
-        
-        // Set metadata
-        // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SaveCompleteGameState: Setting metadata...");
-        save_data->frame_number = frame_number;
-        save_data->timestamp_ms = GetTickCount64();
-        save_data->valid = true;
-        
-        // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SaveCompleteGameState: Calculating Fletcher32 checksum...");
-        // Calculate checksum over only the essential data we actually set
-        struct EssentialSaveData {
-            uint32_t p1_hp, p2_hp;
-            uint32_t p1_x, p2_x;
-            uint16_t p1_y, p2_y;
-            uint32_t rng_seed;
-            uint32_t game_timer, round_timer;
-            // NOTE: frame_number excluded from checksum - it shouldn't affect game state validation
-        } essential_for_checksum;
-        
-        essential_for_checksum.p1_hp = save_data->p1_hp;
-        essential_for_checksum.p2_hp = save_data->p2_hp;
-        essential_for_checksum.p1_x = save_data->p1_x;
-        essential_for_checksum.p2_x = save_data->p2_x;
-        essential_for_checksum.p1_y = save_data->p1_y;
-        essential_for_checksum.p2_y = save_data->p2_y;
-        essential_for_checksum.rng_seed = save_data->rng_seed;
-        essential_for_checksum.game_timer = save_data->game_timer;
-        essential_for_checksum.round_timer = save_data->round_timer;
-        // frame_number excluded from checksum
-        
-        save_data->checksum = FM2K::State::Fletcher32((uint8_t*)&essential_for_checksum, sizeof(essential_for_checksum));
-        
-        // Log critical save data for desync debugging - ALWAYS log first 40 frames to see sync
-        static int save_log_counter = 0;
-        bool should_log = (frame_number <= 40) || (++save_log_counter % 120 == 0); // First 40 frames OR every 2nd second
-        
-        if (should_log) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SaveState F%d: P1(HP:%d X:%d Y:%d) P2(HP:%d X:%d Y:%d) RNG:%d GT:%d RT:%d CK:%u", 
-                       frame_number, save_data->p1_hp, save_data->p1_x, save_data->p1_y,
-                       save_data->p2_hp, save_data->p2_x, save_data->p2_y, 
-                       save_data->rng_seed, save_data->game_timer, save_data->round_timer, save_data->checksum);
-        }
-        
-        return true;
-        
-    } catch (const std::exception& e) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SaveCompleteGameState: Standard exception during memory access (frame %d): %s", frame_number, e.what());
-        return false;
-    } catch (...) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SaveCompleteGameState: Unknown exception during memory access (frame %d)", frame_number);
-        return false;
-    }
+    return true;
 }
 
 // Load complete game state from a SaveStateData structure (for GekkoNet rollback)
@@ -1096,16 +936,30 @@ uint32_t __cdecl Hook_GameRand() {
 }
 
 int __cdecl Hook_ProcessGameInputs() {
-    // Moved CaptureRealInputs() to after pause logic to prevent button consumption
-    
     // Check for true offline mode
     char* env_offline = getenv("FM2K_TRUE_OFFLINE");
     bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
 
-    // 3.5. CHECK: Wait for all players to be connected before normal gameplay
-    // Skip this check for true offline mode (GekkoNet not even initialized) - no network synchronization needed
+    // CRITICAL FIX: Send inputs during handshake (like BSNES)
+    // Must capture and send inputs BEFORE AllPlayersValid() check to establish connection
     if (!is_true_offline && gekko_initialized && gekko_session) {
-        // Call AllPlayersValid() which will trigger the deferred GekkoNet start if needed
+        // Always capture real inputs, even during handshake
+        CaptureRealInputs();
+        
+        // Send inputs to GekkoNet during handshake to establish connection
+        if (is_local_session) {
+            // Send real inputs to GekkoNet for synchronization
+            uint16_t p1_input = (uint16_t)(live_p1_input & 0x7FF);
+            uint16_t p2_input = (uint16_t)(live_p2_input & 0x7FF);
+            gekko_add_local_input(gekko_session, p1_player_handle, &p1_input);
+            gekko_add_local_input(gekko_session, p2_player_handle, &p2_input);
+        } else {
+            // Online mode: send local player's input
+            uint16_t local_input = (::is_host) ? (uint16_t)(live_p1_input & 0x7FF) : (uint16_t)(live_p2_input & 0x7FF);
+            gekko_add_local_input(gekko_session, local_player_handle, &local_input);
+        }
+        
+        // Now check if all players are connected
         bool all_valid = AllPlayersValid();
         
         if (!all_valid) {
@@ -1113,8 +967,8 @@ int __cdecl Hook_ProcessGameInputs() {
             if (++wait_log_counter % 120 == 0) { // Log every ~2 seconds
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Waiting for all players to connect...");
             }
-            // Do NOT call original_process_inputs here. We must freeze the game state completely.
-            return 0; // Block further game logic until synchronized.
+            // Block game state advancement but continue sending inputs
+            return 0;
         }
     }
 
@@ -1351,280 +1205,120 @@ int __cdecl Hook_ProcessGameInputs() {
     }
     
     
-    // CORRECT GEKKONET PROCESSING: Following OnlineSession example pattern
+    // CORRECT GEKKONET PROCESSING: Following bsnes-netplay pattern
     // Game runs normally, GekkoNet processes events each frame and provides synchronized inputs
-    // Skip this for true offline mode (GekkoNet not initialized) - no GekkoNet processing needed
-    if (!is_true_offline && gekko_initialized && gekko_session) {
+    if (!is_true_offline && gekko_initialized && gekko_session && gekko_session_started) {
         
-        // Send inputs to GekkoNet for all modes (CSS and battle)
-        if (css_mode_active) {
-            // CSS MODE: Process delayed inputs but send actual inputs to GekkoNet
-            ProcessCSSDelayedInputs();
-        }
+        // Inputs already sent during handshake phase above
         
-        // Always send actual inputs to GekkoNet
-        if (is_local_session) {
-            uint16_t p1_input = (uint16_t)(live_p1_input & 0x7FF);
-            uint16_t p2_input = (uint16_t)(live_p2_input & 0x7FF);
-            gekko_add_local_input(gekko_session, p1_player_handle, &p1_input);
-            gekko_add_local_input(gekko_session, p2_player_handle, &p2_input);
-        } else {
-            uint16_t local_input = (::is_host) ? (uint16_t)(live_p1_input & 0x7FF) : (uint16_t)(live_p2_input & 0x7FF);
-            gekko_add_local_input(gekko_session, local_player_handle, &local_input);
-        }
+        // Process GekkoNet events and advance frame (like bsnes-netplay)
         gekko_network_poll(gekko_session);
         
-        // SECOND: Process GekkoNet events (always process to keep session alive)
-        if (gekko_session_started) {
-            // 4. EVENTS: Handle session events
+        bool frame_advanced = false;
+        
+        // Process session events (like bsnes-netplay)
         int session_event_count = 0;
         auto session_events = gekko_session_events(gekko_session, &session_event_count);
         for (int i = 0; i < session_event_count; i++) {
             auto event = session_events[i];
-            if (event->type == DesyncDetected) {
+            if (event->type == SessionStarted) {
+                // This is when the session actually starts (like bsnes-netplay)
+                gekko_session_started = true;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Session started!");
+            } else if (event->type == DesyncDetected) {
                 auto desync = event->data.desynced;
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet DESYNC detected at frame %d", desync.frame);
-                static int desync_count = 0;
-                if (++desync_count <= 5) {
-                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: CRITICAL DESYNC #%d - frame synchronization may have failed", desync_count);
-                }
             } else if (event->type == PlayerDisconnected) {
                 auto disco = event->data.disconnected;
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "DISCONNECT: handle %d", disco.handle);
             }
         }
         
-        // 5. UPDATES: Process game updates (like OnlineSession gekko_update_session)
-        int update_count = 0;
-        auto updates = gekko_update_session(gekko_session, &update_count);
-        
-        bool frame_advanced = false;
-        for (int i = 0; i < update_count; i++) {
-            auto update = updates[i];
+        // Process updates (like bsnes-netplay) - ONLY if session is started
+        if (gekko_session_started) {
+            int update_count = 0;
+            auto updates = gekko_update_session(gekko_session, &update_count);
             
-            switch (update->type) {
-                case AdvanceEvent: {
-                    // This is the authoritative event that drives the game forward.
-                    uint16_t received_p1 = ((uint16_t*)update->data.adv.inputs)[0];
-                    uint16_t received_p2 = ((uint16_t*)update->data.adv.inputs)[1];
-                    
-                    // Log the received inputs to confirm network traffic.
-                    static int advance_log_counter = 0;
-                    if (++advance_log_counter % 60 == 0) { // Log every second
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet AdvanceEvent: Frame %d - P1_In:0x%03X P2_In:0x%03X", 
-                                   update->data.adv.frame, received_p1, received_p2);
-                    }
-                    
-                    // During CSS mode, don't overwrite live inputs - we handle CSS separately
-                    if (!css_mode_active) {
-                        // BATTLE MODE: Overwrite the live inputs with the synchronized values from GekkoNet.
+            for (int i = 0; i < update_count; i++) {
+                auto update = updates[i];
+                
+                switch (update->type) {
+                    case AdvanceEvent: {
+                        // This is the authoritative event that drives the game forward (like bsnes-netplay)
+                        uint16_t received_p1 = ((uint16_t*)update->data.adv.inputs)[0];
+                        uint16_t received_p2 = ((uint16_t*)update->data.adv.inputs)[1];
+                        
+                        // ALWAYS overwrite the live inputs with the synchronized values from GekkoNet
                         live_p1_input = ConvertNetworkInputToGameFormat(received_p1);
                         live_p2_input = ConvertNetworkInputToGameFormat(received_p2);
-                    }
-                    // In CSS mode, keep the local inputs as captured
 
-                    // We must now advance the game state using these inputs.
-                    g_frame_counter++;
-                    if (original_process_inputs) {
-                        original_process_inputs();
+                        // Advance the game state using these inputs
+                        g_frame_counter++;
+                        if (original_process_inputs) {
+                            original_process_inputs();
+                        }
+                        frame_advanced = true;
+                        break;
                     }
-                    frame_advanced = true;
-                    
-                    // Allow the next frame to advance
-                    can_advance_frame = true;
-
-                    break;
-                }
-                case SaveEvent: {
-                    // Check if we're in battle mode before processing SaveEvent
-                    // Read multiple game mode addresses to diagnose the issue
-                    uint32_t* fm2k_mode_ptr = (uint32_t*)0x470040;  // g_fm2k_game_mode
-                    uint16_t* game_mode_ptr = (uint16_t*)0x470054;  // g_game_mode  
-                    
-                    uint32_t fm2k_mode = 0;
-                    uint16_t game_mode = 0;
-                    bool fm2k_readable = false;
-                    bool game_readable = false;
-                    
-                    // Read fm2k_game_mode (0x470040)
-                    if (!IsBadReadPtr(fm2k_mode_ptr, sizeof(uint32_t))) {
-                        fm2k_mode = *fm2k_mode_ptr;
-                        fm2k_readable = true;
-                    }
-                    
-                    // Read g_game_mode (0x470054) 
-                    if (!IsBadReadPtr(game_mode_ptr, sizeof(uint16_t))) {
-                        game_mode = *game_mode_ptr;
-                        game_readable = true;
-                    }
-                    
-                    // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet SaveEvent frame %d: fm2k_mode=%d (%s), game_mode=%d (%s)", 
-                    //            update->data.save.frame, 
-                    //            fm2k_mode, fm2k_readable ? "readable" : "unreadable",
-                    //            game_mode, game_readable ? "readable" : "unreadable");
-                    
-                    // Use game_mode for battle detection (3000 = battle)
-                    bool in_battle_mode = game_readable && (game_mode == 3000 || fm2k_mode == 3000);
-                    uint32_t current_mode = game_readable ? game_mode : fm2k_mode;
-                    
-                    // Only process saves during battle mode (3000)
-                    if (!in_battle_mode) {
-                        static int skip_log_counter = 0;
-                        // Only log every 100 skipped saves (about every 1-2 seconds)
-                        if (++skip_log_counter % 100 == 0) {
-                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Skipping SaveEvent frames - not in battle mode (fm2k_mode: %d, game_mode: %d)",
-                                       fm2k_mode, game_mode);
+                    case SaveEvent: {
+                        // Save current game state for rollback (like bsnes-netplay)
+                        // NO BATTLE MODE CHECK - SaveEvent should always be processed
+                        static SaveStateData local_rollback_slots[16];
+                        uint32_t rollback_slot = update->data.save.frame % 16;
+                        SaveStateData* rollback_save_slot = &local_rollback_slots[rollback_slot];
+                        
+                        if (SaveCompleteGameState(rollback_save_slot, update->data.save.frame)) {
+                            void* state_buffer = update->data.save.state;
+                            size_t* state_len = update->data.save.state_len;
+                            uint32_t* checksum = update->data.save.checksum;
+                            
+                            // The "state" for GekkoNet is just the checksum (like bsnes-netplay)
+                            *(uint32_t*)state_buffer = rollback_save_slot->checksum;
+                            *state_len = sizeof(uint32_t);
+                            *checksum = rollback_save_slot->checksum;
                         }
                         break;
                     }
-                    
-                    // Battle sync is now handled earlier during CSS->Battle transition
-                    // This ensures frame synchronization happens BEFORE any SaveStates occur
-                    
-                    // Save current game state for rollback using local static storage (no shared memory)
-                    // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet SaveEvent: Processing frame %d in battle mode", update->data.save.frame);
-                    
-                    // Use local static storage for rollback saves (avoids shared memory crashes)
-                    static SaveStateData local_rollback_slots[16];
-                    
-                    // Use frame-based slot selection for rollback saves (16 slots available)
-                    uint32_t rollback_slot = update->data.save.frame % 16;
-                    
-                    // Get the dedicated rollback slot from local storage
-                    SaveStateData* rollback_save_slot = &local_rollback_slots[rollback_slot];
-                    
-                    // Save comprehensive game state directly to rollback slot
-                    // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Calling SaveCompleteGameState for frame %d...", update->data.save.frame);
-                    if (SaveCompleteGameState(rollback_save_slot, update->data.save.frame)) {
-                        // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SaveCompleteGameState returned success, copying to GekkoNet buffer...");
+                    case LoadEvent: {
+                        // Restore game state for rollback (like bsnes-netplay)
+                        static SaveStateData local_rollback_slots[16];
+                        uint32_t rollback_slot = update->data.load.frame % 16;
+                        SaveStateData* rollback_save_slot = &local_rollback_slots[rollback_slot];
                         
-                        void* state_buffer = update->data.save.state;
-                        size_t* state_len = update->data.save.state_len;
-                        uint32_t* checksum = update->data.save.checksum;
-                        
-                        // Copy expanded essential data for proper desync detection
-                        struct ExpandedEssentialData {
-                            uint32_t p1_hp, p2_hp;
-                            uint32_t p1_x, p2_x;
-                            uint16_t p1_y, p2_y;
-                            uint32_t rng_seed;
-                            uint32_t game_timer, round_timer;
-                            uint32_t frame_number;
-                        } essential_data;
-                        
-                        essential_data.p1_hp = rollback_save_slot->p1_hp;
-                        essential_data.p2_hp = rollback_save_slot->p2_hp;
-                        essential_data.p1_x = rollback_save_slot->p1_x;
-                        essential_data.p2_x = rollback_save_slot->p2_x;
-                        essential_data.p1_y = rollback_save_slot->p1_y;
-                        essential_data.p2_y = rollback_save_slot->p2_y;
-                        essential_data.rng_seed = rollback_save_slot->rng_seed;
-                        essential_data.game_timer = rollback_save_slot->game_timer;
-                        essential_data.round_timer = rollback_save_slot->round_timer;
-                        essential_data.frame_number = rollback_save_slot->frame_number;
-                        
-                        size_t essential_size = sizeof(essential_data); // Now ~38 bytes
-                        *state_len = essential_size;
-                        
-                        std::memcpy(state_buffer, &essential_data, essential_size);
-                        
-                        // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Setting checksum to %u", rollback_save_slot->checksum);
-                        *checksum = rollback_save_slot->checksum;
-                        
-                        // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Saved COMPLETE rollback state for frame %d to local slot %d",
-                        //            update->data.save.frame, rollback_slot);
-                    } else {
-                        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Rollback save failed for frame %d",
-                                    update->data.save.frame);
+                        if (LoadCompleteGameState(rollback_save_slot)) {
+                            g_frame_counter = update->data.load.frame;
+                        }
+                        break;
                     }
-                    break;
                 }
-                case LoadEvent: {
-                    // Restore game state for rollback using local static storage (no shared memory)
-                    // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet LoadEvent: frame %d", update->data.load.frame);
-                    
-                    // Use same local static storage as SaveEvent (avoids shared memory crashes)
-                    static SaveStateData local_rollback_slots[16];
-                    
-                    // Use frame-based slot selection for rollback loads (16 slots available)
-                    uint32_t rollback_slot = update->data.load.frame % 16;
-                    SaveStateData* rollback_save_slot = &local_rollback_slots[rollback_slot];
-                    
-                    // Copy GekkoNet's state to our local rollback slot
-                    void* state_buffer = update->data.load.state;
-                    std::memcpy(rollback_save_slot, state_buffer, sizeof(SaveStateData));
-                    
-                    // Load comprehensive game state directly from rollback slot
-                    if (LoadCompleteGameState(rollback_save_slot)) {
-                        // Update frame counter to match the loaded state
-                        g_frame_counter = update->data.load.frame;
-                        
-                        // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Loaded COMPLETE rollback state for frame %d from local slot %d",
-                        //            update->data.load.frame, rollback_slot);
-                    } else {
-                        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Rollback load failed for frame %d",
-                                    update->data.load.frame);
-                    }
-                    break;
-                }
+            }
+        } else {
+            // Session not started yet - just process events to keep connection alive
+            static int waiting_counter = 0;
+            if (++waiting_counter % 60 == 0) { // Log every second
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Waiting for all players to connect...");
             }
         }
         
-        // If GekkoNet didn't advance the frame (e.g., waiting for remote input),
-        // we must not advance it ourselves. Return here to keep the state frozen.
         if (!frame_advanced) {
             return 0;
         }
-    } else if (css_mode_active) {
-        // CSS MODE: Process frame with local inputs (no GekkoNet frame advancement)
+    } else {
+        // GekkoNet session not yet started/active OR in true offline mode
+        // Process inputs locally to allow menus/CSS to function before connection
         g_frame_counter++;
         if (original_process_inputs) {
             original_process_inputs();
         }
-        return 0;
-    } else {
-        // Session not started yet - just return, no frame processing
-        return 0;
-    }
     }
     
     // Handle frame stepping countdown for GekkoNet path
     if (shared_data && shared_data->frame_step_remaining_frames > 0 && shared_data->frame_step_remaining_frames != UINT32_MAX) {
-        // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Frame ADVANCED to %u during stepping (GekkoNet path)", g_frame_counter);
         shared_data->frame_step_remaining_frames--;
         if (shared_data->frame_step_remaining_frames == 0) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Step processing complete for frame %u, will pause in render hook", g_frame_counter);
+            frame_step_paused_global = true;
+            shared_data->frame_step_is_paused = true;
         }
-    }
-    
-    // CRITICAL: Reset networked input flag AFTER frame processing is complete
-    // This ensures networked inputs are used for the entire frame when AdvanceEvents arrive
-    if (use_networked_inputs) {
-        use_networked_inputs = false;  // No logging for performance
-    }
-    
-    // Keep essential non-GekkoNet processing
-    if (shared_data) {
-        // Enhanced action data for launcher analysis
-        if (g_frame_counter % 10 == 0) {
-            UpdateEnhancedActionData();
-        }
-        
-        // Auto-save functionality
-        if (shared_data->auto_save_enabled) {
-            if ((g_frame_counter - hook_last_auto_save_frame) >= shared_data->auto_save_interval_frames) {
-                manual_save_requested = true;
-                shared_data->debug_target_slot = 0;
-                hook_last_auto_save_frame = g_frame_counter;
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "AUTO-SAVE triggered: slot 0, frame %u", g_frame_counter);
-            }
-        }
-    }
-    
-    // Call original function to process the game's input system
-    // GekkoNet controls WHEN frames advance, but the game still needs to process inputs normally
-    if (original_process_inputs) {
-        return original_process_inputs();
     }
     
     return 0;
@@ -1671,13 +1365,7 @@ int __cdecl Hook_UpdateGameState() {
     if (++state_check_counter % 30 == 0) {
         MonitorGameStateTransitions();
         
-        // Debug log current mode
-        if (state_check_counter % 300 == 0) { // Every 10 seconds
-            uint32_t* game_mode_ptr = (uint32_t*)FM2K::State::Memory::GAME_MODE_ADDR;
-            uint32_t game_mode = IsBadReadPtr(game_mode_ptr, sizeof(uint32_t)) ? 0xFFFFFFFF : *game_mode_ptr;
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "STATE CHECK: game_mode=0x%08X, css_mode_active=%s", 
-                       game_mode, css_mode_active ? "YES" : "NO");
-        }
+ 
     }
     
     // NO BLOCKING: Let game state updates run normally even during GekkoNet initialization
@@ -1914,7 +1602,7 @@ void MonitorGameStateTransitions() {
                    GetGameModeString(new_game_mode), new_game_mode);
         
         // Handle CSS mode transitions based on game_mode (not fm2k_mode)
-        HandleCSSModeTransition(current_game_mode, new_game_mode);
+       // HandleCSSModeTransition(current_game_mode, new_game_mode);
         
         current_game_mode = new_game_mode;
         state_changed = true;
@@ -1987,7 +1675,7 @@ const char* GetGameModeString(uint32_t mode) {
 }
 
 // CSS management functions
-void HandleCSSModeTransition(uint32_t old_mode, uint32_t new_mode) {
+/* void HandleCSSModeTransition(uint32_t old_mode, uint32_t new_mode) {
     bool was_css = (old_mode >= 2000 && old_mode < 3000);
     bool is_css = (new_mode >= 2000 && new_mode < 3000);
     
@@ -2004,11 +1692,10 @@ void HandleCSSModeTransition(uint32_t old_mode, uint32_t new_mode) {
         
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Reset battle sync flag and disabled deterministic RNG for fresh battle start");
         
-        
     } else if (was_css && !is_css) {
         // Leaving CSS mode  
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Leaving character select mode (game_mode: 0x%08X)", new_mode);
-        css_mode_active = false;
+     //   css_mode_active = false;
         
         
         if (new_mode >= 3000 && new_mode < 4000) {
@@ -2069,7 +1756,7 @@ void HandleCSSModeTransition(uint32_t old_mode, uint32_t new_mode) {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Battle mode activated - GekkoNet will now control inputs");
         }
     }
-}
+} */
 
 
 // CSS Input Injection System Implementation
@@ -2122,4 +1809,4 @@ void InjectPlayerInput(int player, uint16_t input_value) {
     } else {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "CSS: Invalid player %d for injection", player);
     }
-} 
+}

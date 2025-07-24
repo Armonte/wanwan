@@ -134,7 +134,7 @@ void MonitorGameStateTransitions();
 void ManageRollbackActivation(uint32_t game_mode, uint32_t fm2k_mode, uint32_t char_select_mode);
 bool ShouldActivateRollback(uint32_t game_mode, uint32_t fm2k_mode);
 const char* GetGameModeString(uint32_t mode);
-void HandleCSSModeTransition(uint32_t old_mode, uint32_t new_mode);
+//void HandleCSSModeTransition(uint32_t old_mode, uint32_t new_mode);
 
 
 // Input injection system for CSS color selection

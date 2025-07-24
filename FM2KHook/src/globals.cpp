@@ -61,4 +61,3 @@ uint32_t current_char_select_mode = 0xFFFFFFFF;
 bool rollback_active = false;
 bool game_state_initialized = false;
 
-bool css_mode_active = false; 

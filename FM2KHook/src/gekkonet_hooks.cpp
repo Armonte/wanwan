@@ -53,113 +53,83 @@ bool InitializeGekkoNet() {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Network config - Player: %u, Local port: %u, Remote: %s", 
                 player_index, local_port, remote_address.c_str());
     
-    if (!gekko_create(&gekko_session)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Failed to create GekkoNet session!");
-        return false;
-    }
-    
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet session created successfully");
-    
+    // LIKE BSNES-NETPLAY: Proper player setup
     GekkoConfig config;
     config.num_players = 2;
     config.max_spectators = 0;
-    config.input_prediction_window = 10;  // ROLLBACK mode - test CSS with prediction frames
-    // Previously was 0 (lockstep) - now testing rollback compatibility
-    config.spectator_delay = 0;
-    config.input_size = sizeof(uint16_t);
-    config.state_size = sizeof(FM2K::State::GameState);  // Use full GameState for proper save states
+    config.input_prediction_window = 10;  // ROLLBACK mode
+    config.input_size = sizeof(uint16_t); // 2 bytes per input
+    config.state_size = sizeof(int32_t); // 4 bytes for network state (exactly like bsnes)
+    config.desync_detection = true;
     config.limited_saving = false;
     config.post_sync_joining = false;
-    config.desync_detection = true;
+    config.spectator_delay = 0;
     
-    // Start GekkoNet immediately - we'll handle frame sync differently
+    // Create session like bsnes-netplay
+    gekko_create(&gekko_session);
     gekko_start(gekko_session, &config);
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet session configured and started");
     
-    // Check for true offline mode (no networking at all)
-    char* env_offline = getenv("FM2K_TRUE_OFFLINE");
-    bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
+    // Set network adapter like bsnes-netplay
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Setting up network adapter on port %u", local_port);
     
-    // Set network adapter BEFORE adding players (following OnlineSession example)
-    if (!is_true_offline) {
-        auto adapter = gekko_default_adapter(local_port);
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Creating UDP adapter for port %u - adapter ptr: %p", local_port, adapter);
-        gekko_net_adapter_set(gekko_session, adapter);
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Real UDP adapter set on port %u", local_port);
-    } else {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: TRUE OFFLINE - No network adapter set");
-    }
-    
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Adding players - Player index: %u", player_index);
-    
-    // CRITICAL: Store original player index before reassignment
-    original_player_index = player_index;
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Setting original_player_index=%d", original_player_index);
-    
-    if (is_true_offline) {
-        // TRUE OFFLINE MODE: Both players LocalPlayer, no network adapter
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Setting up TRUE OFFLINE session (no networking)");
-        
-        p1_player_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
-        p2_player_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
-        
-        // No network adapter for true offline
-        is_local_session = true;
-        // For offline mode, set local_player_handle based on original_player_index
-        local_player_handle = (original_player_index == 0) ? p1_player_handle : p2_player_handle;
-        
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: TRUE OFFLINE - P1 handle: %d, P2 handle: %d, local_player_handle: %d", p1_player_handle, p2_player_handle, local_player_handle);
-    } else {
-        // ONLINE SESSION PATTERN: One LocalPlayer, one RemotePlayer (includes localhost testing)
-        bool is_localhost_test = (remote_address.find("127.0.0.1") != std::string::npos);
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Setting up %s session", 
-                   is_localhost_test ? "LOCALHOST TESTING" : "ONLINE");
-        
-        if (player_index == 0) {
-            // HOST: add local player first (gets handle 0)
-            local_player_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
-            p1_player_handle = local_player_handle;  // HOST controls P1
-            
-            // add remote player (gets handle 1)
-            auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), (unsigned int)remote_address.size() };
-            p2_player_handle = gekko_add_actor(gekko_session, RemotePlayer, &remote);
-            
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: HOST - player_index=%d, LOCAL handle: %d (P1), REMOTE handle: %d (P2)", 
-                       player_index, local_player_handle, p2_player_handle);
-        } else {
-            // CLIENT: add remote player first (gets handle 0)
-            auto remote = GekkoNetAddress{ (void*)remote_address.c_str(), (unsigned int)remote_address.size() };
-            p1_player_handle = gekko_add_actor(gekko_session, RemotePlayer, &remote);
-            
-            // add local player (gets handle 1)
-            local_player_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
-            p2_player_handle = local_player_handle;  // CLIENT controls P2
-            
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: CLIENT - player_index=%d, REMOTE handle: %d (P1), LOCAL handle: %d (P2)", 
-                       player_index, p1_player_handle, local_player_handle);
-        }
-    }
-    
-    if (local_player_handle < 0) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Failed to add local player! Handle: %d", local_player_handle);
-        gekko_destroy(gekko_session);
-        gekko_session = nullptr;
+    auto adapter = gekko_default_adapter(local_port);
+    if (!adapter) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Failed to create network adapter on port %u", local_port);
         return false;
     }
     
-    // Only set delay for online sessions, not true offline mode
-    if (!is_true_offline) {
-        gekko_set_local_delay(gekko_session, local_player_handle, 1);  // Match launcher: 1 frame delay
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Set input delay to 1 frame for local player handle %d", local_player_handle);
+    gekko_net_adapter_set(gekko_session, adapter);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Network adapter configured successfully");
+    
+    // FIX: Both players should be in online mode when connecting to each other
+    // Check if we have a remote address - if so, we're in online mode
+    bool is_online_session = !remote_address.empty();
+    
+    if (is_online_session) {
+        // Online session: Add local player and remote player
+        local_player_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
+        
+        // Add remote player with address
+        GekkoNetAddress remote_addr;
+        remote_addr.data = (void*)remote_address.c_str();
+        remote_addr.size = remote_address.length();
+        
+        int remote_handle = gekko_add_actor(gekko_session, RemotePlayer, &remote_addr);
+        
+        if (local_player_handle == -1 || remote_handle == -1) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Failed to add players - Local: %d, Remote: %d", 
+                        local_player_handle, remote_handle);
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Connection failed to %s", remote_address.c_str());
+            return false;
+        }
+        
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Added local=%d, remote=%d", local_player_handle, remote_handle);
+        
+        // Set online mode flags
+        is_online_mode = true;
+        is_local_session = false;
+        
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Online session detected - connecting to %s", remote_address.c_str());
     } else {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: TRUE OFFLINE - No input delay set (both players equal)");
+        // Local session: Add both players as local
+        p1_player_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
+        p2_player_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
+        
+        if (p1_player_handle == -1 || p2_player_handle == -1) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Failed to add local players");
+            return false;
+        }
+        
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Added local players P1=%d, P2=%d", p1_player_handle, p2_player_handle);
+        
+        // Set local mode flags
+        is_online_mode = false;
+        is_local_session = true;
+        
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Local session detected");
     }
     
     gekko_initialized = true;
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet initialization complete - ready for synchronized start!");
-    
-    // GekkoNet is already started above
-    
     return true;
 }
 
@@ -193,8 +163,22 @@ bool AllPlayersValid() {
 
     // For online sessions, check for AdvanceEvents to confirm connection.
     // This is the real handshake.
+    // CRITICAL: Network polling MUST happen before checking events (like BSNES)
+    gekko_network_poll(gekko_session);
+    
     int update_count_check = 0;
     auto updates_check = gekko_update_session(gekko_session, &update_count_check);
+
+    // Debug: Log all events we're receiving during handshake
+    static uint32_t debug_attempts = 0;
+    debug_attempts++;
+    if (debug_attempts <= 10 || debug_attempts % 300 == 0) { // Log first 10 attempts, then every 5 seconds
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Handshake attempt %d - received %d events", 
+                    debug_attempts, update_count_check);
+        for (int i = 0; i < update_count_check; i++) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Event %d: type=%d", i, updates_check[i]->type);
+        }
+    }
 
     bool got_advance_events = false;
     for (int i = 0; i < update_count_check; i++) {
@@ -208,6 +192,7 @@ bool AllPlayersValid() {
         static bool connection_logged = false;
         if (!connection_logged) {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: First AdvanceEvent received. All players are now valid.");
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Connection established successfully!");
             connection_logged = true;
         }
         
@@ -215,6 +200,17 @@ bool AllPlayersValid() {
         gekko_frame_control_enabled = true;
         can_advance_frame = false;
         return true;
+    }
+
+    // Add timeout detection for failed connections
+    static uint32_t connection_attempts = 0;
+    connection_attempts++;
+    
+    if (connection_attempts % 600 == 0) { // Every 10 seconds at 60fps
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Still waiting for connection after %d attempts", connection_attempts);
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Local port: %u, Remote: %s", GetGekkoLocalPort(), GetGekkoRemoteIP());
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Session state - initialized: %s, started: %s", 
+                    gekko_initialized ? "YES" : "NO", gekko_session_started ? "YES" : "NO");
     }
 
     // Not yet connected and validated.

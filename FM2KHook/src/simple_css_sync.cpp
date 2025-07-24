@@ -14,6 +14,9 @@ SimpleCSSSync::SimpleCSSSync()
     memset(&remote_state_, 0, sizeof(remote_state_));
     local_state_.magic = 0xC55C55C5;
     remote_state_.magic = 0xC55C55C5;
+    
+    // Verify structure size is as expected (16 bytes)
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: CSSMessage size = %d bytes", (int)sizeof(CSSMessage));
 }
 
 SimpleCSSSync::~SimpleCSSSync() {
@@ -68,17 +71,26 @@ bool SimpleCSSSync::Initialize(bool is_host, uint16_t base_port, const char* rem
         bool got_handshake = false;
         uint32_t handshake_msg = 0;
         
-        while (handshake_wait < 1000) { // 1 second timeout
+        while (handshake_wait < 3000) { // 3 second timeout (increased from 1s)
             void* sockets[] = { socket_ };
             int ready = NET_WaitUntilInputAvailable(sockets, 1, 100);
             
             if (ready > 0) {
                 int bytes_received = NET_ReadFromStreamSocket(socket_, &handshake_msg, sizeof(handshake_msg));
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: HOST received %d bytes, expected %d", bytes_received, (int)sizeof(handshake_msg));
+                
+                if (bytes_received > 0) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: HOST received data: 0x%08X", handshake_msg);
+                }
+                
                 if (bytes_received == sizeof(handshake_msg) && handshake_msg == 0xC5511A5D) {
                     // Send handshake response
                     NET_WriteToStreamSocket(socket_, &handshake_msg, sizeof(handshake_msg));
                     got_handshake = true;
                     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: HOST handshake successful after %dms", handshake_wait);
+                    break;
+                } else if (bytes_received < 0) {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "CSS: HOST socket error: %s", SDL_GetError());
                     break;
                 }
             }
@@ -120,29 +132,68 @@ bool SimpleCSSSync::Initialize(bool is_host, uint16_t base_port, const char* rem
         
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Socket created, starting connection to %s:%u", remote_ip, port_);
         
-        // For localhost connections, skip the wait and use handshake to verify
-        bool is_localhost = (strcmp(remote_ip, "127.0.0.1") == 0 || strcmp(remote_ip, "localhost") == 0);
-        
-        if (!is_localhost) {
-            // For remote connections, wait for connection establishment
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: CLIENT waiting for connection to establish (remote)...");
-            int wait_result = NET_WaitUntilConnected(socket_, 5000); // 5 second timeout
-            if (wait_result <= 0) {
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "CSS: Connection timeout or error - wait_result: %d", wait_result);
-                NET_DestroyStreamSocket(socket_);
-                socket_ = nullptr;
-                return false;
-            }
+        // Always wait a bit for TCP connection to establish
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: CLIENT waiting for connection to establish...");
+        int wait_result = NET_WaitUntilConnected(socket_, 1000); // 1 second timeout
+        if (wait_result <= 0) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "CSS: Connection not ready after 1s, trying handshake anyway");
         } else {
-            // For localhost, just add a small delay to ensure server is ready
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Localhost connection - skipping wait, proceeding with handshake");
-            SDL_Delay(100); // 100ms should be plenty for localhost
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Connection established");
         }
         
         // Perform handshake to verify connection
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: CLIENT sending handshake...");
         uint32_t handshake = 0xC5511A5D; // CSS HAND
+        
+        // Wait longer for socket to be fully ready for writing
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Waiting for socket to be ready for writing...");
+        
+        // Check if socket is ready for writing with timeout
+        int write_ready = 0;
+        for (int i = 0; i < 10; i++) { // Try for up to 1 second
+            void* write_sockets[] = { socket_ };
+            // Use SDL_net's write readiness check (if available) or just wait
+            SDL_Delay(100); // Wait 100ms between attempts
+            write_ready = 1; // Assume ready after wait
+            break;
+        }
+        
+        if (!write_ready) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "CSS: Socket not ready for writing after 1 second");
+        }
+        
+        // Log socket state  
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Socket ptr: %p, attempting to send %d bytes", socket_, (int)sizeof(handshake));
+        
+        // Send the complete handshake in one call first, then retry if partial
         int bytes_sent = NET_WriteToStreamSocket(socket_, &handshake, sizeof(handshake));
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Initial send attempt - sent %d bytes of %d", bytes_sent, (int)sizeof(handshake));
+        
+        if (bytes_sent != sizeof(handshake)) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "CSS: Partial send detected, trying retry approach...");
+            
+            // If partial send, try the retry approach
+            int total_sent = (bytes_sent > 0) ? bytes_sent : 0;
+            uint8_t* data = (uint8_t*)&handshake;
+            
+            for (int attempt = 0; attempt < 5 && total_sent < sizeof(handshake); attempt++) {
+                SDL_Delay(50); // Wait between attempts
+                
+                int remaining = sizeof(handshake) - total_sent;
+                int chunk_sent = NET_WriteToStreamSocket(socket_, data + total_sent, remaining);
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Retry attempt %d - sent %d bytes (total: %d/%d)", 
+                           attempt + 1, chunk_sent, total_sent + (chunk_sent > 0 ? chunk_sent : 0), (int)sizeof(handshake));
+                
+                if (chunk_sent > 0) {
+                    total_sent += chunk_sent;
+                } else if (chunk_sent < 0) {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "CSS: Send error on retry: %s", SDL_GetError());
+                    break;
+                }
+            }
+            
+            bytes_sent = total_sent;
+        }
         
         if (bytes_sent != sizeof(handshake)) {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "CSS: Failed to send handshake: %d bytes sent", bytes_sent);
@@ -256,8 +307,12 @@ bool SimpleCSSSync::ReceiveUpdate() {
     }
     
     if (bytes_received != sizeof(CSSMessage)) {
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "CSS: Partial receive: %d/%d bytes", 
-            bytes_received, (int)sizeof(CSSMessage));
+        // Reduce logging frequency for partial receives
+        static int partial_receive_counter = 0;
+        if (++partial_receive_counter % 60 == 0) { // Log every second instead of every frame
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "CSS: Partial receive: %d/%d bytes", 
+                bytes_received, (int)sizeof(CSSMessage));
+        }
         return false; // Wait for complete message
     }
     

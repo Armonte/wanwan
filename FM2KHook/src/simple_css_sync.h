@@ -11,10 +11,12 @@ struct CSSMessage {
     uint8_t p1_cursor_x;          // P1 cursor X (low byte of u32)
     uint8_t p1_cursor_y;          // P1 cursor Y (low byte of u32)
     uint8_t p1_confirmed;         // P1 confirmation status
+    uint8_t p1_padding;           // Explicit padding for alignment
     uint16_t p1_color_button;     // P1 color button (0x010, 0x020, 0x040, 0x080, 0x100, 0x200)
     uint8_t p2_cursor_x;          // P2 cursor X (low byte of u32)
     uint8_t p2_cursor_y;          // P2 cursor Y (low byte of u32)
     uint8_t p2_confirmed;         // P2 confirmation status
+    uint8_t p2_padding;           // Explicit padding for alignment
     uint16_t p2_color_button;     // P2 color button (0x010, 0x020, 0x040, 0x080, 0x100, 0x200)
 };
 

@@ -60,18 +60,21 @@ bool InitializeGekkoNet() {
     
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet session created successfully");
     
-    // Store config globally for deferred start
-    static GekkoConfig stored_config;
-    stored_config.num_players = 2;
-    stored_config.max_spectators = 0;
-    stored_config.input_prediction_window = 10;  // ROLLBACK mode - test CSS with prediction frames
+    GekkoConfig config;
+    config.num_players = 2;
+    config.max_spectators = 0;
+    config.input_prediction_window = 10;  // ROLLBACK mode - test CSS with prediction frames
     // Previously was 0 (lockstep) - now testing rollback compatibility
-    stored_config.spectator_delay = 0;
-    stored_config.input_size = sizeof(uint16_t);
-    stored_config.state_size = sizeof(FM2K::State::GameState);  // Use full GameState for proper save states
-    stored_config.limited_saving = false;
-    stored_config.post_sync_joining = false;
-    stored_config.desync_detection = true;
+    config.spectator_delay = 0;
+    config.input_size = sizeof(uint16_t);
+    config.state_size = sizeof(FM2K::State::GameState);  // Use full GameState for proper save states
+    config.limited_saving = false;
+    config.post_sync_joining = false;
+    config.desync_detection = true;
+    
+    // Start GekkoNet immediately - we'll handle frame sync differently
+    gekko_start(gekko_session, &config);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet session configured and started");
     
     // Check for true offline mode (no networking at all)
     char* env_offline = getenv("FM2K_TRUE_OFFLINE");
@@ -155,15 +158,7 @@ bool InitializeGekkoNet() {
     gekko_initialized = true;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet initialization complete - ready for synchronized start!");
     
-    // For online mode, defer start until proper synchronization
-    if (!is_true_offline) {
-        gekko_needs_synchronized_start = true;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Online mode - deferring GekkoNet start for synchronization");
-    } else {
-        // For true offline mode, start immediately since no sync needed
-        gekko_start(gekko_session, &stored_config);
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: GekkoNet started immediately (offline mode)");
-    }
+    // GekkoNet is already started above
     
     return true;
 }
@@ -180,39 +175,6 @@ void CleanupGekkoNet() {
 bool AllPlayersValid() {
     if (!gekko_session || !gekko_initialized) {
         return false;
-    }
-
-    // Handle deferred start for online sessions
-    if (gekko_needs_synchronized_start) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Starting deferred session with frame synchronization");
-        
-        // Reset frame counters to 0 before starting GekkoNet
-        extern uint32_t g_frame_counter;
-        g_frame_counter = 0;
-        
-        uint32_t* continuous_frame_ptr = (uint32_t*)0x004456FC;  // g_negate_interpolation_value_frame_counter
-        if (!IsBadWritePtr(continuous_frame_ptr, sizeof(uint32_t))) {
-            *continuous_frame_ptr = 0;
-        }
-        
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Frame counters reset to 0, starting session NOW");
-        
-        // Get the stored config
-        static GekkoConfig stored_config;
-        stored_config.num_players = 2;
-        stored_config.max_spectators = 0;
-        stored_config.input_prediction_window = 10;
-        stored_config.spectator_delay = 0;
-        stored_config.input_size = sizeof(uint16_t);
-        stored_config.state_size = sizeof(FM2K::State::GameState);
-        stored_config.limited_saving = false;
-        stored_config.post_sync_joining = false;
-        stored_config.desync_detection = true;
-        
-        gekko_start(gekko_session, &stored_config);
-        gekko_needs_synchronized_start = false;
-        
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Synchronized start complete - both clients should start at F0");
     }
 
     // If session is already started, we're good.

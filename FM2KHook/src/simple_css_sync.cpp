@@ -61,6 +61,37 @@ bool SimpleCSSSync::Initialize(bool is_host, uint16_t base_port, const char* rem
             return false;
         }
         
+        // Host: Handle handshake from client
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: HOST waiting for CLIENT handshake...");
+        
+        int handshake_wait = 0;
+        bool got_handshake = false;
+        uint32_t handshake_msg = 0;
+        
+        while (handshake_wait < 1000) { // 1 second timeout
+            void* sockets[] = { socket_ };
+            int ready = NET_WaitUntilInputAvailable(sockets, 1, 100);
+            
+            if (ready > 0) {
+                int bytes_received = NET_ReadFromStreamSocket(socket_, &handshake_msg, sizeof(handshake_msg));
+                if (bytes_received == sizeof(handshake_msg) && handshake_msg == 0xC5511A5D) {
+                    // Send handshake response
+                    NET_WriteToStreamSocket(socket_, &handshake_msg, sizeof(handshake_msg));
+                    got_handshake = true;
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: HOST handshake successful after %dms", handshake_wait);
+                    break;
+                }
+            }
+            handshake_wait += 100;
+        }
+        
+        if (!got_handshake) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "CSS: HOST handshake timeout");
+            NET_DestroyStreamSocket(socket_);
+            socket_ = nullptr;
+            return false;
+        }
+        
     } else {
         // Client: Connect to host
         NET_Address* address = NET_ResolveHostname(remote_ip);
@@ -87,16 +118,61 @@ bool SimpleCSSSync::Initialize(bool is_host, uint16_t base_port, const char* rem
             return false;
         }
         
-        // Wait for connection to establish
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: CLIENT waiting for connection to establish...");
-        int wait_result = NET_WaitUntilConnected(socket_, 5000); // 5 second timeout
-        if (wait_result <= 0) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "CSS: Connection timeout or error - wait_result: %d", wait_result);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Socket created, starting connection to %s:%u", remote_ip, port_);
+        
+        // For localhost connections, skip the wait and use handshake to verify
+        bool is_localhost = (strcmp(remote_ip, "127.0.0.1") == 0 || strcmp(remote_ip, "localhost") == 0);
+        
+        if (!is_localhost) {
+            // For remote connections, wait for connection establishment
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: CLIENT waiting for connection to establish (remote)...");
+            int wait_result = NET_WaitUntilConnected(socket_, 5000); // 5 second timeout
+            if (wait_result <= 0) {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "CSS: Connection timeout or error - wait_result: %d", wait_result);
+                NET_DestroyStreamSocket(socket_);
+                socket_ = nullptr;
+                return false;
+            }
+        } else {
+            // For localhost, just add a small delay to ensure server is ready
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Localhost connection - skipping wait, proceeding with handshake");
+            SDL_Delay(100); // 100ms should be plenty for localhost
+        }
+        
+        // Perform handshake to verify connection
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: CLIENT sending handshake...");
+        uint32_t handshake = 0xC5511A5D; // CSS HAND
+        int bytes_sent = NET_WriteToStreamSocket(socket_, &handshake, sizeof(handshake));
+        
+        if (bytes_sent != sizeof(handshake)) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "CSS: Failed to send handshake: %d bytes sent", bytes_sent);
             NET_DestroyStreamSocket(socket_);
             socket_ = nullptr;
             return false;
         }
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: CLIENT connection established successfully");
+        
+        // Wait for handshake response
+        void* sockets[] = { socket_ };
+        int ready = NET_WaitUntilInputAvailable(sockets, 1, 1000); // 1 second timeout
+        
+        if (ready <= 0) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "CSS: Handshake response timeout");
+            NET_DestroyStreamSocket(socket_);
+            socket_ = nullptr;
+            return false;
+        }
+        
+        uint32_t response = 0;
+        int bytes_received = NET_ReadFromStreamSocket(socket_, &response, sizeof(response));
+        
+        if (bytes_received != sizeof(response) || response != 0xC5511A5D) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "CSS: Invalid handshake response");
+            NET_DestroyStreamSocket(socket_);
+            socket_ = nullptr;
+            return false;
+        }
+        
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: CLIENT handshake successful");
     }
     
     connected_ = true;

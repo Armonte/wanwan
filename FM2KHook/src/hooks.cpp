@@ -1739,9 +1739,13 @@ int __cdecl Hook_ProcessGameInputs() {
         }
     }
     
-    // Input capture moved to AdvanceEvent processing for GekkoNet timing
+    // Call original function to process the game's input system
+    // GekkoNet controls WHEN frames advance, but the game still needs to process inputs normally
+    if (original_process_inputs) {
+        return original_process_inputs();
+    }
     
-    return 0; // Return 0 as the game's frame advancement is handled by GekkoNet
+    return 0;
 }
 
 int __cdecl Hook_UpdateGameState() {

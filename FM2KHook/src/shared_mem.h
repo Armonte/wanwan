@@ -238,8 +238,11 @@ struct SharedInputData {
     bool enhanced_actions_updated;
     EnhancedActionData enhanced_actions[64];
     
-    // Dedicated save state storage (8 slots)
+    // Dedicated save state storage (8 slots for manual saves Shift+1-8)
     SaveStateData save_slots[8];
+    
+    // Dedicated rollback save state storage for GekkoNet (16 slots)
+    SaveStateData rollback_save_slots[16];
 };
 
 // Functions for managing shared memory

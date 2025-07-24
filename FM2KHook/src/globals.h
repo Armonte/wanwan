@@ -58,6 +58,7 @@ namespace FM2K::State::Memory {
 extern GekkoSession* gekko_session;
 extern bool gekko_initialized;
 extern bool gekko_session_started;
+extern bool gekko_needs_synchronized_start;  // Flag for deferred start
 extern bool is_online_mode;
 extern bool is_host;
 extern uint8_t player_index;

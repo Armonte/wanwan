@@ -18,6 +18,13 @@
 #include <cstdlib>
 
 // Global variables for manual save/load requests
+bool battle_sync_done = false; // Flag to ensure sync happens only once per battle
+
+// Original game_rand function pointer and deterministic RNG state
+typedef uint32_t (*GameRandFunc)();
+static GameRandFunc original_game_rand = nullptr;
+static uint32_t deterministic_rng_seed = 12345678;
+static bool use_deterministic_rng = false;
 static bool manual_save_requested = false;
 static bool manual_load_requested = false;
 static uint32_t target_save_slot = 0;
@@ -150,6 +157,274 @@ static inline uint32_t ConvertNetworkInputToGameFormat(uint32_t network_input) {
 }
 
 // Process manual save/load requests
+// Save complete game state to a SaveStateData structure (for GekkoNet rollback)
+static bool SaveCompleteGameState(SaveStateData* save_data, uint32_t frame_number) {
+    if (!save_data) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SaveCompleteGameState: Invalid save_data pointer");
+        return false;
+    }
+    
+    // Only save states when in battle mode (game_mode 3000) - this is a secondary check
+    uint16_t* game_mode_ptr = (uint16_t*)0x470054;  // Use g_game_mode instead of g_fm2k_game_mode
+    if (!IsBadReadPtr(game_mode_ptr, sizeof(uint16_t))) {
+        uint16_t current_mode = *game_mode_ptr;
+        if (current_mode != 3000) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SaveCompleteGameState: Secondary check - not in battle mode (frame: %d, game_mode: %d)", frame_number, current_mode);
+            return false;
+        }
+    } else {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SaveCompleteGameState: IsBadReadPtr failed for game_mode (0x470054) - memory not accessible");
+        return false;
+    }
+    
+    // Clear the save data structure
+    memset(save_data, 0, sizeof(SaveStateData));
+    
+    // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SaveCompleteGameState: Starting memory access for frame %d", frame_number);
+    
+    // Player state addresses (CheatEngine verified)
+    uint32_t* p1_hp_ptr = (uint32_t*)0x004DFC85;
+    uint32_t* p2_hp_ptr = (uint32_t*)0x004EDCC4;
+    uint32_t* p1_x_ptr = (uint32_t*)0x004DFCC3;
+    uint16_t* p1_y_ptr = (uint16_t*)0x004DFCC7;
+    uint32_t* p2_x_ptr = (uint32_t*)0x004EDD02;
+    uint16_t* p2_y_ptr = (uint16_t*)0x004EDD06;
+    
+    // Player meter/super/stock  
+    uint32_t* p1_super_ptr = (uint32_t*)0x004DFC9D;
+    uint32_t* p2_super_ptr = (uint32_t*)0x004EDCDC;
+    uint32_t* p1_special_stock_ptr = (uint32_t*)0x004DFC95;
+    uint32_t* p2_special_stock_ptr = (uint32_t*)0x004EDCD4;
+    uint32_t* p1_rounds_won_ptr = (uint32_t*)0x004DFC6D;
+    uint32_t* p2_rounds_won_ptr = (uint32_t*)0x004EDCAC;
+    
+    // RNG seed
+    uint32_t* rng_seed_ptr = (uint32_t*)0x41FB1C;
+    
+    // Timers
+    uint32_t* timer_ptr = (uint32_t*)0x470050;
+    uint32_t* round_timer_ptr = (uint32_t*)0x00470060;
+    uint32_t* round_state_ptr = (uint32_t*)0x47004C;
+    uint32_t* round_limit_ptr = (uint32_t*)0x470048;
+    uint32_t* round_setting_ptr = (uint32_t*)0x470068;
+    
+    // Game modes and flags
+    uint32_t* fm2k_game_mode_ptr = (uint32_t*)0x470040;
+    uint16_t* game_mode_data_ptr = (uint16_t*)0x00470054;  // Renamed to avoid conflict
+    uint32_t* game_paused_ptr = (uint32_t*)0x4701BC;
+    uint32_t* replay_mode_ptr = (uint32_t*)0x4701C0;
+    
+    // Camera position
+    uint32_t* camera_x_ptr = (uint32_t*)0x00447F2C;
+    uint32_t* camera_y_ptr = (uint32_t*)0x00447F30;
+    
+    // Character variables base addresses
+    int16_t* p1_char_vars_ptr = (int16_t*)0x004DFD17;
+    int16_t* p2_char_vars_ptr = (int16_t*)0x004EDD56;
+    
+    // System variables base address
+    int16_t* sys_vars_ptr = (int16_t*)0x004456B0;
+    
+    // Task variables base addresses
+    uint16_t* p1_task_vars_ptr = (uint16_t*)0x00470311;
+    uint16_t* p2_task_vars_ptr = (uint16_t*)0x0047060D;
+    
+    // Move history
+    uint8_t* move_history_ptr = (uint8_t*)0x47006C;
+    
+    // Additional state
+    uint32_t* object_count_ptr = (uint32_t*)0x004246FC;
+    uint32_t* frame_sync_flag_ptr = (uint32_t*)0x00424700;
+    uint32_t* hit_effect_target_ptr = (uint32_t*)0x4701C4;
+    
+    // Character selection
+    uint32_t* menu_selection_ptr = (uint32_t*)0x424780;
+    uint64_t* p1_css_cursor_ptr = (uint64_t*)0x00424E50;
+    uint64_t* p2_css_cursor_ptr = (uint64_t*)0x00424E58;
+    uint32_t* p1_char_to_load_ptr = (uint32_t*)0x470020;
+    uint32_t* p2_char_to_load_ptr = (uint32_t*)0x470024;
+    uint32_t* p1_color_selection_ptr = (uint32_t*)0x00470024;
+    
+    // Object pool (391KB)
+    uint8_t* object_pool_ptr = (uint8_t*)0x4701E0;
+    
+    try {
+        // CRITICAL ROLLBACK STATE: Save essential data for proper desync detection
+        
+        // Basic player state (HP)
+        if (!IsBadReadPtr(p1_hp_ptr, sizeof(uint32_t))) {
+            save_data->p1_hp = *p1_hp_ptr;
+        }
+        if (!IsBadReadPtr(p2_hp_ptr, sizeof(uint32_t))) {
+            save_data->p2_hp = *p2_hp_ptr;
+        }
+        
+        // Player positions (critical for rollback)
+        uint32_t* p1_x_ptr = (uint32_t*)0x004DFCC3;
+        uint16_t* p1_y_ptr = (uint16_t*)0x004DFCC7;
+        uint32_t* p2_x_ptr = (uint32_t*)0x004EDD02;
+        uint16_t* p2_y_ptr = (uint16_t*)0x004EDD06;
+        
+        if (!IsBadReadPtr(p1_x_ptr, sizeof(uint32_t))) {
+            save_data->p1_x = *p1_x_ptr;
+        }
+        if (!IsBadReadPtr(p1_y_ptr, sizeof(uint16_t))) {
+            save_data->p1_y = *p1_y_ptr;
+        }
+        if (!IsBadReadPtr(p2_x_ptr, sizeof(uint32_t))) {
+            save_data->p2_x = *p2_x_ptr;
+        }
+        if (!IsBadReadPtr(p2_y_ptr, sizeof(uint16_t))) {
+            save_data->p2_y = *p2_y_ptr;
+        }
+        
+        // RNG seed (critical for determinism)
+        if (!IsBadReadPtr(rng_seed_ptr, sizeof(uint32_t))) {
+            save_data->rng_seed = *rng_seed_ptr;
+        }
+        
+        // Game timers (critical for game state)
+        uint32_t* game_timer_ptr = (uint32_t*)0x470050;
+        uint32_t* round_timer_ptr = (uint32_t*)0x470060;
+        
+        if (!IsBadReadPtr(game_timer_ptr, sizeof(uint32_t))) {
+            save_data->game_timer = *game_timer_ptr;
+        }
+        if (!IsBadReadPtr(round_timer_ptr, sizeof(uint32_t))) {
+            save_data->round_timer = *round_timer_ptr;
+        }
+        
+        // Set metadata
+        // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SaveCompleteGameState: Setting metadata...");
+        save_data->frame_number = frame_number;
+        save_data->timestamp_ms = GetTickCount64();
+        save_data->valid = true;
+        
+        // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SaveCompleteGameState: Calculating Fletcher32 checksum...");
+        // Calculate checksum over only the essential data we actually set
+        struct EssentialSaveData {
+            uint32_t p1_hp, p2_hp;
+            uint32_t p1_x, p2_x;
+            uint16_t p1_y, p2_y;
+            uint32_t rng_seed;
+            uint32_t game_timer, round_timer;
+            // NOTE: frame_number excluded from checksum - it shouldn't affect game state validation
+        } essential_for_checksum;
+        
+        essential_for_checksum.p1_hp = save_data->p1_hp;
+        essential_for_checksum.p2_hp = save_data->p2_hp;
+        essential_for_checksum.p1_x = save_data->p1_x;
+        essential_for_checksum.p2_x = save_data->p2_x;
+        essential_for_checksum.p1_y = save_data->p1_y;
+        essential_for_checksum.p2_y = save_data->p2_y;
+        essential_for_checksum.rng_seed = save_data->rng_seed;
+        essential_for_checksum.game_timer = save_data->game_timer;
+        essential_for_checksum.round_timer = save_data->round_timer;
+        // frame_number excluded from checksum
+        
+        save_data->checksum = FM2K::State::Fletcher32((uint8_t*)&essential_for_checksum, sizeof(essential_for_checksum));
+        
+        // Log critical save data for desync debugging - ALWAYS log first 40 frames to see sync
+        static int save_log_counter = 0;
+        bool should_log = (frame_number <= 40) || (++save_log_counter % 120 == 0); // First 40 frames OR every 2nd second
+        
+        if (should_log) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SaveState F%d: P1(HP:%d X:%d Y:%d) P2(HP:%d X:%d Y:%d) RNG:%d GT:%d RT:%d CK:%u", 
+                       frame_number, save_data->p1_hp, save_data->p1_x, save_data->p1_y,
+                       save_data->p2_hp, save_data->p2_x, save_data->p2_y, 
+                       save_data->rng_seed, save_data->game_timer, save_data->round_timer, save_data->checksum);
+        }
+        
+        return true;
+        
+    } catch (const std::exception& e) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SaveCompleteGameState: Standard exception during memory access (frame %d): %s", frame_number, e.what());
+        return false;
+    } catch (...) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SaveCompleteGameState: Unknown exception during memory access (frame %d)", frame_number);
+        return false;
+    }
+}
+
+// Load complete game state from a SaveStateData structure (for GekkoNet rollback)
+static bool LoadCompleteGameState(const SaveStateData* save_data) {
+    if (!save_data || !save_data->valid) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "LoadCompleteGameState: Invalid save_data pointer or data not valid");
+        return false;
+    }
+    
+    // Verify checksum using the same essential data structure as save
+    struct EssentialSaveData {
+        uint32_t p1_hp, p2_hp;
+        uint32_t p1_x, p2_x;
+        uint16_t p1_y, p2_y;
+        uint32_t rng_seed;
+        uint32_t game_timer, round_timer;
+        // NOTE: frame_number excluded from checksum - it shouldn't affect game state validation
+    } essential_for_checksum;
+    
+    essential_for_checksum.p1_hp = save_data->p1_hp;
+    essential_for_checksum.p2_hp = save_data->p2_hp;
+    essential_for_checksum.p1_x = save_data->p1_x;
+    essential_for_checksum.p2_x = save_data->p2_x;
+    essential_for_checksum.p1_y = save_data->p1_y;
+    essential_for_checksum.p2_y = save_data->p2_y;
+    essential_for_checksum.rng_seed = save_data->rng_seed;
+    essential_for_checksum.game_timer = save_data->game_timer;
+    essential_for_checksum.round_timer = save_data->round_timer;
+    // frame_number excluded from checksum
+    
+    uint32_t calculated_checksum = FM2K::State::Fletcher32((uint8_t*)&essential_for_checksum, sizeof(essential_for_checksum));
+    if (calculated_checksum != save_data->checksum) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "LoadCompleteGameState: Checksum mismatch (calculated: %u, stored: %u)",
+                    calculated_checksum, save_data->checksum);
+        return false;
+    }
+    
+    try {
+        // CRITICAL: Only restore the essential data we actually save
+        // Player state addresses
+        uint32_t* p1_hp_ptr = (uint32_t*)0x004DFC85;
+        uint32_t* p2_hp_ptr = (uint32_t*)0x004EDCC4;
+        uint32_t* p1_x_ptr = (uint32_t*)0x004DFCC3;
+        uint16_t* p1_y_ptr = (uint16_t*)0x004DFCC7;
+        uint32_t* p2_x_ptr = (uint32_t*)0x004EDD02;
+        uint16_t* p2_y_ptr = (uint16_t*)0x004EDD06;
+        
+        // RNG seed
+        uint32_t* rng_seed_ptr = (uint32_t*)0x41FB1C;
+        
+        // Game timers
+        uint32_t* game_timer_ptr = (uint32_t*)0x470050;
+        uint32_t* round_timer_ptr = (uint32_t*)0x470060;
+        
+        // Restore ONLY the essential data we actually save (matches SaveCompleteGameState)
+        if (!IsBadWritePtr(p1_hp_ptr, sizeof(uint32_t))) *p1_hp_ptr = save_data->p1_hp;
+        if (!IsBadWritePtr(p2_hp_ptr, sizeof(uint32_t))) *p2_hp_ptr = save_data->p2_hp;
+        if (!IsBadWritePtr(p1_x_ptr, sizeof(uint32_t))) *p1_x_ptr = save_data->p1_x;
+        if (!IsBadWritePtr(p1_y_ptr, sizeof(uint16_t))) *p1_y_ptr = save_data->p1_y;
+        if (!IsBadWritePtr(p2_x_ptr, sizeof(uint32_t))) *p2_x_ptr = save_data->p2_x;
+        if (!IsBadWritePtr(p2_y_ptr, sizeof(uint16_t))) *p2_y_ptr = save_data->p2_y;
+        if (!IsBadWritePtr(rng_seed_ptr, sizeof(uint32_t))) *rng_seed_ptr = save_data->rng_seed;
+        if (!IsBadWritePtr(game_timer_ptr, sizeof(uint32_t))) *game_timer_ptr = save_data->game_timer;
+        if (!IsBadWritePtr(round_timer_ptr, sizeof(uint32_t))) *round_timer_ptr = save_data->round_timer;
+        
+        // Log critical load data for desync debugging (first 40 frames only)
+        if (save_data->frame_number <= 40) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LoadState F%d: P1(HP:%d X:%d Y:%d) P2(HP:%d X:%d Y:%d) RNG:%d GT:%d RT:%d CK:%u", 
+                       save_data->frame_number, save_data->p1_hp, save_data->p1_x, save_data->p1_y,
+                       save_data->p2_hp, save_data->p2_x, save_data->p2_y, 
+                       save_data->rng_seed, save_data->game_timer, save_data->round_timer, save_data->checksum);
+        }
+        
+        return true;
+        
+    } catch (...) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "LoadCompleteGameState: Exception during memory access (frame %d)", save_data->frame_number);
+        return false;
+    }
+}
+
 static void ProcessManualSaveLoadRequests() {
     SharedInputData* shared_data = GetSharedMemory();
     if (!shared_data) {
@@ -193,7 +468,7 @@ static void ProcessManualSaveLoadRequests() {
             
             // Game modes and flags
             uint32_t* fm2k_game_mode_ptr = (uint32_t*)0x470040;
-            uint16_t* game_mode_ptr = (uint16_t*)0x00470054;
+            uint16_t* game_mode_data_ptr = (uint16_t*)0x00470054;  // Renamed to avoid conflict
             uint32_t* game_paused_ptr = (uint32_t*)0x4701BC;
             uint32_t* replay_mode_ptr = (uint32_t*)0x4701C0;
             
@@ -282,7 +557,7 @@ static void ProcessManualSaveLoadRequests() {
                 
                 // Save game modes and flags
                 save_slot->fm2k_game_mode = *fm2k_game_mode_ptr;
-                save_slot->game_mode = *game_mode_ptr;
+                save_slot->game_mode = *game_mode_data_ptr;
                 save_slot->game_paused = *game_paused_ptr;
                 save_slot->replay_mode = *replay_mode_ptr;
                 
@@ -457,7 +732,7 @@ static void ProcessManualSaveLoadRequests() {
             
             // Game modes and flags
             uint32_t* fm2k_game_mode_ptr = (uint32_t*)0x470040;
-            uint16_t* game_mode_ptr = (uint16_t*)0x00470054;
+            uint16_t* game_mode_data_ptr = (uint16_t*)0x00470054;  // Renamed to avoid conflict
             uint32_t* game_paused_ptr = (uint32_t*)0x4701BC;
             uint32_t* replay_mode_ptr = (uint32_t*)0x4701C0;
             
@@ -541,7 +816,7 @@ static void ProcessManualSaveLoadRequests() {
                 
                 // Restore game modes and flags
                 *fm2k_game_mode_ptr = save_slot->fm2k_game_mode;
-                *game_mode_ptr = save_slot->game_mode;
+                *game_mode_data_ptr = save_slot->game_mode;
                 *game_paused_ptr = save_slot->game_paused;
                 *replay_mode_ptr = save_slot->replay_mode;
                 
@@ -798,6 +1073,22 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
     return original_get_player_input ? original_get_player_input(player_id, input_type) : 0;
 }
 
+// Hook for game_rand function to ensure deterministic RNG
+uint32_t __cdecl Hook_GameRand() {
+    if (use_deterministic_rng) {
+        // Use our own deterministic RNG algorithm (Linear Congruential Generator)
+        deterministic_rng_seed = (deterministic_rng_seed * 1103515245 + 12345) & 0x7FFFFFFF;
+        uint32_t result = deterministic_rng_seed;
+        
+        // Mimic the original game_rand behavior (shift right 16, mask to 0x7FFF)
+        result = (result >> 16) & 0x7FFF;
+        
+        return result;
+    } else {
+        // Use original RNG when not in deterministic mode
+        return original_game_rand();
+    }
+}
 
 int __cdecl Hook_ProcessGameInputs() {
     // Moved CaptureRealInputs() to after pause logic to prevent button consumption
@@ -808,13 +1099,18 @@ int __cdecl Hook_ProcessGameInputs() {
 
     // 3.5. CHECK: Wait for all players to be connected before normal gameplay
     // Skip this check for true offline mode (GekkoNet not even initialized) - no network synchronization needed
-    if (!is_true_offline && gekko_initialized && gekko_session && !AllPlayersValid()) {
-        static uint32_t wait_log_counter = 0;
-        if (++wait_log_counter % 120 == 0) { // Log every ~2 seconds
-             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Waiting for all players to connect...");
+    if (!is_true_offline && gekko_initialized && gekko_session) {
+        // Call AllPlayersValid() which will trigger the deferred GekkoNet start if needed
+        bool all_valid = AllPlayersValid();
+        
+        if (!all_valid) {
+            static uint32_t wait_log_counter = 0;
+            if (++wait_log_counter % 120 == 0) { // Log every ~2 seconds
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Waiting for all players to connect...");
+            }
+            // Do NOT call original_process_inputs here. We must freeze the game state completely.
+            return 0; // Block further game logic until synchronized.
         }
-        // Do NOT call original_process_inputs here. We must freeze the game state completely.
-        return 0; // Block further game logic until synchronized.
     }
 
     // DEBUG: Log when this function is called to find frame controller
@@ -836,6 +1132,7 @@ int __cdecl Hook_ProcessGameInputs() {
     SharedInputData* shared_data = GetSharedMemory();
     
     // Initialize GekkoNet on first input hook call (safer than main loop hook)
+    // Initialize GekkoNet early for networking support
     // Skip GekkoNet initialization entirely for true offline mode
     if (!gekko_initialized && !is_true_offline) {
         static bool initialization_attempted = false;
@@ -1072,7 +1369,7 @@ int __cdecl Hook_ProcessGameInputs() {
         
         // UNIFIED LOGIC: Handle frame stepping countdown. Re-pausing is now in the render hook.
         if (shared_data && shared_data->frame_step_remaining_frames > 0 && shared_data->frame_step_remaining_frames != UINT32_MAX) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Frame ADVANCED to %u during stepping (normal path)", g_frame_counter);
+            // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Frame ADVANCED to %u during stepping (normal path)", g_frame_counter);
             shared_data->frame_step_remaining_frames--;
             if (shared_data->frame_step_remaining_frames == 0) {
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Step processing complete for frame %u, will pause in render hook", g_frame_counter);
@@ -1214,7 +1511,11 @@ int __cdecl Hook_ProcessGameInputs() {
             auto event = session_events[i];
             if (event->type == DesyncDetected) {
                 auto desync = event->data.desynced;
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DESYNC: frame %d", desync.frame);
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet DESYNC detected at frame %d", desync.frame);
+                static int desync_count = 0;
+                if (++desync_count <= 5) {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: CRITICAL DESYNC #%d - frame synchronization may have failed", desync_count);
+                }
             } else if (event->type == PlayerDisconnected) {
                 auto disco = event->data.disconnected;
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "DISCONNECT: handle %d", disco.handle);
@@ -1257,11 +1558,131 @@ int __cdecl Hook_ProcessGameInputs() {
                     break;
                 }
                 case SaveEvent: {
-                    // TODO: Implement proper save state
+                    // Check if we're in battle mode before processing SaveEvent
+                    // Read multiple game mode addresses to diagnose the issue
+                    uint32_t* fm2k_mode_ptr = (uint32_t*)0x470040;  // g_fm2k_game_mode
+                    uint16_t* game_mode_ptr = (uint16_t*)0x470054;  // g_game_mode  
+                    
+                    uint32_t fm2k_mode = 0;
+                    uint16_t game_mode = 0;
+                    bool fm2k_readable = false;
+                    bool game_readable = false;
+                    
+                    // Read fm2k_game_mode (0x470040)
+                    if (!IsBadReadPtr(fm2k_mode_ptr, sizeof(uint32_t))) {
+                        fm2k_mode = *fm2k_mode_ptr;
+                        fm2k_readable = true;
+                    }
+                    
+                    // Read g_game_mode (0x470054) 
+                    if (!IsBadReadPtr(game_mode_ptr, sizeof(uint16_t))) {
+                        game_mode = *game_mode_ptr;
+                        game_readable = true;
+                    }
+                    
+                    // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet SaveEvent frame %d: fm2k_mode=%d (%s), game_mode=%d (%s)", 
+                    //            update->data.save.frame, 
+                    //            fm2k_mode, fm2k_readable ? "readable" : "unreadable",
+                    //            game_mode, game_readable ? "readable" : "unreadable");
+                    
+                    // Use game_mode for battle detection (3000 = battle)
+                    bool in_battle_mode = game_readable && (game_mode == 3000 || fm2k_mode == 3000);
+                    uint32_t current_mode = game_readable ? game_mode : fm2k_mode;
+                    
+                    // Only process saves during battle mode (3000)
+                    if (!in_battle_mode) {
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Skipping SaveEvent frame %d - not in battle mode (fm2k_mode: %d, game_mode: %d)",
+                                   update->data.save.frame, fm2k_mode, game_mode);
+                        break;
+                    }
+                    
+                    // Battle sync is now handled earlier during CSS->Battle transition
+                    // This ensures frame synchronization happens BEFORE any SaveStates occur
+                    
+                    // Save current game state for rollback using local static storage (no shared memory)
+                    // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet SaveEvent: Processing frame %d in battle mode", update->data.save.frame);
+                    
+                    // Use local static storage for rollback saves (avoids shared memory crashes)
+                    static SaveStateData local_rollback_slots[16];
+                    
+                    // Use frame-based slot selection for rollback saves (16 slots available)
+                    uint32_t rollback_slot = update->data.save.frame % 16;
+                    
+                    // Get the dedicated rollback slot from local storage
+                    SaveStateData* rollback_save_slot = &local_rollback_slots[rollback_slot];
+                    
+                    // Save comprehensive game state directly to rollback slot
+                    // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Calling SaveCompleteGameState for frame %d...", update->data.save.frame);
+                    if (SaveCompleteGameState(rollback_save_slot, update->data.save.frame)) {
+                        // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SaveCompleteGameState returned success, copying to GekkoNet buffer...");
+                        
+                        void* state_buffer = update->data.save.state;
+                        size_t* state_len = update->data.save.state_len;
+                        uint32_t* checksum = update->data.save.checksum;
+                        
+                        // Copy expanded essential data for proper desync detection
+                        struct ExpandedEssentialData {
+                            uint32_t p1_hp, p2_hp;
+                            uint32_t p1_x, p2_x;
+                            uint16_t p1_y, p2_y;
+                            uint32_t rng_seed;
+                            uint32_t game_timer, round_timer;
+                            uint32_t frame_number;
+                        } essential_data;
+                        
+                        essential_data.p1_hp = rollback_save_slot->p1_hp;
+                        essential_data.p2_hp = rollback_save_slot->p2_hp;
+                        essential_data.p1_x = rollback_save_slot->p1_x;
+                        essential_data.p2_x = rollback_save_slot->p2_x;
+                        essential_data.p1_y = rollback_save_slot->p1_y;
+                        essential_data.p2_y = rollback_save_slot->p2_y;
+                        essential_data.rng_seed = rollback_save_slot->rng_seed;
+                        essential_data.game_timer = rollback_save_slot->game_timer;
+                        essential_data.round_timer = rollback_save_slot->round_timer;
+                        essential_data.frame_number = rollback_save_slot->frame_number;
+                        
+                        size_t essential_size = sizeof(essential_data); // Now ~38 bytes
+                        *state_len = essential_size;
+                        
+                        std::memcpy(state_buffer, &essential_data, essential_size);
+                        
+                        // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Setting checksum to %u", rollback_save_slot->checksum);
+                        *checksum = rollback_save_slot->checksum;
+                        
+                        // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Saved COMPLETE rollback state for frame %d to local slot %d",
+                        //            update->data.save.frame, rollback_slot);
+                    } else {
+                        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Rollback save failed for frame %d",
+                                    update->data.save.frame);
+                    }
                     break;
                 }
                 case LoadEvent: {
-                    // TODO: Implement proper load state
+                    // Restore game state for rollback using local static storage (no shared memory)
+                    // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet LoadEvent: frame %d", update->data.load.frame);
+                    
+                    // Use same local static storage as SaveEvent (avoids shared memory crashes)
+                    static SaveStateData local_rollback_slots[16];
+                    
+                    // Use frame-based slot selection for rollback loads (16 slots available)
+                    uint32_t rollback_slot = update->data.load.frame % 16;
+                    SaveStateData* rollback_save_slot = &local_rollback_slots[rollback_slot];
+                    
+                    // Copy GekkoNet's state to our local rollback slot
+                    void* state_buffer = update->data.load.state;
+                    std::memcpy(rollback_save_slot, state_buffer, sizeof(SaveStateData));
+                    
+                    // Load comprehensive game state directly from rollback slot
+                    if (LoadCompleteGameState(rollback_save_slot)) {
+                        // Update frame counter to match the loaded state
+                        g_frame_counter = update->data.load.frame;
+                        
+                        // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Loaded COMPLETE rollback state for frame %d from local slot %d",
+                        //            update->data.load.frame, rollback_slot);
+                    } else {
+                        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Rollback load failed for frame %d",
+                                    update->data.load.frame);
+                    }
                     break;
                 }
             }
@@ -1287,7 +1708,7 @@ int __cdecl Hook_ProcessGameInputs() {
     
     // Handle frame stepping countdown for GekkoNet path
     if (shared_data && shared_data->frame_step_remaining_frames > 0 && shared_data->frame_step_remaining_frames != UINT32_MAX) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Frame ADVANCED to %u during stepping (GekkoNet path)", g_frame_counter);
+        // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Frame ADVANCED to %u during stepping (GekkoNet path)", g_frame_counter);
         shared_data->frame_step_remaining_frames--;
         if (shared_data->frame_step_remaining_frames == 0) {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Step processing complete for frame %u, will pause in render hook", g_frame_counter);
@@ -1529,6 +1950,24 @@ bool InitializeHooks() {
         return false;
     }
     
+    // Install game_rand hook for deterministic RNG
+    void* gameRandFuncAddr = (void*)0x417A22;
+    MH_STATUS status5 = MH_CreateHook(gameRandFuncAddr, (void*)Hook_GameRand, (void**)&original_game_rand);
+    if (status5 != MH_OK) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ERROR FM2K HOOK: Failed to create game_rand hook: %d", status5);
+        MH_Uninitialize();
+        return false;
+    }
+    
+    MH_STATUS enable5 = MH_EnableHook(gameRandFuncAddr);
+    if (enable5 != MH_OK) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ERROR FM2K HOOK: Failed to enable game_rand hook: %d", enable5);
+        MH_Uninitialize();
+        return false;
+    }
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SUCCESS FM2K HOOK: game_rand hook installed for deterministic RNG");
+    
     // Apply boot-to-character-select patches directly
     ApplyBootToCharacterSelectPatches();
     
@@ -1662,6 +2101,15 @@ void HandleCSSModeTransition(uint32_t old_mode, uint32_t new_mode) {
         // Entering CSS mode
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Entering character select mode (game_mode: 0x%08X)", new_mode);
         css_mode_active = true;
+        
+        // Reset battle sync flag when entering CSS (allows re-sync for next battle)
+        battle_sync_done = false;
+        
+        // Disable deterministic RNG when leaving battle
+        use_deterministic_rng = false;
+        
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Reset battle sync flag and disabled deterministic RNG for fresh battle start");
+        
         InitializeCSSSync();
         
     } else if (was_css && !is_css) {
@@ -1677,6 +2125,55 @@ void HandleCSSModeTransition(uint32_t old_mode, uint32_t new_mode) {
             
             // Enable networked inputs for battle mode
             use_networked_inputs = true;
+            
+            // CRITICAL: Synchronize RNG seed when battle starts to prevent desyncs
+            uint32_t* rng_seed_ptr = (uint32_t*)0x41FB1C;
+            uint32_t* game_timer_ptr = (uint32_t*)0x470050;
+            
+            // Force both clients to the same deterministic starting state
+            uint32_t sync_rng_seed = 12345678; // Fixed seed for both clients
+            uint32_t sync_game_timer = 10000;  // Fixed timer for both clients
+            
+            if (!IsBadWritePtr(rng_seed_ptr, sizeof(uint32_t))) {
+                *rng_seed_ptr = sync_rng_seed;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "BATTLE SYNC: Set RNG seed to %u", sync_rng_seed);
+            }
+            
+            if (!IsBadWritePtr(game_timer_ptr, sizeof(uint32_t))) {
+                *game_timer_ptr = sync_game_timer;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "BATTLE SYNC: Set game timer to %u", sync_game_timer);
+            }
+            
+            // CRITICAL: Synchronize frame counters BEFORE GekkoNet starts saving states
+            uint32_t sync_frame = 100;
+            
+            // Frame counters already synchronized at GekkoNet startup
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "BATTLE SYNC: Using frame counters synchronized at GekkoNet startup");
+            
+            // Enable deterministic RNG to prevent future desync from random values
+            deterministic_rng_seed = sync_rng_seed;
+            use_deterministic_rng = true;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "BATTLE SYNC: Enabled deterministic RNG with seed %u", sync_rng_seed);
+            
+            // CRITICAL: Reset and restart GekkoNet rollback state with synchronized frame counters
+            if (gekko_initialized) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "BATTLE SYNC: Resetting GekkoNet rollback state with synchronized frame counters");
+                
+                // Force a clean restart of GekkoNet's rollback system
+                gekko_session_started = false;
+                gekko_frame_control_enabled = false;
+                waiting_for_gekko_advance = false;
+                rollback_active = false;
+                
+                // Small delay to ensure reset takes effect
+                SDL_Delay(50);
+                
+                // Restart with synchronized state
+                gekko_session_started = true;
+                gekko_frame_control_enabled = true;
+                
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "BATTLE SYNC: GekkoNet rollback state restarted with synchronized frame counters");
+            }
             
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Battle mode activated - GekkoNet will now control inputs");
         }

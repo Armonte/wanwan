@@ -4,7 +4,10 @@
 #include "input_handler.h"
 #include "gekkonet.h"
 #include "state_manager.h"  // For GameState
+#include "game_patches.h"   // For ApplyCharacterSelectModePatches
 #include <SDL3/SDL_log.h>
+#include <windows.h>        // For message processing
+#include <mmsystem.h>       // For timeGetTime()
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -71,7 +74,7 @@ bool InitializeGekkoNet() {
     GekkoConfig config;
     config.num_players = 2;
     config.max_spectators = 0;
-    config.input_prediction_window = 10;  // ROLLBACK mode
+    config.input_prediction_window = 3;   // Smaller window for tighter sync during testing
     config.input_size = sizeof(uint16_t); // 2 bytes per input
     config.state_size = sizeof(int32_t); // 4 bytes for network state (exactly like bsnes)
     config.desync_detection = true;
@@ -108,30 +111,39 @@ bool InitializeGekkoNet() {
         remote_addr.size = remote_address.length();
         
         if (::player_index == 0) {
-            // Player 1 (host): Add self first (gets handle 0), then remote (gets handle 1)
+            // HOST (like BSNES local==0): Add LocalPlayer first (gets handle 0), then RemotePlayer (gets handle 1)
+            // This means P1 is local on the host
             local_player_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
             int remote_handle = gekko_add_actor(gekko_session, RemotePlayer, &remote_addr);
             
             if (local_player_handle == -1 || remote_handle == -1) {
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: P1 failed to add players - Local: %d, Remote: %d", 
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: HOST failed to add players - Local: %d, Remote: %d", 
                             local_player_handle, remote_handle);
                 return false;
             }
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: P1 added - local_handle=%d (P1), remote_handle=%d (P2)", 
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: HOST added - local_handle=%d (P1=HOST), remote_handle=%d (P2=CLIENT)", 
                         local_player_handle, remote_handle);
         } else {
-            // Player 2 (client): Add remote first (gets handle 0), then self (gets handle 1) 
+            // CLIENT (like BSNES local==1): Add RemotePlayer first (gets handle 0), then LocalPlayer (gets handle 1) 
+            // This means P1 is remote on the client
             int remote_handle = gekko_add_actor(gekko_session, RemotePlayer, &remote_addr);
             local_player_handle = gekko_add_actor(gekko_session, LocalPlayer, nullptr);
             
             if (local_player_handle == -1 || remote_handle == -1) {
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: P2 failed to add players - Remote: %d, Local: %d", 
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: CLIENT failed to add players - Remote: %d, Local: %d", 
                             remote_handle, local_player_handle);
                 return false;
             }
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: P2 added - remote_handle=%d (P1), local_handle=%d (P2)", 
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: CLIENT added - remote_handle=%d (P1=HOST), local_handle=%d (P2=CLIENT)", 
                         remote_handle, local_player_handle);
         }
+        
+        // CRITICAL: Set local delay like BSNES does (line 104 in bsnes netplay.cpp)
+        // This is essential for GekkoNet's synchronization mechanism
+        uint8_t local_delay = 0; // Start with 0 delay for testing
+        gekko_set_local_delay(gekko_session, local_player_handle, local_delay);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Set local delay %d for handle %d", 
+                    local_delay, local_player_handle);
         
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Player %d controls handle %d", 
                     ::player_index == 0 ? 1 : 2, local_player_handle);
@@ -192,32 +204,9 @@ bool AllPlayersValid() {
         return true;
     }
 
-    // For online sessions, check for AdvanceEvents to confirm connection.
-    // This is the real handshake.
-    // CRITICAL: Network polling MUST happen before checking events (like BSNES)
-    gekko_network_poll(gekko_session);
-    
-    int update_count_check = 0;
-    auto updates_check = gekko_update_session(gekko_session, &update_count_check);
-
-    // Debug: Log all events we're receiving during handshake
-    static uint32_t debug_attempts = 0;
-    debug_attempts++;
-    if (debug_attempts <= 10 || debug_attempts % 300 == 0) { // Log first 10 attempts, then every 5 seconds
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Handshake attempt %d - received %d events", 
-                    debug_attempts, update_count_check);
-        for (int i = 0; i < update_count_check; i++) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Event %d: type=%d", i, updates_check[i]->type);
-        }
-    }
-
-    bool got_advance_events = false;
-    for (int i = 0; i < update_count_check; i++) {
-        if (updates_check[i]->type == AdvanceEvent) {
-            got_advance_events = true;
-            break;
-        }
-    }
+    // For online sessions, simply check if session has started
+    // All actual event processing is handled by ProcessGekkoNetFrame()
+    bool got_advance_events = gekko_session_started;
 
     if (got_advance_events) {
         static bool connection_logged = false;
@@ -297,6 +286,10 @@ const char* GetGekkoRemoteIP() {
 
 // Process GekkoNet frame - extracted from Hook_ProcessGameInputs for reuse
 void ProcessGekkoNetFrame() {
+    // BSNES-STYLE: Reset frame advancement permission (like BSNES netplayRun())
+    can_advance_frame = false;
+    use_networked_inputs = false;
+    
     // STEP 1: Always capture real inputs (equivalent to BSNES netplayPollLocalInput)
     CaptureRealInputs();
     
@@ -309,24 +302,27 @@ void ProcessGekkoNetFrame() {
         gekko_add_local_input(gekko_session, p1_player_handle, &p1_input);
         gekko_add_local_input(gekko_session, p2_player_handle, &p2_input);
     } else {
-        // Online session: Each client sends only their player's input
+        // Online session: Send input based on what local player controls
+        // HOST (player_index=0) controls P1, CLIENT (player_index=1) controls P2
         if (::player_index == 0) {
+            // HOST: Send P1 input (local_player_handle should be 0)
             uint16_t p1_input = (uint16_t)(live_p1_input & 0x7FF);
             gekko_add_local_input(gekko_session, local_player_handle, &p1_input);
             
             static uint32_t input_log_counter = 0;
             if (++input_log_counter % 300 == 0) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: P1 sending input 0x%04X (live_p1_input=0x%08X)", 
-                           p1_input, live_p1_input);
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: HOST sending P1 input 0x%04X via handle %d", 
+                           p1_input, local_player_handle);
             }
         } else {
+            // CLIENT: Send P2 input (local_player_handle should be 1) 
             uint16_t p2_input = (uint16_t)(live_p2_input & 0x7FF);
             gekko_add_local_input(gekko_session, local_player_handle, &p2_input);
             
             static uint32_t input_log_counter = 0;
             if (++input_log_counter % 300 == 0) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: P2 sending input 0x%04X (live_p2_input=0x%08X)", 
-                           p2_input, live_p2_input);
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: CLIENT sending P2 input 0x%04X via handle %d", 
+                           p2_input, local_player_handle);
             }
         }
     }
@@ -344,6 +340,20 @@ void ProcessGekkoNetFrame() {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Session Started!");
             gekko_session_started = true;
             gekko_frame_control_enabled = true;
+            
+            // CRITICAL: Reset synchronization point like BSNES emulator->power()
+            // This ensures both clients start from identical state
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Synchronization reset - both clients starting from frame 0");
+            // Reset frame counter to ensure sync
+            uint32_t* frame_counter = (uint32_t*)FM2K::State::Memory::FRAME_COUNTER_ADDR;
+            if (frame_counter && !IsBadWritePtr(frame_counter, sizeof(uint32_t))) {
+                *frame_counter = 0;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Reset frame counter to 0 for perfect sync");
+            }
+            
+            // Mark session as ready for true BSNES-style operation
+            gekko_session_ready = true;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Session is now ready - both clients synchronized");
         }
     }
     
@@ -353,9 +363,7 @@ void ProcessGekkoNetFrame() {
     int update_count = 0;
     auto updates = gekko_update_session(gekko_session, &update_count);
     
-    // Reset frame advance flag - will be set by AdvanceEvent if we should advance
-    can_advance_frame = false;
-    use_networked_inputs = false;
+    // Frame advance flag already reset at start of function
     
     for (int i = 0; i < update_count; i++) {
         auto update = updates[i];
@@ -374,7 +382,7 @@ void ProcessGekkoNetFrame() {
                 break;
                 
             case AdvanceEvent:
-                // This is the key - only advance when GekkoNet says so (like BSNES emulator->run())
+                // CRITICAL: This is the ONLY place where frame advancement is allowed (like BSNES emulator->run())
                 can_advance_frame = true;
                 use_networked_inputs = true;
                 gekko_frame_control_enabled = true;
@@ -388,12 +396,110 @@ void ProcessGekkoNetFrame() {
                     networked_p2_input = networked_inputs[1];
                     
                     static uint32_t advance_counter = 0;
-                    if (++advance_counter % 300 == 0) {
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent #%d - P1=0x%04X P2=0x%04X", 
-                                   advance_counter, networked_p1_input, networked_p2_input);
-                    }
+                    advance_counter++;
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent #%d (frame %d) - P1=0x%04X P2=0x%04X", 
+                               advance_counter, update->data.adv.frame, networked_p1_input, networked_p2_input);
+                } else {
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent received but no input data available");
                 }
                 break;
         }
     }
-} 
+}
+
+// COMPLETE MAIN LOOP REPLACEMENT: This completely replaces FM2K's main loop
+// with native GekkoNet integration, like how BSNES replaces the emulator loop
+BOOL GekkoNet_MainLoop() {
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Starting complete main loop replacement");
+    
+    // Apply character select patches
+    ApplyCharacterSelectModePatches();
+    
+    // Get original function pointers for calling game logic
+    extern int (__cdecl *original_update_game)();
+    extern void (__cdecl *original_render_game)();
+    extern int (__cdecl *original_process_inputs)();
+    
+    // FM2K runs at 100 FPS (10ms per frame)
+    const DWORD FRAME_TIME_MS = 10;
+    DWORD last_frame_time = timeGetTime();
+    
+    // Initial game warmup - 8 frames like original (but controlled by GekkoNet)
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Starting initial warmup frames");
+    for (int warmup = 0; warmup < 8; warmup++) {
+        // Process GekkoNet for warmup frames
+        ProcessGekkoNetFrame();
+        
+        if (original_update_game) {
+            original_update_game();
+        }
+    }
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Warmup complete, starting main loop");
+    
+    // Main loop with integrated GekkoNet control
+    MSG msg;
+    BOOL should_continue = TRUE;
+    
+    while (should_continue) {
+        // Handle Windows messages (like original)
+        while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) {
+                should_continue = FALSE;
+                break;
+            }
+            TranslateMessage(&msg);
+            DispatchMessageA(&msg);
+        }
+        
+        if (!should_continue) break;
+        
+        // GEKKONET FRAME CONTROL: This is the key difference from original
+        // Instead of time-based frames, we use GekkoNet AdvanceEvent
+        ProcessGekkoNetFrame();
+        
+        // CRITICAL FIX: Only advance frames when GekkoNet explicitly allows it via AdvanceEvents
+        // This removes the architectural flaw that allowed Client 1 to run ahead freely
+        if (can_advance_frame) {
+            // Process one game frame ONLY when GekkoNet AdvanceEvent allows it (like BSNES line 218)
+            if (original_process_inputs) {
+                original_process_inputs();
+            }
+            
+            if (original_update_game) {
+                original_update_game();
+            }
+            
+            if (original_render_game) {
+                original_render_game();
+            }
+            
+            static uint32_t frame_count = 0;
+            if (++frame_count % 300 == 0) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet MainLoop: Advanced frame %d (AdvanceEvent)", frame_count);
+            }
+        } else {
+            // TRUE BSNES BLOCKING: Wait for AdvanceEvent, never advance freely
+            // This ensures perfect synchronization between clients
+            static uint32_t blocked_count = 0;
+            if (++blocked_count % 300 == 0) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet MainLoop: Blocked frame %d (waiting for AdvanceEvent)", blocked_count);
+            }
+            
+            // Small sleep to prevent 100% CPU usage while blocking
+            Sleep(1);
+        }
+        
+        // Handle additional Windows messages that might have arrived
+        while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) {
+                should_continue = FALSE;
+                break;
+            }
+            TranslateMessage(&msg);
+            DispatchMessageA(&msg);
+        }
+    }
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Main loop ended");
+    return FALSE; // Return FALSE to end the application
+}

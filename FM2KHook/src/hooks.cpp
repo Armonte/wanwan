@@ -9,6 +9,8 @@
 #include "css_handler.h"
 #include "gekkonet_hooks.h"
 #include <MinHook.h>
+#include <cstdlib>
+#include <cstring>
 
 bool InitializeHooks() {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Initializing MinHook...");
@@ -76,6 +78,9 @@ bool InitializeHooks() {
     // Apply boot-to-character-select patches directly
     ApplyBootToCharacterSelectPatches();
     
+    // Apply character select mode patches
+    ApplyCharacterSelectModePatches();
+    
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SUCCESS FM2K HOOK: BSNES-level architecture installed successfully!");
     
     return true;
@@ -88,7 +93,9 @@ void ShutdownHooks() {
 }
 
 int __cdecl Hook_UpdateGameState() {
-    // This is the main entry point for our custom logic each frame
+    // Frame control is now handled at the main loop level (Hook_RunGameLoop)
+    // This function just processes per-frame logic when the main loop allows it to run
+    
     MonitorGameStateTransitions();
     CheckForDebugCommands();
     CheckForHotkeys();
@@ -108,15 +115,21 @@ void __cdecl Hook_RenderGame() {
 }
 
 BOOL __cdecl Hook_RunGameLoop() {
-    // Set character select mode flag after memory clearing
-    uint8_t* char_select_mode_ptr = (uint8_t*)FM2K::State::Memory::CHARACTER_SELECT_MODE_ADDR;
-    if (!IsBadWritePtr(char_select_mode_ptr, sizeof(uint8_t))) {
-        DWORD old_protect;
-        if (VirtualProtect(char_select_mode_ptr, sizeof(uint8_t), PAGE_READWRITE, &old_protect)) {
-            *char_select_mode_ptr = 1;
-            VirtualProtect(char_select_mode_ptr, sizeof(uint8_t), old_protect, &old_protect);
-        }
-    }
+    // COMPLETE MAIN LOOP REPLACEMENT: Like BSNES, we completely replace the game loop
+    // instead of trying to patch the existing complex one
     
-    return original_run_game_loop ? original_run_game_loop() : FALSE;
+    // Determine if we should use GekkoNet rollback
+    char* env_offline = getenv("FM2K_TRUE_OFFLINE");
+    bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
+    bool dual_client_mode = (::player_index == 0 || ::player_index == 1);
+    bool use_gekko_replacement = !is_true_offline && dual_client_mode && gekko_initialized && gekko_session;
+    
+    if (use_gekko_replacement) {
+        // COMPLETE GEKKO-INTEGRATED MAIN LOOP: This replaces the entire original loop
+        return GekkoNet_MainLoop();
+    } else {
+        // Use original main loop for offline/single-player
+        ApplyCharacterSelectModePatches();
+        return original_run_game_loop ? original_run_game_loop() : FALSE;
+    }
 }

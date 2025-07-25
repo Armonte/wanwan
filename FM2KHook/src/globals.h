@@ -1,8 +1,51 @@
-#pragma once
+#ifndef GLOBALS_H
+#define GLOBALS_H
 
+#include <windows.h>
+#include <cstdint>
+#include <vector>
+#include <string>
 #include "common.h"
 #include "state_manager.h" // For GameState and MinimalGameState
 #include "gekkonet.h"
+
+// Typedefs for original game functions
+typedef int(__cdecl* ProcessGameInputsFunc)();
+typedef int(__cdecl* GetPlayerInputFunc)(int, int);
+typedef int(__cdecl* UpdateGameStateFunc)();
+typedef BOOL(__cdecl* RunGameLoopFunc)();
+typedef void(__cdecl* RenderGameFunc)();
+typedef uint32_t(__cdecl* GameRandFunc)();
+typedef void(__cdecl* ProcessInputHistoryFunc)();
+typedef int(__cdecl* CheckGameContinueFunc)();
+
+// Function pointers for original game functions
+extern ProcessGameInputsFunc original_process_inputs;
+extern GetPlayerInputFunc original_get_player_input;
+extern UpdateGameStateFunc original_update_game;
+extern RunGameLoopFunc original_run_game_loop;
+extern RenderGameFunc original_render_game;
+extern GameRandFunc original_game_rand;
+extern ProcessInputHistoryFunc original_process_input_history;
+extern CheckGameContinueFunc original_check_game_continue;
+
+// Global variables for manual save/load requests
+extern bool manual_save_requested;
+extern bool manual_load_requested;
+extern uint32_t target_save_slot;
+extern uint32_t target_load_slot;
+
+// Deterministic RNG state
+extern uint32_t deterministic_rng_seed;
+extern bool use_deterministic_rng;
+
+// CSS Input injection system
+struct DelayedInput {
+    uint16_t input_value;
+    uint8_t frames_remaining;
+    bool active;
+};
+extern DelayedInput css_delayed_inputs[2];
 
 // Key FM2K addresses
 namespace FM2K::State::Memory {
@@ -57,6 +100,7 @@ namespace FM2K::State::Memory {
 extern GekkoSession* gekko_session;
 extern bool gekko_initialized;
 extern bool gekko_session_started;
+extern bool gekko_session_ready;  // True when session is fully synchronized and ready
 extern bool is_online_mode;
 extern bool is_host;
 extern uint8_t player_index;
@@ -94,26 +138,6 @@ extern uint32_t handshake_timeout_frames;    // Timeout counter for network hand
 extern uint32_t advance_timeout_frames;      // Timeout counter for frame advance waits
 extern uint32_t last_valid_players_frame;    // Last frame when AllPlayersValid() was true
 
-// Function pointers for original functions
-typedef int(__cdecl* ProcessGameInputsFunc)();
-typedef int(__cdecl* GetPlayerInputFunc)(int playerIndex, int inputType);
-typedef int(__cdecl* UpdateGameStateFunc)();
-typedef BOOL(__cdecl* RunGameLoopFunc)();
-
-extern ProcessGameInputsFunc original_process_inputs;
-extern GetPlayerInputFunc original_get_player_input;
-extern UpdateGameStateFunc original_update_game;
-extern RunGameLoopFunc original_run_game_loop;
-
-// Additional function pointers for main loop implementation
-typedef void(__cdecl* RenderGameFunc)();
-typedef void(__cdecl* ProcessInputHistoryFunc)(uint32_t input_data);
-typedef int(__cdecl* CheckGameContinueFunc)();
-
-extern RenderGameFunc original_render_game;
-extern ProcessInputHistoryFunc original_process_input_history;
-extern CheckGameContinueFunc original_check_game_continue;
-
 // State manager variables
 extern uint32_t last_auto_save_frame;
 extern bool state_manager_initialized;
@@ -137,15 +161,9 @@ const char* GetGameModeString(uint32_t mode);
 
 
 // Input injection system for CSS color selection
-struct DelayedInput {
-    uint16_t input_value;
-    uint8_t frames_remaining;
-    bool active;
-};
-
-extern DelayedInput css_delayed_inputs[2]; // P1, P2
-
 void ProcessCSSDelayedInputs();
 void QueueCSSDelayedInput(int player, uint16_t input, uint8_t delay_frames = 1);
 uint16_t ExtractColorButton(uint16_t input_flags);
-void InjectPlayerInput(int player, uint16_t input_value); 
+void InjectPlayerInput(int player, uint16_t input_value);
+
+#endif // GLOBALS_H 

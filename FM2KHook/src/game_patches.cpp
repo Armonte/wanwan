@@ -31,6 +31,19 @@ void ApplyBootToCharacterSelectPatches() {
     
 }
 
+// Set character select mode flag - this ensures VS player mode instead of VS CPU
+void ApplyCharacterSelectModePatches() {
+    uint8_t* char_select_mode_ptr = (uint8_t*)FM2K::State::Memory::CHARACTER_SELECT_MODE_ADDR;
+    if (!IsBadWritePtr(char_select_mode_ptr, sizeof(uint8_t))) {
+        DWORD old_protect;
+        if (VirtualProtect(char_select_mode_ptr, sizeof(uint8_t), PAGE_READWRITE, &old_protect)) {
+            *char_select_mode_ptr = 1;
+            VirtualProtect(char_select_mode_ptr, sizeof(uint8_t), old_protect, &old_protect);
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Set character select mode to VS player");
+        }
+    }
+}
+
 // Hook for game_rand function to ensure deterministic RNG
 uint32_t __cdecl Hook_GameRand() {
     if (use_deterministic_rng) {

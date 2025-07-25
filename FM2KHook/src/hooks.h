@@ -1,6 +1,13 @@
-#pragma once
+#ifndef HOOKS_H
+#define HOOKS_H
 
-#include "common.h"
+#include "globals.h"
 
+// Hook function declarations
 bool InitializeHooks();
-void ShutdownHooks(); 
+void ShutdownHooks();
+int __cdecl Hook_UpdateGameState();
+void __cdecl Hook_RenderGame();
+BOOL __cdecl Hook_RunGameLoop();
+
+#endif // HOOKS_H 

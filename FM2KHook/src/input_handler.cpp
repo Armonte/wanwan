@@ -208,10 +208,23 @@ uint32_t ConvertNetworkInputToGameFormat(uint32_t network_input) {
 // NEW GEKKONET INTEGRATION: Complete replacement for process_game_inputs
 // Follows BSNES-netplay pattern: GekkoNet for input sync + FM2K's processing logic
 int __cdecl FM2K_ProcessGameInputs_GekkoNet() {
+    // URGENT DEBUG: Log at the very start EVERY TIME to catch execution issues
+    static uint32_t entry_counter = 0;
+    entry_counter++;
+    if (entry_counter <= 5 || entry_counter % 50 == 0) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ENTRY DEBUG: FM2K_ProcessGameInputs_GekkoNet() called #%d", entry_counter);
+    }
+    
     // COMPLETE REIMPLEMENTATION: Following exact original algorithm from analysis
     static uint32_t call_count = 0;
     if (++call_count <= 3 || call_count % 100 == 0) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "COMPLETE REIMPL called #%d", call_count);
+    }
+    
+    // DEBUG: Immediate logging to see if we get past this point
+    static uint32_t flow_counter = 0;
+    if (++flow_counter % 50 == 0) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FLOW DEBUG: About to check GekkoNet conditions... (call #%d)", flow_counter);
     }
     
     // BSNES-STYLE FRAME CONTROL: Process GekkoNet and block if no AdvanceEvent
@@ -220,18 +233,29 @@ int __cdecl FM2K_ProcessGameInputs_GekkoNet() {
     bool dual_client_mode = (::player_index == 0 || ::player_index == 1);
     bool use_gekko = !is_true_offline || dual_client_mode;
     
-    if (use_gekko && gekko_initialized && gekko_session) {
-        // Run the GekkoNet processing (from Hook_ProcessGameInputs)
-        ProcessGekkoNetFrame();
-        
-        // CRITICAL: Block frame advancement if no AdvanceEvent
-        if (!can_advance_frame) {
-            static uint32_t block_counter = 0;
-            if (++block_counter % 120 == 0) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: BLOCKING FRAME #%d - waiting for AdvanceEvent [session_started=%s]", 
-                           block_counter, gekko_session_started ? "YES" : "NO");
-            }
-            return 0; // Don't process this frame - this is true frame control
+    // DEBUG: URGENT - Log conditions EVERY time for the first few calls
+    static uint32_t condition_counter = 0;
+    if (++condition_counter <= 10 || condition_counter % 50 == 0) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CONDITION DEBUG #%d: use_gekko=%s, gekko_initialized=%s, gekko_session=%p, player_index=%d", 
+                   condition_counter, use_gekko ? "YES" : "NO", gekko_initialized ? "YES" : "NO", gekko_session, ::player_index);
+    }
+    
+    // BSNES-STYLE: GekkoNet frame control is now handled in Hook_UpdateGameState()
+    // Input processing just needs to use networked inputs when available
+    if (use_gekko && gekko_initialized && gekko_session && use_networked_inputs) {
+        // Use synchronized inputs from GekkoNet (set by ProcessGekkoNetFrame in Hook_UpdateGameState)
+        // This is equivalent to BSNES's netplay.inputs usage after emulator->run()
+        static uint32_t input_counter = 0;
+        if (++input_counter <= 5 || input_counter % 100 == 0) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GEKKO INPUT: Using networked P1=0x%03X P2=0x%03X (call #%d)", 
+                       networked_p1_input, networked_p2_input, input_counter);
+        }
+    } else {
+        // DEBUG: Log why GekkoNet frame control is disabled
+        static uint32_t disabled_counter = 0;
+        if (++disabled_counter % 300 == 0) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet Frame Control DISABLED: use_gekko=%s, gekko_initialized=%s, gekko_session=%p", 
+                       use_gekko ? "YES" : "NO", gekko_initialized ? "YES" : "NO", gekko_session);
         }
     }
     
@@ -464,55 +488,8 @@ int __cdecl Hook_ProcessGameInputs() {
             }
         }
         
-        // STEP 4: Always process updates (SaveEvent, LoadEvent, AdvanceEvent)
-        // This is the core of BSNES gekko_update_session processing
-        gekko_network_poll(gekko_session);
-        int update_count = 0;
-        auto updates = gekko_update_session(gekko_session, &update_count);
-        
-        // Reset frame advance flag - will be set by AdvanceEvent if we should advance
-        can_advance_frame = false;
-        use_networked_inputs = false;
-        
-        for (int i = 0; i < update_count; i++) {
-            auto update = updates[i];
-            switch (update->type) {
-                case SaveEvent:
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SaveEvent frame %d", update->data.save.frame);
-                    // Minimal state like BSNES - just 4 bytes
-                    *update->data.save.checksum = 0;
-                    *update->data.save.state_len = sizeof(int32_t);
-                    memcpy(update->data.save.state, &update->data.save.frame, sizeof(int32_t));
-                    break;
-                    
-                case LoadEvent:
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: LoadEvent frame %d", update->data.load.frame);
-                    // TODO: Implement rollback state loading
-                    break;
-                    
-                case AdvanceEvent:
-                    // This is the key - only advance when GekkoNet says so (like BSNES emulator->run())
-                    can_advance_frame = true;
-                    use_networked_inputs = true;
-                    gekko_frame_control_enabled = true;
-                    
-                    // Copy networked inputs from GekkoNet (like BSNES memcpy)
-                    if (update->data.adv.inputs && update->data.adv.input_len >= sizeof(uint16_t) * 2) {
-                        uint16_t* networked_inputs = (uint16_t*)update->data.adv.inputs;
-                        static uint16_t p1_networked_input = 0;
-                        static uint16_t p2_networked_input = 0;
-                        p1_networked_input = networked_inputs[0];
-                        p2_networked_input = networked_inputs[1];
-                        
-                        static uint32_t advance_counter = 0;
-                        if (++advance_counter % 300 == 0) {
-                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent #%d - P1=0x%04X P2=0x%04X", 
-                                       advance_counter, p1_networked_input, p2_networked_input);
-                        }
-                    }
-                    break;
-            }
-        }
+        // STEP 4: This is now handled entirely by ProcessGekkoNetFrame() for single-point control
+        // NO duplicate GekkoNet processing here
         
         // BSNES-STYLE BLOCKING: Only advance frame if we got AdvanceEvent
         // This is the critical control point - like BSNES emulator->run()
@@ -769,111 +746,17 @@ int __cdecl Hook_ProcessGameInputs() {
     }
     
     
-    // CORRECT GEKKONET PROCESSING: Following bsnes-netplay pattern
-    // Game runs normally, GekkoNet processes events each frame and provides synchronized inputs
-    if (use_gekko && gekko_initialized && gekko_session && gekko_session_started) {
+    // SINGLE-POINT GEKKONET PROCESSING: Use ProcessGekkoNetFrame() for all GekkoNet logic
+    // This eliminates duplicate processing and ensures proper frame control
+    if (use_gekko && gekko_initialized && gekko_session) {
+        // All GekkoNet processing is now handled by ProcessGekkoNetFrame() only
+        // This follows the BSNES single-point control pattern
         
-        // Inputs already sent during handshake phase above
-        
-        // Process GekkoNet events and advance frame (like bsnes-netplay)
-        gekko_network_poll(gekko_session);
-        
-        // Process session events (like bsnes-netplay)
-        int session_event_count = 0;
-        auto session_events = gekko_session_events(gekko_session, &session_event_count);
-        for (int i = 0; i < session_event_count; i++) {
-            auto event = session_events[i];
-            if (event->type == SessionStarted) {
-                // This is when the session actually starts (like bsnes-netplay)
-                gekko_session_started = true;
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Session started!");
-            } else if (event->type == DesyncDetected) {
-                auto desync = event->data.desynced;
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet DESYNC detected at frame %d", desync.frame);
-            } else if (event->type == PlayerDisconnected) {
-                auto disco = event->data.disconnected;
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "DISCONNECT: handle %d", disco.handle);
-            }
-        }
-        
-        // Process updates (like bsnes-netplay) - ONLY if session is started
-        if (gekko_session_started) {
-            int update_count = 0;
-            auto updates = gekko_update_session(gekko_session, &update_count);
-            
-            for (int i = 0; i < update_count; i++) {
-                auto update = updates[i];
-                
-                switch (update->type) {
-                    case AdvanceEvent: {
-                        // This is the authoritative event that drives the game forward (like bsnes-netplay)
-                        uint16_t received_p1 = ((uint16_t*)update->data.adv.inputs)[0];
-                        uint16_t received_p2 = ((uint16_t*)update->data.adv.inputs)[1];
-                        
-                        static uint32_t debug_count = 0;
-                        if (++debug_count % 300 == 0) { // Log every 5 seconds
-                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT DEBUG: AdvanceEvent received inputs[0]=0x%03X, inputs[1]=0x%03X", 
-                                        received_p1, received_p2);
-                        }
-                        
-                        // BSNES APPROACH: Simple direct mapping - inputs[0]=P1, inputs[1]=P2
-                        // Set networked inputs (used by Hook_GetPlayerInput when use_networked_inputs=true)
-                        networked_p1_input = received_p1;
-                        networked_p2_input = received_p2;
-                        use_networked_inputs = true;
-                        
-                        static uint32_t debug_networked_count = 0;
-                        if (++debug_networked_count % 50 == 0) { // Log every 50 AdvanceEvents
-                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "NETWORKED INPUT SET: P1=0x%03X, P2=0x%03X, use_networked_inputs=true", 
-                                       networked_p1_input, networked_p2_input);
-                        }
-
-                        // CRITICAL: Set frame_advanced=true to prevent calling original_process_inputs()
-                        // which would overwrite the networked inputs with hardware inputs
-                        frame_advanced = true;  // Prevent double call to original_process_inputs()
-                        break;
-                    }
-                    case SaveEvent: {
-                        // Save current game state for rollback (like bsnes-netplay)
-                        // NO BATTLE MODE CHECK - SaveEvent should always be processed
-                        static SaveStateData local_rollback_slots[16];
-                        uint32_t rollback_slot = update->data.save.frame % 16;
-                        SaveStateData* rollback_save_slot = &local_rollback_slots[rollback_slot];
-                        
-                        if (SaveCompleteGameState(rollback_save_slot, update->data.save.frame)) {
-                            void* state_buffer = update->data.save.state;
-                            size_t* state_len = update->data.save.state_len;
-                            uint32_t* checksum = update->data.save.checksum;
-                            
-                            // The "state" for GekkoNet is just the checksum (like bsnes-netplay)
-                            *(uint32_t*)state_buffer = rollback_save_slot->checksum;
-                            *state_len = sizeof(uint32_t);
-                            *checksum = rollback_save_slot->checksum;
-                        }
-                        break;
-                    }
-                    case LoadEvent: {
-                        // Restore game state for rollback (like bsnes-netplay)
-                        static SaveStateData local_rollback_slots[16];
-                        uint32_t rollback_slot = update->data.load.frame % 16;
-                        SaveStateData* rollback_save_slot = &local_rollback_slots[rollback_slot];
-                        
-                        if (LoadCompleteGameState(rollback_save_slot)) {
-                            g_frame_counter = update->data.load.frame;
-                        }
-                        break;
-                    }
-                }
-            }
+        if (use_networked_inputs) {
+            // GekkoNet provided synchronized inputs - use them and advance frame
+            frame_advanced = true;
         } else {
-            // Session not started yet - just process events to keep connection alive
-            static int waiting_counter = 0;
-            if (++waiting_counter % 60 == 0) { // Log every second
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Waiting for all players to connect...");
-            }
-        }
-        
-        if (!frame_advanced) {
+            // No AdvanceEvent received - block the frame
             return 0;
         }
     } else {

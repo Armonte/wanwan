@@ -417,8 +417,11 @@ void ProcessGekkoNetFrame() {
                     *update->data.save.state_len = sizeof(int32_t);
                     memcpy(update->data.save.state, &frame, sizeof(int32_t));
                     
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                               "GekkoNet: Saved complete state for frame %d locally", frame);
+                    static uint32_t save_log_counter = 0;
+                    if (++save_log_counter % 300 == 0) {
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                                   "GekkoNet: Saved complete state for frame %d locally (count=%d)", frame, save_log_counter);
+                    }
                 } else {
                     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, 
                                 "GekkoNet: Failed to save state for frame %d", frame);
@@ -471,8 +474,10 @@ void ProcessGekkoNetFrame() {
                     
                     static uint32_t advance_counter = 0;
                     advance_counter++;
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent #%d (frame %d) - P1=0x%04X P2=0x%04X", 
-                               advance_counter, update->data.adv.frame, networked_p1_input, networked_p2_input);
+                    if (advance_counter % 300 == 0 || (networked_p1_input != 0 || networked_p2_input != 0) && advance_counter % 60 == 0) {
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent #%d (frame %d) - P1=0x%04X P2=0x%04X", 
+                                   advance_counter, update->data.adv.frame, networked_p1_input, networked_p2_input);
+                    }
                 } else {
                     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent received but no input data available");
                 }

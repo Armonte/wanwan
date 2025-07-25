@@ -1,6 +1,6 @@
 #include "globals.h"
 
-// GekkoNet session
+// GekkoNet session state
 GekkoSession* gekko_session = nullptr;
 bool gekko_initialized = false;
 bool gekko_session_started = false;
@@ -26,7 +26,7 @@ uint32_t backup_p1_input = 0;  // Raw inputs from game for debugging
 uint32_t backup_p2_input = 0;
 
 // Frame advance control (GekkoNet synchronization)
-bool can_advance_frame = true;        // Allow frame advancement initially
+bool can_advance_frame = false;       // Block frame advancement until GekkoNet sends AdvanceEvent
 bool waiting_for_gekko_advance = false; // Not waiting initially
 bool gekko_frame_control_enabled = false; // Disabled by default, enable after GekkoNet starts
 
@@ -47,8 +47,22 @@ RunGameLoopFunc original_run_game_loop = nullptr;
 
 // Additional function pointers for main loop implementation
 RenderGameFunc original_render_game = nullptr;
+GameRandFunc original_game_rand = nullptr;
 ProcessInputHistoryFunc original_process_input_history = nullptr;
 CheckGameContinueFunc original_check_game_continue = nullptr;
+
+// Global variables for manual save/load requests
+bool manual_save_requested = false;
+bool manual_load_requested = false;
+uint32_t target_save_slot = 0;
+uint32_t target_load_slot = 0;
+
+// Deterministic RNG state
+uint32_t deterministic_rng_seed = 12345678;
+bool use_deterministic_rng = false;
+
+// CSS Input injection system
+DelayedInput css_delayed_inputs[2] = {{0, 0, false}, {0, 0, false}};
 
 // State manager variables
 uint32_t last_auto_save_frame = 0;

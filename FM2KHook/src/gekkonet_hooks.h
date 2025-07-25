@@ -1,11 +1,13 @@
 #pragma once
 
 #include "common.h"
+#include <vector>
+#include <string>
 
 bool InitializeGekkoNet();
 void CleanupGekkoNet();
-bool AllPlayersValid();
-void ConfigureNetworkMode(bool online_mode, bool host_mode);
+void GekkoNetUpdate();
+void ProcessGekkoNetFrame();
 
 // Network connection info for CSS TCP sync
 uint16_t GetGekkoLocalPort();

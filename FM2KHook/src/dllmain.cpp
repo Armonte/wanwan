@@ -35,12 +35,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             char* env_offline = getenv("FM2K_TRUE_OFFLINE");
             bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
             
+            // FIXED: Enable shared memory for network sessions (GekkoNet requires it)
+            // Only disable for true offline mode if conflicts occur
             if (is_true_offline) {
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "TRUE OFFLINE mode detected - enabling shared memory for debugging features");
                 InitializeSharedMemory();
             } else {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Network mode detected - shared memory disabled to prevent dual client crashes");
-                // TEMPORARILY DISABLED: InitializeSharedMemory(); // Causing dual client crashes
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Network mode detected - enabling shared memory for GekkoNet coordination");
+                InitializeSharedMemory(); // FIXED: Enable for GekkoNet networking
             }
             
             char* forced_seed = getenv("FM2K_FORCE_RNG_SEED");
@@ -63,6 +65,21 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                 return FALSE;
             }
             
+            // DUAL CLIENT TESTING: Initialize GekkoNet immediately when player_index is set
+            bool dual_client_mode = (::player_index == 0 || ::player_index == 1);
+            bool should_init_gekko = !is_true_offline || dual_client_mode;
+            
+            if (should_init_gekko) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DLL_MAIN: DUAL CLIENT mode detected (player_index=%d) - initializing GekkoNet early...", ::player_index);
+                if (InitializeGekkoNet()) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DLL_MAIN: GekkoNet initialized successfully!");
+                } else {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "DLL_MAIN: GekkoNet initialization failed!");
+                }
+            } else {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DLL_MAIN: SINGLE CLIENT offline mode - GekkoNet will be skipped");
+            }
+            
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SUCCESS FM2K HOOK: DLL initialization complete!");
             break;
         }
@@ -73,7 +90,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         CleanupGekkoNet();
         CleanupFileLogging();
         CleanupInputRecording();
-        // TEMPORARILY DISABLED: CleanupSharedMemory(); // Was disabled in init
+        CleanupSharedMemory(); // FIXED: Re-enabled to match init
         ShutdownHooks();
         break;
     }

@@ -109,7 +109,7 @@ bool InitializeGekkoNet() {
     GekkoConfig config;
     config.num_players = 2;
     config.max_spectators = 0;
-    config.input_prediction_window = 3;   // Smaller window for tighter sync during testing
+    config.input_prediction_window = 10;   // Match OnlineSession example for proper rollback
     config.input_size = sizeof(uint16_t); // 2 bytes per input
     config.state_size = sizeof(int32_t); // 4 bytes for network state (exactly like bsnes)
     config.desync_detection = true;
@@ -379,6 +379,23 @@ void ProcessGekkoNetFrame() {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Player Connected - handle %d", event->data.connected.handle);
         } else if (event->type == PlayerDisconnected) {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Player Disconnected - handle %d", event->data.disconnected.handle);
+        } else if (event->type == DesyncDetected) {
+            // CRITICAL: Handle desync detection events - BUT ONLY LOG THE FIRST ONE
+            static bool first_desync_logged = false;
+            if (!first_desync_logged) {
+                auto desync_data = event->data.desynced;
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, 
+                            "FIRST DESYNC DETECTED! Frame=%d Local=0x%08X Remote=0x%08X Handle=%d", 
+                            desync_data.frame, desync_data.local_checksum, 
+                            desync_data.remote_checksum, desync_data.remote_handle);
+                
+                // Generate detailed desync report for first desync only
+                GenerateDesyncReport(desync_data.frame, desync_data.local_checksum, desync_data.remote_checksum);
+                LogMinimalGameStateDesync(desync_data.frame, desync_data.local_checksum, desync_data.remote_checksum);
+                
+                first_desync_logged = true;
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "DESYNC LOGGING DISABLED - only first desync logged to prevent spam");
+            }
         } else if (event->type == SessionStarted) {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Session Started!");
             gekko_session_started = true;
@@ -405,6 +422,28 @@ void ProcessGekkoNetFrame() {
     gekko_network_poll(gekko_session);
     int update_count = 0;
     auto updates = gekko_update_session(gekko_session, &update_count);
+    
+    // DEBUG: Log update events
+    static uint32_t update_log_counter = 0;
+    if (update_count > 0 && ++update_log_counter <= 50) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                   "📊 GekkoNet Updates: count=%d, frame=%u", update_count, g_frame_counter);
+        for (int i = 0; i < update_count && i < 5; i++) {
+            const char* event_name;
+            switch(updates[i]->type) {
+                case SaveEvent: event_name = "SaveEvent"; break;
+                case LoadEvent: event_name = "LoadEvent"; break;
+                case AdvanceEvent: event_name = "AdvanceEvent"; break;
+                default: event_name = "Unknown"; break;
+            }
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "   [%d] %s (type=%d)", i, event_name, updates[i]->type);
+            
+            // SPECIAL: Log LoadEvent details immediately when detected
+            if (updates[i]->type == LoadEvent) {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "!!! FOUND LoadEvent: frame=%u !!!", updates[i]->data.load.frame);
+            }
+        }
+    }
     
     // BSNES-STYLE: Handle stalling due to network issues (lines 224-230)
     if (update_count == 0) {
@@ -462,10 +501,18 @@ void ProcessGekkoNetFrame() {
                     rollback_slot.is_valid = true;
                     rollback_slot.access_count++;  // Track buffer usage
                     
-                    // Return minimal network state (like BSNES - just 4 bytes)
-                    *update->data.save.checksum = 0; // Can be used for desync detection later
+                    // Return checksum for desync detection (like BSNES)
+                    *update->data.save.checksum = rollback_slot.state_data->checksum;
                     *update->data.save.state_len = sizeof(int32_t);
                     memcpy(update->data.save.state, &frame, sizeof(int32_t));
+                    
+                    // DEBUG: Log what we're sending to GekkoNet
+                    static uint32_t checksum_log_counter = 0;
+                    if (++checksum_log_counter <= 20) { // Log first 20 frames
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                                   "GekkoNet SaveEvent: Sending checksum 0x%08X for frame %u to GekkoNet", 
+                                   rollback_slot.state_data->checksum, frame);
+                    }
                     
                     static uint32_t save_log_counter = 0;
                     if (++save_log_counter % 300 == 0) {
@@ -487,7 +534,7 @@ void ProcessGekkoNetFrame() {
                 // BUFFER HEALTH: Track load operations
                 buffer_load_count++;
                 
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: LoadEvent frame %d (buffer index %d) - enabling run-ahead mode", 
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: ROLLBACK LoadEvent frame %d (buffer index %d) - enabling run-ahead mode", 
                            frame, buffer_index);
                 
                 // BSNES PATTERN: Load complete state from local storage (like BSNES emulator->unserialize())
@@ -505,7 +552,7 @@ void ProcessGekkoNetFrame() {
                         netplay_run_ahead_mode = true;
                         
                         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                                   "GekkoNet: Successfully loaded state for frame %d - run-ahead mode enabled", frame);
+                                   "GekkoNet: ROLLBACK SUCCESSFUL! Restored frame %d state - run-ahead mode enabled", frame);
                     } else {
                         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, 
                                     "GekkoNet: Failed to load state for frame %d", frame);
@@ -569,6 +616,10 @@ void ProcessGekkoNetFrame() {
                 } else {
                     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: AdvanceEvent received but no input data available");
                 }
+                break;
+                
+            default:
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: UNKNOWN EVENT TYPE %d - this might be a missed LoadEvent!", update->type);
                 break;
         }
     }

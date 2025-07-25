@@ -13,9 +13,11 @@ namespace FM2K {
 
 // MinimalGameState method implementations
 bool MinimalGameState::LoadFromMemory() {
-    // Read HP values
-    uint32_t* p1_hp_ptr = (uint32_t*)State::Memory::P1_HP_ADDR;
-    uint32_t* p2_hp_ptr = (uint32_t*)State::Memory::P2_HP_ADDR;
+    // CHEATENGINE-VERIFIED ADDRESSES: Use exact addresses from WonderfulWorld_ver_0946.CT
+    
+    // Read HP values (CheatEngine entries 134-135: P1 HP = 004DFC85, P2 HP = 004EDCC4)
+    uint32_t* p1_hp_ptr = (uint32_t*)0x004DFC85;  // CheatEngine verified
+    uint32_t* p2_hp_ptr = (uint32_t*)0x004EDCC4;  // CheatEngine verified
     uint32_t* p1_max_hp_ptr = (uint32_t*)0x4DFC85;  // P1_MAX_HP_ARTMONEY_ADDR
     uint32_t* p2_max_hp_ptr = (uint32_t*)0x4EDC4;   // P2_MAX_HP_ARTMONEY_ADDR
     
@@ -28,11 +30,11 @@ bool MinimalGameState::LoadFromMemory() {
     p1_max_hp = *p1_max_hp_ptr;
     p2_max_hp = *p2_max_hp_ptr;
     
-    // Read positions
-    uint32_t* p1_x_ptr = (uint32_t*)0x4ADCC3;  // P1_COORD_X_ADDR
-    uint16_t* p1_y_ptr = (uint16_t*)0x4ADCC7;  // P1_COORD_Y_ADDR
-    uint32_t* p2_x_ptr = (uint32_t*)0x4EDD02;  // P2_COORD_X_ADDR
-    uint16_t* p2_y_ptr = (uint16_t*)0x4EDD06;  // P2_COORD_Y_ADDR
+    // Read positions (CheatEngine entries 48-51: P1 X/Y = 004DFCC3/004DFCC7, P2 X/Y = 004EDD02/004EDD06)
+    uint32_t* p1_x_ptr = (uint32_t*)0x004DFCC3;  // CheatEngine verified "Coor X P1"
+    uint16_t* p1_y_ptr = (uint16_t*)0x004DFCC7;  // CheatEngine verified "Coor Y P1"
+    uint32_t* p2_x_ptr = (uint32_t*)0x004EDD02;  // CheatEngine verified "Coor X P2"
+    uint16_t* p2_y_ptr = (uint16_t*)0x004EDD06;  // CheatEngine verified "Coor Y P2"
     
     if (!p1_x_ptr || !p1_y_ptr || !p2_x_ptr || !p2_y_ptr) return false;
     if (IsBadReadPtr(p1_x_ptr, sizeof(uint32_t)) || IsBadReadPtr(p1_y_ptr, sizeof(uint16_t)) ||
@@ -43,9 +45,9 @@ bool MinimalGameState::LoadFromMemory() {
     p2_x = *p2_x_ptr;
     p2_y = *p2_y_ptr;
     
-    // Read timer and RNG
-    uint32_t* timer_ptr = (uint32_t*)State::Memory::GAME_TIMER_ADDR;
-    uint32_t* rng_ptr = (uint32_t*)State::Memory::RANDOM_SEED_ADDR;
+    // Read timer and RNG (CheatEngine entries 25,29,35: timer = 470050, round timer = 00470060, RNG = 41FB1C)
+    uint32_t* timer_ptr = (uint32_t*)0x470050;    // CheatEngine verified "g_actual_wanwan_timer"
+    uint32_t* rng_ptr = (uint32_t*)0x41FB1C;      // CheatEngine verified "g_rand"
     
     if (!timer_ptr || !rng_ptr) return false;
     if (IsBadReadPtr(timer_ptr, sizeof(uint32_t)) || IsBadReadPtr(rng_ptr, sizeof(uint32_t))) return false;

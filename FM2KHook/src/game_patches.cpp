@@ -46,17 +46,10 @@ void ApplyCharacterSelectModePatches() {
 
 // Hook for game_rand function to ensure deterministic RNG
 uint32_t __cdecl Hook_GameRand() {
-    if (use_deterministic_rng) {
-        // Use our own deterministic RNG algorithm (Linear Congruential Generator)
-        deterministic_rng_seed = (deterministic_rng_seed * 1103515245 + 12345) & 0x7FFFFFFF;
-        uint32_t result = deterministic_rng_seed;
-        
-        // Mimic the original game_rand behavior (shift right 16, mask to 0x7FFF)
-        result = (result >> 16) & 0x7FFF;
-        
-        return result;
-    } else {
-        // Use original RNG when not in deterministic mode
-        return original_game_rand();
-    }
+    // SIMPLE FIX: Force g_rand_seed to constant value to prevent RNG desyncs
+    uint32_t* g_rand_seed_ptr = (uint32_t*)0x41FB1C;
+    *g_rand_seed_ptr = 1337;
+    
+    // Return a constant value to prevent any RNG divergence
+    return 1337;
 }

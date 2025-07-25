@@ -93,9 +93,46 @@ void ShutdownHooks() {
 }
 
 int __cdecl Hook_UpdateGameState() {
-    // Frame control is now handled at the main loop level (Hook_RunGameLoop)
-    // This function just processes per-frame logic when the main loop allows it to run
+    // STARTUP SYNCHRONIZATION: Block during initialization phases before frame control
+    char* env_offline = getenv("FM2K_TRUE_OFFLINE");
+    bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
+    bool dual_client_mode = (::player_index == 0 || ::player_index == 1);
+    bool use_gekko = !is_true_offline && dual_client_mode;
     
+    // CRITICAL STARTUP BLOCKING: Block immediately when GekkoNet is active, regardless of session state
+    if (use_gekko && gekko_initialized && gekko_session) {
+        uint32_t* game_mode = (uint32_t*)0x470054;  // g_game_mode
+        bool is_initialization_phase = (*game_mode < 3000);  // Before battle mode
+        
+        if (is_initialization_phase) {
+            // Process GekkoNet events during initialization
+            ProcessGekkoNetFrame();
+            
+            // UNCONDITIONAL BLOCKING during startup - wait for session to be ready
+            if (!gekko_session_started) {
+                static uint32_t startup_block_counter = 0;
+                if (++startup_block_counter % 60 == 0) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                               "GekkoNet STARTUP BLOCK: Waiting for session start - game_mode=%d (#%d)", 
+                               *game_mode, startup_block_counter);
+                }
+                return 0; // Block until both clients connect
+            }
+            
+            // After session starts, use frame control blocking
+            if (gekko_frame_control_enabled && !can_advance_frame) {
+                static uint32_t frame_block_counter = 0;
+                if (++frame_block_counter % 120 == 0) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                               "GekkoNet FRAME BLOCK: Waiting for AdvanceEvent - game_mode=%d (#%d)", 
+                               *game_mode, frame_block_counter);
+                }
+                return 0; // Block until AdvanceEvent received
+            }
+        }
+    }
+    
+    // Normal per-frame logic
     MonitorGameStateTransitions();
     CheckForDebugCommands();
     CheckForHotkeys();
@@ -109,27 +146,41 @@ int __cdecl Hook_UpdateGameState() {
 }
 
 void __cdecl Hook_RenderGame() {
+    // STARTUP SYNCHRONIZATION: Also block rendering during initialization if needed
+    char* env_offline = getenv("FM2K_TRUE_OFFLINE");
+    bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
+    bool dual_client_mode = (::player_index == 0 || ::player_index == 1);
+    bool use_gekko = !is_true_offline && dual_client_mode;
+    
+    if (use_gekko && gekko_initialized && gekko_session) {
+        uint32_t* game_mode = (uint32_t*)0x470054;  // g_game_mode
+        bool is_initialization_phase = (*game_mode < 3000);  // Before battle mode
+        
+        if (is_initialization_phase) {
+            // Block rendering during startup until session ready
+            if (!gekko_session_started) {
+                return; // Skip rendering until both clients connect
+            }
+            
+            // Block rendering during frame sync
+            if (gekko_frame_control_enabled && !can_advance_frame) {
+                return; // Skip rendering until AdvanceEvent
+            }
+        }
+    }
+    
     if (original_render_game) {
         original_render_game();
     }
 }
 
 BOOL __cdecl Hook_RunGameLoop() {
-    // COMPLETE MAIN LOOP REPLACEMENT: Like BSNES, we completely replace the game loop
-    // instead of trying to patch the existing complex one
+    // STRATEGY CHANGE: Use original main loop but control through hooks
+    // The original loop has sophisticated timing with timeGetTime() and frame skip logic
+    // We let it run naturally and control frame processing through our hooks
     
-    // Determine if we should use GekkoNet rollback
-    char* env_offline = getenv("FM2K_TRUE_OFFLINE");
-    bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
-    bool dual_client_mode = (::player_index == 0 || ::player_index == 1);
-    bool use_gekko_replacement = !is_true_offline && dual_client_mode && gekko_initialized && gekko_session;
+    ApplyCharacterSelectModePatches();
     
-    if (use_gekko_replacement) {
-        // COMPLETE GEKKO-INTEGRATED MAIN LOOP: This replaces the entire original loop
-        return GekkoNet_MainLoop();
-    } else {
-        // Use original main loop for offline/single-player
-        ApplyCharacterSelectModePatches();
-        return original_run_game_loop ? original_run_game_loop() : FALSE;
-    }
+    // Always use original main loop - our hooks will control the frame processing
+    return original_run_game_loop ? original_run_game_loop() : FALSE;
 }

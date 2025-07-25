@@ -20,44 +20,150 @@ void WriteMemorySafe(uintptr_t address, T value) {
 
 // Save complete game state to a SaveStateData structure (for GekkoNet rollback)
 bool SaveCompleteGameState(SaveStateData* save_data, uint32_t frame_number) {
+    // REDUCED LOGGING: Only log occasionally to prevent spam
+    static uint32_t call_counter = 0;
+    call_counter++;
+    if (call_counter <= 5 || call_counter % 300 == 0) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "🟢 SaveCompleteGameState CALLED: save_data=%p, frame=%u", 
+                   save_data, frame_number);
+    }
+    
+    if (!save_data) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "❌ SaveCompleteGameState FAILED: save_data is NULL");
+        return false;
+    }
+    
     // LIKE BSNES-NETPLAY: No game mode checks, just save state
     // bsnes-netplay simply calls seria.save() for whatever state the emulator has
     
     // Save essential game state data (like bsnes saves SNES RAM)
     save_data->frame_number = frame_number;
     
-    // Save player data (like bsnes saves wram, cgram, etc.)
-    save_data->p1_hp = ReadMemorySafe<uint32_t>(0x470000);
-    save_data->p2_hp = ReadMemorySafe<uint32_t>(0x470004);
-    save_data->p1_x = ReadMemorySafe<uint32_t>(0x470008);
-    save_data->p2_x = ReadMemorySafe<uint32_t>(0x47000C);
-    save_data->p1_y = ReadMemorySafe<uint16_t>(0x470010);
-    save_data->p2_y = ReadMemorySafe<uint16_t>(0x470012);
+    // REDUCED LOGGING: Only log occasionally
+    if (call_counter <= 5 || call_counter % 300 == 0) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "📦 SaveCompleteGameState: Starting memory read from CheatEngine addresses...");
+    }
     
-    // Save RNG and timers (like bsnes saves CPU state)
-    save_data->rng_seed = ReadMemorySafe<uint32_t>(0x470014);
-    save_data->game_timer = ReadMemorySafe<uint32_t>(0x470018);
-    save_data->round_timer = ReadMemorySafe<uint32_t>(0x47001C);
+    // CHEATENGINE-VERIFIED ADDRESSES: Use exact same addresses as MinimalGameState.LoadFromMemory()
+    // This ensures checksums match between save/load and verification
     
-    // Simple checksum calculation (like bsnes uses for network state)
-    // Just use the frame number as the checksum for simplicity
-    save_data->checksum = frame_number;
+    // Player state addresses (MUST match CheatEngine WonderfulWorld_ver_0946.CT)
+    uint32_t* p1_hp_ptr = (uint32_t*)0x004DFC85;  // CheatEngine verified "P1 HP"
+    uint32_t* p2_hp_ptr = (uint32_t*)0x004EDCC4;  // CheatEngine verified "P2 HP"
+    uint32_t* p1_x_ptr = (uint32_t*)0x004DFCC3;   // CheatEngine verified "Coor X P1"
+    uint16_t* p1_y_ptr = (uint16_t*)0x004DFCC7;   // CheatEngine verified "Coor Y P1"
+    uint32_t* p2_x_ptr = (uint32_t*)0x004EDD02;   // CheatEngine verified "Coor X P2"
+    uint16_t* p2_y_ptr = (uint16_t*)0x004EDD06;   // CheatEngine verified "Coor Y P2"
+    
+    // RNG seed and timers (MUST match CheatEngine WonderfulWorld_ver_0946.CT)
+    uint32_t* rng_seed_ptr = (uint32_t*)0x41FB1C;   // CheatEngine verified "g_rand"
+    uint32_t* timer_ptr = (uint32_t*)0x470050;      // CheatEngine verified "g_actual_wanwan_timer"
+    uint32_t* round_timer_ptr = (uint32_t*)0x470050; // Use same as timer for now
+    
+    // Object pool (391KB) - CRITICAL for proper rollback
+    uint8_t* object_pool_ptr = (uint8_t*)0x4701E0;
+    const size_t object_pool_size = 0x5F800;
+    
+    // Check if addresses are valid
+    bool addresses_valid = (!IsBadReadPtr(p1_hp_ptr, sizeof(uint32_t)) && 
+                          !IsBadReadPtr(p2_hp_ptr, sizeof(uint32_t)) &&
+                          !IsBadReadPtr(p1_x_ptr, sizeof(uint32_t)) && 
+                          !IsBadReadPtr(p1_y_ptr, sizeof(uint16_t)) &&
+                          !IsBadReadPtr(p2_x_ptr, sizeof(uint32_t)) && 
+                          !IsBadReadPtr(p2_y_ptr, sizeof(uint16_t)) &&
+                          !IsBadReadPtr(rng_seed_ptr, sizeof(uint32_t)) &&
+                          !IsBadReadPtr(timer_ptr, sizeof(uint32_t)) &&
+                          !IsBadReadPtr(round_timer_ptr, sizeof(uint32_t)) &&
+                          !IsBadReadPtr(object_pool_ptr, object_pool_size));
+    
+    if (!addresses_valid) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "❌ SaveCompleteGameState FAILED: Invalid memory addresses detected");
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "   P1_HP_PTR=%p, P2_HP_PTR=%p, P1_X_PTR=%p, P2_X_PTR=%p", 
+                    p1_hp_ptr, p2_hp_ptr, p1_x_ptr, p2_x_ptr);
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "   RNG_PTR=%p, TIMER_PTR=%p, OBJECT_POOL_PTR=%p", 
+                    rng_seed_ptr, timer_ptr, object_pool_ptr);
+        return false;
+    }
+    
+    // Save player data using CheatEngine addresses
+    save_data->p1_hp = *p1_hp_ptr;
+    save_data->p2_hp = *p2_hp_ptr; 
+    save_data->p1_x = *p1_x_ptr;
+    save_data->p2_x = *p2_x_ptr;
+    save_data->p1_y = *p1_y_ptr;
+    save_data->p2_y = *p2_y_ptr;
+    
+    // Save RNG and timers
+    save_data->rng_seed = *rng_seed_ptr;
+    save_data->game_timer = *timer_ptr;
+    save_data->round_timer = *round_timer_ptr;
+    
+    // CRITICAL: Save entire object pool (391KB) - required for comprehensive rollback
+    // REDUCED LOGGING: Only log occasionally
+    if (call_counter <= 5 || call_counter % 300 == 0) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "📦 SaveCompleteGameState: Copying object pool (391KB)...");
+    }
+    memcpy(save_data->object_pool, object_pool_ptr, object_pool_size);
+    
+    // Enhanced checksum calculation including object pool
+    struct EssentialSaveData {
+        uint32_t p1_hp, p2_hp;
+        uint32_t p1_x, p2_x;
+        uint16_t p1_y, p2_y;
+        uint32_t rng_seed;
+        uint32_t game_timer, round_timer;
+    } essential_for_checksum;
+    
+    essential_for_checksum.p1_hp = save_data->p1_hp;
+    essential_for_checksum.p2_hp = save_data->p2_hp;
+    essential_for_checksum.p1_x = save_data->p1_x;
+    essential_for_checksum.p2_x = save_data->p2_x;
+    essential_for_checksum.p1_y = save_data->p1_y;
+    essential_for_checksum.p2_y = save_data->p2_y;
+    essential_for_checksum.rng_seed = save_data->rng_seed;
+    essential_for_checksum.game_timer = save_data->game_timer;
+    essential_for_checksum.round_timer = save_data->round_timer;
+    
+    // Calculate checksum of essential data + first 1KB of object pool for performance
+    // REDUCED LOGGING: Only log occasionally
+    if (call_counter <= 5 || call_counter % 300 == 0) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "🔍 SaveCompleteGameState: Calculating checksum...");
+    }
+    uint32_t basic_checksum = FM2K::State::Fletcher32((uint8_t*)&essential_for_checksum, sizeof(essential_for_checksum));
+    uint32_t object_checksum = FM2K::State::Fletcher32(save_data->object_pool, 1024); // First 1KB of object pool
+    save_data->checksum = basic_checksum ^ object_checksum; // Combine checksums
+    
+    // CRITICAL FIX: Mark the save data as valid
+    save_data->valid = true;
+    
+    // REDUCED LOGGING: Only log occasionally
+    if (call_counter <= 5 || call_counter % 300 == 0) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "✅ SaveCompleteGameState SUCCESS: frame=%u, checksum=0x%08X, P1_HP=%u, P2_HP=%u", 
+                   save_data->frame_number, save_data->checksum, save_data->p1_hp, save_data->p2_hp);
+    }
     
     return true;
 }
 
 // Load complete game state from a SaveStateData structure (for GekkoNet rollback)
 bool LoadCompleteGameState(const SaveStateData* save_data) {
-    if (!save_data || !save_data->valid) {
-        // TEMPORARY: Reduce spam during input sync stabilization (following BSNES minimal approach)
-        static uint32_t error_count = 0;
-        if (++error_count <= 5) { // Only log first 5 errors
-            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "LoadCompleteGameState: Rollback disabled - focusing on input sync first (BSNES approach)");
-        }
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "🔵 LoadCompleteGameState CALLED: save_data=%p", save_data);
+    
+    if (!save_data) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "❌ LoadCompleteGameState FAILED: save_data is NULL");
         return false;
     }
     
-    // Verify checksum using the same essential data structure as save
+    if (!save_data->valid) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "❌ LoadCompleteGameState FAILED: save_data is not valid (frame=%u)", 
+                    save_data->frame_number);
+        return false;
+    }
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "📦 LoadCompleteGameState: Starting memory restore from frame %u, checksum=0x%08X...", 
+               save_data->frame_number, save_data->checksum);
+    
+    // Verify enhanced checksum including object pool (must match SaveCompleteGameState)
     struct EssentialSaveData {
         uint32_t p1_hp, p2_hp;
         uint32_t p1_x, p2_x;
@@ -78,7 +184,11 @@ bool LoadCompleteGameState(const SaveStateData* save_data) {
     essential_for_checksum.round_timer = save_data->round_timer;
     // frame_number excluded from checksum
     
-    uint32_t calculated_checksum = FM2K::State::Fletcher32((uint8_t*)&essential_for_checksum, sizeof(essential_for_checksum));
+    // Calculate combined checksum (must match SaveCompleteGameState calculation)
+    uint32_t basic_checksum = FM2K::State::Fletcher32((uint8_t*)&essential_for_checksum, sizeof(essential_for_checksum));
+    uint32_t object_checksum = FM2K::State::Fletcher32(save_data->object_pool, 1024); // First 1KB of object pool
+    uint32_t calculated_checksum = basic_checksum ^ object_checksum; // Combine checksums
+    
     if (calculated_checksum != save_data->checksum) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "LoadCompleteGameState: Checksum mismatch (calculated: %u, stored: %u)",
                     calculated_checksum, save_data->checksum);
@@ -86,40 +196,72 @@ bool LoadCompleteGameState(const SaveStateData* save_data) {
     }
     
     try {
-        // CRITICAL: Only restore the essential data we actually save
-        // Player state addresses
-        uint32_t* p1_hp_ptr = (uint32_t*)0x004DFC85;
-        uint32_t* p2_hp_ptr = (uint32_t*)0x004EDCC4;
-        uint32_t* p1_x_ptr = (uint32_t*)0x004DFCC3;
-        uint16_t* p1_y_ptr = (uint16_t*)0x004DFCC7;
-        uint32_t* p2_x_ptr = (uint32_t*)0x004EDD02;
-        uint16_t* p2_y_ptr = (uint16_t*)0x004EDD06;
+        // CHEATENGINE-VERIFIED ADDRESSES: Use exact same addresses as SaveCompleteGameState and MinimalGameState
+        // Player state addresses (must match CheatEngine WonderfulWorld_ver_0946.CT exactly)
+        uint32_t* p1_hp_ptr = (uint32_t*)0x004DFC85;  // CheatEngine verified "P1 HP"
+        uint32_t* p2_hp_ptr = (uint32_t*)0x004EDCC4;  // CheatEngine verified "P2 HP"
+        uint32_t* p1_x_ptr = (uint32_t*)0x004DFCC3;   // CheatEngine verified "Coor X P1"
+        uint16_t* p1_y_ptr = (uint16_t*)0x004DFCC7;   // CheatEngine verified "Coor Y P1"
+        uint32_t* p2_x_ptr = (uint32_t*)0x004EDD02;   // CheatEngine verified "Coor X P2"
+        uint16_t* p2_y_ptr = (uint16_t*)0x004EDD06;   // CheatEngine verified "Coor Y P2"
         
-        // RNG seed
-        uint32_t* rng_seed_ptr = (uint32_t*)0x41FB1C;
+        // RNG seed and timers (must match CheatEngine WonderfulWorld_ver_0946.CT exactly)
+        uint32_t* rng_seed_ptr = (uint32_t*)0x41FB1C;   // CheatEngine verified "g_rand"
+        uint32_t* timer_ptr = (uint32_t*)0x470050;      // CheatEngine verified "g_actual_wanwan_timer"
+        uint32_t* round_timer_ptr = (uint32_t*)0x470050; // Use same as timer for now
         
-        // Game timers
-        uint32_t* game_timer_ptr = (uint32_t*)0x470050;
-        uint32_t* round_timer_ptr = (uint32_t*)0x470060;
+        // Object pool (391KB) - CRITICAL for proper rollback
+        uint8_t* object_pool_ptr = (uint8_t*)0x4701E0;
+        const size_t object_pool_size = 0x5F800;
         
-        // Restore ONLY the essential data we actually save (matches SaveCompleteGameState)
-        if (!IsBadWritePtr(p1_hp_ptr, sizeof(uint32_t))) *p1_hp_ptr = save_data->p1_hp;
-        if (!IsBadWritePtr(p2_hp_ptr, sizeof(uint32_t))) *p2_hp_ptr = save_data->p2_hp;
-        if (!IsBadWritePtr(p1_x_ptr, sizeof(uint32_t))) *p1_x_ptr = save_data->p1_x;
-        if (!IsBadWritePtr(p1_y_ptr, sizeof(uint16_t))) *p1_y_ptr = save_data->p1_y;
-        if (!IsBadWritePtr(p2_x_ptr, sizeof(uint32_t))) *p2_x_ptr = save_data->p2_x;
-        if (!IsBadWritePtr(p2_y_ptr, sizeof(uint16_t))) *p2_y_ptr = save_data->p2_y;
-        if (!IsBadWritePtr(rng_seed_ptr, sizeof(uint32_t))) *rng_seed_ptr = save_data->rng_seed;
-        if (!IsBadWritePtr(game_timer_ptr, sizeof(uint32_t))) *game_timer_ptr = save_data->game_timer;
-        if (!IsBadWritePtr(round_timer_ptr, sizeof(uint32_t))) *round_timer_ptr = save_data->round_timer;
+        // Check if addresses are writable
+        bool addresses_writable = (!IsBadWritePtr(p1_hp_ptr, sizeof(uint32_t)) && 
+                                 !IsBadWritePtr(p2_hp_ptr, sizeof(uint32_t)) &&
+                                 !IsBadWritePtr(p1_x_ptr, sizeof(uint32_t)) && 
+                                 !IsBadWritePtr(p1_y_ptr, sizeof(uint16_t)) &&
+                                 !IsBadWritePtr(p2_x_ptr, sizeof(uint32_t)) && 
+                                 !IsBadWritePtr(p2_y_ptr, sizeof(uint16_t)) &&
+                                 !IsBadWritePtr(rng_seed_ptr, sizeof(uint32_t)) &&
+                                 !IsBadWritePtr(timer_ptr, sizeof(uint32_t)) &&
+                                 !IsBadWritePtr(round_timer_ptr, sizeof(uint32_t)) &&
+                                 !IsBadWritePtr(object_pool_ptr, object_pool_size));
+        
+        if (!addresses_writable) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "❌ LoadCompleteGameState FAILED: Invalid write addresses detected");
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "   P1_HP_PTR=%p, P2_HP_PTR=%p, P1_X_PTR=%p, P2_X_PTR=%p", 
+                        p1_hp_ptr, p2_hp_ptr, p1_x_ptr, p2_x_ptr);
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "   RNG_PTR=%p, TIMER_PTR=%p, OBJECT_POOL_PTR=%p", 
+                        rng_seed_ptr, timer_ptr, object_pool_ptr);
+            return false;
+        }
+        
+        // Restore player data using CheatEngine addresses
+        *p1_hp_ptr = save_data->p1_hp;
+        *p2_hp_ptr = save_data->p2_hp;
+        *p1_x_ptr = save_data->p1_x;
+        *p1_y_ptr = save_data->p1_y;
+        *p2_x_ptr = save_data->p2_x;
+        *p2_y_ptr = save_data->p2_y;
+        
+        // Restore RNG and timers
+        *rng_seed_ptr = save_data->rng_seed;
+        *timer_ptr = save_data->game_timer;
+        *round_timer_ptr = save_data->round_timer;
+        
+        // CRITICAL: Restore entire object pool (391KB) - required for comprehensive rollback
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "📦 LoadCompleteGameState: Restoring object pool (391KB)...");
+        memcpy(object_pool_ptr, save_data->object_pool, object_pool_size);
         
         // Log critical load data for desync debugging (first 40 frames only)
         if (save_data->frame_number <= 40) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LoadState F%d: P1(HP:%d X:%d Y:%d) P2(HP:%d X:%d Y:%d) RNG:%d GT:%d RT:%d CK:%u", 
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "🔄 LoadState F%d: P1(HP:%d X:%d Y:%d) P2(HP:%d X:%d Y:%d) RNG:%d GT:%d RT:%d CK:%u + 391KB OBJECTS", 
                        save_data->frame_number, save_data->p1_hp, save_data->p1_x, save_data->p1_y,
                        save_data->p2_hp, save_data->p2_x, save_data->p2_y, 
                        save_data->rng_seed, save_data->game_timer, save_data->round_timer, save_data->checksum);
         }
+        
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "✅ LoadCompleteGameState SUCCESS: frame=%u, checksum=0x%08X, P1_HP=%u, P2_HP=%u", 
+                   save_data->frame_number, save_data->checksum, save_data->p1_hp, save_data->p2_hp);
         
         return true;
         

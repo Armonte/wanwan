@@ -4,6 +4,7 @@
 GekkoSession* gekko_session = nullptr;
 bool gekko_initialized = false;
 bool gekko_session_started = false;
+bool gekko_session_ready = false;  // True when session is fully synchronized and ready
 bool is_online_mode = false;
 bool is_host = false;
 uint8_t player_index = 0;

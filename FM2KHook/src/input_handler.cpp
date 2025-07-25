@@ -50,46 +50,42 @@ void PatchInputBufferWrites(bool block) {
 
 // ARCHITECTURE FIX: Real input capture following CCCaster/GekkoNet pattern
 void CaptureRealInputs() {
-    // In online mode, we only read the input for the local player.
-    // In true offline (local VS) mode, we read both.
+    // CRITICAL DEBUG: Let's bypass the original system and directly call our input logic
+    // This should match exactly what Hook_GetPlayerInput is doing
+    
     char* env_offline = getenv("FM2K_TRUE_OFFLINE");
     bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
 
-    if (original_get_player_input) {
-        if (is_true_offline) {
-            // TRUE OFFLINE: Read both players from local hardware.
-            live_p1_input = original_get_player_input(0, 0);
-            live_p2_input = original_get_player_input(1, 0);
+    // DIRECT INPUT CAPTURE: Bypass original_get_player_input and use our logic directly
+    if (is_true_offline) {
+        // TRUE OFFLINE: Read both players from local hardware.
+        live_p1_input = Hook_GetPlayerInput(0, 0);
+        live_p2_input = Hook_GetPlayerInput(1, 0);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DIRECT CAPTURE OFFLINE: P1=0x%03X P2=0x%03X", 
+                   live_p1_input & 0x7FF, live_p2_input & 0x7FF);
+    } else {
+        // ONLINE: Each client captures input for their assigned player
+        if (::player_index == 0) {
+            // HOST: Capture P1 input directly
+            live_p1_input = Hook_GetPlayerInput(0, 0);
+            live_p2_input = 0; // Will be filled by GekkoNet
+            if (live_p1_input != 0) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DIRECT CAPTURE HOST: P1=0x%03X (bypassing original_get_player_input)", 
+                           live_p1_input & 0x7FF);
+            }
         } else {
-            // ONLINE: Both host and client read their local controls from the P1 slot.
-            // The netcode layer (GekkoNet) will map this to the correct player in-game.
-            uint32_t local_hardware_input = original_get_player_input(0, 0);
-
-            if (::is_host) {
-                live_p1_input = local_hardware_input;
-                live_p2_input = 0;
-                if (local_hardware_input != 0) {
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT CAPTURE: Host P1 input=0x%03X (is_host=%s, player_index=%d)", 
-                               local_hardware_input, ::is_host ? "YES" : "NO", ::player_index);
-                }
-            } else {
-                live_p1_input = 0;
-                // The client's local input becomes P2's input in the session.
-                live_p2_input = local_hardware_input;
-                if (local_hardware_input != 0) {
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT CAPTURE: Client P2 input=0x%03X (is_host=%s, player_index=%d)", 
-                               local_hardware_input, ::is_host ? "YES" : "NO", ::player_index);
-                }
+            // CLIENT: Capture P2 input directly
+            live_p1_input = 0; // Will be filled by GekkoNet
+            live_p2_input = Hook_GetPlayerInput(1, 0);
+            if (live_p2_input != 0) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DIRECT CAPTURE CLIENT: P2=0x%03X (bypassing original_get_player_input)", 
+                           live_p2_input & 0x7FF);
             }
         }
-
-        // The P2 left/right bit swap is a hardware/engine quirk, apply it whenever P2 input is generated.
-        // This needs to happen for the client's input as it will control the P2 character.
-
-    } else {
-        live_p1_input = 0;
-        live_p2_input = 0;
     }
+
+    // The P2 left/right bit swap is a hardware/engine quirk, apply it whenever P2 input is generated.
+    // This needs to happen for the client's input as it will control the P2 character.
 
     // Debug logging for button issues
     static uint32_t debug_counter = 0;
@@ -154,26 +150,58 @@ uint16_t PollSDLKeyboard() {
 }
 
 // Our simplified get_player_input replacement - no joystick, just keyboard
+bool IsWindowFocused() {
+    // Get the currently focused window
+    HWND focused_window = GetForegroundWindow();
+    HWND our_window = GetActiveWindow();
+    
+    // Check if our process window has focus (like BSNES focused() check)
+    return (focused_window == our_window) || (focused_window != NULL && our_window != NULL);
+}
+
 int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
     static uint32_t call_count = 0;
     
-    // Get our Windows keyboard input - replicate original function behavior
+    // CRITICAL FIX: Each client only provides input for their own player
+    // HOST (player_index=0) only provides input when player_id=0 (P1)
+    // CLIENT (player_index=1) only provides input when player_id=1 (P2)
     int input_mask = 0;
     
-    // Directional inputs (same bit pattern as original)
-    if (GetAsyncKeyState(VK_DOWN) & 0x8000)   input_mask |= 0x008;
-    if (GetAsyncKeyState(VK_UP) & 0x8000)     input_mask |= 0x004;
-    if (GetAsyncKeyState(VK_LEFT) & 0x8000)   input_mask |= 0x001;
-    if (GetAsyncKeyState(VK_RIGHT) & 0x8000)  input_mask |= 0x002;
-    
-    // Button inputs (same bit pattern as original)
-    if (GetAsyncKeyState('Z') & 0x8000)       input_mask |= 0x010;
-    if (GetAsyncKeyState('X') & 0x8000)       input_mask |= 0x020;
-    if (GetAsyncKeyState('C') & 0x8000)       input_mask |= 0x040;
-    if (GetAsyncKeyState('A') & 0x8000)       input_mask |= 0x080;
-    if (GetAsyncKeyState('S') & 0x8000)       input_mask |= 0x100;
-    if (GetAsyncKeyState('D') & 0x8000)       input_mask |= 0x200;
-    if (GetAsyncKeyState('Q') & 0x8000)       input_mask |= 0x400;
+    if (IsWindowFocused()) {
+        if (::player_index == 0 && player_id == 0) {
+            // HOST providing P1 input: Use Arrow keys + ZXC/ASD layout  
+            if (GetAsyncKeyState(VK_DOWN) & 0x8000)   input_mask |= 0x008;
+            if (GetAsyncKeyState(VK_UP) & 0x8000)     input_mask |= 0x004;
+            if (GetAsyncKeyState(VK_LEFT) & 0x8000)   input_mask |= 0x001;
+            if (GetAsyncKeyState(VK_RIGHT) & 0x8000)  input_mask |= 0x002;
+            
+            if (GetAsyncKeyState('Z') & 0x8000)       input_mask |= 0x010;
+            if (GetAsyncKeyState('X') & 0x8000)       input_mask |= 0x020;
+            if (GetAsyncKeyState('C') & 0x8000)       input_mask |= 0x040;
+            if (GetAsyncKeyState('A') & 0x8000)       input_mask |= 0x080;
+            if (GetAsyncKeyState('S') & 0x8000)       input_mask |= 0x100;
+            if (GetAsyncKeyState('D') & 0x8000)       input_mask |= 0x200;
+        } else if (::player_index == 1 && player_id == 1) {
+            // CLIENT providing P2 input: Use WASD movement + UIOP buttons
+            if (GetAsyncKeyState('S') & 0x8000)       input_mask |= 0x008; // DOWN
+            if (GetAsyncKeyState('W') & 0x8000)       input_mask |= 0x004; // UP  
+            if (GetAsyncKeyState('A') & 0x8000)       input_mask |= 0x001; // LEFT
+            if (GetAsyncKeyState('D') & 0x8000)       input_mask |= 0x002; // RIGHT
+            
+            if (GetAsyncKeyState('U') & 0x8000)       input_mask |= 0x010;
+            if (GetAsyncKeyState('I') & 0x8000)       input_mask |= 0x020;
+            if (GetAsyncKeyState('O') & 0x8000)       input_mask |= 0x040;
+            if (GetAsyncKeyState('P') & 0x8000)       input_mask |= 0x080;
+            if (GetAsyncKeyState('J') & 0x8000)       input_mask |= 0x100;
+            if (GetAsyncKeyState('K') & 0x8000)       input_mask |= 0x200;
+        } else {
+            // Not our player - return 0 (let GekkoNet provide networked input)
+            input_mask = 0;
+        }
+    } else {
+        // Window not focused - return no input (like BSNES)
+        input_mask = 0;
+    }
     
     // Debug logging
     if (++call_count % 100 == 0 || input_mask != 0) {
@@ -287,18 +315,43 @@ int __cdecl FM2K_ProcessGameInputs_GekkoNet() {
     uint32_t p1_final_input = 0;
     uint32_t p2_final_input = 0;
     
-    if (use_networked_inputs && gekko_session_started) {
+    // CRITICAL FIX: Always use networked inputs when available in online mode
+    bool should_use_networked = use_gekko && gekko_initialized && gekko_session && use_networked_inputs;
+    
+    // CRITICAL DEBUG: Log the exact condition values
+    static uint32_t debug_condition_counter = 0;
+    if (++debug_condition_counter % 100 == 0) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                   "CONDITION DEBUG #%d: use_gekko=%s gekko_initialized=%s gekko_session=%p use_networked_inputs=%s -> should_use_networked=%s", 
+                   debug_condition_counter, 
+                   use_gekko ? "YES" : "NO", 
+                   gekko_initialized ? "YES" : "NO", 
+                   gekko_session, 
+                   use_networked_inputs ? "YES" : "NO",
+                   should_use_networked ? "YES" : "NO");
+    }
+    
+    if (should_use_networked) {
         // Use GekkoNet synchronized inputs (BSNES approach)
         p1_final_input = networked_p1_input;
         p2_final_input = networked_p2_input;
         
         static uint32_t sync_log_counter = 0;
-        if (++sync_log_counter % 300 == 0) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Using GekkoNet inputs - P1=0x%04X P2=0x%04X", 
-                       p1_final_input, p2_final_input);
+        if (++sync_log_counter % 300 == 0 || (networked_p1_input != 0 || networked_p2_input != 0) && sync_log_counter % 60 == 0) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "APPLYING NETWORKED INPUTS: P1=0x%04X P2=0x%04X (count=%d)", 
+                       p1_final_input, p2_final_input, sync_log_counter);
         }
     } else {
-        // Use local Windows input (fallback/offline mode)
+        // DEBUG: Log why networked inputs are not being used
+        static uint32_t fallback_counter = 0;
+        if (++fallback_counter % 300 == 0) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                       "FALLBACK TO LOCAL INPUT #%d: use_gekko=%s, gekko_initialized=%s, gekko_session=%p, use_networked_inputs=%s", 
+                       fallback_counter, use_gekko ? "YES" : "NO", gekko_initialized ? "YES" : "NO", 
+                       gekko_session, use_networked_inputs ? "YES" : "NO");
+        }
+        
+        // Use local Windows input (fallback/offline mode)  
         if (GetAsyncKeyState(VK_LEFT) & 0x8000)   p1_final_input |= 0x001;  // LEFT
         if (GetAsyncKeyState(VK_RIGHT) & 0x8000)  p1_final_input |= 0x002;  // RIGHT
         if (GetAsyncKeyState(VK_UP) & 0x8000)     p1_final_input |= 0x004;  // UP

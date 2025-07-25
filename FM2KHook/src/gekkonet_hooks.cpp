@@ -5,6 +5,9 @@
 #include "gekkonet.h"
 #include "state_manager.h"  // For GameState
 #include "game_patches.h"   // For ApplyCharacterSelectModePatches
+#include "savestate.h"      // For SaveCompleteGameState/LoadCompleteGameState
+#include "shared_mem.h"     // For SaveStateData
+#include "logging.h"        // For GenerateDesyncReport
 #include <SDL3/SDL_log.h>
 #include <windows.h>        // For message processing
 #include <mmsystem.h>       // For timeGetTime()
@@ -14,6 +17,22 @@
 #include <cstring>
 #include <cstdlib>
 #include <string>
+
+// Forward declare Fletcher32 from state_manager.cpp
+extern uint32_t Fletcher32(const uint8_t* data, size_t len);
+
+// BSNES-style rollback state buffer (circular buffer for efficiency)
+struct RollbackState {
+    std::unique_ptr<SaveStateData> state_data;
+    uint32_t frame_number;
+    bool is_valid;
+    
+    RollbackState() : state_data(nullptr), frame_number(0), is_valid(false) {}
+};
+
+// Rollback state buffer - like BSNES netplay.states
+static constexpr size_t ROLLBACK_BUFFER_SIZE = 32; // Store last 32 frames for rollback
+static std::vector<RollbackState> rollback_states(ROLLBACK_BUFFER_SIZE);
 
 bool InitializeGekkoNet() {
     // Set network session flag in the game state machine
@@ -288,7 +307,8 @@ const char* GetGekkoRemoteIP() {
 void ProcessGekkoNetFrame() {
     // BSNES-STYLE: Reset frame advancement permission (like BSNES netplayRun())
     can_advance_frame = false;
-    use_networked_inputs = false;
+    // CRITICAL FIX: Don't reset use_networked_inputs - let AdvanceEvent set it to true
+    // use_networked_inputs = false; // <-- This was causing networked inputs to be ignored!
     
     // STEP 1: Always capture real inputs (equivalent to BSNES netplayPollLocalInput)
     CaptureRealInputs();
@@ -368,18 +388,72 @@ void ProcessGekkoNetFrame() {
     for (int i = 0; i < update_count; i++) {
         auto update = updates[i];
         switch (update->type) {
-            case SaveEvent:
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SaveEvent frame %d", update->data.save.frame);
-                // Minimal state like BSNES - just 4 bytes
-                *update->data.save.checksum = 0;
-                *update->data.save.state_len = sizeof(int32_t);
-                memcpy(update->data.save.state, &update->data.save.frame, sizeof(int32_t));
-                break;
+            case SaveEvent: {
+                uint32_t frame = update->data.save.frame;
+                uint32_t buffer_index = frame % ROLLBACK_BUFFER_SIZE;
                 
-            case LoadEvent:
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: LoadEvent frame %d", update->data.load.frame);
-                // TODO: Implement rollback state loading
+                static uint32_t debug_save_counter = 0;
+                if (++debug_save_counter % 300 == 0) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: SaveEvent frame %d (buffer index %d)", 
+                               frame, buffer_index);
+                }
+                
+                // BSNES PATTERN: Save complete state locally, only send frame number over network
+                auto& rollback_slot = rollback_states[buffer_index];
+                
+                // Allocate state data if needed
+                if (!rollback_slot.state_data) {
+                    rollback_slot.state_data = std::make_unique<SaveStateData>();
+                }
+                
+                // Save complete FM2K game state (like BSNES emulator->serialize())
+                bool save_success = SaveCompleteGameState(rollback_slot.state_data.get(), frame);
+                if (save_success) {
+                    rollback_slot.frame_number = frame;
+                    rollback_slot.is_valid = true;
+                    
+                    // Return minimal network state (like BSNES - just 4 bytes)
+                    *update->data.save.checksum = 0; // Can be used for desync detection later
+                    *update->data.save.state_len = sizeof(int32_t);
+                    memcpy(update->data.save.state, &frame, sizeof(int32_t));
+                    
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                               "GekkoNet: Saved complete state for frame %d locally", frame);
+                } else {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, 
+                                "GekkoNet: Failed to save state for frame %d", frame);
+                    rollback_slot.is_valid = false;
+                }
                 break;
+            }
+                
+            case LoadEvent: {
+                uint32_t frame = update->data.load.frame;
+                uint32_t buffer_index = frame % ROLLBACK_BUFFER_SIZE;
+                
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: LoadEvent frame %d (buffer index %d)", 
+                           frame, buffer_index);
+                
+                // BSNES PATTERN: Load complete state from local storage (like BSNES emulator->unserialize())
+                auto& rollback_slot = rollback_states[buffer_index];
+                
+                if (rollback_slot.is_valid && rollback_slot.frame_number == frame && rollback_slot.state_data) {
+                    bool load_success = LoadCompleteGameState(rollback_slot.state_data.get());
+                    if (load_success) {
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                                   "GekkoNet: Successfully loaded state for frame %d", frame);
+                    } else {
+                        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, 
+                                    "GekkoNet: Failed to load state for frame %d", frame);
+                    }
+                } else {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, 
+                                "GekkoNet: No valid state found for frame %d (valid=%s, frame_match=%s)", 
+                                frame, rollback_slot.is_valid ? "YES" : "NO",
+                                rollback_slot.frame_number == frame ? "YES" : "NO");
+                }
+                break;
+            }
                 
             case AdvanceEvent:
                 // CRITICAL: This is the ONLY place where frame advancement is allowed (like BSNES emulator->run())
@@ -461,9 +535,8 @@ BOOL GekkoNet_MainLoop() {
         // This removes the architectural flaw that allowed Client 1 to run ahead freely
         if (can_advance_frame) {
             // Process one game frame ONLY when GekkoNet AdvanceEvent allows it (like BSNES line 218)
-            if (original_process_inputs) {
-                original_process_inputs();
-            }
+            // CRITICAL FIX: Call our hooked function, not the original!
+            FM2K_ProcessGameInputs_GekkoNet();
             
             if (original_update_game) {
                 original_update_game();

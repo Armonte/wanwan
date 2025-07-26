@@ -62,6 +62,24 @@ struct SaveStateData {
     // Move history
     uint8_t player_move_history[16];   // 0x47006C - g_player_move_history
     
+    // INPUT BUFFER - CRITICAL FOR ROLLBACK
+    // Motion inputs like quarter-circle forward (236+P) require input history
+    uint16_t p1_input_history[1024];   // 0x4280E0 - P1 input history buffer (1024 frames)
+    uint16_t p2_input_history[1024];   // 0x4290E0 - P2 input history buffer (1024 frames)
+    uint32_t input_buffer_index;       // Current position in circular input buffer
+    
+    // CSS INPUT STATE - CRITICAL FOR CSS: Input change detection for just-pressed buttons
+    uint32_t player_input_changes[8];  // 0x447f60 - g_player_input_changes[8] array
+    
+    // INPUT REPEAT LOGIC STATE - CRITICAL FOR ROLLBACK: Static variables from input processing
+    uint32_t prev_input_state[8];       // Previous frame input states for repeat logic
+    uint32_t input_repeat_state[8];     // Current repeat states for repeat logic  
+    uint32_t input_repeat_timer[8];     // Timers for repeat logic
+    
+    // IMMEDIATE INPUT APPLY STATE - CRITICAL FOR ROLLBACK: ApplyNetworkedInputsImmediately variables
+    uint32_t apply_prev_p1_input;       // Previous P1 input for immediate apply change detection
+    uint32_t apply_prev_p2_input;       // Previous P2 input for immediate apply change detection
+    
     // Object pool (391KB - 1024 objects * 382 bytes each)
     uint8_t object_pool[0x5F800];      // 0x4701E0 - Full object pool capture
     

@@ -60,6 +60,15 @@ bool SaveCompleteGameState(SaveStateData* save_data, uint32_t frame_number) {
     uint32_t* timer_ptr = (uint32_t*)0x470050;      // CheatEngine verified "g_actual_wanwan_timer"
     uint32_t* round_timer_ptr = (uint32_t*)0x470050; // Use same as timer for now
     
+    // INPUT BUFFER - CRITICAL FOR ROLLBACK: Motion inputs require input history
+    uint16_t* p1_input_history_ptr = (uint16_t*)0x4280E0;  // P1 input history (1024 frames)
+    uint16_t* p2_input_history_ptr = (uint16_t*)0x4290E0;  // P2 input history (1024 frames)
+    uint32_t* input_buffer_index_ptr = (uint32_t*)0x447EE0;  // Frame counter as buffer index
+    const size_t input_history_size = 1024 * sizeof(uint16_t);  // 2048 bytes each
+    
+    // CSS INPUT STATE - CRITICAL FOR CSS: Input change detection for just-pressed buttons
+    uint32_t* player_input_changes_ptr = (uint32_t*)0x447f60;  // g_player_input_changes[8] array
+    
     // Object pool (391KB) - CRITICAL for proper rollback
     uint8_t* object_pool_ptr = (uint8_t*)0x4701E0;
     const size_t object_pool_size = 0x5F800;
@@ -74,6 +83,10 @@ bool SaveCompleteGameState(SaveStateData* save_data, uint32_t frame_number) {
                           !IsBadReadPtr(rng_seed_ptr, sizeof(uint32_t)) &&
                           !IsBadReadPtr(timer_ptr, sizeof(uint32_t)) &&
                           !IsBadReadPtr(round_timer_ptr, sizeof(uint32_t)) &&
+                          !IsBadReadPtr(p1_input_history_ptr, input_history_size) &&
+                          !IsBadReadPtr(p2_input_history_ptr, input_history_size) &&
+                          !IsBadReadPtr(input_buffer_index_ptr, sizeof(uint32_t)) &&
+                          !IsBadReadPtr(player_input_changes_ptr, 8 * sizeof(uint32_t)) &&
                           !IsBadReadPtr(object_pool_ptr, object_pool_size));
     
     if (!addresses_valid) {
@@ -98,6 +111,27 @@ bool SaveCompleteGameState(SaveStateData* save_data, uint32_t frame_number) {
     save_data->game_timer = *timer_ptr;
     save_data->round_timer = *round_timer_ptr;
     
+    // CRITICAL: Save input buffer - required for motion inputs like quarter-circle forward
+    // REDUCED LOGGING: Only log occasionally
+    if (call_counter <= 5 || call_counter % 300 == 0) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "📦 SaveCompleteGameState: Copying input buffers (4KB total)...");
+    }
+    memcpy(save_data->p1_input_history, p1_input_history_ptr, input_history_size);
+    memcpy(save_data->p2_input_history, p2_input_history_ptr, input_history_size);
+    save_data->input_buffer_index = *input_buffer_index_ptr;
+    
+    // CSS INPUT STATE: Save input change detection for just-pressed buttons
+    memcpy(save_data->player_input_changes, player_input_changes_ptr, 8 * sizeof(uint32_t));
+    
+    // INPUT REPEAT LOGIC STATE: Save repeat logic state for rollback consistency
+    memcpy(save_data->prev_input_state, g_prev_input_state, 8 * sizeof(uint32_t));
+    memcpy(save_data->input_repeat_state, g_input_repeat_state, 8 * sizeof(uint32_t));
+    memcpy(save_data->input_repeat_timer, g_input_repeat_timer, 8 * sizeof(uint32_t));
+    
+    // IMMEDIATE INPUT APPLY STATE: Save ApplyNetworkedInputsImmediately state for rollback consistency
+    save_data->apply_prev_p1_input = g_apply_prev_p1_input;
+    save_data->apply_prev_p2_input = g_apply_prev_p2_input;
+    
     // CRITICAL: Save entire object pool (391KB) - required for comprehensive rollback
     // REDUCED LOGGING: Only log occasionally
     if (call_counter <= 5 || call_counter % 300 == 0) {
@@ -105,13 +139,14 @@ bool SaveCompleteGameState(SaveStateData* save_data, uint32_t frame_number) {
     }
     memcpy(save_data->object_pool, object_pool_ptr, object_pool_size);
     
-    // Enhanced checksum calculation including object pool
+    // Enhanced checksum calculation including object pool and input buffer
     struct EssentialSaveData {
         uint32_t p1_hp, p2_hp;
         uint32_t p1_x, p2_x;
         uint16_t p1_y, p2_y;
         uint32_t rng_seed;
         uint32_t game_timer, round_timer;
+        // REMOVED: input_buffer_index - this is local timing state, not synchronized game state
     } essential_for_checksum;
     
     essential_for_checksum.p1_hp = save_data->p1_hp;
@@ -124,14 +159,37 @@ bool SaveCompleteGameState(SaveStateData* save_data, uint32_t frame_number) {
     essential_for_checksum.game_timer = save_data->game_timer;
     essential_for_checksum.round_timer = save_data->round_timer;
     
-    // Calculate checksum of essential data + first 1KB of object pool for performance
+    // Calculate checksum: essential data + object pool + input buffer samples
     // REDUCED LOGGING: Only log occasionally
     if (call_counter <= 5 || call_counter % 300 == 0) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "🔍 SaveCompleteGameState: Calculating checksum...");
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "🔍 SaveCompleteGameState: Calculating checksum including input buffer...");
     }
     uint32_t basic_checksum = FM2K::State::Fletcher32((uint8_t*)&essential_for_checksum, sizeof(essential_for_checksum));
     uint32_t object_checksum = FM2K::State::Fletcher32(save_data->object_pool, 1024); // First 1KB of object pool
-    save_data->checksum = basic_checksum ^ object_checksum; // Combine checksums
+    uint32_t p1_input_checksum = FM2K::State::Fletcher32((uint8_t*)save_data->p1_input_history, 512);
+    uint32_t p2_input_checksum = FM2K::State::Fletcher32((uint8_t*)save_data->p2_input_history, 512);
+    uint32_t input_checksum = p1_input_checksum ^ p2_input_checksum; // First 256 frames each
+    save_data->checksum = basic_checksum ^ object_checksum ^ input_checksum; // Combine all checksums
+    
+    // DESYNC INVESTIGATION: Log individual checksum components
+    static uint32_t checksum_debug_counter = 0;
+    if (++checksum_debug_counter <= 10) { // Log first 10 frames only
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "🔍 CHECKSUM BREAKDOWN Player%d Frame%u:", ::player_index + 1, save_data->frame_number);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "   basic_checksum    = 0x%08X (essential game state)", basic_checksum);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "   object_checksum   = 0x%08X (first 1KB object pool)", object_checksum);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "   p1_input_checksum = 0x%08X (P1 input history 512B)", p1_input_checksum);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "   p2_input_checksum = 0x%08X (P2 input history 512B)", p2_input_checksum);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "   input_checksum    = 0x%08X (P1 XOR P2)", input_checksum);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "   FINAL_CHECKSUM    = 0x%08X (basic ^ object ^ input)", save_data->checksum);
+        
+        // FIELD-BY-FIELD ANALYSIS: Log each essential field to find the exact difference
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "🔍 ESSENTIAL FIELDS Player%d:", ::player_index + 1);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "   P1_HP=0x%08X, P2_HP=0x%08X", essential_for_checksum.p1_hp, essential_for_checksum.p2_hp);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "   P1_Pos=(0x%08X,0x%04X), P2_Pos=(0x%08X,0x%04X)", 
+                   essential_for_checksum.p1_x, essential_for_checksum.p1_y, essential_for_checksum.p2_x, essential_for_checksum.p2_y);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "   RNG=0x%08X, GameTimer=0x%08X, RoundTimer=0x%08X", 
+                   essential_for_checksum.rng_seed, essential_for_checksum.game_timer, essential_for_checksum.round_timer);
+    }
     
     // CRITICAL FIX: Mark the save data as valid
     save_data->valid = true;
@@ -163,14 +221,14 @@ bool LoadCompleteGameState(const SaveStateData* save_data) {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "📦 LoadCompleteGameState: Starting memory restore from frame %u, checksum=0x%08X...", 
                save_data->frame_number, save_data->checksum);
     
-    // Verify enhanced checksum including object pool (must match SaveCompleteGameState)
+    // Verify enhanced checksum including object pool and input buffer (must match SaveCompleteGameState)
     struct EssentialSaveData {
         uint32_t p1_hp, p2_hp;
         uint32_t p1_x, p2_x;
         uint16_t p1_y, p2_y;
         uint32_t rng_seed;
         uint32_t game_timer, round_timer;
-        // NOTE: frame_number excluded from checksum - it shouldn't affect game state validation
+        // REMOVED: input_buffer_index - this is local timing state, not synchronized game state
     } essential_for_checksum;
     
     essential_for_checksum.p1_hp = save_data->p1_hp;
@@ -183,11 +241,14 @@ bool LoadCompleteGameState(const SaveStateData* save_data) {
     essential_for_checksum.game_timer = save_data->game_timer;
     essential_for_checksum.round_timer = save_data->round_timer;
     // frame_number excluded from checksum
+    // input_buffer_index excluded from checksum - local timing state
     
-    // Calculate combined checksum (must match SaveCompleteGameState calculation)
+    // Calculate combined checksum (must match SaveCompleteGameState calculation exactly)
     uint32_t basic_checksum = FM2K::State::Fletcher32((uint8_t*)&essential_for_checksum, sizeof(essential_for_checksum));
     uint32_t object_checksum = FM2K::State::Fletcher32(save_data->object_pool, 1024); // First 1KB of object pool
-    uint32_t calculated_checksum = basic_checksum ^ object_checksum; // Combine checksums
+    uint32_t input_checksum = FM2K::State::Fletcher32((uint8_t*)save_data->p1_input_history, 512) ^ 
+                             FM2K::State::Fletcher32((uint8_t*)save_data->p2_input_history, 512); // First 256 frames each
+    uint32_t calculated_checksum = basic_checksum ^ object_checksum ^ input_checksum; // Combine all checksums
     
     if (calculated_checksum != save_data->checksum) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "LoadCompleteGameState: Checksum mismatch (calculated: %u, stored: %u)",
@@ -210,6 +271,15 @@ bool LoadCompleteGameState(const SaveStateData* save_data) {
         uint32_t* timer_ptr = (uint32_t*)0x470050;      // CheatEngine verified "g_actual_wanwan_timer"
         uint32_t* round_timer_ptr = (uint32_t*)0x470050; // Use same as timer for now
         
+        // INPUT BUFFER - CRITICAL FOR ROLLBACK: Motion inputs require input history
+        uint16_t* p1_input_history_ptr = (uint16_t*)0x4280E0;  // P1 input history (1024 frames)
+        uint16_t* p2_input_history_ptr = (uint16_t*)0x4290E0;  // P2 input history (1024 frames)
+        uint32_t* input_buffer_index_ptr = (uint32_t*)0x447EE0;  // Frame counter as buffer index
+        const size_t input_history_size = 1024 * sizeof(uint16_t);  // 2048 bytes each
+        
+        // CSS INPUT STATE - CRITICAL FOR CSS: Input change detection for just-pressed buttons
+        uint32_t* player_input_changes_ptr = (uint32_t*)0x447f60;  // g_player_input_changes[8] array
+        
         // Object pool (391KB) - CRITICAL for proper rollback
         uint8_t* object_pool_ptr = (uint8_t*)0x4701E0;
         const size_t object_pool_size = 0x5F800;
@@ -224,6 +294,10 @@ bool LoadCompleteGameState(const SaveStateData* save_data) {
                                  !IsBadWritePtr(rng_seed_ptr, sizeof(uint32_t)) &&
                                  !IsBadWritePtr(timer_ptr, sizeof(uint32_t)) &&
                                  !IsBadWritePtr(round_timer_ptr, sizeof(uint32_t)) &&
+                                 !IsBadWritePtr(p1_input_history_ptr, input_history_size) &&
+                                 !IsBadWritePtr(p2_input_history_ptr, input_history_size) &&
+                                 !IsBadWritePtr(input_buffer_index_ptr, sizeof(uint32_t)) &&
+                                 !IsBadWritePtr(player_input_changes_ptr, 8 * sizeof(uint32_t)) &&
                                  !IsBadWritePtr(object_pool_ptr, object_pool_size));
         
         if (!addresses_writable) {
@@ -248,13 +322,31 @@ bool LoadCompleteGameState(const SaveStateData* save_data) {
         *timer_ptr = save_data->game_timer;
         *round_timer_ptr = save_data->round_timer;
         
+        // CRITICAL: Restore input buffer - required for motion inputs like quarter-circle forward
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "📦 LoadCompleteGameState: Restoring input buffers (4KB total)...");
+        memcpy(p1_input_history_ptr, save_data->p1_input_history, input_history_size);
+        memcpy(p2_input_history_ptr, save_data->p2_input_history, input_history_size);
+        *input_buffer_index_ptr = save_data->input_buffer_index;
+        
+        // CSS INPUT STATE: Restore input change detection for just-pressed buttons
+        memcpy(player_input_changes_ptr, save_data->player_input_changes, 8 * sizeof(uint32_t));
+        
+        // INPUT REPEAT LOGIC STATE: Restore repeat logic state for rollback consistency
+        memcpy(g_prev_input_state, save_data->prev_input_state, 8 * sizeof(uint32_t));
+        memcpy(g_input_repeat_state, save_data->input_repeat_state, 8 * sizeof(uint32_t));
+        memcpy(g_input_repeat_timer, save_data->input_repeat_timer, 8 * sizeof(uint32_t));
+        
+        // IMMEDIATE INPUT APPLY STATE: Restore ApplyNetworkedInputsImmediately state for rollback consistency
+        g_apply_prev_p1_input = save_data->apply_prev_p1_input;
+        g_apply_prev_p2_input = save_data->apply_prev_p2_input;
+        
         // CRITICAL: Restore entire object pool (391KB) - required for comprehensive rollback
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "📦 LoadCompleteGameState: Restoring object pool (391KB)...");
         memcpy(object_pool_ptr, save_data->object_pool, object_pool_size);
         
         // Log critical load data for desync debugging (first 40 frames only)
         if (save_data->frame_number <= 40) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "🔄 LoadState F%d: P1(HP:%d X:%d Y:%d) P2(HP:%d X:%d Y:%d) RNG:%d GT:%d RT:%d CK:%u + 391KB OBJECTS", 
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "🔄 LoadState F%d: P1(HP:%d X:%d Y:%d) P2(HP:%d X:%d Y:%d) RNG:%d GT:%d RT:%d CK:%u + INPUT BUFFERS + 391KB OBJECTS", 
                        save_data->frame_number, save_data->p1_hp, save_data->p1_x, save_data->p1_y,
                        save_data->p2_hp, save_data->p2_x, save_data->p2_y, 
                        save_data->rng_seed, save_data->game_timer, save_data->round_timer, save_data->checksum);

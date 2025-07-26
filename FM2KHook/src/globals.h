@@ -18,6 +18,7 @@ typedef void(__cdecl* RenderGameFunc)();
 typedef uint32_t(__cdecl* GameRandFunc)();
 typedef void(__cdecl* ProcessInputHistoryFunc)();
 typedef int(__cdecl* CheckGameContinueFunc)();
+typedef char(__cdecl* CSSHandlerFunc)();
 
 // Function pointers for original game functions
 extern ProcessGameInputsFunc original_process_inputs;
@@ -28,6 +29,7 @@ extern RenderGameFunc original_render_game;
 extern GameRandFunc original_game_rand;
 extern ProcessInputHistoryFunc original_process_input_history;
 extern CheckGameContinueFunc original_check_game_continue;
+extern CSSHandlerFunc original_css_handler;
 
 // Global variables for manual save/load requests
 extern bool manual_save_requested;
@@ -40,12 +42,7 @@ extern uint32_t deterministic_rng_seed;
 extern bool use_deterministic_rng;
 
 // CSS Input injection system
-struct DelayedInput {
-    uint16_t input_value;
-    uint8_t frames_remaining;
-    bool active;
-};
-extern DelayedInput css_delayed_inputs[2];
+// REMOVED: DelayedInput and css_delayed_inputs - caused rollback issues
 
 // Key FM2K addresses
 namespace FM2K::State::Memory {
@@ -133,6 +130,18 @@ extern bool block_input_buffer_update; // Block input history buffer updates dur
 
 extern bool css_mode_active;           // True when in character select (fm2k_mode == 2000)
 
+// Input repeat logic state (moved from static variables to global for rollback support)
+extern uint32_t g_prev_input_state[8];     // Previous frame input states for repeat logic
+extern uint32_t g_input_repeat_state[8];   // Current repeat states for repeat logic  
+extern uint32_t g_input_repeat_timer[8];   // Timers for repeat logic
+
+// ApplyNetworkedInputsImmediately state (moved from static variables to global for rollback support)
+extern uint32_t g_apply_prev_p1_input;     // Previous P1 input for immediate apply change detection
+extern uint32_t g_apply_prev_p2_input;     // Previous P2 input for immediate apply change detection
+
+// Double-processing prevention flag
+extern bool inputs_already_applied_this_frame;  // Flag to prevent double-processing of inputs
+
 // Timeout mechanisms to prevent deadlocks
 extern uint32_t handshake_timeout_frames;    // Timeout counter for network handshake
 extern uint32_t advance_timeout_frames;      // Timeout counter for frame advance waits
@@ -160,10 +169,7 @@ const char* GetGameModeString(uint32_t mode);
 //void HandleCSSModeTransition(uint32_t old_mode, uint32_t new_mode);
 
 
-// Input injection system for CSS color selection
-void ProcessCSSDelayedInputs();
-void QueueCSSDelayedInput(int player, uint16_t input, uint8_t delay_frames = 1);
-uint16_t ExtractColorButton(uint16_t input_flags);
-void InjectPlayerInput(int player, uint16_t input_value);
+// REMOVED: CSS delayed input system - caused rollback issues
+// Direct input processing now used instead
 
 #endif // GLOBALS_H 

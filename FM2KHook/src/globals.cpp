@@ -35,6 +35,18 @@ bool gekko_frame_control_enabled = false; // Disabled by default, enable after G
 bool frame_step_paused_global = false; // Global pause flag for frame stepping
 bool block_input_buffer_update = false; // Block input history buffer updates during pause
 
+// Input repeat logic state (moved from static variables to global for rollback support)
+uint32_t g_prev_input_state[8] = {0};     // Previous frame input states for repeat logic
+uint32_t g_input_repeat_state[8] = {0};   // Current repeat states for repeat logic  
+uint32_t g_input_repeat_timer[8] = {0};   // Timers for repeat logic
+
+// ApplyNetworkedInputsImmediately state (moved from static variables to global for rollback support)
+uint32_t g_apply_prev_p1_input = 0;       // Previous P1 input for immediate apply change detection
+uint32_t g_apply_prev_p2_input = 0;       // Previous P2 input for immediate apply change detection
+
+// Double-processing prevention flag
+bool inputs_already_applied_this_frame = false;  // Flag to prevent double-processing of inputs
+
 // Timeout mechanisms to prevent deadlocks
 uint32_t handshake_timeout_frames = 0;    // Timeout counter for network handshake
 uint32_t advance_timeout_frames = 0;      // Timeout counter for frame advance waits
@@ -51,6 +63,7 @@ RenderGameFunc original_render_game = nullptr;
 GameRandFunc original_game_rand = nullptr;
 ProcessInputHistoryFunc original_process_input_history = nullptr;
 CheckGameContinueFunc original_check_game_continue = nullptr;
+CSSHandlerFunc original_css_handler = nullptr;
 
 // Global variables for manual save/load requests
 bool manual_save_requested = false;
@@ -62,8 +75,7 @@ uint32_t target_load_slot = 0;
 uint32_t deterministic_rng_seed = 12345678;
 bool use_deterministic_rng = false;
 
-// CSS Input injection system
-DelayedInput css_delayed_inputs[2] = {{0, 0, false}, {0, 0, false}};
+// REMOVED: CSS delayed input system - caused rollback issues
 
 // State manager variables
 uint32_t last_auto_save_frame = 0;

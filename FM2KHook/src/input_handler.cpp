@@ -287,12 +287,14 @@ uint32_t ConvertNetworkInputToGameFormat(uint32_t network_input) {
 // NEW GEKKONET INTEGRATION: Complete replacement for process_game_inputs
 // Follows BSNES-netplay pattern: GekkoNet for input sync + FM2K's processing logic
 int __cdecl FM2K_ProcessGameInputs_GekkoNet() {
-    // Reduced entry debug logging
+    // REMOVED: Double-processing prevention system completely eliminated
+    // It was blocking legitimate input processing needed for rapid button recognition
+    
+    // CSS DEBUG: Always log entry when inputs are synchronized and active
     static uint32_t entry_counter = 0;
     entry_counter++;
-    if (entry_counter <= 5 || entry_counter % 600 == 0) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ENTRY DEBUG: FM2K_ProcessGameInputs_GekkoNet() called #%d", entry_counter);
-    }
+    
+    // PERFORMANCE: Entry debug logging disabled to prevent lag during input spam
     
     // Reduced complete reimpl debug logging
     static uint32_t call_count = 0;
@@ -311,18 +313,17 @@ int __cdecl FM2K_ProcessGameInputs_GekkoNet() {
     bool dual_client_mode = (::player_index == 0 || ::player_index == 1);
     bool use_gekko = !is_true_offline && dual_client_mode;
     
-    // Process GekkoNet events and handle synchronization
+    // BSNES ARCHITECTURE: GekkoNet is now processed every frame in Hook_UpdateGameState()
+    // This ensures consistent timing independent of input processing
     if (use_gekko && gekko_initialized && gekko_session) {
-        ProcessGekkoNetFrame(); // This processes events and sets can_advance_frame
-        
-        // CRITICAL: Block frame advancement when GekkoNet synchronization is required
-        // This prevents one client from running ahead during gameplay
+        // FRAME CONTROL: Check if we should block based on GekkoNet synchronization
+        // ProcessGekkoNetFrame() is now called every frame from Hook_UpdateGameState()
         if (gekko_frame_control_enabled && !can_advance_frame) {
             // Block execution until GekkoNet provides AdvanceEvent
             static uint32_t block_counter = 0;
             if (++block_counter % 300 == 0) {
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                           "GekkoNet SYNC: Blocking frame advancement - waiting for AdvanceEvent (#%d)", block_counter);
+                           "GekkoNet INPUT SYNC: Blocking frame advancement - waiting for AdvanceEvent (#%d)", block_counter);
             }
             
             // Return immediately without processing frame - like BSNES when no AdvanceEvent
@@ -360,6 +361,11 @@ int __cdecl FM2K_ProcessGameInputs_GekkoNet() {
     
     // CRITICAL FIX: Always use networked inputs when available in online mode
     bool should_use_networked = use_gekko && gekko_initialized && gekko_session && use_networked_inputs;
+    
+    // CRITICAL FIX: Removed double-processing prevention - it was blocking legitimate input processing
+    // The flag was preventing Player 2 from seeing Player 1's rapid inputs
+    // BSNES doesn't need this because emulator->run() in AdvanceEvent IS the final processing
+    // Our ApplyNetworkedInputsImmediately is just a preview - normal processing must still happen
     
     // Disabled critical debug logging (working correctly)
     static uint32_t debug_condition_counter = 0;
@@ -410,10 +416,8 @@ int __cdecl FM2K_ProcessGameInputs_GekkoNet() {
     
     // ===== PHASE 2: Input Processing Phase - FULL REPEAT LOGIC =====
     
-    // Static local arrays for repeat logic state
-    static uint32_t g_prev_input_state[8] = {0};         // Previous frame input states
-    static uint32_t g_input_repeat_state[8] = {0};       // Current repeat states
-    static uint32_t g_input_repeat_timer[8] = {0};       // Timers for repeat logic
+    // Use global arrays for repeat logic state (moved from static for rollback support)
+    // These are now declared in globals.h and defined in globals.cpp
     
     // CRITICAL: Use actual game memory addresses that CSS reads from!
     uint32_t* g_player_input_processed = (uint32_t*)0x447f40;  // g_player_input_processed[8] array
@@ -482,12 +486,12 @@ int __cdecl FM2K_ProcessGameInputs_GekkoNet() {
         accumulated_just_pressed |= current_input_changes;
         accumulated_processed_input |= current_processed_input;
         
-        // Reduced debug logging for repeat logic
-        static uint32_t repeat_log_counter = 0;
-        if (device_index == 0 && current_processed_input != 0 && ++repeat_log_counter % 30 == 0) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "REPEAT LOGIC: Device %d - raw=0x%03X processed=0x%03X", 
-                       device_index, current_raw_input, current_processed_input);
-        }
+        // PERFORMANCE: Disabled REPEAT LOGIC logging - causes lag during input spam
+        // if (device_index == 0 && (current_raw_input != 0 || current_processed_input != 0)) {
+        //     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "REPEAT LOGIC Device %d: raw=0x%03X processed=0x%03X changes=0x%03X prev=0x%03X repeat_state=0x%03X timer=%d", 
+        //                device_index, current_raw_input, current_processed_input, current_input_changes, 
+        //                previous_raw_input, g_input_repeat_state[device_index], g_input_repeat_timer[device_index]);
+        // }
     }
     
     // ===== PHASE 3: Output Phase (using CORRECT global addresses found via MCP) =====
@@ -500,12 +504,22 @@ int __cdecl FM2K_ProcessGameInputs_GekkoNet() {
     // g_player_input_processed and g_player_input_changes are already pointing to the right addresses
     // No need to memcpy since we wrote directly to memory addresses
     
-    // Reduced debug logging for output
-    static uint32_t output_log_counter = 0;
-    if (accumulated_processed_input != 0 && ++output_log_counter % 60 == 0) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "OUTPUT DEBUG: Writing 0x%03X to addresses 0x4cfa04, 0x4d1c20, 0x447f40[0]", 
-                   accumulated_processed_input);
-    }
+    // PERFORMANCE: Disabled CSS INPUT logging - causes lag during input spam
+    // if (accumulated_processed_input & 0x3F0) {
+    //     uint32_t* game_mode = (uint32_t*)0x470054;  // g_game_mode
+    //     uint32_t* fm2k_mode = (uint32_t*)0x470040;  // g_fm2k_game_mode
+    //     uint32_t* css_mode = (uint32_t*)0x470058;   // g_character_select_mode_flag
+    //     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS INPUT DETECTED: processed=0x%03X, changes[0]=0x%03X, changes[1]=0x%03X, game_mode=%d, fm2k_mode=%d, css_mode=%d", 
+    //                accumulated_processed_input, g_player_input_changes[0], g_player_input_changes[1], 
+    //                *game_mode, *fm2k_mode, *css_mode);
+    // }
+    
+    // PERFORMANCE: Disabled OUTPUT DEBUG logging - causes lag during input spam
+    // static uint32_t output_log_counter = 0;
+    // if (accumulated_processed_input != 0 && ++output_log_counter % 60 == 0) {
+    //     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "OUTPUT DEBUG: Writing 0x%03X to addresses 0x4cfa04, 0x4d1c20, 0x447f40[0]", 
+    //                accumulated_processed_input);
+    // }
     
     // Reduced complete reimpl logging
     static uint32_t complete_log_counter = 0;

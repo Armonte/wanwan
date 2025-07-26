@@ -25,7 +25,7 @@ add_library(FM2KHook SHARED
     src/debug_features.cpp
     src/game_patches.cpp
     src/state_monitor.cpp
-    src/css_handler.cpp
+    # REMOVED: src/css_handler.cpp - CSS delayed input system eliminated
     src/object_tracker.cpp
     src/object_analysis.cpp
     src/object_pool_scanner.cpp

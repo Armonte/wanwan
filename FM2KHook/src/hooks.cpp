@@ -6,7 +6,7 @@
 #include "debug_features.h"
 #include "game_patches.h"
 #include "state_monitor.h"
-#include "css_handler.h"
+// REMOVED: #include "css_handler.h" - CSS delayed input system removed
 #include "gekkonet_hooks.h"
 #include <MinHook.h>
 #include <cstdlib>
@@ -75,6 +75,15 @@ bool InitializeHooks() {
         return false;
     }
     
+    // Hook characterSelect_state_manager for CSS debugging (main CSS function)
+    void* cssHandlerFuncAddr = (void*)0x407000;
+    if (MH_CreateHook(cssHandlerFuncAddr, (void*)Hook_CSS_Handler, (void**)&original_css_handler) != MH_OK ||
+        MH_EnableHook(cssHandlerFuncAddr) != MH_OK) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ERROR FM2K HOOK: Failed to hook CSS handler");
+        MH_Uninitialize();
+        return false;
+    }
+    
     // Apply boot-to-character-select patches directly
     ApplyBootToCharacterSelectPatches();
     
@@ -93,21 +102,21 @@ void ShutdownHooks() {
 }
 
 int __cdecl Hook_UpdateGameState() {
-    // STARTUP SYNCHRONIZATION: Block during initialization phases before frame control
+    // BSNES ARCHITECTURE: Process GekkoNet every frame for total control over timing
     char* env_offline = getenv("FM2K_TRUE_OFFLINE");
     bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
     bool dual_client_mode = (::player_index == 0 || ::player_index == 1);
     bool use_gekko = !is_true_offline && dual_client_mode;
     
-    // CRITICAL STARTUP BLOCKING: Block immediately when GekkoNet is active, regardless of session state
+    // EVERY FRAME GEKKONET PROCESSING: Like BSNES netplayRun() called every frame
     if (use_gekko && gekko_initialized && gekko_session) {
         uint32_t* game_mode = (uint32_t*)0x470054;  // g_game_mode
         bool is_initialization_phase = (*game_mode < 3000);  // Before battle mode
         
+        // CRITICAL: Process GekkoNet EVERY frame (like BSNES), not just during input processing
+        ProcessGekkoNetFrame();
+        
         if (is_initialization_phase) {
-            // Process GekkoNet events during initialization
-            ProcessGekkoNetFrame();
-            
             // UNCONDITIONAL BLOCKING during startup - wait for session to be ready
             if (!gekko_session_started) {
                 static uint32_t startup_block_counter = 0;
@@ -129,6 +138,17 @@ int __cdecl Hook_UpdateGameState() {
                 }
                 return 0; // Block until AdvanceEvent received
             }
+        } else {
+            // BATTLE MODE: Also check frame control for consistent behavior
+            if (gekko_frame_control_enabled && !can_advance_frame) {
+                static uint32_t battle_frame_block_counter = 0;
+                if (++battle_frame_block_counter % 120 == 0) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                               "GekkoNet BATTLE FRAME BLOCK: Waiting for AdvanceEvent - game_mode=%d (#%d)", 
+                               *game_mode, battle_frame_block_counter);
+                }
+                return 0; // Block until AdvanceEvent received
+            }
         }
     }
     
@@ -137,7 +157,7 @@ int __cdecl Hook_UpdateGameState() {
     CheckForDebugCommands();
     CheckForHotkeys();
     ProcessManualSaveLoadRequests();
-    ProcessCSSDelayedInputs();
+    // REMOVED: CSS delayed input system - causes rollback issues
     
     if (original_update_game) {
         return original_update_game();
@@ -183,4 +203,39 @@ BOOL __cdecl Hook_RunGameLoop() {
     
     // Always use original main loop - our hooks will control the frame processing
     return original_run_game_loop ? original_run_game_loop() : FALSE;
+}
+
+char __cdecl Hook_CSS_Handler() {
+    // CSS DEBUG: Log when CSS handler is called and what input values it sees
+    uint32_t* player_input_flags = (uint32_t*)0x4cfa04;  // g_combined_raw_input
+    uint32_t* player_input_changes = (uint32_t*)0x447f60; // g_player_input_changes[8]
+    uint32_t* game_mode = (uint32_t*)0x470054;  // g_game_mode
+    
+    static uint32_t css_call_counter = 0;
+    css_call_counter++;
+    
+    // Always log CSS handler calls when there's potential button input
+    bool has_button_input = (*player_input_flags & 0x3F0) || 
+                           (player_input_changes[0] & 0x3F0) || 
+                           (player_input_changes[1] & 0x3F0);
+    
+    if (css_call_counter <= 5 || has_button_input || css_call_counter % 300 == 0) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                   "CSS HANDLER #%d: game_mode=%d, input_flags=0x%03X, changes[0]=0x%03X, changes[1]=0x%03X", 
+                   css_call_counter, *game_mode, *player_input_flags, 
+                   player_input_changes[0], player_input_changes[1]);
+    }
+    
+    // Call original CSS handler
+    char result = 0;
+    if (original_css_handler) {
+        result = original_css_handler();
+    }
+    
+    // Log result if there was button input
+    if (has_button_input) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS HANDLER RESULT: %d", result);
+    }
+    
+    return result;
 }

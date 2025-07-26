@@ -9,6 +9,7 @@ bool InitializeGekkoNet();
 void CleanupGekkoNet();
 void GekkoNetUpdate();
 void ProcessGekkoNetFrame();
+void ApplyNetworkedInputsImmediately(uint16_t p1_input, uint16_t p2_input);
 
 // Complete main loop replacement with GekkoNet integration
 BOOL GekkoNet_MainLoop();

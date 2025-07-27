@@ -5,11 +5,12 @@
 
 // Function declarations for input handling logic
 void PatchInputBufferWrites(bool block);
-void CaptureRealInputs();
 uint16_t PollSDLKeyboard();
 int __cdecl Hook_GetPlayerInput(int player_id, int input_type);
 uint32_t ConvertNetworkInputToGameFormat(uint32_t network_input);
-int __cdecl FM2K_ProcessGameInputs_GekkoNet();
-int __cdecl Hook_ProcessGameInputs();
+bool IsWindowFocused();
+
+// REMOVED: All intermediate input writing functions
+// Following Heat's advice - only override FINAL processed state in GekkoNet callbacks
 
 #endif // INPUT_HANDLER_H 

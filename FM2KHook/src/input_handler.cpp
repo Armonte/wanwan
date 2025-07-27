@@ -48,60 +48,7 @@ void PatchInputBufferWrites(bool block) {
     }
 }
 
-// ARCHITECTURE FIX: Real input capture following CCCaster/GekkoNet pattern
-void CaptureRealInputs() {
-    // CRITICAL DEBUG: Let's bypass the original system and directly call our input logic
-    // This should match exactly what Hook_GetPlayerInput is doing
-    
-    char* env_offline = getenv("FM2K_TRUE_OFFLINE");
-    bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
-
-    // DIRECT INPUT CAPTURE: Bypass original_get_player_input and use our logic directly
-    if (is_true_offline) {
-        // TRUE OFFLINE: Read both players from local hardware.
-        live_p1_input = Hook_GetPlayerInput(0, 0);
-        live_p2_input = Hook_GetPlayerInput(1, 0);
-        // REDUCED LOGGING: Only log occasionally
-        static uint32_t offline_log_counter = 0;
-        if (++offline_log_counter % 300 == 0) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DIRECT CAPTURE OFFLINE: P1=0x%03X P2=0x%03X", 
-                       live_p1_input & 0x7FF, live_p2_input & 0x7FF);
-        }
-    } else {
-        // ONLINE: Each client captures input for their assigned player
-        if (::player_index == 0) {
-            // HOST: Capture P1 input directly
-            live_p1_input = Hook_GetPlayerInput(0, 0);
-            live_p2_input = 0; // Will be filled by GekkoNet
-            static uint32_t host_log_counter = 0;
-            if (live_p1_input != 0 && ++host_log_counter % 300 == 0) { // Reduced from 60 to 300
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DIRECT CAPTURE HOST: P1=0x%03X (bypassing original_get_player_input)", 
-                           live_p1_input & 0x7FF);
-            }
-        } else {
-            // CLIENT: Capture P2 input directly
-            live_p1_input = 0; // Will be filled by GekkoNet
-            live_p2_input = Hook_GetPlayerInput(1, 0);
-            static uint32_t client_log_counter = 0;
-            if (live_p2_input != 0 && ++client_log_counter % 300 == 0) { // Reduced from 60 to 300
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "DIRECT CAPTURE CLIENT: P2=0x%03X (bypassing original_get_player_input)", 
-                           live_p2_input & 0x7FF);
-            }
-        }
-    }
-
-    // The P2 left/right bit swap is a hardware/engine quirk, apply it whenever P2 input is generated.
-    // This needs to happen for the client's input as it will control the P2 character.
-
-    // REDUCED 2DFM INPUT debug logging (working correctly)
-    static uint32_t debug_counter = 0;
-    debug_counter++;
-    // Only log when inputs are actually non-zero, but much less frequently
-    if ((live_p1_input != 0 || live_p2_input != 0) && debug_counter % 600 == 0) { // Reduced from 180 to 600
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "2DFM INPUT: P1=0x%03X P2=0x%03X",
-                   live_p1_input & 0x7FF, live_p2_input & 0x7FF);
-    }
-}
+// REMOVED: CaptureRealInputs - no longer needed with pure GekkoNet architecture
 
 // NEW GEKKONET INTEGRATION: SDL keyboard polling for clean input source
 uint16_t PollSDLKeyboard() {
@@ -168,100 +115,89 @@ bool IsWindowFocused() {
 }
 
 int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
-    static uint32_t call_count = 0;
+    // HEAT'S ADVICE: Only poll for local player, let GekkoNet provide remote player
+    // In TRUE_OFFLINE mode, we provide both players' inputs
     
-    // CRITICAL FIX: Each client only provides input for their own player
-    // HOST (player_index=0) only provides input when player_id=0 (P1)
-    // CLIENT (player_index=1) only provides input when player_id=1 (P2)
+    char* env_offline = getenv("FM2K_TRUE_OFFLINE");
+    bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
+    
     int input_mask = 0;
     
-    if (IsWindowFocused()) {
-        if (::player_index == 0 && player_id == 0) {
-            // HOST providing P1 input: Use Arrow keys + ZXC/ASD layout  
-            int raw_left = GetAsyncKeyState(VK_LEFT) & 0x8000;
-            int raw_right = GetAsyncKeyState(VK_RIGHT) & 0x8000;
-            int raw_up = GetAsyncKeyState(VK_UP) & 0x8000;
-            int raw_down = GetAsyncKeyState(VK_DOWN) & 0x8000;
-            
-            // ORIGINAL LOGIC: invert_directions determination (from get_player_input decompilation)
-            // invert_directions = 1 when: g_game_mode < 3000 || g_game_mode >= 4000 || !g_player_current_actions || (g_player_action_flags & 8) != 0
-            uint32_t* game_mode = (uint32_t*)0x470054;  // g_game_mode (corrected address from MCP)
-            uint32_t* player_actions = (uint32_t*)(0x4dfcd1 + 57407 * player_id);  // g_player_current_actions (use player_id not input_type)
-            uint32_t* action_flags = (uint32_t*)(0x4d9a36 + 57407 * player_id);   // g_player_action_flags (use player_id not input_type)
-            
-            bool invert_directions = (*game_mode < 3000) || (*game_mode >= 4000) || 
-                                   (!*player_actions) || ((*action_flags & 8) != 0);
-            
-            if (invert_directions) {
-                // NORMAL mapping when inverted (invert_directions = 1)
-                if (raw_left)  input_mask |= 0x001;  // LEFT = 1
-                if (raw_right) input_mask |= 0x002;  // RIGHT = 2
-            } else {
-                // FLIPPED mapping when not inverted (invert_directions = 0)  
-                if (raw_left)  input_mask |= 0x002;  // LEFT becomes RIGHT = 2
-                if (raw_right) input_mask |= 0x001;  // RIGHT becomes LEFT = 1
+    // TRUE OFFLINE: Provide inputs for both players
+    if (is_true_offline) {
+        if (IsWindowFocused()) {
+            if (player_id == 0) {
+                // P1: Arrow keys + ZXC/ASD
+                if (GetAsyncKeyState(VK_LEFT) & 0x8000)  input_mask |= 0x001;
+                if (GetAsyncKeyState(VK_RIGHT) & 0x8000) input_mask |= 0x002;
+                if (GetAsyncKeyState(VK_UP) & 0x8000)    input_mask |= 0x004;
+                if (GetAsyncKeyState(VK_DOWN) & 0x8000)  input_mask |= 0x008;
+                if (GetAsyncKeyState('Z') & 0x8000)      input_mask |= 0x010;
+                if (GetAsyncKeyState('X') & 0x8000)      input_mask |= 0x020;
+                if (GetAsyncKeyState('C') & 0x8000)      input_mask |= 0x040;
+                if (GetAsyncKeyState('A') & 0x8000)      input_mask |= 0x080;
+                if (GetAsyncKeyState('S') & 0x8000)      input_mask |= 0x100;
+                if (GetAsyncKeyState('D') & 0x8000)      input_mask |= 0x200;
+            } else if (player_id == 1) {
+                // P2: WASD + UIO/JKL
+                if (GetAsyncKeyState('A') & 0x8000)      input_mask |= 0x001;
+                if (GetAsyncKeyState('D') & 0x8000)      input_mask |= 0x002;
+                if (GetAsyncKeyState('W') & 0x8000)      input_mask |= 0x004;
+                if (GetAsyncKeyState('S') & 0x8000)      input_mask |= 0x008;
+                if (GetAsyncKeyState('U') & 0x8000)      input_mask |= 0x010;
+                if (GetAsyncKeyState('I') & 0x8000)      input_mask |= 0x020;
+                if (GetAsyncKeyState('O') & 0x8000)      input_mask |= 0x040;
+                if (GetAsyncKeyState('P') & 0x8000)      input_mask |= 0x080;
+                if (GetAsyncKeyState('J') & 0x8000)      input_mask |= 0x100;
+                if (GetAsyncKeyState('K') & 0x8000)      input_mask |= 0x200;
             }
-            
-            // Up/Down never flip
-            if (raw_down) input_mask |= 0x008;
-            if (raw_up)   input_mask |= 0x004;
-            
-            if (GetAsyncKeyState('Z') & 0x8000)       input_mask |= 0x010;
-            if (GetAsyncKeyState('X') & 0x8000)       input_mask |= 0x020;
-            if (GetAsyncKeyState('C') & 0x8000)       input_mask |= 0x040;
-            if (GetAsyncKeyState('A') & 0x8000)       input_mask |= 0x080;
-            if (GetAsyncKeyState('S') & 0x8000)       input_mask |= 0x100;
-            if (GetAsyncKeyState('D') & 0x8000)       input_mask |= 0x200;
-        } else if (::player_index == 1 && player_id == 1) {
-            // CLIENT providing P2 input: Use WASD movement + UIOP buttons
-            int raw_left = GetAsyncKeyState('A') & 0x8000;
-            int raw_right = GetAsyncKeyState('D') & 0x8000;
-            int raw_up = GetAsyncKeyState('W') & 0x8000;
-            int raw_down = GetAsyncKeyState('S') & 0x8000;
-            
-            // ORIGINAL LOGIC: invert_directions determination (from get_player_input decompilation)
-            uint32_t* game_mode = (uint32_t*)0x470054;  // g_game_mode (corrected address from MCP)
-            uint32_t* player_actions = (uint32_t*)(0x4dfcd1 + 57407 * player_id);  // g_player_current_actions (use player_id not input_type)
-            uint32_t* action_flags = (uint32_t*)(0x4d9a36 + 57407 * player_id);   // g_player_action_flags (use player_id not input_type)
-            
-            bool invert_directions = (*game_mode < 3000) || (*game_mode >= 4000) || 
-                                   (!*player_actions) || ((*action_flags & 8) != 0);
-            
-            if (invert_directions) {
-                // NORMAL mapping when inverted (invert_directions = 1)
-                if (raw_left)  input_mask |= 0x001;  // LEFT = 1
-                if (raw_right) input_mask |= 0x002;  // RIGHT = 2
-            } else {
-                // FLIPPED mapping when not inverted (invert_directions = 0)  
-                if (raw_left)  input_mask |= 0x002;  // LEFT becomes RIGHT = 2
-                if (raw_right) input_mask |= 0x001;  // RIGHT becomes LEFT = 1
-            }
-            
-            // Up/Down never flip
-            if (raw_down) input_mask |= 0x008; // DOWN
-            if (raw_up)   input_mask |= 0x004; // UP
-            
-            if (GetAsyncKeyState('U') & 0x8000)       input_mask |= 0x010;
-            if (GetAsyncKeyState('I') & 0x8000)       input_mask |= 0x020;
-            if (GetAsyncKeyState('O') & 0x8000)       input_mask |= 0x040;
-            if (GetAsyncKeyState('P') & 0x8000)       input_mask |= 0x080;
-            if (GetAsyncKeyState('J') & 0x8000)       input_mask |= 0x100;
-            if (GetAsyncKeyState('K') & 0x8000)       input_mask |= 0x200;
-        } else {
-            // Not our player - return 0 (let GekkoNet provide networked input)
-            input_mask = 0;
         }
-    } else {
-        // Window not focused - return no input (like BSNES)
-        input_mask = 0;
+        return input_mask;
     }
     
-    // Reduced debug logging - only when input changes
-    static uint32_t last_mask = 0;
-
+    // ONLINE MODE: Provide local player input + networked remote player input
+    if (::player_index == 0) {
+        // HOST controls P1, receives P2 from network
+        if (player_id == 0) {
+            // P1 input from local keyboard
+            if (IsWindowFocused()) {
+                if (GetAsyncKeyState(VK_LEFT) & 0x8000)  input_mask |= 0x001;
+                if (GetAsyncKeyState(VK_RIGHT) & 0x8000) input_mask |= 0x002;
+                if (GetAsyncKeyState(VK_UP) & 0x8000)    input_mask |= 0x004;
+                if (GetAsyncKeyState(VK_DOWN) & 0x8000)  input_mask |= 0x008;
+                if (GetAsyncKeyState('Z') & 0x8000)      input_mask |= 0x010;
+                if (GetAsyncKeyState('X') & 0x8000)      input_mask |= 0x020;
+                if (GetAsyncKeyState('C') & 0x8000)      input_mask |= 0x040;
+                if (GetAsyncKeyState('A') & 0x8000)      input_mask |= 0x080;
+                if (GetAsyncKeyState('S') & 0x8000)      input_mask |= 0x100;
+                if (GetAsyncKeyState('D') & 0x8000)      input_mask |= 0x200;
+            }
+        } else if (player_id == 1) {
+            // P2 input from network
+            input_mask = GetCurrentNetworkedP2Input();
+        }
+    } else if (::player_index == 1) {
+        // CLIENT controls P2, receives P1 from network
+        if (player_id == 0) {
+            // P1 input from network
+            input_mask = GetCurrentNetworkedP1Input();
+        } else if (player_id == 1) {
+            // P2 input from local keyboard
+            if (IsWindowFocused()) {
+                if (GetAsyncKeyState('A') & 0x8000)      input_mask |= 0x001;
+                if (GetAsyncKeyState('D') & 0x8000)      input_mask |= 0x002;
+                if (GetAsyncKeyState('W') & 0x8000)      input_mask |= 0x004;
+                if (GetAsyncKeyState('S') & 0x8000)      input_mask |= 0x008;
+                if (GetAsyncKeyState('U') & 0x8000)      input_mask |= 0x010;
+                if (GetAsyncKeyState('I') & 0x8000)      input_mask |= 0x020;
+                if (GetAsyncKeyState('O') & 0x8000)      input_mask |= 0x040;
+                if (GetAsyncKeyState('P') & 0x8000)      input_mask |= 0x080;
+                if (GetAsyncKeyState('J') & 0x8000)      input_mask |= 0x100;
+                if (GetAsyncKeyState('K') & 0x8000)      input_mask |= 0x200;
+            }
+        }
+    }
     
-    // Just return the input mask like the original function
-    // Let process_game_inputs handle writing to the arrays
     return input_mask;
 }
 
@@ -284,619 +220,5 @@ uint32_t ConvertNetworkInputToGameFormat(uint32_t network_input) {
     return game_input;
 }
 
-// NEW GEKKONET INTEGRATION: Complete replacement for process_game_inputs
-// Follows BSNES-netplay pattern: GekkoNet for input sync + FM2K's processing logic
-int __cdecl FM2K_ProcessGameInputs_GekkoNet() {
-    // REMOVED: Double-processing prevention system completely eliminated
-    // It was blocking legitimate input processing needed for rapid button recognition
-    
-    // CSS DEBUG: Always log entry when inputs are synchronized and active
-    static uint32_t entry_counter = 0;
-    entry_counter++;
-    
-    // PERFORMANCE: Entry debug logging disabled to prevent lag during input spam
-    
-    // Reduced complete reimpl debug logging
-    static uint32_t call_count = 0;
-    if (++call_count <= 3 || call_count % 600 == 0) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "COMPLETE REIMPL called #%d", call_count);
-    }
-    
-    // Disabled flow debug logging (working correctly)
-    static uint32_t flow_counter = 0;
-    flow_counter++;
-    // SDL_LogInfo disabled for production
-    
-    // BSNES-STYLE NON-BLOCKING: Process GekkoNet events like BSNES netplayRun()
-    char* env_offline = getenv("FM2K_TRUE_OFFLINE");
-    bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
-    bool dual_client_mode = (::player_index == 0 || ::player_index == 1);
-    bool use_gekko = !is_true_offline && dual_client_mode;
-    
-    // BSNES ARCHITECTURE: GekkoNet is now processed every frame in Hook_UpdateGameState()
-    // This ensures consistent timing independent of input processing
-    if (use_gekko && gekko_initialized && gekko_session) {
-        // FRAME CONTROL: Check if we should block based on GekkoNet synchronization
-        // ProcessGekkoNetFrame() is now called every frame from Hook_UpdateGameState()
-        if (gekko_frame_control_enabled && !can_advance_frame) {
-            // Block execution until GekkoNet provides AdvanceEvent
-            static uint32_t block_counter = 0;
-            if (++block_counter % 300 == 0) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                           "GekkoNet INPUT SYNC: Blocking frame advancement - waiting for AdvanceEvent (#%d)", block_counter);
-            }
-            
-            // Return immediately without processing frame - like BSNES when no AdvanceEvent
-            return 0;
-        }
-    }
-    
-    // ===== PHASE 1: Input Capture Phase (exactly like original) =====
-    
-    // 1. Keyboard State Capture (0x4146d9) - CRITICAL for graphics!
-    static BYTE KeyState[256];
-    GetKeyboardState(KeyState);
-    
-    // 2. Frame Counter Management (0x4146f4) - USE GAME'S REAL FRAME COUNTER!
-    uint32_t* game_frame_counter_ptr = (uint32_t*)0x447ee0;
-    uint32_t current_frame = (*game_frame_counter_ptr + 1) & 0x3FF; // Read game's counter and increment
-    *game_frame_counter_ptr = current_frame; // Write back to game's counter
-    g_frame_counter = current_frame; // Also update our local copy for logging
-    
-    // 3. Input Buffer Initialization (0x4146fb)
-    uint32_t* g_p1_input = (uint32_t*)0x4259c0;      // g_p1_input[8] 
-    uint32_t* g_p2_input_ptr = (uint32_t*)0x4259c4;   // g_p2_input
-    uint32_t* g_player_input_history = (uint32_t*)0x4280e0; // Input history[1024]
-    uint32_t* g_p2_input_history = (uint32_t*)0x4290e0;     // P2 history[1024]
-    
-    memset(g_p1_input, 0, 0x20u); // Clear P1 input buffer (32 bytes)
-    
-    // 4. Game Mode Input Handling (0x414710) - REPLACE get_player_input with Windows
-    uint32_t g_game_mode = *(uint32_t*)0x447EDC; // Game mode address
-    uint8_t g_character_select_mode_flag = *(uint8_t*)0x447EE8; // Character select flag
-    
-    // GEKKONET INTEGRATION: Use synchronized inputs from ProcessGekkoNetFrame
-    uint32_t p1_final_input = 0;
-    uint32_t p2_final_input = 0;
-    
-    // CRITICAL FIX: Always use networked inputs when available in online mode
-    bool should_use_networked = use_gekko && gekko_initialized && gekko_session && use_networked_inputs;
-    
-    // CRITICAL FIX: Removed double-processing prevention - it was blocking legitimate input processing
-    // The flag was preventing Player 2 from seeing Player 1's rapid inputs
-    // BSNES doesn't need this because emulator->run() in AdvanceEvent IS the final processing
-    // Our ApplyNetworkedInputsImmediately is just a preview - normal processing must still happen
-    
-    // Disabled critical debug logging (working correctly)
-    static uint32_t debug_condition_counter = 0;
-    debug_condition_counter++;
-    // SDL_LogInfo disabled for production
-    
-    if (should_use_networked) {
-        // Use GekkoNet synchronized inputs (BSNES approach)
-        p1_final_input = networked_p1_input;
-        p2_final_input = networked_p2_input;
-        
-        static uint32_t sync_log_counter = 0;
-        
-    } else {
-        // DEBUG: Log why networked inputs are not being used
-        static uint32_t fallback_counter = 0;
-        
-        
-        // Use local Windows input (fallback/offline mode)  
-        if (GetAsyncKeyState(VK_LEFT) & 0x8000)   p1_final_input |= 0x001;  // LEFT
-        if (GetAsyncKeyState(VK_RIGHT) & 0x8000)  p1_final_input |= 0x002;  // RIGHT
-        if (GetAsyncKeyState(VK_UP) & 0x8000)     p1_final_input |= 0x004;  // UP
-        if (GetAsyncKeyState(VK_DOWN) & 0x8000)   p1_final_input |= 0x008;  // DOWN
-        if (GetAsyncKeyState('Z') & 0x8000)       p1_final_input |= 0x010;  // BUTTON1
-        if (GetAsyncKeyState('X') & 0x8000)       p1_final_input |= 0x020;  // BUTTON2
-        if (GetAsyncKeyState('C') & 0x8000)       p1_final_input |= 0x040;  // BUTTON3
-        if (GetAsyncKeyState('A') & 0x8000)       p1_final_input |= 0x080;  // BUTTON4
-        if (GetAsyncKeyState('S') & 0x8000)       p1_final_input |= 0x100;  // BUTTON5
-        if (GetAsyncKeyState('D') & 0x8000)       p1_final_input |= 0x200;  // BUTTON6
-        
-        // For now, P2 is controlled by P1 in offline mode
-        p2_final_input = 0;
-    }
-    
-    // ===== PHASE 2: Input Assignment to Game Memory =====
-    
-    if (g_game_mode < 3000 || g_character_select_mode_flag) {
-        // Versus mode - assign both P1 and P2 inputs
-        g_p1_input[0] = p1_final_input;
-        g_player_input_history[g_frame_counter] = p1_final_input;
-        *g_p2_input_ptr = p2_final_input;
-        g_p2_input_history[g_frame_counter] = p2_final_input;
-    } else {
-        // Story mode - only P1 input
-        g_p1_input[0] = p1_final_input;
-        g_player_input_history[g_frame_counter] = p1_final_input;
-    }
-    
-    // ===== PHASE 2: Input Processing Phase - FULL REPEAT LOGIC =====
-    
-    // Use global arrays for repeat logic state (moved from static for rollback support)
-    // These are now declared in globals.h and defined in globals.cpp
-    
-    // CRITICAL: Use actual game memory addresses that CSS reads from!
-    uint32_t* g_player_input_processed = (uint32_t*)0x447f40;  // g_player_input_processed[8] array
-    uint32_t* g_player_input_changes = (uint32_t*)0x447f60;    // g_player_input_changes[8] array (estimated)
-    
-    // Configuration values (typical fighting game values)
-    const uint32_t g_input_initial_delay = 15;  // Initial delay frames
-    const uint32_t g_input_repeat_delay = 4;    // Repeat delay frames
-    
-    uint32_t accumulated_raw_input = 0;
-    uint32_t accumulated_just_pressed = 0;
-    uint32_t accumulated_processed_input = 0;
-    
-    // Process all 8 input devices with repeat logic (exactly like original)
-    for (int device_index = 0; device_index < 8; device_index++) {
-        uint32_t current_raw_input = g_p1_input[device_index];
-        uint32_t previous_raw_input = g_prev_input_state[device_index];
-        
-        // Update previous input state for next frame
-        g_prev_input_state[device_index] = current_raw_input;
-        
-        // Detect input changes (just-pressed buttons)
-        uint32_t current_input_changes = current_raw_input & (previous_raw_input ^ current_raw_input);
-        g_player_input_changes[device_index] = current_input_changes;
-        
-        uint32_t current_processed_input;
-        
-        // REPEAT LOGIC: Check if input is held (same as previous repeat state)
-        if (current_raw_input && current_raw_input == g_input_repeat_state[device_index]) {
-            // Held input - use repeat logic
-            uint32_t repeat_timer_remaining = g_input_repeat_timer[device_index] - 1;
-            g_input_repeat_timer[device_index] = repeat_timer_remaining;
-            
-            if (repeat_timer_remaining) {
-                // Timer not expired - suppress input
-                current_processed_input = 0;
-            } else {
-                // Timer expired - allow input and reset to repeat delay
-                current_processed_input = current_raw_input;
-                g_input_repeat_timer[device_index] = g_input_repeat_delay;
-            }
-        } else {
-            // New input detected - set initial delay
-            current_processed_input = current_raw_input; // Allow new input immediately
-            g_input_repeat_timer[device_index] = g_input_initial_delay;
-            
-            // Bit filtering: Filter out specific bits if previously held
-            uint32_t previous_repeat_state = g_input_repeat_state[device_index];
-            if ((previous_repeat_state & 3) != 0) {
-                // Filter out bits 0-1 if previously held
-                current_processed_input &= 0xFFFFFFFC;
-            }
-            if ((previous_repeat_state & 0xC) != 0) {
-                // Filter out bits 2-3 if previously held  
-                current_processed_input &= 0xFFFFFFF3;
-            }
-            
-            // Update repeat state for next frame
-            g_input_repeat_state[device_index] = current_raw_input;
-        }
-        
-        g_player_input_processed[device_index] = current_processed_input;
-        
-        // Accumulate inputs from all devices
-        accumulated_raw_input |= current_raw_input;
-        accumulated_just_pressed |= current_input_changes;
-        accumulated_processed_input |= current_processed_input;
-        
-        // PERFORMANCE: Disabled REPEAT LOGIC logging - causes lag during input spam
-        // if (device_index == 0 && (current_raw_input != 0 || current_processed_input != 0)) {
-        //     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "REPEAT LOGIC Device %d: raw=0x%03X processed=0x%03X changes=0x%03X prev=0x%03X repeat_state=0x%03X timer=%d", 
-        //                device_index, current_raw_input, current_processed_input, current_input_changes, 
-        //                previous_raw_input, g_input_repeat_state[device_index], g_input_repeat_timer[device_index]);
-        // }
-    }
-    
-    // ===== PHASE 3: Output Phase (using CORRECT global addresses found via MCP) =====
-    
-    // Store final results in the REAL global variables that the game actually reads!
-    *(uint32_t*)0x4cfa04 = accumulated_raw_input;       // g_combined_raw_input (REAL ADDRESS!)
-    *(uint32_t*)0x4d1c20 = accumulated_processed_input; // g_combined_processed_input (REAL ADDRESS!)
-    
-    // CRITICAL: Write to the ACTUAL global arrays the game reads
-    // g_player_input_processed and g_player_input_changes are already pointing to the right addresses
-    // No need to memcpy since we wrote directly to memory addresses
-    
-    // PERFORMANCE: Disabled CSS INPUT logging - causes lag during input spam
-    // if (accumulated_processed_input & 0x3F0) {
-    //     uint32_t* game_mode = (uint32_t*)0x470054;  // g_game_mode
-    //     uint32_t* fm2k_mode = (uint32_t*)0x470040;  // g_fm2k_game_mode
-    //     uint32_t* css_mode = (uint32_t*)0x470058;   // g_character_select_mode_flag
-    //     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS INPUT DETECTED: processed=0x%03X, changes[0]=0x%03X, changes[1]=0x%03X, game_mode=%d, fm2k_mode=%d, css_mode=%d", 
-    //                accumulated_processed_input, g_player_input_changes[0], g_player_input_changes[1], 
-    //                *game_mode, *fm2k_mode, *css_mode);
-    // }
-    
-    // PERFORMANCE: Disabled OUTPUT DEBUG logging - causes lag during input spam
-    // static uint32_t output_log_counter = 0;
-    // if (accumulated_processed_input != 0 && ++output_log_counter % 60 == 0) {
-    //     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "OUTPUT DEBUG: Writing 0x%03X to addresses 0x4cfa04, 0x4d1c20, 0x447f40[0]", 
-    //                accumulated_processed_input);
-    // }
-    
-    // Reduced complete reimpl logging
-    static uint32_t complete_log_counter = 0;
-    if (++complete_log_counter % 300 == 0 || (accumulated_processed_input != 0 && complete_log_counter % 120 == 0)) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "COMPLETE REIMPL: Frame %u - Raw=0x%03X Processed=0x%03X JustPressed=0x%03X", 
-                   g_frame_counter, accumulated_raw_input, accumulated_processed_input, accumulated_just_pressed);
-    }
-    
-    return 32; // device_index * 4 (8 devices * 4 bytes)
-}
-
-int __cdecl Hook_ProcessGameInputs() {
-    // Check for true offline mode
-    char* env_offline = getenv("FM2K_TRUE_OFFLINE");
-    bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
-    
-    // Track if we advanced frame via AdvanceEvent (to avoid double calling original_process_inputs)
-    bool frame_advanced = false;
-
-    // CRITICAL FIX: Send inputs during handshake (like BSNES)
-    // Must capture and send inputs BEFORE AllPlayersValid() check to establish connection
-    bool dual_client_mode = (::player_index == 0 || ::player_index == 1);
-    bool use_gekko = !is_true_offline || dual_client_mode;
-    
-    // BSNES-STYLE GEKKONET PROCESSING
-    // This is the exact equivalent of BSNES's netplayRun() function for FM2K
-    if (use_gekko && gekko_initialized && gekko_session) {
-        
-        // STEP 1: Always capture real inputs (equivalent to BSNES netplayPollLocalInput)
-        CaptureRealInputs();
-        
-        // STEP 2: Always send inputs to GekkoNet (equivalent to BSNES gekko_add_local_input)
-        // This must happen regardless of session state to establish the connection
-        if (is_local_session) {
-            // Local session: Send both players' inputs
-            uint16_t p1_input = (uint16_t)(live_p1_input & 0x7FF);
-            uint16_t p2_input = (uint16_t)(live_p2_input & 0x7FF);
-            gekko_add_local_input(gekko_session, p1_player_handle, &p1_input);
-            gekko_add_local_input(gekko_session, p2_player_handle, &p2_input);
-        } else {
-            // Online session: Each client sends only their player's input
-            if (::player_index == 0) {
-                uint16_t p1_input = (uint16_t)(live_p1_input & 0x7FF);
-                gekko_add_local_input(gekko_session, local_player_handle, &p1_input);
-            } else {
-                uint16_t p2_input = (uint16_t)(live_p2_input & 0x7FF);
-                gekko_add_local_input(gekko_session, local_player_handle, &p2_input);
-            }
-        }
-        
-        // STEP 3: Always process connection events (equivalent to BSNES gekko_session_events)
-        int event_count = 0;
-        auto events = gekko_session_events(gekko_session, &event_count);
-        for (int i = 0; i < event_count; i++) {
-            auto event = events[i];
-            if (event->type == PlayerConnected) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Player Connected - handle %d", event->data.connected.handle);
-            } else if (event->type == PlayerDisconnected) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Player Disconnected - handle %d", event->data.disconnected.handle);
-            } else if (event->type == DesyncDetected) {
-                // CRITICAL: Handle desync detection events - BUT ONLY LOG THE FIRST ONE
-                static bool first_desync_logged = false;
-                if (!first_desync_logged) {
-                    auto desync_data = event->data.desynced;
-                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, 
-                                "FIRST DESYNC DETECTED! Frame=%d Local=0x%08X Remote=0x%08X Handle=%d", 
-                                desync_data.frame, desync_data.local_checksum, 
-                                desync_data.remote_checksum, desync_data.remote_handle);
-                    
-                    // Generate detailed desync report for first desync only
-                    GenerateDesyncReport(desync_data.frame, desync_data.local_checksum, desync_data.remote_checksum);
-                    LogMinimalGameStateDesync(desync_data.frame, desync_data.local_checksum, desync_data.remote_checksum);
-                    
-                    first_desync_logged = true;
-                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "DESYNC LOGGING DISABLED - only first desync logged to prevent spam");
-                }
-            } else if (event->type == SessionStarted) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: Session Started!");
-                gekko_session_started = true;
-                gekko_frame_control_enabled = true;
-            }
-        }
-        
-        // STEP 4: This is now handled entirely by ProcessGekkoNetFrame() for single-point control
-        // NO duplicate GekkoNet processing here
-        
-        // BSNES-STYLE BLOCKING: Only advance frame if we got AdvanceEvent
-        // This is the critical control point - like BSNES emulator->run()
-        // Block regardless of session state - if GekkoNet is active, we wait for AdvanceEvent
-        if (!can_advance_frame) {
-            static uint32_t input_block_counter = 0;
-            if (++input_block_counter % 120 == 0) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: BLOCKING FRAME - waiting for AdvanceEvent (#%d) [session_started=%s]", 
-                           input_block_counter, gekko_session_started ? "YES" : "NO");
-            }
-            // This is the key - don't call original_process_inputs() when no AdvanceEvent
-            return 0;
-        }
-    }
-
-    // DEBUG: Log frame counters to understand the difference
-    static uint32_t input_call_count = 0;
-    if (++input_call_count % 100 == 0) { // Log every 100 calls to avoid spam
-        uint32_t input_buffer_frame = *(uint32_t*)0x004EF1A4; // Input buffer circular index
-        uint32_t render_frame = *(uint32_t*)0x4456FC; // Render frame counter
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-            "Hook_ProcessGameInputs() called #%d - input_buffer_frame=%u, render_frame=%u - gekko_frame_control_enabled=%s, gekko_session_started=%s, can_advance_frame=%s", 
-            input_call_count, input_buffer_frame, render_frame,
-            gekko_frame_control_enabled ? "YES" : "NO",
-            gekko_session_started ? "YES" : "NO",
-            can_advance_frame ? "YES" : "NO");
-    }
-    
-    // CORRECT APPROACH: Following OnlineSession example - NO BLOCKING
-    // Let the game run normally and just process synchronized inputs on AdvanceEvents
-    
-    // FRAME STEPPING: This is the main control point since it's called repeatedly in the game loop
-    // Get shared memory for frame stepping control
-    SharedInputData* shared_data = GetSharedMemory();
-    
-    // Initialize GekkoNet on first input hook call (safer than main loop hook)
-    // DUAL CLIENT TESTING: Always initialize GekkoNet when player_index is set (dual client mode)
-    // Only skip GekkoNet for true single-client offline mode
-    bool skip_gekko = is_true_offline && !dual_client_mode;
-    
-    if (!gekko_initialized && !skip_gekko) {
-        static bool initialization_attempted = false;
-        if (!initialization_attempted) {
-            initialization_attempted = true;
-            if (dual_client_mode) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: DUAL CLIENT mode detected (player_index=%d) - initializing GekkoNet...", ::player_index);
-            } else {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: First call - initializing GekkoNet...");
-            }
-            
-            if (InitializeGekkoNet()) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: GekkoNet initialized successfully from input hook");
-            } else {
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: GekkoNet initialization failed");
-            }
-        }
-    } else if (skip_gekko) {
-        static bool offline_log_shown = false;
-        if (!offline_log_shown) {
-            offline_log_shown = true;
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: SINGLE CLIENT offline mode - skipping GekkoNet initialization completely");
-        }
-    }
-    
-    // Wait for GekkoNet connection (moved from main loop hook) - REMOVED, handled by AllPlayersValid() now
-    
-    // DEBUG: Log that input hook is being called
-    static uint32_t input_hook_call_count = 0;
-    input_hook_call_count++;
-    // Disabled verbose input hook logging
-    // if (input_hook_call_count % 100 == 0) { // Log every 100 calls to avoid spam
-    //     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Called %u times, frame %u", input_hook_call_count, g_frame_counter);
-    // }
-    
-    // ARCHITECTURE FIX: Process debug commands (including save/load) BEFORE the pause check
-    // This allows save/load to work even when the game is paused
-    CheckForDebugCommands();
-    CheckForHotkeys(); // Check for keyboard hotkeys for save/load and frame stepping
-    ProcessManualSaveLoadRequests();
-    
-    // Check for frame stepping commands
-    if (shared_data) {
-        // ONE-TIME-FIX: Handle the initial state where memset sets remaining_frames to 0.
-        // This state should mean "running indefinitely".
-        static bool initial_state_fixed = false;
-        if (!initial_state_fixed && !shared_data->frame_step_is_paused && shared_data->frame_step_remaining_frames == 0) {
-            shared_data->frame_step_remaining_frames = UINT32_MAX;
-            initial_state_fixed = true;
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Corrected initial frame step state to RUNNING.");
-        }
-
-        // DEBUG: Log frame stepping state
-        if (shared_data->frame_step_pause_requested || 
-            shared_data->frame_step_resume_requested || 
-            shared_data->frame_step_single_requested || 
-            shared_data->frame_step_multi_count > 0) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Frame stepping command detected - pause=%d, resume=%d, single=%d, multi=%u", 
-                       shared_data->frame_step_pause_requested,
-                       shared_data->frame_step_resume_requested,
-                       shared_data->frame_step_single_requested,
-                       shared_data->frame_step_multi_count);
-        }
-        
-        // Always log single step requests for debugging
-        if (shared_data->frame_step_single_requested) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: SINGLE STEP REQUEST DETECTED at frame %u", g_frame_counter);
-        }
-        
-        // Handle frame stepping commands
-        if (shared_data->frame_step_pause_requested) {
-            frame_step_paused_global = true;
-            shared_data->frame_step_is_paused = true;
-            shared_data->frame_step_pause_requested = false;
-            shared_data->frame_step_remaining_frames = 0; // No stepping, just pause
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Frame stepping PAUSED at frame %u", g_frame_counter);
-        }
-        if (shared_data->frame_step_resume_requested) {
-            frame_step_paused_global = false;
-            shared_data->frame_step_is_paused = false;
-            shared_data->frame_step_resume_requested = false;
-            shared_data->frame_step_remaining_frames = UINT32_MAX; // Use sentinel for "running"
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Frame stepping RESUMED at frame %u", g_frame_counter);
-        }
-        if (shared_data->frame_step_single_requested) {
-            // Single step: run one frame then pause
-            shared_data->frame_step_single_requested = false;
-            frame_step_paused_global = false; // Allow one frame
-            shared_data->frame_step_is_paused = false;
-            shared_data->frame_step_remaining_frames = 1; // Allow exactly 1 frame
-            shared_data->frame_step_needs_input_refresh = true; // Capture fresh inputs right before execution
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: SINGLE STEP ENABLED - allowing 1 frame at frame %u", g_frame_counter);
-        }
-        // Multi-step disabled - focus on single step only
-        if (shared_data->frame_step_multi_count > 0) {
-            shared_data->frame_step_multi_count = 0;
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Multi-step disabled - use single step instead");
-        }
-        
-        // If paused, keep input system alive but preserve motion input buffer SURGICALLY
-        if (frame_step_paused_global && shared_data->frame_step_is_paused) {
-            // SURGICAL APPROACH: Keep input system alive but prevent frame counter advancement
-            
-            // Save critical state that original_process_inputs modifies
-            uint32_t* frame_counter_ptr = (uint32_t*)0x447EE0;  // g_frame_counter
-            uint32_t* p1_history_ptr = (uint32_t*)0x4280E0;     // g_player_input_history  
-            uint32_t* p2_history_ptr = (uint32_t*)0x4284E0;     // g_p2_input_history (assuming offset)
-            
-            uint32_t saved_frame_counter = 0;
-            uint32_t saved_p1_history = 0;
-            uint32_t saved_p2_history = 0;
-            
-            if (!IsBadReadPtr(frame_counter_ptr, sizeof(uint32_t))) {
-                saved_frame_counter = *frame_counter_ptr;
-                
-                // Save the input history entries that would be overwritten
-                uint32_t next_frame_index = (saved_frame_counter + 1) & 0x3FF;
-                if (!IsBadReadPtr(p1_history_ptr + next_frame_index, sizeof(uint32_t))) {
-                    saved_p1_history = p1_history_ptr[next_frame_index];
-                }
-                if (!IsBadReadPtr(p2_history_ptr + next_frame_index, sizeof(uint32_t))) {
-                    saved_p2_history = p2_history_ptr[next_frame_index];
-                }
-            }
-            
-            // Update input system to keep it alive
-            CaptureRealInputs();
-            if (original_process_inputs) {
-                original_process_inputs();
-            }
-            
-            // Restore the critical state to preserve motion inputs
-            if (!IsBadWritePtr(frame_counter_ptr, sizeof(uint32_t))) {
-                *frame_counter_ptr = saved_frame_counter;  // Undo frame counter advance
-                
-                // Restore the input history entries
-                uint32_t next_frame_index = (saved_frame_counter + 1) & 0x3FF;
-                if (!IsBadWritePtr(p1_history_ptr + next_frame_index, sizeof(uint32_t))) {
-                    p1_history_ptr[next_frame_index] = saved_p1_history;
-                }
-                if (!IsBadWritePtr(p2_history_ptr + next_frame_index, sizeof(uint32_t))) {
-                    p2_history_ptr[next_frame_index] = saved_p2_history;
-                }
-            }
-            
-            return 0; // Block game advancement but keep inputs fresh
-        }
-        
-        // CRITICAL: Inputs are now captured at the top of the function.
-        
-        // Handle frame stepping countdown AFTER processing the frame
-        // This ensures the frame actually gets processed before we count it down
-    }
-    
-    // Normal input capture - but skip if we're going to do fresh capture right before execution
-    if (!shared_data || !shared_data->frame_step_needs_input_refresh) {
-        static int capture_log = 0;
-        if (++capture_log % 300 == 0) {  // Reduced frequency from 30 to 300
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Calling CaptureRealInputs() - shared_data=%p, frame_step_needs_input_refresh=%s", 
-                       shared_data, shared_data ? (shared_data->frame_step_needs_input_refresh ? "YES" : "NO") : "N/A");
-        }
-        CaptureRealInputs();
-    } else {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Skipping normal capture, will do fresh capture before execution at frame %u", g_frame_counter);
-    }
-    
-    
-    // TRUE OFFLINE MODE: Handle completely without GekkoNet
-    if (is_true_offline) {
-        
-        // FIXED: Increment frame counter BEFORE processing to fix 1-frame input delay
-        g_frame_counter++;
-        
-        // RADICAL SOLUTION: Call original_process_inputs TWICE on step frames to eliminate delay
-        if (shared_data && shared_data->frame_step_needs_input_refresh) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: DOUBLE CALL to eliminate 1-frame delay at frame %u", g_frame_counter);
-            
-            // Capture fresh inputs with detailed logging
-            uint32_t old_p1 = live_p1_input;
-            uint32_t old_p2 = live_p2_input;
-            CaptureRealInputs();
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Step capture - P1: 0x%03X->0x%03X, P2: 0x%03X->0x%03X", 
-                       old_p1, live_p1_input, old_p2, live_p2_input);
-            
-            // First call: This "primes" the input system with current inputs
-            if (original_process_inputs) {
-                original_process_inputs();
-            }
-            
-            // Second call: This ensures the inputs are processed for THIS frame, not next
-            if (original_process_inputs) {
-                original_process_inputs();
-            }
-            
-            shared_data->frame_step_needs_input_refresh = false;
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Double call complete - inputs should be immediate");
-        } else {
-            // Normal single call
-            if (original_process_inputs) {
-                original_process_inputs();
-            }
-        }
-        
-        // UNIFIED LOGIC: Handle frame stepping countdown. Re-pausing is now in the render hook.
-        if (shared_data && shared_data->frame_step_remaining_frames > 0 && shared_data->frame_step_remaining_frames != UINT32_MAX) {
-            // SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Frame ADVANCED to %u during stepping (normal path)", g_frame_counter);
-            shared_data->frame_step_remaining_frames--;
-            if (shared_data->frame_step_remaining_frames == 0) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Step processing complete for frame %u, will pause in render hook", g_frame_counter);
-            }
-        }
-        
-        // TRUE OFFLINE: Early return to prevent double frame execution
-        return 0;
-    }
-    
-    
-    // SINGLE-POINT GEKKONET PROCESSING: Use ProcessGekkoNetFrame() for all GekkoNet logic
-    // This eliminates duplicate processing and ensures proper frame control
-    if (use_gekko && gekko_initialized && gekko_session) {
-        // All GekkoNet processing is now handled by ProcessGekkoNetFrame() only
-        // This follows the BSNES single-point control pattern
-        
-        if (use_networked_inputs) {
-            // GekkoNet provided synchronized inputs - use them and advance frame
-            frame_advanced = true;
-        } else {
-            // No AdvanceEvent received - block the frame
-            return 0;
-        }
-    } else {
-        // GekkoNet session not yet started/active OR in true offline mode
-        // Process inputs locally to allow menus/CSS to function before connection
-        g_frame_counter++;
-        if (original_process_inputs) {
-            original_process_inputs();
-        }
-    }
-    
-    // Handle frame stepping countdown for GekkoNet path
-    if (shared_data && shared_data->frame_step_remaining_frames > 0 && shared_data->frame_step_remaining_frames != UINT32_MAX) {
-        shared_data->frame_step_remaining_frames--;
-        if (shared_data->frame_step_remaining_frames == 0) {
-            frame_step_paused_global = true;
-            shared_data->frame_step_is_paused = true;
-        }
-    }
-    
-    // CRITICAL FIX: Only call original function when we have networked inputs from AdvanceEvent
-    // Like BSNES: AdvanceEvent triggers emulator->run() with synchronized inputs
-    if (frame_advanced && original_process_inputs) {
-        return original_process_inputs();
-    }
-    
-    return 0; // Return 0 if no AdvanceEvent received or no original function
-}
+// REMOVED: CaptureKeyboardInput and WriteInputsToGameMemory
+// Following Heat's advice - only override FINAL processed state in GekkoNet callbacks

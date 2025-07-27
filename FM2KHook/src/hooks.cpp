@@ -21,14 +21,8 @@ bool InitializeHooks() {
         return false;
     }
     
-    // Hook ProcessGameInputs
-    void* inputFuncAddr = (void*)FM2K::State::Memory::PROCESS_INPUTS_ADDR;
-    if (MH_CreateHook(inputFuncAddr, (void*)FM2K_ProcessGameInputs_GekkoNet, (void**)&original_process_inputs) != MH_OK ||
-        MH_EnableHook(inputFuncAddr) != MH_OK) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ERROR FM2K HOOK: Failed to hook ProcessGameInputs");
-        MH_Uninitialize();
-        return false;
-    }
+    // CCCASTER APPROACH: Don't hook ProcessGameInputs - let it run naturally
+    // The game will read inputs we write to memory in UpdateGameState
 
     // Hook GetPlayerInput
     void* getInputFuncAddr = (void*)FM2K::State::Memory::GET_PLAYER_INPUT_ADDR;
@@ -90,6 +84,9 @@ bool InitializeHooks() {
     // Apply character select mode patches
     ApplyCharacterSelectModePatches();
     
+    // DO NOT disable input repeat delays - they're necessary for FM2K's architecture
+    // DisableInputRepeatDelays(); // REMOVED - causes rapid fire desyncs
+    
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SUCCESS FM2K HOOK: BSNES-level architecture installed successfully!");
     
     return true;
@@ -102,19 +99,25 @@ void ShutdownHooks() {
 }
 
 int __cdecl Hook_UpdateGameState() {
-    // BSNES ARCHITECTURE: Process GekkoNet every frame for total control over timing
+    // PURE GEKKONET ARCHITECTURE: Only handle GekkoNet frame control
     char* env_offline = getenv("FM2K_TRUE_OFFLINE");
     bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
     bool dual_client_mode = (::player_index == 0 || ::player_index == 1);
     bool use_gekko = !is_true_offline && dual_client_mode;
     
-    // EVERY FRAME GEKKONET PROCESSING: Like BSNES netplayRun() called every frame
+    // HEAT'S ADVICE: Only capture PROCESSED inputs after the game runs
+    // The game will call process_game_inputs_FRAMESTEP_hook naturally
+    // We'll capture the FINAL processed state after that happens
+    
     if (use_gekko && gekko_initialized && gekko_session) {
         uint32_t* game_mode = (uint32_t*)0x470054;  // g_game_mode
         bool is_initialization_phase = (*game_mode < 3000);  // Before battle mode
         
-        // CRITICAL: Process GekkoNet EVERY frame (like BSNES), not just during input processing
+        // Process GekkoNet frame - this will store inputs in AdvanceEvent
         ProcessGekkoNetFrame();
+        
+        // BSNES PATTERN: Inputs are now applied immediately in AdvanceEvent
+        // No need for pending input logic - inputs are written directly to memory
         
         if (is_initialization_phase) {
             // UNCONDITIONAL BLOCKING during startup - wait for session to be ready

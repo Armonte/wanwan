@@ -3,6 +3,7 @@
 #include "logging.h"
 #include <windows.h>
 #include <SDL3/SDL.h>
+#include <cstring>
 
 // New hook for boot-to-character-select hack
 // This hook modifies the game's initialization to boot directly to character select screen
@@ -52,4 +53,38 @@ uint32_t __cdecl Hook_GameRand() {
     
     // Return a constant value to prevent any RNG divergence
     return 1337;
+}
+
+void DisableInputRepeatDelays() {
+    // DISABLE NATIVE REPEAT SUPPRESSION: Set delay values to 0 for instant response
+    // Native FM2K has 50-frame initial delay and 5-frame repeat delay which blocks rapid inputs
+    
+    DWORD oldProtect;
+    
+    // g_input_initial_delay at 0x41e3fc - default is 50 (0x32) frames
+    uint32_t* initial_delay = (uint32_t*)0x41e3fc;
+    VirtualProtect(initial_delay, 4, PAGE_EXECUTE_READWRITE, &oldProtect);
+    *initial_delay = 0;  // Disable initial delay
+    VirtualProtect(initial_delay, 4, oldProtect, &oldProtect);
+    
+    // g_input_repeat_delay at 0x41e400 - default is 5 (0x5) frames  
+    uint32_t* repeat_delay = (uint32_t*)0x41e400;
+    VirtualProtect(repeat_delay, 4, PAGE_EXECUTE_READWRITE, &oldProtect);
+    *repeat_delay = 0;  // Disable repeat delay
+    VirtualProtect(repeat_delay, 4, oldProtect, &oldProtect);
+    
+    // Clear the repeat timer array at 0x4d1c40 (8 devices * 4 bytes each)
+    uint32_t* repeat_timers = (uint32_t*)0x4d1c40;
+    VirtualProtect(repeat_timers, 32, PAGE_EXECUTE_READWRITE, &oldProtect);
+    memset(repeat_timers, 0, 32);  // Clear all 8 device timers
+    VirtualProtect(repeat_timers, 32, oldProtect, &oldProtect);
+    
+    // Clear the repeat state array at 0x541f80 (8 devices * 4 bytes each)
+    uint32_t* repeat_states = (uint32_t*)0x541f80;
+    VirtualProtect(repeat_states, 32, PAGE_EXECUTE_READWRITE, &oldProtect);
+    memset(repeat_states, 0, 32);  // Clear all 8 device states
+    VirtualProtect(repeat_states, 32, oldProtect, &oldProtect);
+    
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                "FM2K PATCH: Disabled native input repeat delays (was 50/5 frames, now 0/0) and cleared timer arrays");
 }

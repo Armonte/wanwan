@@ -6,5 +6,6 @@
 void ApplyBootToCharacterSelectPatches();
 void ApplyCharacterSelectModePatches();
 uint32_t __cdecl Hook_GameRand();
+void DisableInputRepeatDelays();
 
 #endif // GAME_PATCHES_H

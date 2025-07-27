@@ -111,13 +111,8 @@ extern bool production_mode;
 
 // Hook-related globals
 extern uint32_t g_frame_counter;
-extern uint32_t networked_p1_input;
-extern uint32_t networked_p2_input;
-extern bool use_networked_inputs;
-extern uint32_t live_p1_input;
-extern uint32_t live_p2_input;
-extern uint32_t backup_p1_input;  // Raw inputs from game for debugging
-extern uint32_t backup_p2_input;
+// REMOVED: All intermediate input variables
+// Following Heat's advice - only override FINAL processed state in GekkoNet callbacks
 
 // Frame advance control (GekkoNet synchronization)
 extern bool can_advance_frame;        // Flag to control FM2K frame advancement
@@ -128,7 +123,6 @@ extern bool gekko_frame_control_enabled; // True when GekkoNet should control fr
 extern bool frame_step_paused_global; // Global pause flag for frame stepping
 extern bool block_input_buffer_update; // Block input history buffer updates during pause
 
-extern bool css_mode_active;           // True when in character select (fm2k_mode == 2000)
 
 // Input repeat logic state (moved from static variables to global for rollback support)
 extern uint32_t g_prev_input_state[8];     // Previous frame input states for repeat logic

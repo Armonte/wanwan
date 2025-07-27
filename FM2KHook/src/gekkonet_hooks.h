@@ -10,6 +10,12 @@ void CleanupGekkoNet();
 void GekkoNetUpdate();
 void ProcessGekkoNetFrame();
 void ApplyNetworkedInputsImmediately(uint16_t p1_input, uint16_t p2_input);
+void WriteNetworkedInputsToMemory(uint16_t p1_input, uint16_t p2_input);
+// BSNES PATTERN: Immediate input application - no pending functions needed
+
+// Functions for Hook_GetPlayerInput to access networked inputs
+uint16_t GetCurrentNetworkedP1Input();
+uint16_t GetCurrentNetworkedP2Input();
 
 // Complete main loop replacement with GekkoNet integration
 BOOL GekkoNet_MainLoop();

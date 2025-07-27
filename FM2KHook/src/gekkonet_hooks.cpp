@@ -255,12 +255,6 @@ void WriteNetworkedInputsToMemory(uint16_t p1_input, uint16_t p2_input) {
     prev_p1_input = p1_input;
     prev_p2_input = p2_input;
     
-    // Log networked inputs when non-zero
-    if (p1_input != 0 || p2_input != 0) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                   "NETWORKED INPUT STORED: P1=0x%03X P2=0x%03X -> available for Hook_GetPlayerInput", 
-                   p1_input, p2_input);
-    }
 }
 
 // Accessor functions for Hook_GetPlayerInput
@@ -420,32 +414,13 @@ void ProcessGekkoNetFrame() {
             // HOST: Send P1's RAW input
             uint16_t p1_input = (uint16_t)(g_p1_input[0] & 0x7FF);
             gekko_add_local_input(gekko_session, local_player_handle, &p1_input);
-            
-            static uint32_t input_log_counter = 0;
-            if (++input_log_counter % 60 == 0 || p1_input != 0) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: HOST sending P1 RAW input 0x%03X (dir=%d%d%d%d) via handle %d", 
-                           p1_input,
-                           (p1_input & 0x001) ? 1 : 0,  // LEFT
-                           (p1_input & 0x002) ? 1 : 0,  // RIGHT  
-                           (p1_input & 0x004) ? 1 : 0,  // UP
-                           (p1_input & 0x008) ? 1 : 0,  // DOWN
-                           local_player_handle);
-            }
+           
         } else if (::player_index == 1) {
             // CLIENT: Send P2's RAW input
             uint16_t p2_input = (uint16_t)(*g_p2_input & 0x7FF);
             gekko_add_local_input(gekko_session, local_player_handle, &p2_input);
             
-            static uint32_t input_log_counter = 0;
-            if (++input_log_counter % 60 == 0 || p2_input != 0) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "GekkoNet: CLIENT sending P2 RAW input 0x%03X (dir=%d%d%d%d) via handle %d", 
-                           p2_input,
-                           (p2_input & 0x001) ? 1 : 0,  // LEFT
-                           (p2_input & 0x002) ? 1 : 0,  // RIGHT
-                           (p2_input & 0x004) ? 1 : 0,  // UP  
-                           (p2_input & 0x008) ? 1 : 0,  // DOWN
-                           local_player_handle);
-            }
+           
         }
     }
     
@@ -709,13 +684,7 @@ void ProcessGekkoNetFrame() {
                     
                     // CRITICAL FIX: Write inputs to memory IMMEDIATELY like BSNES
                     WriteNetworkedInputsToMemory(p1_input, p2_input);
-                    
-                    // Log that we applied inputs immediately
-                    if (p1_input != 0 || p2_input != 0) {
-                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                                   "GEKKONET APPLIED: P1=0x%03X P2=0x%03X -> written to memory IMMEDIATELY", 
-                                   p1_input, p2_input);
-                    }
+
                     
                     static uint32_t advance_counter = 0;
                     advance_counter++;

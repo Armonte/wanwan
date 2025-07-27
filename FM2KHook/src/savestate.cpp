@@ -23,26 +23,13 @@ bool SaveCompleteGameState(SaveStateData* save_data, uint32_t frame_number) {
     // REDUCED LOGGING: Only log occasionally to prevent spam
     static uint32_t call_counter = 0;
     call_counter++;
-    if (call_counter <= 5 || call_counter % 300 == 0) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "🟢 SaveCompleteGameState CALLED: save_data=%p, frame=%u", 
-                   save_data, frame_number);
-    }
-    
-    if (!save_data) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "❌ SaveCompleteGameState FAILED: save_data is NULL");
-        return false;
-    }
-    
+
     // LIKE BSNES-NETPLAY: No game mode checks, just save state
     // bsnes-netplay simply calls seria.save() for whatever state the emulator has
     
     // Save essential game state data (like bsnes saves SNES RAM)
     save_data->frame_number = frame_number;
-    
-    // REDUCED LOGGING: Only log occasionally
-    if (call_counter <= 5 || call_counter % 300 == 0) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "📦 SaveCompleteGameState: Starting memory read from CheatEngine addresses...");
-    }
+
     
     // CHEATENGINE-VERIFIED ADDRESSES: Use exact same addresses as MinimalGameState.LoadFromMemory()
     // This ensures checksums match between save/load and verification
@@ -89,14 +76,7 @@ bool SaveCompleteGameState(SaveStateData* save_data, uint32_t frame_number) {
                           !IsBadReadPtr(player_input_changes_ptr, 8 * sizeof(uint32_t)) &&
                           !IsBadReadPtr(object_pool_ptr, object_pool_size));
     
-    if (!addresses_valid) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "❌ SaveCompleteGameState FAILED: Invalid memory addresses detected");
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "   P1_HP_PTR=%p, P2_HP_PTR=%p, P1_X_PTR=%p, P2_X_PTR=%p", 
-                    p1_hp_ptr, p2_hp_ptr, p1_x_ptr, p2_x_ptr);
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "   RNG_PTR=%p, TIMER_PTR=%p, OBJECT_POOL_PTR=%p", 
-                    rng_seed_ptr, timer_ptr, object_pool_ptr);
-        return false;
-    }
+
     
     // Save player data using CheatEngine addresses
     save_data->p1_hp = *p1_hp_ptr;
@@ -113,9 +93,7 @@ bool SaveCompleteGameState(SaveStateData* save_data, uint32_t frame_number) {
     
     // CRITICAL: Save input buffer - required for motion inputs like quarter-circle forward
     // REDUCED LOGGING: Only log occasionally
-    if (call_counter <= 5 || call_counter % 300 == 0) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "📦 SaveCompleteGameState: Copying input buffers (4KB total)...");
-    }
+
     memcpy(save_data->p1_input_history, p1_input_history_ptr, input_history_size);
     memcpy(save_data->p2_input_history, p2_input_history_ptr, input_history_size);
     save_data->input_buffer_index = *input_buffer_index_ptr;
@@ -134,9 +112,7 @@ bool SaveCompleteGameState(SaveStateData* save_data, uint32_t frame_number) {
     
     // CRITICAL: Save entire object pool (391KB) - required for comprehensive rollback
     // REDUCED LOGGING: Only log occasionally
-    if (call_counter <= 5 || call_counter % 300 == 0) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "📦 SaveCompleteGameState: Copying object pool (391KB)...");
-    }
+
     memcpy(save_data->object_pool, object_pool_ptr, object_pool_size);
     
     // Enhanced checksum calculation including object pool and input buffer
@@ -160,10 +136,7 @@ bool SaveCompleteGameState(SaveStateData* save_data, uint32_t frame_number) {
     essential_for_checksum.round_timer = save_data->round_timer;
     
     // Calculate checksum: essential data + object pool + input buffer samples
-    // REDUCED LOGGING: Only log occasionally
-    if (call_counter <= 5 || call_counter % 300 == 0) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "🔍 SaveCompleteGameState: Calculating checksum including input buffer...");
-    }
+
     uint32_t basic_checksum = FM2K::State::Fletcher32((uint8_t*)&essential_for_checksum, sizeof(essential_for_checksum));
     uint32_t object_checksum = FM2K::State::Fletcher32(save_data->object_pool, 1024); // First 1KB of object pool
     uint32_t p1_input_checksum = FM2K::State::Fletcher32((uint8_t*)save_data->p1_input_history, 512);
@@ -193,33 +166,14 @@ bool SaveCompleteGameState(SaveStateData* save_data, uint32_t frame_number) {
     
     // CRITICAL FIX: Mark the save data as valid
     save_data->valid = true;
-    
-    // REDUCED LOGGING: Only log occasionally
-    if (call_counter <= 5 || call_counter % 300 == 0) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "✅ SaveCompleteGameState SUCCESS: frame=%u, checksum=0x%08X, P1_HP=%u, P2_HP=%u", 
-                   save_data->frame_number, save_data->checksum, save_data->p1_hp, save_data->p2_hp);
-    }
+
     
     return true;
 }
 
 // Load complete game state from a SaveStateData structure (for GekkoNet rollback)
 bool LoadCompleteGameState(const SaveStateData* save_data) {
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "🔵 LoadCompleteGameState CALLED: save_data=%p", save_data);
-    
-    if (!save_data) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "❌ LoadCompleteGameState FAILED: save_data is NULL");
-        return false;
-    }
-    
-    if (!save_data->valid) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "❌ LoadCompleteGameState FAILED: save_data is not valid (frame=%u)", 
-                    save_data->frame_number);
-        return false;
-    }
-    
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "📦 LoadCompleteGameState: Starting memory restore from frame %u, checksum=0x%08X...", 
-               save_data->frame_number, save_data->checksum);
+
     
     // Verify enhanced checksum including object pool and input buffer (must match SaveCompleteGameState)
     struct EssentialSaveData {
@@ -250,11 +204,7 @@ bool LoadCompleteGameState(const SaveStateData* save_data) {
                              FM2K::State::Fletcher32((uint8_t*)save_data->p2_input_history, 512); // First 256 frames each
     uint32_t calculated_checksum = basic_checksum ^ object_checksum ^ input_checksum; // Combine all checksums
     
-    if (calculated_checksum != save_data->checksum) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "LoadCompleteGameState: Checksum mismatch (calculated: %u, stored: %u)",
-                    calculated_checksum, save_data->checksum);
-        return false;
-    }
+
     
     try {
         // CHEATENGINE-VERIFIED ADDRESSES: Use exact same addresses as SaveCompleteGameState and MinimalGameState
@@ -300,14 +250,7 @@ bool LoadCompleteGameState(const SaveStateData* save_data) {
                                  !IsBadWritePtr(player_input_changes_ptr, 8 * sizeof(uint32_t)) &&
                                  !IsBadWritePtr(object_pool_ptr, object_pool_size));
         
-        if (!addresses_writable) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "❌ LoadCompleteGameState FAILED: Invalid write addresses detected");
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "   P1_HP_PTR=%p, P2_HP_PTR=%p, P1_X_PTR=%p, P2_X_PTR=%p", 
-                        p1_hp_ptr, p2_hp_ptr, p1_x_ptr, p2_x_ptr);
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "   RNG_PTR=%p, TIMER_PTR=%p, OBJECT_POOL_PTR=%p", 
-                        rng_seed_ptr, timer_ptr, object_pool_ptr);
-            return false;
-        }
+
         
         // Restore player data using CheatEngine addresses
         *p1_hp_ptr = save_data->p1_hp;
@@ -323,7 +266,6 @@ bool LoadCompleteGameState(const SaveStateData* save_data) {
         *round_timer_ptr = save_data->round_timer;
         
         // CRITICAL: Restore input buffer - required for motion inputs like quarter-circle forward
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "📦 LoadCompleteGameState: Restoring input buffers (4KB total)...");
         memcpy(p1_input_history_ptr, save_data->p1_input_history, input_history_size);
         memcpy(p2_input_history_ptr, save_data->p2_input_history, input_history_size);
         *input_buffer_index_ptr = save_data->input_buffer_index;
@@ -341,24 +283,12 @@ bool LoadCompleteGameState(const SaveStateData* save_data) {
         g_apply_prev_p2_input = save_data->apply_prev_p2_input;
         
         // CRITICAL: Restore entire object pool (391KB) - required for comprehensive rollback
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "📦 LoadCompleteGameState: Restoring object pool (391KB)...");
         memcpy(object_pool_ptr, save_data->object_pool, object_pool_size);
         
-        // Log critical load data for desync debugging (first 40 frames only)
-        if (save_data->frame_number <= 40) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "🔄 LoadState F%d: P1(HP:%d X:%d Y:%d) P2(HP:%d X:%d Y:%d) RNG:%d GT:%d RT:%d CK:%u + INPUT BUFFERS + 391KB OBJECTS", 
-                       save_data->frame_number, save_data->p1_hp, save_data->p1_x, save_data->p1_y,
-                       save_data->p2_hp, save_data->p2_x, save_data->p2_y, 
-                       save_data->rng_seed, save_data->game_timer, save_data->round_timer, save_data->checksum);
-        }
-        
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "✅ LoadCompleteGameState SUCCESS: frame=%u, checksum=0x%08X, P1_HP=%u, P2_HP=%u", 
-                   save_data->frame_number, save_data->checksum, save_data->p1_hp, save_data->p2_hp);
-        
+
         return true;
         
     } catch (...) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "LoadCompleteGameState: Exception during memory access (frame %d)", save_data->frame_number);
         return false;
     }
 }

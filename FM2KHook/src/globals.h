@@ -18,6 +18,7 @@ typedef uint32_t(__cdecl* GameRandFunc)();
 typedef void(__cdecl* ProcessInputHistoryFunc)();
 typedef int(__cdecl* CheckGameContinueFunc)();
 typedef char(__cdecl* CSSHandlerFunc)();
+typedef int(__cdecl* ProcessGameInputsFunc)();
 
 // Function pointers for original game functions
 extern GetPlayerInputFunc original_get_player_input;
@@ -28,6 +29,7 @@ extern GameRandFunc original_game_rand;
 extern ProcessInputHistoryFunc original_process_input_history;
 extern CheckGameContinueFunc original_check_game_continue;
 extern CSSHandlerFunc original_css_handler;
+extern ProcessGameInputsFunc original_process_game_inputs;
 
 // Global variables for manual save/load requests
 extern bool manual_save_requested;

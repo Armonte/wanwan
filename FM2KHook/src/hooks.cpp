@@ -11,10 +11,17 @@
 #include "gekkonet_hooks.h"
 #include "imgui_overlay.h"
 #include <MinHook.h>
+#include <windows.h>
 #include <cstdlib>
 #include <cstring>
 
 // Original function pointers
+
+// FM2K internal functions we need to call directly
+static ProcessGameInputsFunc process_game_inputs_FRAMESTEP_HOOK = (ProcessGameInputsFunc)0x4146d0;
+static UpdateGameStateFunc update_game_state = (UpdateGameStateFunc)0x404d20;
+static RenderGameFunc render_game = (RenderGameFunc)0x404dd0;
+
 
 bool InitializeHooks() {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Initializing MinHook...");
@@ -69,6 +76,15 @@ bool InitializeHooks() {
     if (MH_CreateHook(gameRandFuncAddr, (void*)Hook_GameRand, (void**)&original_game_rand) != MH_OK ||
         MH_EnableHook(gameRandFuncAddr) != MH_OK) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ERROR FM2K HOOK: Failed to hook game_rand");
+        MH_Uninitialize();
+        return false;
+    }
+    
+    // Hook process_game_inputs for framestep input buffer control
+    void* processInputsFuncAddr = (void*)0x4146d0;
+    if (MH_CreateHook(processInputsFuncAddr, (void*)Hook_ProcessGameInputs, (void**)&original_process_game_inputs) != MH_OK ||
+        MH_EnableHook(processInputsFuncAddr) != MH_OK) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "ERROR FM2K HOOK: Failed to hook process_game_inputs");
         MH_Uninitialize();
         return false;
     }
@@ -161,34 +177,24 @@ int __cdecl Hook_UpdateGameState() {
         // No direct memory writes needed - GetKeyboardState hook is inactive in offline mode
     }
     
+    // FRAME STEPPING: Block game state updates when paused
+    SharedInputData* shared_data = GetSharedMemory();
+    if (shared_data && frame_step_paused_global && shared_data->frame_step_is_paused) {
+        return 0; // Block game state updates when truly paused
+    }
+    
+    // BYPASS HOOK ENTIRELY during step frames - let original function run without interference
+    if (shared_data && shared_data->frame_step_remaining_frames > 0 && shared_data->frame_step_remaining_frames != UINT32_MAX) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "UPDATE HOOK: BYPASSING hook during step frame %u", g_frame_counter);
+        return original_update_game ? original_update_game() : 0;
+    }
+    
     // Normal per-frame logic
     MonitorGameStateTransitions();
     CheckForDebugCommands();
     CheckForHotkeys();
     CheckOverlayHotkey();
     ProcessManualSaveLoadRequests();
-    
-    // FRAMESTEP LOGIC: Handle pause/resume/single step functionality
-    ProcessFrameStepLogic();
-    
-    // FRAMESTEP BLOCKING: Check if we should block game execution
-    SharedInputData* shared_data = GetSharedMemory();
-    if (shared_data && shared_data->frame_step_is_paused) {
-        if (shared_data->frame_step_remaining_frames <= 0) {
-            // PAUSED: Block game execution but continue processing our hooks
-            // This maintains input buffer continuity for motion inputs and dashes
-            static uint32_t pause_log_counter = 0;
-            if (++pause_log_counter % 300 == 0) {  // Log every 3 seconds
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FRAMESTEP: Game execution blocked (paused)");
-            }
-            return 0; // Block original UpdateGameState
-        } else {
-            // STEPPING: Allow this frame and decrement counter
-            shared_data->frame_step_remaining_frames--;
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FRAMESTEP: Executing frame (%u remaining)", 
-                       shared_data->frame_step_remaining_frames);
-        }
-    }
     
     // Call original UpdateGameState - game will read our pre-written inputs
     if (original_update_game) {
@@ -198,6 +204,19 @@ int __cdecl Hook_UpdateGameState() {
 }
 
 void __cdecl Hook_RenderGame() {
+    SharedInputData* shared_data = GetSharedMemory();
+    
+    // FRAME STEPPING: Re-pause after a step has finished.
+    // This is done in the render hook to ensure that the game state for the stepped frame
+    // has been fully updated before the pause is re-engaged.
+    if (shared_data) {
+        if (!shared_data->frame_step_is_paused && shared_data->frame_step_remaining_frames == 0) {
+            frame_step_paused_global = true;
+            shared_data->frame_step_is_paused = true;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "RENDER HOOK: Step complete, PAUSING at frame %u", g_frame_counter);
+        }
+    }
+
     // SYNCHRONIZATION: Block rendering during both startup and frame sync as needed
     char* env_offline = getenv("FM2K_TRUE_OFFLINE");
     bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
@@ -232,19 +251,17 @@ void __cdecl Hook_RenderGame() {
         }
     }
     
+    // We always render to give visual feedback, even when paused.
     if (original_render_game) {
         original_render_game();
     }
 }
 
 BOOL __cdecl Hook_RunGameLoop() {
-    // STRATEGY CHANGE: Use original main loop but control through hooks
-    // The original loop has sophisticated timing with timeGetTime() and frame skip logic
-    // We let it run naturally and control frame processing through our hooks
-    
+    // Apply patches on startup
     ApplyCharacterSelectModePatches();
     
-    // Always use original main loop - our hooks will control the frame processing
+    // Always use original main loop - framestep is handled in other hooks
     return original_run_game_loop ? original_run_game_loop() : FALSE;
 }
 
@@ -282,4 +299,182 @@ char __cdecl Hook_CSS_Handler() {
     }
     
     return result;
+}
+
+int __cdecl Hook_ProcessGameInputs() {
+    // Check for true offline mode
+    char* env_offline = getenv("FM2K_TRUE_OFFLINE");
+    bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
+
+    // FRAME STEPPING: This is the main control point since it's called repeatedly in the game loop
+    // Get shared memory for frame stepping control
+    SharedInputData* shared_data = GetSharedMemory();
+    
+    // Process debug commands (including save/load) BEFORE the pause check
+    // This allows save/load to work even when the game is paused
+    CheckForDebugCommands();
+    CheckForHotkeys(); // Check for keyboard hotkeys for save/load and frame stepping
+    ProcessManualSaveLoadRequests();
+    
+    // Check for frame stepping commands
+    if (shared_data) {
+        // ONE-TIME-FIX: Handle the initial state where memset sets remaining_frames to 0.
+        // This state should mean "running indefinitely".
+        static bool initial_state_fixed = false;
+        if (!initial_state_fixed && !shared_data->frame_step_is_paused && shared_data->frame_step_remaining_frames == 0) {
+            shared_data->frame_step_remaining_frames = UINT32_MAX;
+            initial_state_fixed = true;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Corrected initial frame step state to RUNNING.");
+        }
+
+        // Handle frame stepping commands
+        if (shared_data->frame_step_pause_requested) {
+            frame_step_paused_global = true;
+            shared_data->frame_step_is_paused = true;
+            shared_data->frame_step_pause_requested = false;
+            shared_data->frame_step_remaining_frames = 0; // No stepping, just pause
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Frame stepping PAUSED at frame %u", g_frame_counter);
+        }
+        if (shared_data->frame_step_resume_requested) {
+            frame_step_paused_global = false;
+            shared_data->frame_step_is_paused = false;
+            shared_data->frame_step_resume_requested = false;
+            shared_data->frame_step_remaining_frames = UINT32_MAX; // Use sentinel for "running"
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Frame stepping RESUMED at frame %u", g_frame_counter);
+        }
+        if (shared_data->frame_step_single_requested) {
+            // Single step: run one frame then pause
+            shared_data->frame_step_single_requested = false;
+            frame_step_paused_global = false; // Allow one frame
+            shared_data->frame_step_is_paused = false;
+            shared_data->frame_step_remaining_frames = 1; // Allow exactly 1 frame
+            shared_data->frame_step_needs_input_refresh = true; // Capture fresh inputs right before execution
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: SINGLE STEP ENABLED - allowing 1 frame at frame %u", g_frame_counter);
+        }
+        // Multi-step disabled - focus on single step only
+        if (shared_data->frame_step_multi_count > 0) {
+            shared_data->frame_step_multi_count = 0;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Multi-step disabled - use single step instead");
+        }
+        
+        // If paused, keep input system alive but preserve motion input buffer SURGICALLY
+        if (frame_step_paused_global && shared_data->frame_step_is_paused) {
+            // SURGICAL APPROACH: Keep input system alive but prevent frame counter advancement
+            
+            // Save critical state that original_process_inputs modifies
+            uint32_t* frame_counter_ptr = (uint32_t*)0x447EE0;  // g_frame_counter
+            uint32_t* p1_history_ptr = (uint32_t*)0x4280E0;     // g_player_input_history  
+            uint32_t* p2_history_ptr = (uint32_t*)0x4284E0;     // g_p2_input_history (assuming offset)
+            
+            uint32_t saved_frame_counter = 0;
+            uint32_t saved_p1_history = 0;
+            uint32_t saved_p2_history = 0;
+            
+            if (!IsBadReadPtr(frame_counter_ptr, sizeof(uint32_t))) {
+                saved_frame_counter = *frame_counter_ptr;
+                
+                // Save the input history entries that would be overwritten
+                uint32_t next_frame_index = (saved_frame_counter + 1) & 0x3FF;
+                if (!IsBadReadPtr(p1_history_ptr + next_frame_index, sizeof(uint32_t))) {
+                    saved_p1_history = p1_history_ptr[next_frame_index];
+                }
+                if (!IsBadReadPtr(p2_history_ptr + next_frame_index, sizeof(uint32_t))) {
+                    saved_p2_history = p2_history_ptr[next_frame_index];
+                }
+            }
+            
+            // Update input system to keep it alive - use game's own input mapping
+            // This is what CaptureRealInputs() did in the working commit
+            if (original_get_player_input) {
+                if (is_true_offline) {
+                    // TRUE OFFLINE: Read both players from local hardware using game's input mapping
+                    original_get_player_input(0, 0);  // P1 input 
+                    original_get_player_input(1, 0);  // P2 input
+                } else {
+                    // ONLINE: Read local controls using game's input mapping
+                    original_get_player_input(0, 0);  // Local input
+                }
+            }
+            
+            if (original_process_game_inputs) {
+                original_process_game_inputs();
+            }
+            
+            // Restore the critical state to preserve motion inputs
+            if (!IsBadWritePtr(frame_counter_ptr, sizeof(uint32_t))) {
+                *frame_counter_ptr = saved_frame_counter;  // Undo frame counter advance
+                
+                // Restore the input history entries
+                uint32_t next_frame_index = (saved_frame_counter + 1) & 0x3FF;
+                if (!IsBadWritePtr(p1_history_ptr + next_frame_index, sizeof(uint32_t))) {
+                    p1_history_ptr[next_frame_index] = saved_p1_history;
+                }
+                if (!IsBadWritePtr(p2_history_ptr + next_frame_index, sizeof(uint32_t))) {
+                    p2_history_ptr[next_frame_index] = saved_p2_history;
+                }
+            }
+            
+            return 0; // Block game advancement but keep inputs fresh
+        }
+    }
+    
+    // Normal input capture - use game's own input system
+    if (!shared_data || !shared_data->frame_step_needs_input_refresh) {
+        if (original_get_player_input) {
+            if (is_true_offline) {
+                original_get_player_input(0, 0);  // P1 input
+                original_get_player_input(1, 0);  // P2 input  
+            } else {
+                original_get_player_input(0, 0);  // Local input
+            }
+        }
+    }
+    
+    // FIXED: Increment frame counter BEFORE processing to fix 1-frame input delay
+    g_frame_counter++;
+    
+    // RADICAL SOLUTION: Call original_process_inputs TWICE on step frames to eliminate delay
+    if (shared_data && shared_data->frame_step_needs_input_refresh) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: DOUBLE CALL to eliminate 1-frame delay at frame %u", g_frame_counter);
+        
+        // Capture fresh inputs using game's input mapping
+        if (original_get_player_input) {
+            if (is_true_offline) {
+                original_get_player_input(0, 0);  // P1 input
+                original_get_player_input(1, 0);  // P2 input
+            } else {
+                original_get_player_input(0, 0);  // Local input
+            }
+        }
+        
+        // First call: This "primes" the input system with current inputs
+        if (original_process_game_inputs) {
+            original_process_game_inputs();
+        }
+        
+        // Second call: This ensures the inputs are processed for THIS frame, not next
+        if (original_process_game_inputs) {
+            original_process_game_inputs();
+        }
+        
+        shared_data->frame_step_needs_input_refresh = false;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Double call complete - inputs should be immediate");
+    } else {
+        // Normal single call
+        if (original_process_game_inputs) {
+            original_process_game_inputs();
+        }
+    }
+    
+    // Handle frame stepping countdown. Re-pausing is now in the render hook.
+    if (shared_data && shared_data->frame_step_remaining_frames > 0 && shared_data->frame_step_remaining_frames != UINT32_MAX) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Frame ADVANCED to %u during stepping", g_frame_counter);
+        shared_data->frame_step_remaining_frames--;
+        if (shared_data->frame_step_remaining_frames == 0) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "INPUT HOOK: Step processing complete for frame %u, will pause in render hook", g_frame_counter);
+        }
+    }
+    
+    // CRITICAL: Early return to prevent double frame execution
+    return 0;
 }

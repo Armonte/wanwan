@@ -59,6 +59,7 @@ GameRandFunc original_game_rand = nullptr;
 ProcessInputHistoryFunc original_process_input_history = nullptr;
 CheckGameContinueFunc original_check_game_continue = nullptr;
 CSSHandlerFunc original_css_handler = nullptr;
+ProcessGameInputsFunc original_process_game_inputs = nullptr;
 
 // Global variables for manual save/load requests
 bool manual_save_requested = false;

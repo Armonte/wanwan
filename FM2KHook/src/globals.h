@@ -10,7 +10,6 @@
 #include "gekkonet.h"
 
 // Typedefs for original game functions
-typedef int(__cdecl* ProcessGameInputsFunc)();
 typedef int(__cdecl* GetPlayerInputFunc)(int, int);
 typedef int(__cdecl* UpdateGameStateFunc)();
 typedef BOOL(__cdecl* RunGameLoopFunc)();
@@ -21,7 +20,6 @@ typedef int(__cdecl* CheckGameContinueFunc)();
 typedef char(__cdecl* CSSHandlerFunc)();
 
 // Function pointers for original game functions
-extern ProcessGameInputsFunc original_process_inputs;
 extern GetPlayerInputFunc original_get_player_input;
 extern UpdateGameStateFunc original_update_game;
 extern RunGameLoopFunc original_run_game_loop;
@@ -50,9 +48,13 @@ namespace FM2K::State::Memory {
     constexpr uintptr_t GET_PLAYER_INPUT_ADDR = 0x414340;
     constexpr uintptr_t UPDATE_GAME_ADDR = 0x404CD0;
     constexpr uintptr_t RUN_GAME_LOOP_ADDR = 0x405AD0;
-    constexpr uintptr_t FRAME_COUNTER_ADDR = 0x447EE0;
+    constexpr uintptr_t FRAME_COUNTER_ADDR = 0x4456FC;  // Continuous counter (never resets)
     constexpr uintptr_t P1_INPUT_ADDR = 0x4259C0;
     constexpr uintptr_t P2_INPUT_ADDR = 0x4259C4;
+    
+    // Raw input addresses where game reads inputs directly (CCCaster-style)
+    constexpr uintptr_t P1_RAW_INPUT_ADDR = 0x4cfa00;
+    constexpr uintptr_t P2_RAW_INPUT_ADDR = 0x4cfa02;
     constexpr uintptr_t P1_HP_ADDR = 0x47010C;
     constexpr uintptr_t P2_HP_ADDR = 0x47030C;
     constexpr uintptr_t ROUND_TIMER_ADDR = 0x470060;

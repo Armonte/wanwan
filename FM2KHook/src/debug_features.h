@@ -3,5 +3,6 @@
 
 void CheckForDebugCommands();
 void CheckForHotkeys();
+void ProcessFrameStepLogic();
 
 #endif // DEBUG_FEATURES_H

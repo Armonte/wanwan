@@ -140,16 +140,42 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/vendored/minhook/include
 )
 
-# ImGui sources
-set(IMGUI_SOURCES
+# ImGui core sources (shared between launcher and hook)
+set(IMGUI_CORE_SOURCES
     vendored/imgui/imgui.cpp
     vendored/imgui/imgui_demo.cpp
     vendored/imgui/imgui_draw.cpp
     vendored/imgui/imgui_tables.cpp
     vendored/imgui/imgui_widgets.cpp
+)
+
+# ImGui library for launcher (SDL backends)
+set(IMGUI_SDL_SOURCES
+    ${IMGUI_CORE_SOURCES}
     vendored/imgui/backends/imgui_impl_sdl3.cpp
     vendored/imgui/backends/imgui_impl_sdlrenderer3.cpp
 )
+
+add_library(imgui_sdl STATIC ${IMGUI_SDL_SOURCES})
+target_include_directories(imgui_sdl PUBLIC 
+    vendored/imgui
+    vendored/imgui/backends
+)
+target_link_libraries(imgui_sdl PUBLIC SDL3::SDL3-static)
+
+# ImGui library for hook DLL (DirectX backends)
+set(IMGUI_DX_SOURCES
+    ${IMGUI_CORE_SOURCES}
+    vendored/imgui/backends/imgui_impl_win32.cpp
+    vendored/imgui/backends/imgui_impl_dx9.cpp
+)
+
+add_library(imgui_dx STATIC ${IMGUI_DX_SOURCES})
+target_include_directories(imgui_dx PUBLIC 
+    vendored/imgui
+    vendored/imgui/backends
+)
+target_link_libraries(imgui_dx PUBLIC d3d9 dwmapi)
 
 # GekkoNet library - Build as static
 add_library(GekkoNet STATIC
@@ -242,9 +268,6 @@ add_executable(FM2K_RollbackLauncher
     LocalNetworkAdapter.cpp
     FM2K_Integration.h
     # DLL injection approach - hooks are in FM2KHook DLL
-    
-    # ImGui sources
-    ${IMGUI_SOURCES}
 )
 
 # Static linking flags for MinGW-GCC
@@ -265,6 +288,7 @@ target_link_libraries(FM2K_RollbackLauncher PRIVATE
     SDL3_image::SDL3_image-static
     SDL3_net::SDL3_net-static
     MinHook
+    imgui_sdl
     psapi
     ws2_32
     winmm

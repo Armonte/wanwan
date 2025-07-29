@@ -48,7 +48,7 @@ uint32_t advance_timeout_frames = 0;      // Timeout counter for frame advance w
 uint32_t last_valid_players_frame = 0;    // Last frame when AllPlayersValid() was true
 
 // Function pointers for original functions
-ProcessGameInputsFunc original_process_inputs = nullptr;
+// ProcessGameInputsFunc removed - following CCCaster approach (let it run naturally)
 GetPlayerInputFunc original_get_player_input = nullptr;
 UpdateGameStateFunc original_update_game = nullptr;
 RunGameLoopFunc original_run_game_loop = nullptr;

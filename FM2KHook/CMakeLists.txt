@@ -29,6 +29,7 @@ add_library(FM2KHook SHARED
     src/object_tracker.cpp
     src/object_analysis.cpp
     src/object_pool_scanner.cpp
+    src/imgui_overlay.cpp
     ../LocalNetworkAdapter.cpp
 )
 
@@ -47,8 +48,10 @@ target_link_libraries(FM2KHook PRIVATE
     GekkoNet
     SDL3::SDL3-static
     SDL3_net::SDL3_net-static
+    imgui_dx
     ws2_32
     winmm
+    d3d9
 )
 
 # Include directories
@@ -60,6 +63,7 @@ target_include_directories(FM2KHook PRIVATE
     ${CMAKE_SOURCE_DIR}/vendored/SDL_net/include
     ${CMAKE_SOURCE_DIR}/vendored/GekkoNet/include
     ${CMAKE_SOURCE_DIR}/vendored/GekkoNet/GekkoLib/include
+    ${CMAKE_SOURCE_DIR}/vendored/imgui
 )
 
 # Set output directories

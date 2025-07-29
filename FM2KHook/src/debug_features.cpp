@@ -136,3 +136,45 @@ void CheckForHotkeys() {
     }
     keys_pressed[VK_F5] = key_f5_pressed;
 }
+
+// Process framestep logic - controls game execution for debugging
+void ProcessFrameStepLogic() {
+    SharedInputData* shared_data = GetSharedMemory();
+    if (!shared_data) {
+        return; // No shared memory available
+    }
+    
+    // Process pause requests
+    if (shared_data->frame_step_pause_requested) {
+        shared_data->frame_step_is_paused = true;
+        shared_data->frame_step_pause_requested = false;
+        shared_data->frame_step_remaining_frames = 0;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FRAMESTEP: Game paused");
+    }
+    
+    // Process resume requests
+    if (shared_data->frame_step_resume_requested) {
+        shared_data->frame_step_is_paused = false;
+        shared_data->frame_step_resume_requested = false;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FRAMESTEP: Game resumed");
+    }
+    
+    // Process single step requests
+    if (shared_data->frame_step_single_requested) {
+        if (shared_data->frame_step_is_paused) {
+            shared_data->frame_step_remaining_frames = 1;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FRAMESTEP: Single step advance");
+        }
+        shared_data->frame_step_single_requested = false;
+    }
+    
+    // Handle multi-step requests
+    if (shared_data->frame_step_multi_count > 0) {
+        if (shared_data->frame_step_is_paused) {
+            shared_data->frame_step_remaining_frames = shared_data->frame_step_multi_count;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FRAMESTEP: Multi-step advance (%u frames)", 
+                       shared_data->frame_step_multi_count);
+        }
+        shared_data->frame_step_multi_count = 0;
+    }
+}

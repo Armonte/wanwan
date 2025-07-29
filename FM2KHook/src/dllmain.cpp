@@ -5,6 +5,7 @@
 #include "state_manager.h"
 #include "gekkonet_hooks.h"
 #include "hooks.h"
+#include "imgui_overlay.h"
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
@@ -65,6 +66,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                 return FALSE;
             }
             
+            // ImGui overlay will be initialized lazily on first use to avoid early D3D conflicts
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ImGui overlay will initialize on first use");
+            
             // DUAL CLIENT TESTING: Initialize GekkoNet immediately when player_index is set
             bool dual_client_mode = (::player_index == 0 || ::player_index == 1);
             bool should_init_gekko = !is_true_offline || dual_client_mode;
@@ -87,6 +91,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     case DLL_PROCESS_DETACH:
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: DLL detaching from process");
         
+        ShutdownImGuiOverlay();
         CleanupGekkoNet();
         CleanupFileLogging();
         CleanupInputRecording();

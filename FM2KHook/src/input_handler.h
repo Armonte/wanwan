@@ -10,6 +10,9 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type);
 uint32_t ConvertNetworkInputToGameFormat(uint32_t network_input);
 bool IsWindowFocused();
 
+// CCCaster-style direct input capture
+uint16_t CaptureDirectInput();
+
 // REMOVED: All intermediate input writing functions
 // Following Heat's advice - only override FINAL processed state in GekkoNet callbacks
 

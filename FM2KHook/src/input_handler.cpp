@@ -8,6 +8,28 @@
 #include <windows.h>
 #include <SDL3/SDL.h>
 
+// CCCaster-style direct input capture
+uint16_t CaptureDirectInput() {
+    uint16_t input = 0;
+    
+    // Direction inputs (correct FM2K bit mapping from documentation)
+    if (GetAsyncKeyState(VK_LEFT) & 0x8000)  input |= 0x001; // Left
+    if (GetAsyncKeyState(VK_RIGHT) & 0x8000) input |= 0x002; // Right  
+    if (GetAsyncKeyState(VK_UP) & 0x8000)    input |= 0x004; // Up
+    if (GetAsyncKeyState(VK_DOWN) & 0x8000)  input |= 0x008; // Down
+    
+    // Button inputs (using common keyboard mapping)
+    if (GetAsyncKeyState('Z') & 0x8000)      input |= 0x010; // Button 1
+    if (GetAsyncKeyState('X') & 0x8000)      input |= 0x020; // Button 2  
+    if (GetAsyncKeyState('C') & 0x8000)      input |= 0x040; // Button 3
+    if (GetAsyncKeyState('A') & 0x8000)      input |= 0x080; // Button 4
+    if (GetAsyncKeyState('S') & 0x8000)      input |= 0x100; // Button 5
+    if (GetAsyncKeyState('D') & 0x8000)      input |= 0x200; // Button 6
+    if (GetAsyncKeyState('Q') & 0x8000)      input |= 0x400; // Button 7
+    
+    return input;
+}
+
 // Input buffer write patches for motion input preservation
 static bool buffer_writes_patched = false;
 static uint8_t original_bytes_1[7] = {0};
@@ -115,90 +137,122 @@ bool IsWindowFocused() {
 }
 
 int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
-    // HEAT'S ADVICE: Only poll for local player, let GekkoNet provide remote player
-    // In TRUE_OFFLINE mode, we provide both players' inputs
+    // UNIFIED INPUT CONTROL: Handle both offline and online modes with proper side-flipping
     
     char* env_offline = getenv("FM2K_TRUE_OFFLINE");
     bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
     
-    int input_mask = 0;
+    int raw_input = 0;
     
-    // TRUE OFFLINE: Provide inputs for both players
+    // Step 1: Get raw input based on mode
     if (is_true_offline) {
+        // OFFLINE MODE: Local keyboard input for both players
         if (IsWindowFocused()) {
             if (player_id == 0) {
-                // P1: Arrow keys + ZXC/ASD
-                if (GetAsyncKeyState(VK_LEFT) & 0x8000)  input_mask |= 0x001;
-                if (GetAsyncKeyState(VK_RIGHT) & 0x8000) input_mask |= 0x002;
-                if (GetAsyncKeyState(VK_UP) & 0x8000)    input_mask |= 0x004;
-                if (GetAsyncKeyState(VK_DOWN) & 0x8000)  input_mask |= 0x008;
-                if (GetAsyncKeyState('Z') & 0x8000)      input_mask |= 0x010;
-                if (GetAsyncKeyState('X') & 0x8000)      input_mask |= 0x020;
-                if (GetAsyncKeyState('C') & 0x8000)      input_mask |= 0x040;
-                if (GetAsyncKeyState('A') & 0x8000)      input_mask |= 0x080;
-                if (GetAsyncKeyState('S') & 0x8000)      input_mask |= 0x100;
-                if (GetAsyncKeyState('D') & 0x8000)      input_mask |= 0x200;
+                // P1: Arrow keys + ZXCASD
+                if (GetAsyncKeyState(VK_LEFT) & 0x8000)  raw_input |= 0x001;
+                if (GetAsyncKeyState(VK_RIGHT) & 0x8000) raw_input |= 0x002;
+                if (GetAsyncKeyState(VK_UP) & 0x8000)    raw_input |= 0x004;
+                if (GetAsyncKeyState(VK_DOWN) & 0x8000)  raw_input |= 0x008;
+                if (GetAsyncKeyState('Z') & 0x8000)      raw_input |= 0x010;
+                if (GetAsyncKeyState('X') & 0x8000)      raw_input |= 0x020;
+                if (GetAsyncKeyState('C') & 0x8000)      raw_input |= 0x040;
+                if (GetAsyncKeyState('A') & 0x8000)      raw_input |= 0x080;
+                if (GetAsyncKeyState('S') & 0x8000)      raw_input |= 0x100;
+                if (GetAsyncKeyState('D') & 0x8000)      raw_input |= 0x200;
             } else if (player_id == 1) {
-                // P2: WASD + UIO/JKL
-                if (GetAsyncKeyState('A') & 0x8000)      input_mask |= 0x001;
-                if (GetAsyncKeyState('D') & 0x8000)      input_mask |= 0x002;
-                if (GetAsyncKeyState('W') & 0x8000)      input_mask |= 0x004;
-                if (GetAsyncKeyState('S') & 0x8000)      input_mask |= 0x008;
-                if (GetAsyncKeyState('U') & 0x8000)      input_mask |= 0x010;
-                if (GetAsyncKeyState('I') & 0x8000)      input_mask |= 0x020;
-                if (GetAsyncKeyState('O') & 0x8000)      input_mask |= 0x040;
-                if (GetAsyncKeyState('P') & 0x8000)      input_mask |= 0x080;
-                if (GetAsyncKeyState('J') & 0x8000)      input_mask |= 0x100;
-                if (GetAsyncKeyState('K') & 0x8000)      input_mask |= 0x200;
+                // P2: WASD + UIOPJK
+                if (GetAsyncKeyState('A') & 0x8000)      raw_input |= 0x001;
+                if (GetAsyncKeyState('D') & 0x8000)      raw_input |= 0x002;
+                if (GetAsyncKeyState('W') & 0x8000)      raw_input |= 0x004;
+                if (GetAsyncKeyState('S') & 0x8000)      raw_input |= 0x008;
+                if (GetAsyncKeyState('U') & 0x8000)      raw_input |= 0x010;
+                if (GetAsyncKeyState('I') & 0x8000)      raw_input |= 0x020;
+                if (GetAsyncKeyState('O') & 0x8000)      raw_input |= 0x040;
+                if (GetAsyncKeyState('P') & 0x8000)      raw_input |= 0x080;
+                if (GetAsyncKeyState('J') & 0x8000)      raw_input |= 0x100;
+                if (GetAsyncKeyState('K') & 0x8000)      raw_input |= 0x200;
             }
         }
-        return input_mask;
+    } else {
+        // ONLINE MODE: Local + networked inputs
+        if (::player_index == 0) {
+            // HOST: Controls P1, receives P2 from network
+            if (player_id == 0) {
+                // P1 local keyboard
+                if (IsWindowFocused()) {
+                    if (GetAsyncKeyState(VK_LEFT) & 0x8000)  raw_input |= 0x001;
+                    if (GetAsyncKeyState(VK_RIGHT) & 0x8000) raw_input |= 0x002;
+                    if (GetAsyncKeyState(VK_UP) & 0x8000)    raw_input |= 0x004;
+                    if (GetAsyncKeyState(VK_DOWN) & 0x8000)  raw_input |= 0x008;
+                    if (GetAsyncKeyState('Z') & 0x8000)      raw_input |= 0x010;
+                    if (GetAsyncKeyState('X') & 0x8000)      raw_input |= 0x020;
+                    if (GetAsyncKeyState('C') & 0x8000)      raw_input |= 0x040;
+                    if (GetAsyncKeyState('A') & 0x8000)      raw_input |= 0x080;
+                    if (GetAsyncKeyState('S') & 0x8000)      raw_input |= 0x100;
+                    if (GetAsyncKeyState('D') & 0x8000)      raw_input |= 0x200;
+                }
+            } else if (player_id == 1) {
+                // P2 networked
+                raw_input = GetCurrentNetworkedP2Input();
+            }
+        } else if (::player_index == 1) {
+            // CLIENT: Controls P2, receives P1 from network
+            if (player_id == 0) {
+                // P1 networked
+                raw_input = GetCurrentNetworkedP1Input();
+            } else if (player_id == 1) {
+                // P2 local keyboard
+                if (IsWindowFocused()) {
+                    if (GetAsyncKeyState('A') & 0x8000)      raw_input |= 0x001;
+                    if (GetAsyncKeyState('D') & 0x8000)      raw_input |= 0x002;
+                    if (GetAsyncKeyState('W') & 0x8000)      raw_input |= 0x004;
+                    if (GetAsyncKeyState('S') & 0x8000)      raw_input |= 0x008;
+                    if (GetAsyncKeyState('U') & 0x8000)      raw_input |= 0x010;
+                    if (GetAsyncKeyState('I') & 0x8000)      raw_input |= 0x020;
+                    if (GetAsyncKeyState('O') & 0x8000)      raw_input |= 0x040;
+                    if (GetAsyncKeyState('P') & 0x8000)      raw_input |= 0x080;
+                    if (GetAsyncKeyState('J') & 0x8000)      raw_input |= 0x100;
+                    if (GetAsyncKeyState('K') & 0x8000)      raw_input |= 0x200;
+                }
+            }
+        }
     }
     
-    // ONLINE MODE: Provide local player input + networked remote player input
-    if (::player_index == 0) {
-        // HOST controls P1, receives P2 from network
-        if (player_id == 0) {
-            // P1 input from local keyboard
-            if (IsWindowFocused()) {
-                if (GetAsyncKeyState(VK_LEFT) & 0x8000)  input_mask |= 0x001;
-                if (GetAsyncKeyState(VK_RIGHT) & 0x8000) input_mask |= 0x002;
-                if (GetAsyncKeyState(VK_UP) & 0x8000)    input_mask |= 0x004;
-                if (GetAsyncKeyState(VK_DOWN) & 0x8000)  input_mask |= 0x008;
-                if (GetAsyncKeyState('Z') & 0x8000)      input_mask |= 0x010;
-                if (GetAsyncKeyState('X') & 0x8000)      input_mask |= 0x020;
-                if (GetAsyncKeyState('C') & 0x8000)      input_mask |= 0x040;
-                if (GetAsyncKeyState('A') & 0x8000)      input_mask |= 0x080;
-                if (GetAsyncKeyState('S') & 0x8000)      input_mask |= 0x100;
-                if (GetAsyncKeyState('D') & 0x8000)      input_mask |= 0x200;
-            }
-        } else if (player_id == 1) {
-            // P2 input from network
-            input_mask = GetCurrentNetworkedP2Input();
-        }
-    } else if (::player_index == 1) {
-        // CLIENT controls P2, receives P1 from network
-        if (player_id == 0) {
-            // P1 input from network
-            input_mask = GetCurrentNetworkedP1Input();
-        } else if (player_id == 1) {
-            // P2 input from local keyboard
-            if (IsWindowFocused()) {
-                if (GetAsyncKeyState('A') & 0x8000)      input_mask |= 0x001;
-                if (GetAsyncKeyState('D') & 0x8000)      input_mask |= 0x002;
-                if (GetAsyncKeyState('W') & 0x8000)      input_mask |= 0x004;
-                if (GetAsyncKeyState('S') & 0x8000)      input_mask |= 0x008;
-                if (GetAsyncKeyState('U') & 0x8000)      input_mask |= 0x010;
-                if (GetAsyncKeyState('I') & 0x8000)      input_mask |= 0x020;
-                if (GetAsyncKeyState('O') & 0x8000)      input_mask |= 0x040;
-                if (GetAsyncKeyState('P') & 0x8000)      input_mask |= 0x080;
-                if (GetAsyncKeyState('J') & 0x8000)      input_mask |= 0x100;
-                if (GetAsyncKeyState('K') & 0x8000)      input_mask |= 0x200;
-            }
-        }
+    // Step 2: Apply FM2K's side-flipping logic (replicated from original get_player_input)
+    uint32_t* g_game_mode = (uint32_t*)0x470054;
+    uint8_t* g_player_current_actions = (uint8_t*)0x4dfcd1; // Correct address from MCP
+    uint32_t* g_player_action_flags = (uint32_t*)0x4d9a36;  // Correct address from MCP
+    
+    bool invert_directions = false;
+    if (*g_game_mode < 3000 || *g_game_mode >= 4000 ||
+        !g_player_current_actions[57407 * input_type] ||
+        (g_player_action_flags[57407 * input_type] & 8) != 0) {
+        invert_directions = true;
     }
     
-    return input_mask;
+    // Step 3: Apply direction inversion if needed
+    int final_input = raw_input;
+    if (!invert_directions) {
+        // Swap left/right bits when NOT inverting (FM2K's logic)
+        int left_bit = (raw_input & 0x001) ? 1 : 0;
+        int right_bit = (raw_input & 0x002) ? 1 : 0;
+        
+        final_input = raw_input & ~0x003; // Clear left/right bits
+        if (left_bit)  final_input |= 0x002; // Left key -> right bit
+        if (right_bit) final_input |= 0x001; // Right key -> left bit
+    }
+    
+    // Step 4: Debug logging
+    static uint32_t input_log_counter = 0;
+    if (++input_log_counter % 180 == 0 && (raw_input != 0 || final_input != 0)) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                   "INPUT P%d: raw=0x%03X final=0x%03X invert=%s mode=%d", 
+                   player_id, raw_input, final_input, 
+                   invert_directions ? "true" : "false", *g_game_mode);
+    }
+    
+    return final_input;
 }
 
 // Proper input bit mapping

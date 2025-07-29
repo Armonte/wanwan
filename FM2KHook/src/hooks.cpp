@@ -6,11 +6,15 @@
 #include "debug_features.h"
 #include "game_patches.h"
 #include "state_monitor.h"
+#include "shared_mem.h"
 // REMOVED: #include "css_handler.h" - CSS delayed input system removed
 #include "gekkonet_hooks.h"
+#include "imgui_overlay.h"
 #include <MinHook.h>
 #include <cstdlib>
 #include <cstring>
+
+// Original function pointers
 
 bool InitializeHooks() {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K HOOK: Initializing MinHook...");
@@ -78,11 +82,15 @@ bool InitializeHooks() {
         return false;
     }
     
+    
     // Apply boot-to-character-select patches directly
     ApplyBootToCharacterSelectPatches();
     
     // Apply character select mode patches
     ApplyCharacterSelectModePatches();
+    
+    // Disable cursor hiding for ImGui overlay
+    DisableCursorHiding();
     
     // DO NOT disable input repeat delays - they're necessary for FM2K's architecture
     // DisableInputRepeatDelays(); // REMOVED - causes rapid fire desyncs
@@ -99,69 +107,90 @@ void ShutdownHooks() {
 }
 
 int __cdecl Hook_UpdateGameState() {
-    // PURE GEKKONET ARCHITECTURE: Only handle GekkoNet frame control
+    // Environment check for offline mode
     char* env_offline = getenv("FM2K_TRUE_OFFLINE");
     bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
     bool dual_client_mode = (::player_index == 0 || ::player_index == 1);
     bool use_gekko = !is_true_offline && dual_client_mode;
     
-    // HEAT'S ADVICE: Only capture PROCESSED inputs after the game runs
-    // The game will call process_game_inputs_FRAMESTEP_hook naturally
-    // We'll capture the FINAL processed state after that happens
-    
     if (use_gekko && gekko_initialized && gekko_session) {
-        uint32_t* game_mode = (uint32_t*)0x470054;  // g_game_mode
-        bool is_initialization_phase = (*game_mode < 3000);  // Before battle mode
+        // CRITICAL FIX: ALWAYS process GekkoNet for connection events, regardless of frame changes
+        // STEP 1: Capture local input directly (CCCaster-style)
+        uint16_t local_input = CaptureDirectInput();
         
-        // Process GekkoNet frame - this will store inputs in AdvanceEvent
+        // STEP 2: Send to GekkoNet for synchronization
+        gekko_add_local_input(gekko_session, player_index, &local_input);
+        
+        // STEP 3: ALWAYS process GekkoNet to handle connection events
         ProcessGekkoNetFrame();
         
-        // BSNES PATTERN: Inputs are now applied immediately in AdvanceEvent
-        // No need for pending input logic - inputs are written directly to memory
+        // STEP 4: Check synchronization status for both initialization and battle phases
+        uint32_t* game_mode = (uint32_t*)0x470054;
+        uint32_t current_frame_count = *(uint32_t*)FM2K::State::Memory::FRAME_COUNTER_ADDR;
+        bool is_initialization_phase = (*game_mode < 3000);  // Before battle mode
         
-        if (is_initialization_phase) {
-            // UNCONDITIONAL BLOCKING during startup - wait for session to be ready
-            if (!gekko_session_started) {
-                static uint32_t startup_block_counter = 0;
-                if (++startup_block_counter % 60 == 0) {
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                               "GekkoNet STARTUP BLOCK: Waiting for session start - game_mode=%d (#%d)", 
-                               *game_mode, startup_block_counter);
-                }
-                return 0; // Block until both clients connect
+        // CRITICAL FIX: Block game state updates, but NOT GekkoNet processing
+        if (!gekko_session_started) {
+            // STARTUP SYNCHRONIZATION: Block game updates until both clients connect
+            static uint32_t startup_sync_counter = 0;
+            if (++startup_sync_counter % 60 == 0) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                           "STARTUP SYNC: ProcessGekkoNetFrame running, blocking game updates - frame=%d mode=%d (#%d)", 
+                           current_frame_count, *game_mode, startup_sync_counter);
             }
-            
-            // After session starts, use frame control blocking
-            if (gekko_frame_control_enabled && !can_advance_frame) {
-                static uint32_t frame_block_counter = 0;
-                if (++frame_block_counter % 120 == 0) {
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                               "GekkoNet FRAME BLOCK: Waiting for AdvanceEvent - game_mode=%d (#%d)", 
-                               *game_mode, frame_block_counter);
-                }
-                return 0; // Block until AdvanceEvent received
-            }
-        } else {
-            // BATTLE MODE: Also check frame control for consistent behavior
-            if (gekko_frame_control_enabled && !can_advance_frame) {
-                static uint32_t battle_frame_block_counter = 0;
-                if (++battle_frame_block_counter % 120 == 0) {
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
-                               "GekkoNet BATTLE FRAME BLOCK: Waiting for AdvanceEvent - game_mode=%d (#%d)", 
-                               *game_mode, battle_frame_block_counter);
-                }
-                return 0; // Block until AdvanceEvent received
-            }
+            // NOTE: We still ran ProcessGekkoNetFrame above, just blocking the original game function
+            return 0; 
         }
+        
+        if (!can_advance_frame && gekko_frame_control_enabled) {
+            // FRAME SYNCHRONIZATION: Block until GekkoNet sends AdvanceEvent
+            const char* phase_name = is_initialization_phase ? "INIT" : "BATTLE";
+            static uint32_t frame_sync_counter = 0;
+            if (++frame_sync_counter % 120 == 0) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                           "%s SYNC: Waiting for AdvanceEvent - frame=%d mode=%d (#%d)", 
+                           phase_name, current_frame_count, *game_mode, frame_sync_counter);
+            }
+            return 0; // Skip original function until AdvanceEvent
+        }
+        
+        // INPUT INJECTION: Now handled via GetKeyboardState hook
+        // This allows FM2K's natural input processing to work, including side-flipping logic
+    } else {
+        // OFFLINE MODE: FM2K reads inputs naturally from keyboard
+        // No direct memory writes needed - GetKeyboardState hook is inactive in offline mode
     }
     
     // Normal per-frame logic
     MonitorGameStateTransitions();
     CheckForDebugCommands();
     CheckForHotkeys();
+    CheckOverlayHotkey();
     ProcessManualSaveLoadRequests();
-    // REMOVED: CSS delayed input system - causes rollback issues
     
+    // FRAMESTEP LOGIC: Handle pause/resume/single step functionality
+    ProcessFrameStepLogic();
+    
+    // FRAMESTEP BLOCKING: Check if we should block game execution
+    SharedInputData* shared_data = GetSharedMemory();
+    if (shared_data && shared_data->frame_step_is_paused) {
+        if (shared_data->frame_step_remaining_frames <= 0) {
+            // PAUSED: Block game execution but continue processing our hooks
+            // This maintains input buffer continuity for motion inputs and dashes
+            static uint32_t pause_log_counter = 0;
+            if (++pause_log_counter % 300 == 0) {  // Log every 3 seconds
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FRAMESTEP: Game execution blocked (paused)");
+            }
+            return 0; // Block original UpdateGameState
+        } else {
+            // STEPPING: Allow this frame and decrement counter
+            shared_data->frame_step_remaining_frames--;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FRAMESTEP: Executing frame (%u remaining)", 
+                       shared_data->frame_step_remaining_frames);
+        }
+    }
+    
+    // Call original UpdateGameState - game will read our pre-written inputs
     if (original_update_game) {
         return original_update_game();
     }
@@ -169,7 +198,7 @@ int __cdecl Hook_UpdateGameState() {
 }
 
 void __cdecl Hook_RenderGame() {
-    // STARTUP SYNCHRONIZATION: Also block rendering during initialization if needed
+    // SYNCHRONIZATION: Block rendering during both startup and frame sync as needed
     char* env_offline = getenv("FM2K_TRUE_OFFLINE");
     bool is_true_offline = (env_offline && strcmp(env_offline, "1") == 0);
     bool dual_client_mode = (::player_index == 0 || ::player_index == 1);
@@ -179,16 +208,27 @@ void __cdecl Hook_RenderGame() {
         uint32_t* game_mode = (uint32_t*)0x470054;  // g_game_mode
         bool is_initialization_phase = (*game_mode < 3000);  // Before battle mode
         
-        if (is_initialization_phase) {
-            // Block rendering during startup until session ready
-            if (!gekko_session_started) {
-                return; // Skip rendering until both clients connect
+        // STARTUP SYNCHRONIZATION: Block rendering until both clients connect
+        if (!gekko_session_started) {
+            static uint32_t startup_render_counter = 0;
+            if (++startup_render_counter % 60 == 0) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                           "STARTUP RENDER BLOCK: Waiting for both clients to connect - mode=%d (#%d)", 
+                           *game_mode, startup_render_counter);
             }
-            
-            // Block rendering during frame sync
-            if (gekko_frame_control_enabled && !can_advance_frame) {
-                return; // Skip rendering until AdvanceEvent
+            return; // Skip rendering until session starts
+        }
+        
+        // FRAME SYNCHRONIZATION: Block rendering when waiting for AdvanceEvent
+        if (!can_advance_frame && gekko_frame_control_enabled) {
+            const char* phase_name = is_initialization_phase ? "INIT" : "BATTLE";
+            static uint32_t frame_render_counter = 0;
+            if (++frame_render_counter % 120 == 0) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
+                           "%s RENDER BLOCK: Waiting for AdvanceEvent - mode=%d (#%d)", 
+                           phase_name, *game_mode, frame_render_counter);
             }
+            return; // Skip rendering until AdvanceEvent
         }
     }
     
@@ -207,6 +247,7 @@ BOOL __cdecl Hook_RunGameLoop() {
     // Always use original main loop - our hooks will control the frame processing
     return original_run_game_loop ? original_run_game_loop() : FALSE;
 }
+
 
 char __cdecl Hook_CSS_Handler() {
     // CSS DEBUG: Log when CSS handler is called and what input values it sees

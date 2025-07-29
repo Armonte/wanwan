@@ -88,3 +88,23 @@ void DisableInputRepeatDelays() {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, 
                 "FM2K PATCH: Disabled native input repeat delays (was 50/5 frames, now 0/0) and cleared timer arrays");
 }
+
+// NOP out ShowCursor(0) call to keep cursor visible for ImGui
+void DisableCursorHiding() {
+    // NOP the ShowCursor(0) call at +49E7 through +49ED (7 bytes)
+    // This prevents FM2K from hiding the cursor in DirectDraw mode
+    uint8_t* cursor_hide_addr = (uint8_t*)0x4049E7;  // Base address + 49E7
+    
+    DWORD old_protect;
+    if (VirtualProtect(cursor_hide_addr, 7, PAGE_EXECUTE_READWRITE, &old_protect)) {
+        // Fill with NOPs (0x90)
+        memset(cursor_hide_addr, 0x90, 7);
+        
+        // Restore original protection
+        VirtualProtect(cursor_hide_addr, 7, old_protect, &old_protect);
+        
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K PATCH: NOPed ShowCursor(0) call at 0x4049E7-0x4049ED for ImGui cursor visibility");
+    } else {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "FM2K PATCH: Failed to make ShowCursor(0) memory writable at 0x4049E7");
+    }
+}

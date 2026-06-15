@@ -1383,7 +1383,15 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
             std::cerr << "No FM2K games found for --offline\n";
             return SDL_APP_FAILURE;
         }
-        ::SetEnvironmentVariableA("FM2K_BOOT_TO_BATTLE", "1");
+        // --offline defaults to boot-straight-to-battle so perf profiling
+        // lands in gameplay, but RESPECT an explicit FM2K_BOOT_TO_BATTLE
+        // from the environment (a CSS test batch sets =0 to walk the normal
+        // title->CSS path for character-select churn testing). Same opt-out
+        // pattern as FM2K_PARITY_RECORD_PATH below. GetEnvironmentVariableA
+        // returns 0 only when the var is unset; any explicit value wins.
+        if (::GetEnvironmentVariableA("FM2K_BOOT_TO_BATTLE", nullptr, 0) == 0) {
+            ::SetEnvironmentVariableA("FM2K_BOOT_TO_BATTLE", "1");
+        }
         ::SetEnvironmentVariableA("FM2K_AUTO_TITLE_SKIP", "1");
         size_t pick = 0;
         if (!offline_game_filter.empty()) {

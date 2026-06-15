@@ -1105,6 +1105,25 @@ table.grid tbody tr:hover td {
   background: rgba(0, 229, 255, 0.04);
 }
 table.grid tbody tr:last-child td { border-bottom: 0; }
+
+/* Sortable tables (table.sortable): click a header to sort, click again to
+   reverse. Active column shows ▲/▼; idle sortable headers get a faint ↕ hint.
+   Behaviour lives in static/sort.js (CSP-safe, no inline JS). */
+table.sortable th.sort-th {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+table.sortable th.sort-th:hover { color: var(--ink); background: rgba(0, 229, 255, 0.07); }
+table.sortable th.sort-th:focus-visible { outline: 1px solid var(--line-bright); outline-offset: -1px; }
+table.sortable th.sort-asc  { color: var(--ink); }
+table.sortable th.sort-desc { color: var(--ink); }
+table.sortable th.sort-asc::after  { content: ' \25B2'; font-size: 0.62em; opacity: 0.9; }
+table.sortable th.sort-desc::after { content: ' \25BC'; font-size: 0.62em; opacity: 0.9; }
+table.sortable th.sort-th:not(.sort-asc):not(.sort-desc)::after {
+  content: ' \2195'; font-size: 0.62em; opacity: 0.22;
+}
 table.grid .num {
   text-align: right;
   font-variant-numeric: tabular-nums;

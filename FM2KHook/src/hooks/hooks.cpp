@@ -3,6 +3,7 @@
 #include "hooks.h"
 #include "round_events.h"     // C3.5 — vs_round_function detour install
 #include "css_autoconfirm.h"  // CSS lock-and-confirm for offline replay playback
+#include "css_fastsound.h"    // FM2K_FPK_CSS_FASTSOUND: lazy DSound buffers (CSS dip fix)
 #include "per_game_patches.h" // damage multiplier MinHook + team-size override
 #include "render_simd.h"      // FM2K_BLIT_SIMD: blit + case -10 blur reimplementation
 #include "globals.h"
@@ -13,6 +14,10 @@
 #include <unordered_map>
 #include <memory>
 #include <mutex>
+#include <list>
+#include <thread>
+#include <condition_variable>
+#include <atomic>
 #include "netplay.h"
 #include "control_channel.h"
 #include "../netplay/game_hash.h"
@@ -25,6 +30,7 @@
 #include "../ui/input_binder.h"             // FM2KInputBinder::Sample_Win32 + Bindings
 #include "../ui/screenshot.h"               // FM2KCapture::SaveScreenshot for the auto-banner pipeline
 #include "../ui/fc_hud.h"                   // IsChatInputActive — gate local input during typing
+#include "../vfs/fpk_reader.h"              // FM2K_FPK_VFS: inflate a slim .fpk -> original asset bytes
 #include <MinHook.h>
 #include <SDL3/SDL_log.h>
 #include <windows.h>
@@ -164,6 +170,13 @@ static CreateFileW_t original_CreateFileW = nullptr;
 static constexpr DWORD kRelaxedShareMode =
     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 
+// FPK VFS redirect (defined after the temp-inflate helpers further down). If the
+// asset has a sibling ".fpk", returns a handle to its inflated temp file; else
+// INVALID_HANDLE_VALUE so the caller falls through to the normal open.
+extern "C" HANDLE FpkTryRedirectOpenA(LPCSTR name, DWORD access, DWORD share,
+                                      LPSECURITY_ATTRIBUTES sa, DWORD disp,
+                                      DWORD flags, HANDLE tmpl);
+
 static HANDLE WINAPI Hook_CreateFileA(LPCSTR name, DWORD access, DWORD share,
                                       LPSECURITY_ATTRIBUTES sa, DWORD disp,
                                       DWORD flags, HANDLE tmpl) {
@@ -187,6 +200,12 @@ static HANDLE WINAPI Hook_CreateFileA(LPCSTR name, DWORD access, DWORD share,
                     "CreateFileA[%d]: '%s'", s_logged,
                     utf8[0] ? utf8 : name);
         ++s_logged;
+    }
+    // FPK VFS: redirect an asset open to its inflated temp file (built on disk,
+    // read by the engine at native speed -- nothing held in our 2GB heap).
+    if (name) {
+        HANDLE rd = FpkTryRedirectOpenA(name, access, share, sa, disp, flags, tmpl);
+        if (rd != INVALID_HANDLE_VALUE) return rd;
     }
     // SJIS -> wide -> CreateFileW path. Required for Japanese-named files in
     // BOTH FM95 (CPW.exe / ＣＰＷ.kgt) and FM2K (e.g. Otepuri's
@@ -308,12 +327,31 @@ static HANDLE WINAPI Hook_CreateFileW(LPCWSTR name, DWORD access, DWORD share,
 namespace {
 
 struct VFile {
-    std::vector<uint8_t> data;
+    // Shared so the path-keyed .fpk cache (g_fpk_cache) and the active handle
+    // reference ONE allocation -- a cache hit costs a pointer copy, not a
+    // 100MB memcpy, which matters in the game's 32-bit address space.
+    std::shared_ptr<std::vector<uint8_t>> buf;
     size_t offset = 0;
 };
 
 // Toggle initialized at hook install time from FM2K_FAST_PLAYER_LOAD env var.
 bool g_fast_player_load = false;
+
+// Toggle initialized at hook install time from FM2K_FPK_VFS env var. When set,
+// MaybeRegisterPlayerVFileA inflates a sibling "<path>.fpk" via fpk_reconstruct
+// instead of slurping the original .player/.stage/.demo. Independent of the
+// fast-player gate, but it shares the same VFile serve-hooks, so the serve
+// fast-paths test (g_fast_player_load || g_fpk_vfs). See InstallFileHooks.
+bool g_fpk_vfs = false;
+
+// Either gate activates the VFile machinery (register + serve from RAM).
+inline bool VfsActive() { return g_fast_player_load || g_fpk_vfs; }
+
+// Ceiling for an inflated .fpk / slurped asset held in RAM. Inflated originals
+// reach ~240MB (BOSS_Miriann.player); cap generously but bound the single 32-bit
+// allocation so a runaway file can't exhaust the game's address space. The old
+// 64MB .player-only slurp cap was too small for .stage/.demo + inflated content.
+constexpr long long kVfsMaxBytes = 768LL * 1024 * 1024;
 
 // Map of OS handle → buffered .player content. Real Windows handles are
 // returned to the game (no synthetic-handle plumbing) so any other API
@@ -321,49 +359,316 @@ bool g_fast_player_load = false;
 std::mutex                                          g_vfile_mtx;
 std::unordered_map<HANDLE, std::unique_ptr<VFile>>  g_vfiles;
 
+// Path-keyed LRU cache of inflated .fpk results. player_data_file_loader
+// (@0x4039F0) re-opens each asset per load event, and CSS auto-browse re-opens
+// the same .player as the cursor cycles -- a fresh inflate is ~0.3-4.4s, so the
+// observed 2-4x consecutive re-inflations were pure waste. Caching by .fpk path
+// turns a re-open into a shared-pointer copy. Bounded by total bytes to stay
+// safe in the game's 32-bit address space; entries share ownership with any
+// live VFile, so eviction never frees a buffer still in use. Guarded by
+// g_vfile_mtx.
+struct FpkCacheEntry {
+    std::string                            path;
+    std::shared_ptr<std::vector<uint8_t>>  bytes;
+};
+std::list<FpkCacheEntry>  g_fpk_cache;          // front = most-recently used
+size_t                    g_fpk_cache_bytes = 0;
+// Soft byte cap, tunable via FM2K_FPK_CACHE_MB. The game is often a 32-bit, NON
+// large-address-aware process (RoHe = 2GB user space) with ~100MB characters, so
+// this must stay well under that or prefetch starves the game and it OOM-crashes.
+// 384MB holds ~4 of RoHe's big characters with safe headroom.
+size_t                    g_fpk_cache_cap = 384u * 1024 * 1024;
+
+// Set while a SYNCHRONOUS (hover) inflate is running, so the background prefetch
+// worker yields instead of allocating a second ~100MB buffer concurrently --
+// concurrent big allocations in a 2GB process were what crashed RoHe on CSS.
+std::atomic<bool>         g_foreground_inflating{false};
+
+// Background prefetch. The engine loads each character fully on every CSS cursor
+// move (player_data_file_loader @0x4039F0), so a cold hover pays the 0.3-0.9s
+// inflate synchronously. We enqueue the whole sibling ".player.fpk" roster the
+// first time one is opened and inflate them into the cache on a low-priority
+// worker, so by the time the cursor reaches a character it is already a cache
+// hit. See InflateFpkCached / PrefetchWorker / EnqueueRosterPrefetch.
+std::list<std::string>    g_prefetch_queue;
+std::mutex                g_prefetch_mtx;
+std::condition_variable   g_prefetch_cv;
+bool                      g_prefetch_stop = false;
+bool                      g_prefetch_roster_enqueued = false;
+bool                      g_prefetch_started = false;
+
 // Aggregate timing across the session so we can see the win in the log.
 LONGLONG g_qpc_freq      = 0;
 LONGLONG g_qpc_load_sum  = 0;
 uint32_t g_qpc_load_count = 0;
 
-inline bool ends_with_player_a(const char* path) {
+// FM2K asset extensions served by the file-VFS: character data, stage data, and
+// the menu/intro/ending demo scripts. All three share player_data_file_loader's
+// read pattern, so the same slurp / .fpk-inflate path applies to each.
+inline bool ends_with_asset_a(const char* path) {
     if (!path) return false;
     size_t n = std::strlen(path);
-    if (n < 7) return false;
-    return _strnicmp(path + n - 7, ".player", 7) == 0;
+    static const char* kExts[] = { ".player", ".stage", ".demo" };
+    for (const char* e : kExts) {
+        size_t el = std::strlen(e);
+        if (n >= el && _strnicmp(path + n - el, e, el) == 0) return true;
+    }
+    return false;
 }
 
-inline bool ends_with_player_w(LPCWSTR path) {
+inline bool ends_with_asset_w(LPCWSTR path) {
     if (!path) return false;
     size_t n = wcslen(path);
-    if (n < 7) return false;
-    return _wcsnicmp(path + n - 7, L".player", 7) == 0;
+    static const wchar_t* kExts[] = { L".player", L".stage", L".demo" };
+    for (const wchar_t* e : kExts) {
+        size_t el = wcslen(e);
+        if (n >= el && _wcsnicmp(path + n - el, e, el) == 0) return true;
+    }
+    return false;
 }
 
 }  // anon
 
-// Slurp full file content into a VFile and register the handle. Called
-// from Hook_CreateFileA/W with the real OS handle returned by the
-// original CreateFile. Failures leave the handle alone — the game's
-// existing per-byte ReadFile path runs as a fallback.
-extern "C" void MaybeRegisterPlayerVFileA(HANDLE h, LPCSTR name) {
-    if (!g_fast_player_load) return;
-    if (h == INVALID_HANDLE_VALUE || h == nullptr) return;
-    if (!ends_with_player_a(name)) return;
+namespace {
 
+// Read an entire file off disk into `out` via a FRESH handle (NOT the game's
+// handle). Used for the sibling "<path>.fpk": reusing the game's .player handle
+// would read the wrong file. Returns false on open/size/read failure or if the
+// file exceeds kVfsMaxBytes. The .fpk itself is the slim packed image (a few MB),
+// so the cap here is a sanity bound, not the inflated-size bound.
+bool ReadWholeFileFresh(const char* path, std::vector<uint8_t>& out) {
+    HANDLE fh = original_CreateFileA
+        ? original_CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)
+        : ::CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, nullptr,
+                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (fh == INVALID_HANDLE_VALUE) return false;
+
+    bool ok = false;
+    LARGE_INTEGER sz_li{};
+    if (::GetFileSizeEx(fh, &sz_li) &&
+        sz_li.QuadPart > 0 && sz_li.QuadPart <= kVfsMaxBytes) {
+        DWORD sz = static_cast<DWORD>(sz_li.QuadPart);
+        try {
+            out.resize(sz);
+        } catch (...) {
+            ::CloseHandle(fh);
+            return false;
+        }
+        DWORD got = 0;
+        BOOL r = ::ReadFile(fh, out.data(), sz, &got, nullptr);
+        ok = (r && got == sz);
+        if (!ok) out.clear();
+    }
+    ::CloseHandle(fh);
+    return ok;
+}
+
+// Serialize inflations so only ONE ~100MB transient buffer exists at a time --
+// the concurrent foreground+worker inflate was what OOM-crashed RoHe (2GB).
+std::mutex g_inflate_mtx;
+
+// True if the inflated temp exists, is non-empty, and is at least as new as the
+// .fpk it was built from (a re-packed .fpk invalidates a stale temp).
+bool TempIsFresh(const std::string& temp, const std::string& fpk) {
+    WIN32_FILE_ATTRIBUTE_DATA td{}, fd{};
+    if (!::GetFileAttributesExA(temp.c_str(), GetFileExInfoStandard, &td)) return false;
+    if ((((uint64_t)td.nFileSizeHigh << 32) | td.nFileSizeLow) == 0) return false;
+    if (!::GetFileAttributesExA(fpk.c_str(), GetFileExInfoStandard, &fd)) return true;
+    return ::CompareFileTime(&td.ftLastWriteTime, &fd.ftLastWriteTime) >= 0;
+}
+
+// Write `data` to `path` (CREATE_ALWAYS) in 8MB chunks. ::WriteFile is not hooked.
+bool WriteWholeFile(const std::string& path, const std::vector<uint8_t>& data) {
+    HANDLE fh = original_CreateFileA
+        ? original_CreateFileA(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr)
+        : ::CreateFileA(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (fh == INVALID_HANDLE_VALUE) return false;
+    bool ok = true;
+    size_t off = 0;
+    while (off < data.size()) {
+        DWORD chunk = (DWORD)((data.size() - off > 8u * 1024 * 1024)
+                              ? 8u * 1024 * 1024 : (data.size() - off));
+        DWORD wrote = 0;
+        if (!::WriteFile(fh, data.data() + off, chunk, &wrote, nullptr) ||
+            wrote != chunk) { ok = false; break; }
+        off += wrote;
+    }
+    ::CloseHandle(fh);
+    return ok;
+}
+
+// Inflate <fpk_path> to a sibling temp "<fpk_path>.inflated" if missing/stale and
+// return the temp path (or "" on failure). The engine then reads the temp as a
+// NORMAL file -- the inflated bytes live on disk (pageable, OS page-cached), NOT
+// in our heap, so we never hold a ~100MB buffer and can't OOM the 2GB game; and
+// the engine's read runs at native (vanilla) speed. Serialized via g_inflate_mtx
+// so at most one transient inflate buffer exists. *was_built=true if we inflated
+// (cold), false if the temp was already fresh (the fast path).
+std::string EnsureInflatedTemp(const std::string& fpk_path, bool* was_built) {
+    std::string temp = fpk_path + ".inflated";
+    if (TempIsFresh(temp, fpk_path)) { if (was_built) *was_built = false; return temp; }
+
+    std::lock_guard<std::mutex> lk(g_inflate_mtx);
+    if (TempIsFresh(temp, fpk_path)) { if (was_built) *was_built = false; return temp; }
+
+    std::vector<uint8_t> raw;
+    if (!ReadWholeFileFresh(fpk_path.c_str(), raw)) return {};
+    std::string err;
+    std::vector<uint8_t> inflated = fpk_reconstruct(raw.data(), raw.size(), &err);
+    if (inflated.empty() || (long long)inflated.size() > kVfsMaxBytes) return {};
+
+    std::string part = temp + ".part";
+    bool ok = WriteWholeFile(part, inflated);
+    inflated.clear();
+    inflated.shrink_to_fit();             // release the ~100MB transient now
+    if (!ok) { ::DeleteFileA(part.c_str()); return {}; }
+    ::DeleteFileA(temp.c_str());
+    if (!::MoveFileA(part.c_str(), temp.c_str())) { ::DeleteFileA(part.c_str()); return {}; }
+    if (was_built) *was_built = true;
+    return temp;
+}
+
+// Background worker: drains g_prefetch_queue, building each .fpk's inflated temp
+// file on DISK at below-normal priority. Disk has no 2GB wall, so the whole
+// roster can be pre-built; each hover then just opens an existing temp.
+void PrefetchWorker() {
+    ::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    for (;;) {
+        std::string path;
+        {
+            std::unique_lock<std::mutex> lk(g_prefetch_mtx);
+            g_prefetch_cv.wait(lk, [] {
+                return g_prefetch_stop || !g_prefetch_queue.empty();
+            });
+            if (g_prefetch_stop) return;
+            path = std::move(g_prefetch_queue.front());
+            g_prefetch_queue.pop_front();
+        }
+        // Yield to an in-flight hover inflate so we never run two decodes at
+        // once (g_inflate_mtx also serializes, but yielding avoids the stall).
+        while (g_foreground_inflating.load(std::memory_order_relaxed)) {
+            ::Sleep(15);
+            if (g_prefetch_stop) return;
+        }
+        EnsureInflatedTemp(path, nullptr);  // build temp on disk (idempotent)
+        ::Sleep(5);  // gentle pacing -- prefetch is a nicety, never a priority
+    }
+}
+
+// On the first ".player.fpk" open, enumerate the sibling roster
+// ("<dir>\\*.player.fpk") and enqueue every entry for background prefetch, so
+// CSS browsing finds each character already decoded. Runs once per session.
+void EnqueueRosterPrefetch(const char* player_path) {
+    {
+        std::lock_guard<std::mutex> lk(g_prefetch_mtx);
+        if (g_prefetch_roster_enqueued) return;
+        g_prefetch_roster_enqueued = true;
+    }
+    std::string p(player_path);
+    size_t slash = p.find_last_of("\\/");
+    std::string dir = (slash == std::string::npos) ? std::string()
+                                                   : p.substr(0, slash + 1);
+    std::string pattern = dir + "*.player.fpk";
+
+    WIN32_FIND_DATAA fd{};
+    HANDLE hf = ::FindFirstFileA(pattern.c_str(), &fd);
+    if (hf == INVALID_HANDLE_VALUE) return;
+    std::list<std::string> found;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        found.push_back(dir + fd.cFileName);
+    } while (::FindNextFileA(hf, &fd));
+    ::FindClose(hf);
+
+    {
+        std::lock_guard<std::mutex> lk(g_prefetch_mtx);
+        for (auto& f : found) g_prefetch_queue.push_back(std::move(f));
+    }
+    g_prefetch_cv.notify_all();
+}
+
+}  // anon
+
+// FPK VFS redirect entry point (forward-declared near Hook_CreateFileA). If the
+// engine opens an asset with a sibling ".fpk", ensure its inflated temp exists
+// (building it on disk if needed) and return a handle to the TEMP -- the engine
+// then reads a normal file at native speed. Also kicks the background roster
+// prefetch. Returns INVALID_HANDLE_VALUE to fall through to the normal open.
+extern "C" HANDLE FpkTryRedirectOpenA(LPCSTR name, DWORD access, DWORD share,
+                                      LPSECURITY_ATTRIBUTES sa, DWORD disp,
+                                      DWORD flags, HANDLE tmpl) {
+    if (!g_fpk_vfs || !name || !ends_with_asset_a(name))
+        return INVALID_HANDLE_VALUE;
+    std::string fpk = std::string(name) + ".fpk";
+    DWORD fa = ::GetFileAttributesA(fpk.c_str());
+    if (fa == INVALID_FILE_ATTRIBUTES || (fa & FILE_ATTRIBUTE_DIRECTORY))
+        return INVALID_HANDLE_VALUE;
+
+    g_foreground_inflating.store(true, std::memory_order_relaxed);
+    bool built = false;
+    std::string temp = EnsureInflatedTemp(fpk, &built);
+    g_foreground_inflating.store(false, std::memory_order_relaxed);
+
+    EnqueueRosterPrefetch(name);  // background-build the rest of the roster
+
+    if (temp.empty()) return INVALID_HANDLE_VALUE;
+    HANDLE th = original_CreateFileA
+        ? original_CreateFileA(temp.c_str(), access, share | kRelaxedShareMode,
+                               sa, disp, flags, tmpl)
+        : ::CreateFileA(temp.c_str(), access, share | kRelaxedShareMode,
+                        sa, disp, flags, tmpl);
+    if (th == INVALID_HANDLE_VALUE) return INVALID_HANDLE_VALUE;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[FpkVfs] %s '%s'",
+                built ? "built+served temp" : "served temp", name);
+    return th;
+}
+
+// Fill a VFile and register the handle. Called from Hook_CreateFileA/W with the
+// real OS handle returned by the original CreateFile.
+//
+// Two sources:
+//   (1) FM2K_FPK_VFS + a sibling "<name>.fpk" exists -> inflate the .fpk via
+//       fpk_reconstruct and serve those bytes (the original .player/.stage/.demo
+//       on disk is never read). The game's loader reads the reconstructed
+//       original-format bytes from RAM via the hooked ReadFile.
+//   (2) otherwise, under FM2K_FAST_PLAYER_LOAD -> slurp the original file whole.
+//
+// Either way the bytes are keyed under the ORIGINAL file's handle `h` (the one
+// the game holds). Failures leave the handle alone — the game's existing
+// per-byte ReadFile path runs as a graceful fallback.
+extern "C" void MaybeRegisterPlayerVFileA(HANDLE h, LPCSTR name) {
+    if (!VfsActive()) return;
+    if (h == INVALID_HANDLE_VALUE || h == nullptr) return;
+    if (!ends_with_asset_a(name)) return;
+
+    // FPK assets are served by the CreateFileA redirect (FpkTryRedirectOpenA ->
+    // inflated temp file). Under FPK VFS we only reach here when the redirect did
+    // NOT fire (no sibling .fpk, or it failed and fell through to the original
+    // open), so there's nothing to do unless the legacy fast-load slurp is on.
+    if (g_fpk_vfs && !g_fast_player_load) return;
+
+    // ── (2) legacy slurp path (FM2K_FAST_PLAYER_LOAD) ──────────────────
     LARGE_INTEGER sz_li{};
     if (!::GetFileSizeEx(h, &sz_li)) return;
-    if (sz_li.QuadPart <= 0 || sz_li.QuadPart > 64LL * 1024 * 1024) return;
+    if (sz_li.QuadPart <= 0 || sz_li.QuadPart > kVfsMaxBytes) return;
 
     DWORD sz = static_cast<DWORD>(sz_li.QuadPart);
     auto vf = std::make_unique<VFile>();
-    vf->data.resize(sz);
+    try {
+        vf->buf = std::make_shared<std::vector<uint8_t>>();
+        vf->buf->resize(sz);
+    } catch (...) {
+        return;  // address-space exhaustion -> fall back to on-disk reads.
+    }
 
     LARGE_INTEGER t0{}, t1{};
     if (g_qpc_freq) ::QueryPerformanceCounter(&t0);
 
     DWORD got = 0;
-    BOOL ok = ::ReadFile(h, vf->data.data(), sz, &got, nullptr);
+    BOOL ok = ::ReadFile(h, vf->buf->data(), sz, &got, nullptr);
     if (!ok || got != sz) return;
 
     if (g_qpc_freq) ::QueryPerformanceCounter(&t1);
@@ -391,13 +696,17 @@ extern "C" void MaybeRegisterPlayerVFileA(HANDLE h, LPCSTR name) {
 }
 
 void MaybeRegisterPlayerVFile(HANDLE h, LPCWSTR name) {
-    if (!g_fast_player_load) return;
+    if (!VfsActive()) return;
     if (h == INVALID_HANDLE_VALUE || h == nullptr) return;
-    if (!ends_with_player_w(name)) return;
-    // Reuse the A path by transcoding the name for the log message only.
-    char utf8[1024] = {0};
-    ::WideCharToMultiByte(CP_UTF8, 0, name, -1, utf8, sizeof(utf8), nullptr, nullptr);
-    MaybeRegisterPlayerVFileA(h, utf8[0] ? utf8 : "<wide>");
+    if (!ends_with_asset_w(name)) return;
+    // Reuse the A path. NOTE: the A path now also uses the name on the
+    // filesystem (sibling "<name>.fpk" probe via GetFileAttributesA /
+    // CreateFileA), so transcode to the ACTIVE ANSI code page (CP_ACP), not
+    // UTF-8 -- the *A filesystem calls interpret bytes in CP_ACP. With the
+    // game's CP932 locale spoof active this round-trips JP basenames correctly.
+    char ansi[1024] = {0};
+    ::WideCharToMultiByte(CP_ACP, 0, name, -1, ansi, sizeof(ansi), nullptr, nullptr);
+    MaybeRegisterPlayerVFileA(h, ansi[0] ? ansi : "<wide>");
 }
 
 // ─── ReadFile / SetFilePointer / CloseHandle hooks ──────────────────────
@@ -417,17 +726,17 @@ static CloseHandle_t       original_CloseHandle      = nullptr;
 
 static BOOL WINAPI Hook_ReadFile(HANDLE h, LPVOID buf, DWORD n,
                                  LPDWORD got, LPOVERLAPPED ov) {
-    if (g_fast_player_load) {
+    if (VfsActive()) {
         std::lock_guard<std::mutex> lk(g_vfile_mtx);
         auto it = g_vfiles.find(h);
         if (it != g_vfiles.end()) {
             VFile& vf = *it->second;
-            DWORD remaining = (vf.offset >= vf.data.size())
+            DWORD remaining = (vf.offset >= vf.buf->size())
                               ? 0u
-                              : (DWORD)(vf.data.size() - vf.offset);
+                              : (DWORD)(vf.buf->size() - vf.offset);
             DWORD avail = (n < remaining) ? n : remaining;
             if (avail && buf) {
-                std::memcpy(buf, vf.data.data() + vf.offset, avail);
+                std::memcpy(buf, vf.buf->data() + vf.offset, avail);
                 vf.offset += avail;
             }
             if (got) *got = avail;
@@ -439,7 +748,7 @@ static BOOL WINAPI Hook_ReadFile(HANDLE h, LPVOID buf, DWORD n,
 
 static DWORD WINAPI Hook_SetFilePointer(HANDLE h, LONG dist, PLONG hi,
                                         DWORD method) {
-    if (g_fast_player_load) {
+    if (VfsActive()) {
         std::lock_guard<std::mutex> lk(g_vfile_mtx);
         auto it = g_vfiles.find(h);
         if (it != g_vfiles.end()) {
@@ -453,11 +762,11 @@ static DWORD WINAPI Hook_SetFilePointer(HANDLE h, LONG dist, PLONG hi,
             switch (method) {
                 case FILE_BEGIN:   newpos = dist64; break;
                 case FILE_CURRENT: newpos = (int64_t)vf.offset + dist64; break;
-                case FILE_END:     newpos = (int64_t)vf.data.size() + dist64; break;
+                case FILE_END:     newpos = (int64_t)vf.buf->size() + dist64; break;
                 default:           return INVALID_SET_FILE_POINTER;
             }
             if (newpos < 0) newpos = 0;
-            if ((uint64_t)newpos > vf.data.size()) newpos = vf.data.size();
+            if ((uint64_t)newpos > vf.buf->size()) newpos = vf.buf->size();
             vf.offset = (size_t)newpos;
             if (hi) *hi = (LONG)((uint64_t)newpos >> 32);
             return (DWORD)((uint64_t)newpos & 0xFFFFFFFFu);
@@ -469,7 +778,7 @@ static DWORD WINAPI Hook_SetFilePointer(HANDLE h, LONG dist, PLONG hi,
 static BOOL WINAPI Hook_SetFilePointerEx(HANDLE h, LARGE_INTEGER dist,
                                          PLARGE_INTEGER newpos_out,
                                          DWORD method) {
-    if (g_fast_player_load) {
+    if (VfsActive()) {
         std::lock_guard<std::mutex> lk(g_vfile_mtx);
         auto it = g_vfiles.find(h);
         if (it != g_vfiles.end()) {
@@ -478,11 +787,11 @@ static BOOL WINAPI Hook_SetFilePointerEx(HANDLE h, LARGE_INTEGER dist,
             switch (method) {
                 case FILE_BEGIN:   newpos = dist.QuadPart; break;
                 case FILE_CURRENT: newpos = (int64_t)vf.offset + dist.QuadPart; break;
-                case FILE_END:     newpos = (int64_t)vf.data.size() + dist.QuadPart; break;
+                case FILE_END:     newpos = (int64_t)vf.buf->size() + dist.QuadPart; break;
                 default:           return FALSE;
             }
             if (newpos < 0) newpos = 0;
-            if ((uint64_t)newpos > vf.data.size()) newpos = vf.data.size();
+            if ((uint64_t)newpos > vf.buf->size()) newpos = vf.buf->size();
             vf.offset = (size_t)newpos;
             if (newpos_out) newpos_out->QuadPart = newpos;
             return TRUE;
@@ -492,7 +801,7 @@ static BOOL WINAPI Hook_SetFilePointerEx(HANDLE h, LARGE_INTEGER dist,
 }
 
 static BOOL WINAPI Hook_CloseHandle(HANDLE h) {
-    if (g_fast_player_load) {
+    if (VfsActive()) {
         std::lock_guard<std::mutex> lk(g_vfile_mtx);
         g_vfiles.erase(h);  // no-op if not a VFile handle
     }
@@ -767,14 +1076,17 @@ uint16_t Hook_ComputeAutoplayCssInput(int player_id) {
         }
     }
     if (s_dwell > 0 && in_css < (uint32_t)s_dwell) {
-        // Wander: direction (or idle) stable for ~20-frame steps. Per-player
-        // offset + per-match salt give independent, varied browsing.
-        const uint32_t step = in_css / 20u;
+        // Wander: direction (or idle) stable for ~10-frame steps (rapid browse
+        // -- 2x the old 20-frame cadence) and only idle 1/4 of the time so the
+        // cursor keeps moving back-to-back. Per-player offset + per-match salt
+        // give independent, varied browsing. This stress-walks the per-move
+        // char reload as fast as the engine will load.
+        const uint32_t step = in_css / 10u;
         uint32_t h = (step + 1u) * 0x9E3779B9u ^ ((uint32_t)player_id << 16)
                    ^ salt;
         h = (h ^ (h >> 16)) * 0x7feb352du;
         h ^= h >> 15;
-        return (h & 1u) ? (uint16_t)(1u << ((h >> 1) & 3u)) : (uint16_t)0u;
+        return (h & 3u) ? (uint16_t)(1u << ((h >> 1) & 3u)) : (uint16_t)0u;
     }
     if (s_dwell == 0) {
         return ((in_css % 30u) == 0u) ? (uint16_t)0x010u : (uint16_t)0u;
@@ -3431,6 +3743,23 @@ bool InitializeHooks() {
         if (const char* env_fpl = std::getenv("FM2K_FAST_PLAYER_LOAD")) {
             g_fast_player_load = (env_fpl[0] == '1');
         }
+        // FM2K_FPK_VFS: serve .player/.stage/.demo from a sibling "<path>.fpk"
+        // (inflated via fpk_reconstruct) instead of the original on disk. Shares
+        // the VFile serve-hooks below; the register + serve fast-paths test
+        // VfsActive() = (g_fast_player_load || g_fpk_vfs).
+        if (const char* env_fpk = std::getenv("FM2K_FPK_VFS")) {
+            g_fpk_vfs = (env_fpk[0] == '1');
+        }
+        // FPK VFS serves assets by inflating each ".fpk" to a sibling
+        // "<path>.inflated" temp on DISK once and handing the engine that file --
+        // no ~100MB buffers in our 2GB heap. Start the low-priority worker that
+        // pre-builds the rest of the roster's temps in the background.
+        if (g_fpk_vfs && !g_prefetch_started) {
+            g_prefetch_started = true;
+            std::thread(PrefetchWorker).detach();
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Hooks: FPK VFS (temp-redirect) + prefetch worker started");
+        }
         // QPC frequency for the slurp timing log; if it ever fails, we
         // disable the timing path (load still works, just no instrumentation).
         LARGE_INTEGER freq{};
@@ -3475,9 +3804,17 @@ bool InitializeHooks() {
             }
         }
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "Hooks: FM2K_FAST_PLAYER_LOAD=%s (ReadFile/SetFP/CloseHandle hooked)",
-                    g_fast_player_load ? "1 (active)" : "0 (passthrough)");
+                    "Hooks: FM2K_FAST_PLAYER_LOAD=%s FM2K_FPK_VFS=%s "
+                    "(ReadFile/SetFP/CloseHandle hooked)",
+                    g_fast_player_load ? "1 (active)" : "0 (passthrough)",
+                    g_fpk_vfs ? "1 (active)" : "0 (off)");
     }
+
+    // CSS fast-sound: defer character DirectSound buffer creation until a sound
+    // first plays (FM2K_FPK_CSS_FASTSOUND=1), killing the ~150ms per-hover dip
+    // from rebuilding ~80 sound buffers on every CSS cursor move. Queues its
+    // hooks here; applied in the batch below. See css_fastsound.cpp.
+    CssFastSound_Install();
 
     // Single thread-freeze for every hook queued during this function and by
     // InstallLocaleSpoof/RoundEvents_Install/CssAutoConfirm_Install. One call

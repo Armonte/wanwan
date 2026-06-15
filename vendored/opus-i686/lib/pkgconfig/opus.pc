@@ -1,0 +1,16 @@
+# Opus codec reference implementation pkg-config file
+
+prefix=/mnt/c/dev/wanwan/vendored/opus-i686
+exec_prefix=/mnt/c/dev/wanwan/vendored/opus-i686
+libdir=/mnt/c/dev/wanwan/vendored/opus-i686/lib
+includedir=/mnt/c/dev/wanwan/vendored/opus-i686/include
+
+Name: Opus
+Description: Opus IETF audio codec ( build)
+URL: https://opus-codec.org/
+Version: 1.4
+Requires:
+Conflicts:
+Libs: -L/mnt/c/dev/wanwan/vendored/opus-i686/lib -lopus
+Libs.private: -lm
+Cflags: -I/mnt/c/dev/wanwan/vendored/opus-i686/include/opus

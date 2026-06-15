@@ -696,6 +696,24 @@ bool SaveState_Save(int frame) {
                             || (fwd_crcs.afterimage_pool != cur_ai_crc)
                             || (fwd_crcs.char_dynamic    != cur_char_dyn);
 
+        // Gekko-authoritative verdict: recompute the gameplay fingerprint
+        // (HP/pos/rng/timer/current-input -- the SAME hash gekko uses as the
+        // save checksum) from live (replay) memory and compare to the forward
+        // save's fingerprint. This is the ONLY divergence that constitutes a
+        // REAL desync. A region CRC can differ while the fingerprint matches --
+        // that's NON-AUTHORITATIVE noise (e.g. g_processed_input recomputed
+        // from the menu-only g_input_repeat_state/timer @0x541F80/0x4D1C40,
+        // which battle never reads; the deliberately-zeroed shake/effect carve-
+        // outs; or a spawned-effect object's subtype). Proven 2026-06-14:
+        // Tyrogue-mirror stress at FM2K_PREDICTION_WINDOW=0 + CHECK_DISTANCE=12
+        // logged region diffs every ~100f yet gekko reported desync=0 across
+        // ~987 forced rollbacks -- i.e. the rollback save/restore IS
+        // deterministic for everything that matters. Recompute is idempotent
+        // with the normal-save fingerprint at line ~1020 (same live memory).
+        const uint32_t cur_fingerprint = SaveState_CalculateFingerprint();
+        const bool fingerprint_diff =
+            (fwd_crcs.gameplay_fingerprint != cur_fingerprint);
+
         // Rate-limit the SDL console log: the byte-level scan re-fires every
         // replay save while a divergence persists across frames, which floods
         // stderr. File output stays per-event (useful for post-mortem); the
@@ -723,6 +741,13 @@ bool SaveState_Save(int frame) {
                 fprintf(df, "  CharDynamic:    fwd=0x%08X  replay=0x%08X  %s\n",
                         fwd_crcs.char_dynamic, cur_char_dyn,
                         fwd_crcs.char_dynamic == cur_char_dyn ? "MATCH" : "DIFF");
+                // Authoritative verdict line -- the reader's first stop.
+                fprintf(df, "  GameplayFingerprint: fwd=0x%08X  replay=0x%08X  %s\n",
+                        fwd_crcs.gameplay_fingerprint, cur_fingerprint,
+                        fingerprint_diff ? "DIFF" : "MATCH");
+                fprintf(df, "  VERDICT: %s\n", fingerprint_diff
+                        ? "*** REAL DESYNC (gekko-authoritative fingerprint DIFFERS) -- the region diffs below are the cause; investigate."
+                        : "NON-AUTHORITATIVE NOISE -- fingerprint MATCHES, so this is NOT a desync (menu input-repeat / zeroed render carve-outs / spawned-effect subtype). Safe to ignore for determinism.");
             }
         }
 
@@ -757,11 +782,16 @@ bool SaveState_Save(int frame) {
                             fprintf(df, "%02X ", cur[i+k]);
                         fprintf(df,
                             "\n  KgtRuntimeObject field map:\n"
-                            "    +0..3 state | +4..7 facing | +8..15 xPos/yPos (q16)\n"
+                            "    +0..3 type | +4..7 subtype (=create_game_object a2; spawn id) | +8..15 xPos/yPos (q16)\n"
                             "    +40 flags40 | +44 itemIdx | +48 scriptId | +52 prevScriptId\n"
                             "    +60 wait | +88 gravBase | +92 facing | +137..216 obj-mgr A\n"
                             "    +217..296 box-ptr array | +338 stateInit | +342 pid\n"
-                            "    +346 role | +350 flags350\n");
+                            "    +346 role | +350 flags350\n"
+                            "  NOTE: spawned-object (+4 subtype etc.) divergences CASCADE from input-edge\n"
+                            "  divergence (g_prev_input_state @0x447F00 / g_input_changes @0x447F60). Under\n"
+                            "  CHECK_DISTANCE self-check the 'forward' save may be a SPECULATIVE (predicted)\n"
+                            "  save vs a post-confirmation 'replay' save -- such a diff is legitimate\n"
+                            "  prediction-correction, not a determinism bug. Cross-check gekko fingerprint.\n");
                     }
                     break;
                 }
@@ -797,6 +827,13 @@ bool SaveState_Save(int frame) {
             for (size_t s = 0; s < NUM_CHAR_SLOTS; s++) {
                 const uint8_t* fwd = state->char_dynamic[s];
                 const uint8_t* cur = (const uint8_t*)(CHAR_SLOT_BASE + s * CHAR_SLOT_SIZE);
+                // Skip UNLOADED slots: Save() only memcpys loaded slots (.kgt
+                // magic byte0 != 0); for unloaded slots char_dynamic[s] is a
+                // STALE buffer, so comparing it vs live yields a guaranteed
+                // false "divergence" (the CharSlot[2] artifact). Only loaded
+                // slots can be a real re-sim divergence. (Diagnostic-only gate;
+                // does NOT touch the actual save/restore path.)
+                if (fwd[0] == 0) continue;
                 bool found = false;
                 for (size_t i = 0; i < CHAR_SLOT_DYNAMIC_SIZE; i++) {
                     if (fwd[i] != cur[i]) {

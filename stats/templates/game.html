@@ -118,7 +118,7 @@
       <span class="count">// LEADERBOARD</span>
     </div>
     {% if g.top_players %}
-    <table class="grid">
+    <table class="grid sortable">
       <thead><tr><th class="rank">#</th><th>Nick</th><th class="num">Matches</th></tr></thead>
       <tbody>
         {% for p in g.top_players %}
@@ -141,7 +141,7 @@
       <span class="count">// {{ g.top_chars|length }} TOTAL · PICKS · W-L-D · WINRATE</span>
     </div>
     {% if g.top_chars %}
-    <table class="grid">
+    <table class="grid sortable">
       <thead>
         <tr>
           <th class="rank">#</th>
@@ -212,4 +212,8 @@
   <p class="empty">No matches yet on this cabinet.</p>
   {% endif %}
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', path='sort.js') }}"></script>
 {% endblock %}

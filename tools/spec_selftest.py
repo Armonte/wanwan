@@ -247,6 +247,15 @@ def main():
                          "battle frames across matches (FM2K_AUTO_TERMINATE_TOTAL). "
                          "Spans MATCH_END -> CSS -> match 2; the parity gate uses "
                          "match 1's canonical .fm2krep.")
+    ap.add_argument("--rounds", type=int, default=0,
+                    help="force N-round matches (FM2K_TEST_ROUNDS, writes "
+                         "g_default_round). 1 = fast css->battle->css cycles for "
+                         "the multi-match-under-loss e2e harness. 0 = game default.")
+    ap.add_argument("--round-time", type=int, default=-1,
+                    help="force the round timer (FM2K_TEST_ROUND_TIME). 0 = OFF "
+                         "(infinite; wanwan NEEDS this -- a non-zero custom timer "
+                         "bugs subsequent battles to 0 time, so matches end on KO). "
+                         "-1 = leave game default.")
     ap.add_argument("--record-timeout", type=float, default=240.0)
     ap.add_argument("--spec-join-delay", type=float, default=3.0,
                     help="seconds after P1/P2 launch before the spectator dials in")
@@ -331,6 +340,13 @@ def main():
         "FM2K_HOST_TRACE":       os.environ.get("FM2K_HOST_TRACE", "1"),
         "FM2K_SPECTATOR_DEBUG":  os.environ.get("FM2K_SPECTATOR_DEBUG", "1"),
     }
+    if args.rounds > 0:
+        # Force N-round matches on both players (host writes g_default_round, the
+        # HOST_CONFIG syncs it to the client) -> short matches -> fast
+        # css->battle->css cycles for the multi-match-under-loss harness.
+        common_env["FM2K_TEST_ROUNDS"] = str(args.rounds)
+    if args.round_time >= 0:
+        common_env["FM2K_TEST_ROUND_TIME"] = str(args.round_time)
     if args.total_frames > 0:
         common_env["FM2K_AUTO_TERMINATE_TOTAL"] = str(args.total_frames)
         common_env.setdefault("FM2K_AUTOPLAY_CSS_DWELL",
@@ -384,6 +400,10 @@ def main():
                    "FM2K_NET_DELAY_MS", "FM2K_NET_JITTER_MS", "FM2K_NET_LOSS", "FM2K_NET_SEED"):
             if os.environ.get(kk):
                 env[kk] = os.environ[kk]
+        # The spectator MUST run the same round count as the host, else a 1-round
+        # host vs best-of-3 spectator diverges at the host's round-1 match-end.
+        if args.rounds > 0:
+            env["FM2K_TEST_ROUNDS"] = str(args.rounds)
         sargs = [str(LAUNCHER), "--host", game_arg,
                  "--spectate", f"127.0.0.1:{P1_PORT}",
                  "--port", str(port), "--player-index", str(idx)]

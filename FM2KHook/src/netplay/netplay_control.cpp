@@ -49,6 +49,29 @@ CtrlPacket BuildHostConfigPacket() {
     // defaults, but host's authoritative values must override or specs
     // get wrong timer / round count (pkmncc default time=60, host had
     // time=0 / infinite, spec ended up running with 60s rounds).
+    // FM2K_TEST_ROUNDS=N (test harness): force N-round matches. g_default_round
+    // (0x430124) is loaded from game.ini at boot and persists, so writing it
+    // here -- before sampling it for the broadcast -- makes the host's own game
+    // AND the HOST_CONFIG-synced client run N-round matches. 1 => fast
+    // css->battle->css cycles for the multi-match-under-loss e2e harness.
+    static const int s_test_rounds = []{
+        const char* v = std::getenv("FM2K_TEST_ROUNDS");
+        return (v && v[0]) ? std::atoi(v) : 0;
+    }();
+    if (s_test_rounds > 0) *(uint32_t*)0x430124 = (uint32_t)s_test_rounds;
+    // FM2K_TEST_ROUND_TIME=S: force an S-second round timer (g_round_time @
+    // 0x430114, from TestPlay.time). The autoplay rarely KOs, so a short timer
+    // makes rounds TIMEOUT fast -> with --rounds 1, matches end in seconds ->
+    // many fast css->battle->css cycles for the multi-match-under-loss harness.
+    // -1 = unset (leave game default); >= 0 forces. 0 = OFF/infinite timer --
+    // wanwan needs this: a non-zero custom timer leaves the round-timer counter
+    // at 0 on subsequent battles (they start at 0 time), so 1-round matches there
+    // end on KO with the timer off rather than the buggy short timer.
+    static const int s_test_round_time = []{
+        const char* v = std::getenv("FM2K_TEST_ROUND_TIME");
+        return (v && v[0]) ? std::atoi(v) : -1;
+    }();
+    if (s_test_round_time >= 0) *(uint32_t*)0x430114 = (uint32_t)s_test_round_time;
     pkt.data.host_config.round_time_sec  = *(uint32_t*)0x430114; // lParam
     pkt.data.host_config.round_count     = *(uint32_t*)0x430124; // g_default_round
     pkt.data.host_config.game_speed_pct  = *(uint32_t*)0x430104; // uValue

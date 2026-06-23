@@ -61,6 +61,19 @@
 int __cdecl Hook_UpdateGameState() {
     uint32_t game_mode = *(uint32_t*)FM2K::ADDR_GAME_MODE;
 
+    // FM2K_TEST_ROUNDS: force g_default_round (0x430124) on EVERY peer -- host,
+    // client, AND spectator -- every frame. The host-only HOST_CONFIG write left
+    // the spectator on best-of-3 while the host ran 1-round, so they diverged at
+    // the host's round-1 match-end (the spec thought it was round 2). Forcing it
+    // here keeps all peers on the same round count. Test harness only; no-op unset.
+    {
+        static const int s_test_rounds = []{
+            const char* v = std::getenv("FM2K_TEST_ROUNDS");
+            return (v && v[0]) ? std::atoi(v) : 0;
+        }();
+        if (s_test_rounds > 0) *(uint32_t*)0x430124 = (uint32_t)s_test_rounds;
+    }
+
     // FM95 host-driven trampoline activation (opt-in via FM95_TRAMPOLINE=1).
     // FM2K's main_game_loop is replaced wholesale by TrampolineMainLoop,
     // but FM95 keeps its natural WinMain pump. Drive the trampoline tick

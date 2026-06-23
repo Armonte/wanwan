@@ -342,7 +342,7 @@ def main():
         # char0/char0 lock. The os.environ forward below still lets FM2K_AUTOPLAY_
         # CSS_DWELL override it.
         common_env["FM2K_AUTOPLAY_CSS_DWELL"] = str(args.css_dwell)
-    for k in ("FM2K_LOCAL_DELAY", "FM2K_PRED_WINDOW", "FM2K_PREDICTION_WINDOW", "FM2K_RUNAHEAD", "FM2K_SPEC_UDP", "FM2K_AUTOPLAY_CSS_DWELL", "FM2K_SPECTATOR_DEBUG", "FM2K_HOST_TRACE", "FM2K_TEST_BATTLE_SEED",
+    for k in ("FM2K_LOCAL_DELAY", "FM2K_PRED_WINDOW", "FM2K_PREDICTION_WINDOW", "FM2K_RUNAHEAD", "FM2K_SPEC_UDP", "FM2K_AUTOPLAY_CSS_DWELL", "FM2K_SPECTATOR_DEBUG", "FM2K_HOST_TRACE", "FM2K_FA_TRACE", "FM2K_TEST_BATTLE_SEED",
               # in-process link impairment (players' gekko+control path)
               "FM2K_NET_DELAY_MS", "FM2K_NET_JITTER_MS", "FM2K_NET_LOSS", "FM2K_NET_SEED"):
         if os.environ.get(k):
@@ -828,22 +828,32 @@ def main():
         cf = len(sfp)
         miss = [st not in host_fp_set for st in sfp]
         mf_total = sum(miss)
-        # A real desync is DETERMINISTIC and PERSISTS: the spectator never rolls
-        # back, so once its sim diverges every later FP frame mismatches. An
-        # ISOLATED single miss (followed by a match) therefore cannot be a real
-        # desync -- it's a sub-frame capture-timing artifact on a value caught
-        # mid-transition (hp during a hit, script at a move-start), the same
-        # class as the position/rng capture noise already excluded. Gate the FP
-        # only on a CONSECUTIVE run >= 2 (a persistent divergence). The aligned
-        # TRACE rng_post (mt) remains the authoritative per-frame check.
-        run = mx = 0
+        # A no-rollback spectator's sim is a one-way forward replay: a REAL desync
+        # NEVER re-converges, so its FP misses form a persistent TAIL reaching the
+        # LAST FP frame. A BOUNDED interior run that re-syncs (later frames match)
+        # is a capture artifact -- a small frame-offset in a TRANSITIONING value
+        # (a round-start hp-fill animation, hp during a hit, a move-start) sampled
+        # against the host's every-30-frame FP grid; the values land back on the
+        # grid once the value stabilizes. (vanpri under loss: hp-fill +3 frames
+        # ahead, bf 270-360, re-syncs at 390 -- 2026-06-23.) Fail only on a
+        # PERSISTENT tail (last FP frame misses) or a massive >40% divergence. The
+        # aligned TRACE rng_post (mt) stays the authoritative per-frame check.
+        trailing = 0
+        for f in reversed(miss):
+            if f:
+                trailing += 1
+            else:
+                break
+        massive = cf > 0 and mf_total > 0.40 * cf
+        mf = mf_total if (trailing > 0 or massive) else 0
+        run = mx = 0                      # longest run -- advisory only now
         for f in miss:
             run = run + 1 if f else 0
             if run > mx:
                 mx = run
-        mf = mf_total if mx >= 2 else 0
         first_f = next((st for st, f in zip(sfp, miss) if f), None)
         return dict(ct=ct, cf=cf, mt=mt, mf=mf, mf_total=mf_total, mx=mx,
+                    trailing=trailing,
                     checked=ct + cf, bad=mt + mf,
                     first_t=first_t, first_f=first_f)
 
@@ -855,14 +865,15 @@ def main():
         print(f"[harness] GATE SPEC{s['k']} ({s['phase']}, P{s['idx']+1}): "
               f"checked {r['checked']} (TRACE {r['ct']} rng + FP {r['cf']} hp/scripts); "
               f"{r['mt']} TRACE-rng + {r['mf']} FP-state not-in-host "
-              f"(FP raw {r['mf_total']}, max-run {r['mx']}) -> {verdict}")
+              f"(FP raw {r['mf_total']}, max-run {r['mx']}, tail {r['trailing']}) -> {verdict}")
         if r["first_t"]:
             print(f"    TRACE rng-not-in-host (REAL divergence): {r['first_t']}")
-        if r["mf_total"] and r["mx"] < 2:
-            print(f"    (advisory) {r['mf_total']} isolated FP miss(es), max-run "
-                  f"{r['mx']} -- capture-timing on transitioning hp/script, not a desync")
-        if r["first_f"]:
-            print(f"    FP hp/scripts-not-in-host (REAL persistent divergence): {r['first_f']}")
+        if r["mf_total"] and r["mf"] == 0:
+            print(f"    (advisory) {r['mf_total']} FP miss(es) but they RE-SYNC "
+                  f"(tail={r['trailing']}, max-run {r['mx']}) -- bounded capture-"
+                  f"timing offset on a transitioning hp/script, not a desync")
+        if r["mf"]:
+            print(f"    FP hp/scripts PERSISTENT divergence (tail={r['trailing']}): {r['first_f']}")
 
     # Phase 3: host-no-hiccup report (host ran with FM2K_PERF_PROFILE on).
     if measure_host:

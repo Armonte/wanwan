@@ -89,6 +89,20 @@ void Netplay_HandleSaveEvent(GekkoGameEvent* update) {
     *update->data.save.state_len = sizeof(uint32_t);
     *update->data.save.checksum = checksum;
     memcpy(update->data.save.state, &frame, sizeof(uint32_t));
+
+    // [CHECKSUM] -- FULL-STATE FENCEPOST (GDC GAP #1). The gameplay_fingerprint is
+    // the DETERMINISTIC HP/pos/rng/timer hash GekkoNet uses for P1-vs-P2 desync
+    // detection, computed at the SAVE event = re-emitted on every re-sim, so the
+    // harness's dedupe-by-frame-last yields the CONFIRMED state (positions
+    // included). The players are already cross-checked by gekko; logging it lets
+    // the harness extend the same check to the SPECTATORS (not in the gekko
+    // session). Gated FM2K_CINPUT.
+    {
+        static int s_ck = -1;
+        if (s_ck < 0) { const char* v = std::getenv("FM2K_CINPUT"); s_ck = (v && v[0] == '1') ? 1 : 0; }
+        if (s_ck == 1)
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[CHECKSUM] f=%d crc=0x%08X", frame, checksum);
+    }
 }
 
 // GekkoNet's update sequence is:

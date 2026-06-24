@@ -403,7 +403,10 @@ def main():
         # instead of [P3]/[P4], so multi-spectator output is readable + each is
         # uniquely identifiable.
         env = {"FM2K_PARITY_RECORD_PATH": to_win(pty), "FM2K_LOG_TAG": f"S{k+1}",
-               "FM2K_CINPUT": os.environ.get("FM2K_CINPUT", "1")}
+               "FM2K_CINPUT": os.environ.get("FM2K_CINPUT", "1"),
+               # Exit ~5s after the host's feed stops (harness TerminateProcess =
+               # no graceful SESSION_END) instead of spinning at [SPEC-Q] q=0.
+               "FM2K_SPEC_HOST_GONE_MS": os.environ.get("FM2K_SPEC_HOST_GONE_MS", "5000")}
         for kk in ("FM2K_SPEC_DROP", "FM2K_SPEC_DROP_SEED", "FM2K_CSS_TRACE",
                    "FM2K_NET_DELAY_MS", "FM2K_NET_JITTER_MS", "FM2K_NET_LOSS", "FM2K_NET_SEED"):
             if os.environ.get(kk):
@@ -975,6 +978,104 @@ def main():
                     print(f"[harness] CINPUT {s['tag']} seg{si}: vs host-match{hi} off{O}: "
                           f"{n} frames input-frame IDENTICAL{extra}")
 
+    # ---- FULL-STATE FENCEPOST: [CHECKSUM] gameplay_fingerprint (GDC GAP #1) ----
+    # The host logs the gameplay_fingerprint (HP/pos/rng/timer -- gekko's own
+    # P1-vs-P2 desync hash) at every SAVE event; the spectator RECOMPUTES the same
+    # fingerprint from its live memory each applied frame (never rolls back ->
+    # always confirmed). Aligning the spec's CRC sequence to the host's catches
+    # POSITION/full-state desyncs the subset rng/hp gate is structurally blind to.
+    # Host f resets per match + re-emits per re-sim -> segment on f=-1, dedupe
+    # frame-LAST. Spec bf resets per battle -> segment on bf reset.
+    _ckpat = _cre.compile(r'\[CHECKSUM\] f=(-?\d+) crc=0x([0-9A-Fa-f]+)')
+    def _ck_host(path):
+        # per-MATCH segments [{frame: crc}]; split on f=-1 (battle-entry marker),
+        # dedupe frame-LAST within a segment (re-sim re-emits; last = confirmed).
+        segs, cur = [], {}
+        try: fh = open(path, errors="ignore")
+        except OSError: return segs
+        for ln in fh:
+            m = _ckpat.search(ln)
+            if not m: continue
+            f = int(m.group(1)); crc = int(m.group(2), 16)
+            if f < 0:
+                if cur: segs.append(cur); cur = {}
+                continue
+            cur[f] = crc
+        if cur: segs.append(cur)
+        return segs
+    def _ck_spec(path):
+        segs, cur, last = [], {}, -1
+        try: fh = open(path, errors="ignore")
+        except OSError: return segs
+        for ln in fh:
+            m = _ckpat.search(ln)
+            if not m: continue
+            bf = int(m.group(1))
+            if bf < 0: continue
+            crc = int(m.group(2), 16)
+            if bf <= last and cur: segs.append(cur); cur = {}
+            cur[bf] = crc; last = bf
+        if cur: segs.append(cur)
+        return segs
+    def _ck_align(sseg, hseg):
+        # offset O (host_f = spec_bf + O) maximizing CRC matches via distinctive
+        # non-zero CRC anchors. Returns (mismatches, O, overlap, longest_run, first).
+        sanchor = [(bf, sseg[bf]) for bf in sorted(sseg) if sseg[bf] != 0]
+        if not sanchor: return (0, 0, 0, 0, None)
+        hbi = {}
+        for hf, hc in hseg.items():
+            if hc != 0: hbi.setdefault(hc, []).append(hf)
+        deltas = {}
+        for sb, sc in sanchor:
+            for hf in hbi.get(sc, ()):
+                deltas[hf - sb] = deltas.get(hf - sb, 0) + 1
+        if not deltas: return (len(sanchor), 0, 0, len(sanchor), sanchor[0][0])
+        O = max(deltas, key=deltas.get)
+        bfs = sorted(bf for bf in sseg if sseg[bf] != 0 and (bf + O) in hseg)
+        run = mx = mm = 0; first = None
+        for bf in bfs:
+            if hseg[bf + O] != sseg[bf]:
+                mm += 1; run += 1; mx = max(mx, run)
+                if first is None: first = bf
+            else:
+                run = 0
+        return (mm, O, len(bfs), mx, first)
+    ck_H = _ck_host(OUT_DIR / "live_FM2K_P1_Debug.log")
+    ck_fail = False
+    if not ck_H:
+        print("[harness] CHECKSUM: no host [CHECKSUM] -- full-state fencepost "
+              "inactive (need FM2K_CINPUT=1 + a battle)")
+    else:
+        for s in specs:
+            for si, sseg in enumerate(_ck_spec(s["live"])):
+                nz = sum(1 for c in sseg.values() if c)
+                if nz == 0:
+                    ck_fail = True
+                    print(f"[harness] CHECKSUM {s['tag']} seg{si}: ALL-ZERO CRCs "
+                          f"(stale spec fingerprint -- recompute regressed) -> FAIL")
+                    continue
+                best = None
+                for hi, hseg in enumerate(ck_H):
+                    mm, O, n, mx, fb = _ck_align(sseg, hseg)
+                    key = (mx, mm, -n)
+                    if best is None or key < best[0]: best = (key, mm, O, n, mx, fb, hi)
+                _, mm, O, n, mx, fb, hi = best
+                if n == 0:
+                    ck_fail = True
+                    print(f"[harness] CHECKSUM {s['tag']} seg{si}: NO OVERLAP with "
+                          f"any host match -> FULL-STATE DESYNC")
+                elif mx > 3:
+                    ck_fail = True
+                    hseg = ck_H[hi]
+                    print(f"[harness] CHECKSUM {s['tag']} seg{si}: vs host-match{hi} "
+                          f"off{O} {mm}/{n} CRC mismatches (longest run {mx}) -> "
+                          f"FULL-STATE DESYNC (first spec-bf={fb} host-f={fb + O}: "
+                          f"spec=0x{sseg[fb]:08X} host=0x{hseg[fb + O]:08X})")
+                else:
+                    extra = f" ({mm} tail/predicted artifact)" if mm else ""
+                    print(f"[harness] CHECKSUM {s['tag']} seg{si}: vs host-match{hi} "
+                          f"off{O} {n} frames FULL-STATE IDENTICAL{extra}")
+
     for s in specs:
         r = gate_one(s["live"])
         s["gate"] = r
@@ -997,7 +1098,7 @@ def main():
     if measure_host:
         report_host_pacing(OUT_DIR / "live_FM2K_P1_Debug.log", args.fake_spectators)
 
-    real_fail   = cin_fail or any(s["gate"]["checked"] > 0 and not s["ok"] for s in specs)
+    real_fail   = cin_fail or ck_fail or any(s["gate"]["checked"] > 0 and not s["ok"] for s in specs)
     checked_any = any(s["gate"]["checked"] > 0 for s in specs)
 
     if not args.keep and not real_fail and checked_any:
@@ -1009,15 +1110,16 @@ def main():
             f.unlink(missing_ok=True)
 
     if real_fail:
-        why = "CINPUT input-frame desync (see above)" if cin_fail else "rng/hp gate"
+        why = ("CHECKSUM full-state desync (see above)" if ck_fail else
+               "CINPUT input-frame desync (see above)" if cin_fail else "rng/hp gate")
         print(f"[harness] OVERALL FAIL: a spectator desynced from host -- {why}.")
         return 1
     if not checked_any:
         print("[harness] GATE INCONCLUSIVE: no spectator trace frames -- need "
               "FM2K_HOST_TRACE=1 + FM2K_SPECTATOR_DEBUG=1 and a battle phase")
         return diff_rc
-    print(f"[harness] OVERALL PASS: all {len(specs)} spectator(s) input-frame-identical "
-          f"(CINPUT) + rng/hp bit-exact with host.")
+    print(f"[harness] OVERALL PASS: all {len(specs)} spectator(s) full-state bit-exact "
+          f"(CHECKSUM) + input-frame-identical (CINPUT) + rng/hp bit-exact with host.")
     return 0
 
 

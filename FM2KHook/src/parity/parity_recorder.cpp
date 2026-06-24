@@ -478,30 +478,6 @@ void Capture() {
      * patch ADDR_SYSTEM_VARS here. For now leave system_vars zeroed
      * (no FM2KHook reference for this address yet). */
 
-    // [CHECKSUM] -- FULL-STATE FENCEPOST (GDC GAP #1). FNV-1a over the CURATED
-    // deterministic snapshot (FillPlayerSnapshot already excludes non-deterministic
-    // per-process fields; the raw 57KB char slot does NOT, so hashing it false-
-    // positived even P1-vs-P2). EXCLUDE snap.frame (the engine frame counter is
-    // offset between instances). Logged per battle frame on every instance; the
-    // harness aligns the (distinctive) CRC sequence and reports the FIRST frame any
-    // CRC diverges -> catches ANY state divergence (positions, projectiles, scripts)
-    // the subset rng/hp gate is blind to. Gated FM2K_CINPUT.
-    {
-        static int s_cksum = -1;
-        if (s_cksum < 0) {
-            const char* v = std::getenv("FM2K_CINPUT");
-            s_cksum = (v && v[0] == '1') ? 1 : 0;
-        }
-        if (s_cksum == 1) {
-            uint32_t h = 2166136261u;  // FNV-1a, skipping the leading frame field
-            const uint8_t* p = (const uint8_t*)&snap + offsetof(KgtParitySnapshot, rng);
-            const size_t n = sizeof(snap) - offsetof(KgtParitySnapshot, rng);
-            for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 16777619u; }
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "[CHECKSUM] rfc=%u crc=0x%08X", snap.frame, h);
-        }
-    }
-
     if (std::fwrite(&snap, sizeof(snap), 1, g_active_recorder->fp) == 1) {
         ++g_active_recorder->frames_written;
     }

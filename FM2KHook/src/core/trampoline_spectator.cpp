@@ -9,6 +9,12 @@
 #include "../netplay/spectator_node.h"
 #include "../ui/shared_mem.h"
 #include "../parity/parity_recorder.h"
+#include "../netplay/savestate.h"   // RegionChecksums + gameplay_fingerprint (GAP #1 fencepost)
+// SaveState_CalculateFingerprint is engine-internal (savestate_internal.h) but has
+// external linkage; forward-declare it so the spectator can RECOMPUTE the fingerprint
+// from its own live FM2K memory. SaveState_Save never runs on a spectator, so the
+// stored ring-slot checksum / g_region_checksums are stale here -- we must recompute.
+uint32_t SaveState_CalculateFingerprint();
 #include <SDL3/SDL_log.h>
 #include <SDL3/SDL_timer.h>
 #include <atomic>
@@ -162,6 +168,18 @@ static bool SpectatorSimOneFrame() {
             if (s_cinput) {
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "[CINPUT] bf=%u p1=0x%03X p2=0x%03X", bf, p1, p2);
+                // [CHECKSUM] -- full-state fencepost: the SAME gameplay_fingerprint
+                // (HP/pos/rng/timer) the players emit at their save event, RECOMPUTED
+                // here from the spectator's live FM2K memory. CalculateFingerprint()
+                // reads rng/hp/timers/ring-inputs directly (same addresses the host
+                // hashes) -- NOT the stale ring-slot checksum (SaveState_Save never
+                // runs on a spectator, so GetLastChecksum/GetRegionChecksums would be
+                // zero/stale -> the "no overlap" bug). The spectator never rolls back,
+                // so this is always the CONFIRMED state -> compared against the host's
+                // dedupe-by-last confirmed CRC catches ANY divergence.
+                uint32_t spec_fp = SaveState_CalculateFingerprint();
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[CHECKSUM] f=%u crc=0x%08X",
+                    bf, spec_fp);
             }
             // [SPEC-FP] every 30 battle frames (~3 lines/sec). Routed
             // through SDL_LOG_CATEGORY_CUSTOM so LogOutputFunction puts
@@ -260,6 +278,36 @@ void RunSpectatorTick() {
             s_last_q_log = now;
         }
     }
+
+    // ---- No-forward-progress watchdog (host gone OR wedged) ----------------
+    // A live spectator that stops admitting NEW input frames is watching a host
+    // that either died (TerminateProcess/crash -- no graceful SESSION_END) or
+    // WEDGED. The wedge that motivated this: under loss the host can get stuck
+    // at the battle->CSS swap barrier, re-sending control-channel BATTLE_END
+    // forever (keeping pb_queue non-empty with stale resends) while producing no
+    // admittable content -- so the OLD queue-empty watchdog never tripped (q
+    // bounced 0<->8). MsSinceLastAdmit() is transport-agnostic (stamped on every
+    // UDP and TCP admit) and stays ~0 during normal battle AND CSS play, so a
+    // multi-second stall is unambiguous. Returns 0 before the first admit (no
+    // false-fire during connect/snapshot) and is skipped for offline replay
+    // (which has its own drain-exit below). Tunable via FM2K_SPEC_HOST_GONE_MS.
+    if (!s_offline_replay_env_active) {
+        static const uint32_t s_gone_ms = []{
+            const char* v = std::getenv("FM2K_SPEC_HOST_GONE_MS");
+            return (v && v[0]) ? (uint32_t)std::atoi(v) : 8000u;
+        }();
+        const uint32_t since_admit = SpectatorNode_MsSinceLastAdmit();
+        if (since_admit > s_gone_ms) {
+            static std::atomic<bool> s_gone_armed{false};
+            if (!s_gone_armed.exchange(true)) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "SpectatorNode: no new content for %ums (host gone or wedged)"
+                    " — exiting process", since_admit);
+                ExitProcess(0);
+            }
+        }
+    }
+
     // Jitter-buffer floor only applies to LIVE spec (waiting on host's next
     // batch). Offline replay has no upstream — the file is the entire input
     // stream — so the last ≤8 events (typically post-match INPUTs +
@@ -320,7 +368,10 @@ void RunSpectatorTick() {
         // playback — when playback ends, the process is done.
         //
         // Live spec falls through to RenderFrameWithSnapshot — peer might
-        // still send more events (next match) and we want to stay alive.
+        // still send more events (next match) and we want to stay alive. The
+        // host-gone/wedged case is handled by the no-forward-progress watchdog
+        // above (MsSinceLastAdmit), which fires even when the queue is NOT empty
+        // (the old queue-empty check here missed the BATTLE_END-spam wedge).
         if (s_offline_replay_env_active &&
             !SpectatorNode_IsPlayingBack()) {
             static std::atomic<bool> s_exit_armed{false};

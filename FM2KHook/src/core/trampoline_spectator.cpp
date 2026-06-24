@@ -150,6 +150,19 @@ static bool SpectatorSimOneFrame() {
                 s_battle_frame_at_entry = s_pop_count;
             }
             const uint32_t bf = s_pop_count - s_battle_frame_at_entry;
+            // [CINPUT] every-frame APPLIED input (bf-keyed) -- the harness's
+            // ground-truth desync detector. The spectator's applied input per
+            // battle frame is compared against the players' confirmed [CINPUT];
+            // a frame-misaligned input (the in-battle position-desync the rng/hp
+            // gate is blind to) shows up as a bf where the aligned inputs differ.
+            static const bool s_cinput = []{
+                const char* v = std::getenv("FM2K_CINPUT");
+                return v && v[0] == '1';
+            }();
+            if (s_cinput) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "[CINPUT] bf=%u p1=0x%03X p2=0x%03X", bf, p1, p2);
+            }
             // [SPEC-FP] every 30 battle frames (~3 lines/sec). Routed
             // through SDL_LOG_CATEGORY_CUSTOM so LogOutputFunction puts
             // it in quill's backtrace ring rather than always-on disk.

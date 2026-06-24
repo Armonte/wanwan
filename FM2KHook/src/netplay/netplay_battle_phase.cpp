@@ -318,6 +318,19 @@ bool Netplay_ProcessBattleInputPhase() {
                     g_pending_confirm[g_next_confirm_flush % PENDING_CONFIRM_RING];
                 if (pi.frame != g_next_confirm_flush) break;
                 SpectatorNode_OnFrameConfirmed(pi.p1, pi.p2);
+                // [CINPUT]: the CONFIRMED input per battle frame (post gekko
+                // confirmation -- not the speculative HOST-FP input). This is the
+                // ground truth the harness compares P2 and every spectator against;
+                // P1==P2 here proves the players are in lockstep. FM2K_CINPUT.
+                static const bool s_cinput = []{
+                    const char* v = std::getenv("FM2K_CINPUT");
+                    return v && v[0] == '1';
+                }();
+                if (s_cinput) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "[CINPUT] bf=%u p1=0x%03X p2=0x%03X",
+                        g_next_confirm_flush, pi.p1, pi.p2);
+                }
                 g_next_confirm_flush++;
             }
         }

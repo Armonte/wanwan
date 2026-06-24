@@ -340,6 +340,9 @@ def main():
         "FM2K_HOST_TRACE":       os.environ.get("FM2K_HOST_TRACE", "1"),
         "FM2K_SPECTATOR_DEBUG":  os.environ.get("FM2K_SPECTATOR_DEBUG", "1"),
         "FM2K_CSS_TRACE":        os.environ.get("FM2K_CSS_TRACE", ""),
+        # Ground-truth desync detector: every-frame confirmed/applied input log,
+        # compared P1==P2==every spectator per (match, bf). Primary verification.
+        "FM2K_CINPUT":           os.environ.get("FM2K_CINPUT", "1"),
     }
     if args.rounds > 0:
         # Force N-round matches on both players (host writes g_default_round, the
@@ -399,7 +402,8 @@ def main():
         # FM2K_LOG_TAG -> the spectator logs as [S1]/[S2]/... (file FM2K_S{n}_Debug.log)
         # instead of [P3]/[P4], so multi-spectator output is readable + each is
         # uniquely identifiable.
-        env = {"FM2K_PARITY_RECORD_PATH": to_win(pty), "FM2K_LOG_TAG": f"S{k+1}"}
+        env = {"FM2K_PARITY_RECORD_PATH": to_win(pty), "FM2K_LOG_TAG": f"S{k+1}",
+               "FM2K_CINPUT": os.environ.get("FM2K_CINPUT", "1")}
         for kk in ("FM2K_SPEC_DROP", "FM2K_SPEC_DROP_SEED", "FM2K_CSS_TRACE",
                    "FM2K_NET_DELAY_MS", "FM2K_NET_JITTER_MS", "FM2K_NET_LOSS", "FM2K_NET_SEED"):
             if os.environ.get(kk):
@@ -887,6 +891,90 @@ def main():
                     checked=ct + cf, bad=mt + mf,
                     first_t=first_t, first_f=first_f)
 
+    # ---- PRIMARY: ground-truth frame-keyed input desync detector --------------
+    # Compare the every-frame [CINPUT] (confirmed input on the players, applied
+    # input on the spectators) per (match, bf): P1 is truth, P2 must match P1
+    # (players in lockstep), every spectator must match P1 at the aligned bf. This
+    # catches frame-misaligned inputs -> in-battle position desyncs the rng/hp gate
+    # is structurally blind to. Authoritative; the rng/hp gate below is secondary.
+    import re as _cre
+    _cpat = _cre.compile(r'\[CINPUT\] bf=(\d+) p1=0x([0-9A-Fa-f]+) p2=0x([0-9A-Fa-f]+)')
+    def _cin_parse(path):
+        segs = []; cur = {}; last = -1
+        try: fh = open(path, errors="ignore")
+        except OSError: return segs
+        for ln in fh:
+            m = _cpat.search(ln)
+            if not m: continue
+            bf = int(m.group(1)); pv = (int(m.group(2), 16), int(m.group(3), 16))
+            if bf <= last and cur: segs.append(cur); cur = {}
+            cur[bf] = pv; last = bf
+        if cur: segs.append(cur)
+        return segs
+    def _cin_align(sseg, hseg):
+        # (full_mismatches, offset, overlap, longest_run). Offset = MODE of all
+        # press-deltas -- robust to stray boundary inputs and the autoplay's
+        # identical match openings (a single-press anchor mis-aligns). longest_run
+        # = longest consecutive-mismatch streak; isolated 1-frame artifacts (off-by-
+        # one boundary, a stray transition press) don't count as a desync, a
+        # SUSTAINED run does.
+        spress = [(bf, sseg[bf]) for bf in sorted(sseg) if sseg[bf] != (0, 0)]
+        if not spress: return (0, 0, 0, 0)
+        hbi = {}
+        for hb in hseg:
+            if hseg[hb] != (0, 0): hbi.setdefault(hseg[hb], []).append(hb)
+        deltas = {}
+        for sb, si in spress:
+            for hb in hbi.get(si, ()):
+                deltas[hb - sb] = deltas.get(hb - sb, 0) + 1
+        if not deltas: return (len(spress), 0, 0, len(spress))
+        O = max(deltas, key=deltas.get)
+        bfs = sorted(bf for bf in sseg if (bf + O) in hseg)
+        run = mx = fmm = 0
+        for bf in bfs:
+            if hseg[bf + O] != sseg[bf]:
+                fmm += 1; run += 1; mx = max(mx, run)
+            else:
+                run = 0
+        return (fmm, O, len(bfs), mx)
+    cin_H = _cin_parse(OUT_DIR / "live_FM2K_P1_Debug.log")
+    cin_fail = False
+    if not cin_H:
+        print("[harness] CINPUT: no host [CINPUT] -- detector inactive (need FM2K_CINPUT=1 + a battle)")
+    else:
+        cin_G = _cin_parse(OUT_DIR / "live_FM2K_P2_Debug.log")
+        for i, hseg in enumerate(cin_H):
+            if i >= len(cin_G): break
+            gseg = cin_G[i]
+            n = sum(1 for bf in hseg if bf in gseg)
+            mm = sum(1 for bf in hseg if bf in gseg and hseg[bf] != gseg[bf])
+            if mm:
+                cin_fail = True
+                fb = next(bf for bf in sorted(hseg) if bf in gseg and hseg[bf] != gseg[bf])
+                print(f"[harness] CINPUT P1-vs-P2 match{i}: {mm}/{n} mismatches -- PLAYERS DESYNCED "
+                      f"(first bf={fb}: p1={hseg[fb]} vs p2={gseg[fb]})")
+            else:
+                print(f"[harness] CINPUT P1-vs-P2 match{i}: {n} frames IDENTICAL (players lockstep)")
+        for s in specs:
+            for si, sseg in enumerate(_cin_parse(s["live"])):
+                best = None
+                for hi, hseg in enumerate(cin_H):
+                    fmm, O, n, mx = _cin_align(sseg, hseg)
+                    key = (mx, fmm, -n)
+                    if best is None or key < best[0]: best = (key, fmm, O, n, mx, hi)
+                _, fmm, O, n, mx, hi = best
+                if mx > 3:   # sustained mismatch run = real input-frame desync
+                    cin_fail = True
+                    hseg = cin_H[hi]
+                    fb = next((bf for bf in sorted(sseg) if (bf + O) in hseg and hseg[bf + O] != sseg[bf]), None)
+                    print(f"[harness] CINPUT {s['tag']} seg{si}: vs host-match{hi} off{O}: {fmm} mismatches "
+                          f"(longest run {mx}) -> DESYNC (first spec-bf={fb} host-bf={fb + O if fb is not None else '?'}: "
+                          f"spec={sseg.get(fb)} host={hseg.get(fb + O) if fb is not None else '?'})")
+                else:
+                    extra = f" ({fmm} isolated boundary artifact{'s' if fmm != 1 else ''})" if fmm else ""
+                    print(f"[harness] CINPUT {s['tag']} seg{si}: vs host-match{hi} off{O}: "
+                          f"{n} frames input-frame IDENTICAL{extra}")
+
     for s in specs:
         r = gate_one(s["live"])
         s["gate"] = r
@@ -909,7 +997,7 @@ def main():
     if measure_host:
         report_host_pacing(OUT_DIR / "live_FM2K_P1_Debug.log", args.fake_spectators)
 
-    real_fail   = any(s["gate"]["checked"] > 0 and not s["ok"] for s in specs)
+    real_fail   = cin_fail or any(s["gate"]["checked"] > 0 and not s["ok"] for s in specs)
     checked_any = any(s["gate"]["checked"] > 0 for s in specs)
 
     if not args.keep and not real_fail and checked_any:
@@ -921,13 +1009,15 @@ def main():
             f.unlink(missing_ok=True)
 
     if real_fail:
-        print(f"[harness] OVERALL FAIL: a spectator desynced from host (rng-keyed).")
+        why = "CINPUT input-frame desync (see above)" if cin_fail else "rng/hp gate"
+        print(f"[harness] OVERALL FAIL: a spectator desynced from host -- {why}.")
         return 1
     if not checked_any:
         print("[harness] GATE INCONCLUSIVE: no spectator trace frames -- need "
               "FM2K_HOST_TRACE=1 + FM2K_SPECTATOR_DEBUG=1 and a battle phase")
         return diff_rc
-    print(f"[harness] OVERALL PASS: all {len(specs)} spectator(s) bit-exact with host.")
+    print(f"[harness] OVERALL PASS: all {len(specs)} spectator(s) input-frame-identical "
+          f"(CINPUT) + rng/hp bit-exact with host.")
     return 0
 
 

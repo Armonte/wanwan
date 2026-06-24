@@ -49,36 +49,40 @@ LARGE_INTEGER g_perf_freq = {};
 LARGE_INTEGER g_frame_start = {};
 bool g_frame_timer_initialized = false;
 
-// Called at the END of each frame to apply frame advantage throttle.
-// The game already has its OWN 10ms frame limiter (timeGetTime in WinMain).
-// We only add EXTRA delay when ahead of remote to prevent rollback cascade.
-// Without this, we'd double-limit (game's 10ms + our 10ms = 20ms = 50fps).
+// Called at the END of each frame to apply frame advantage throttle (our
+// "frame lengthening", NetherRealm GDC doc 11). The game already has its OWN
+// 10ms frame limiter (timeGetTime in WinMain). We only add EXTRA delay when
+// ahead of remote, to slow our advance so the peer's late inputs can still
+// arrive in time -- trading a smooth slowdown for the jarring net-pause (the
+// hard gekko stall when we reach the prediction-window edge) or the rare
+// confirm-at-edge desync under heavy loss.
+//
+// PROGRESSIVE escalation toward the window edge (g_pred_window): the old brake
+// flat-lined at +2ms past 4 frames ahead, so a bad connection raced the last
+// ~12 frames to the hard stall at near-full speed. NetherRealm's lesson is to
+// stretch MORE the closer you get to the pause. Thresholds scale with the actual
+// prediction window so an FM2K_PREDICTION_WINDOW override stays proportionate.
+// A healthy connection holds < 2 frames ahead and is untouched (0-4 range is
+// byte-identical to the prior behavior -- no good-connection regression). The
+// max (+5ms -> ~67fps at 100fps) only bites a connection already at the edge,
+// where a playable slowdown beats a hard freeze.
 void HandleFrameTime(float frames_ahead) {
     // Only throttle when ahead -- the game handles base frame timing
     if (frames_ahead <= 0.5f) {
         return;  // Not ahead, let game's own limiter handle timing
     }
-
-    // Scale extra delay proportionally to advantage:
-    // 0.5-1.0 ahead: +0.16ms (1.6% of 10ms)
-    // 1.0-2.0 ahead: +0.5ms
-    // 2.0-4.0 ahead: +1.0ms
-    // 4.0+ ahead:    +2.0ms
+    const float W = (g_pred_window > 4) ? (float)g_pred_window : 16.0f;
     DWORD extra_ms;
-    if (frames_ahead > 4.0f) {
-        extra_ms = 2;
-    } else if (frames_ahead > 2.0f) {
-        extra_ms = 1;
-    } else if (frames_ahead > 1.0f) {
-        // Sleep(0) yields timeslice, ~0.5ms effective
-        Sleep(0);
-        return;
-    } else {
-        // 0.5-1.0: minimal throttle, just yield
+    if      (frames_ahead > 0.875f * W) extra_ms = 5;   // near the edge (~14/16)
+    else if (frames_ahead > 0.69f  * W) extra_ms = 4;   //              (~11/16)
+    else if (frames_ahead > 0.50f  * W) extra_ms = 3;   //              (~8/16)
+    else if (frames_ahead > 4.0f)       extra_ms = 2;   // unchanged from prior
+    else if (frames_ahead > 2.0f)       extra_ms = 1;   // unchanged from prior
+    else {
+        // 0.5-2.0: minimal throttle, just yield a timeslice (~0.5ms effective)
         Sleep(0);
         return;
     }
-
     Sleep(extra_ms);
 }
 

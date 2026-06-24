@@ -263,6 +263,25 @@ uint32_t Netplay_GetBattleEndSwapFrame() {
     return g_battle_end_swap_frame;
 }
 
+// Force-complete timeout (ms) for the battle-end barrier. Under packet loss the
+// BATTLE_END signal exchange can fail one-sidedly (your sends drop, or the peer
+// is gone) -- the resend loop below only runs while !remote_signaled, so once
+// YOU receive the peer's BATTLE_END you stop resending yours, and a peer that
+// never got yours spins here forever (the observed 75ms/5%-loss wedge: host
+// re-sent BATTLE_END every 50ms with f climbing past swap_frame). Once we've
+// REACHED the (deterministic, shared) swap_frame, the peer has reached the same
+// frame too -- only the SIGNAL was lost -- so force-completing the swap is safe;
+// both peers re-sync at the next (CSS) barrier. Default 8s; FM2K_BARRIER_FORCE_MS.
+static uint32_t BattleEndForceMs() {
+    static uint32_t c = 0;
+    if (c == 0) {
+        const char* v = std::getenv("FM2K_BARRIER_FORCE_MS");
+        c = (v && v[0]) ? (uint32_t)std::atoi(v) : 8000u;
+        if (c < 1000) c = 1000;  // floor: never force before a real loss recovery
+    }
+    return c;
+}
+
 void Netplay_PollBattleEndSync() {
     ControlChannel_Poll();
 
@@ -283,6 +302,20 @@ void Netplay_PollBattleEndSync() {
                 (now - wait_started) / 1000, g_battle_end_swap_frame,
                 g_end_epoch);
             last_wait_warn = now;
+        }
+        // Loss-tolerant force-complete: we've reached the deterministic swap
+        // frame and the peer hasn't acked our BATTLE_END for too long. Proceed
+        // to CSS instead of spinning forever -- the swap point is shared, so
+        // this can't desync; the next barrier resynchronizes coordination.
+        if (g_netplay_frame >= g_battle_end_swap_frame &&
+            (now - wait_started) > BattleEndForceMs()) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "BATTLE END SYNC: force-completing after %ums waiting on remote "
+                "(reached swap=%u at frame=%u, epoch=%u) — proceeding to CSS",
+                now - wait_started, g_battle_end_swap_frame, g_netplay_frame,
+                g_end_epoch);
+            g_remote_battle_end_signaled = true;  // Netplay_IsBattleEndSynced completes
+            wait_started = 0;
         }
     } else {
         wait_started = 0;

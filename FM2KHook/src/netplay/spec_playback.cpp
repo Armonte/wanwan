@@ -84,8 +84,25 @@ void ApplySessionEvent(const SessionEvent& ev) {
             break;
         case SessionEventType::CSS_ENTERED:
             g_state.pb_css_marker_seen = true;
+            // Apply the host's CSS start state (cursor + selected) BEFORE the
+            // replay walk begins. A snapshot-join spectator's own cursor/selected
+            // are stale at a rematch (it never walked CSS1), so without this the
+            // pure replay walks from the wrong start and locks the wrong char.
+            // Aligning the start makes the natural walk land on the host's char.
+            if constexpr (!FM2K::kIsFM95) {
+                *(int32_t*)0x424E50 = ev.u.css_entered.p1_cur_x;
+                *(int32_t*)0x424E54 = ev.u.css_entered.p1_cur_y;
+                *(int32_t*)0x424E58 = ev.u.css_entered.p2_cur_x;
+                *(int32_t*)0x424E5C = ev.u.css_entered.p2_cur_y;
+                *(int32_t*)0x470020 = ev.u.css_entered.p1_sel;
+                *(int32_t*)0x470024 = ev.u.css_entered.p2_sel;
+            }
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "SpectatorNode: applied CSS_ENTERED (seam mirror split)");
+                "SpectatorNode: applied CSS_ENTERED (seam split) -- synced host CSS "
+                "start cur=(%d,%d)/(%d,%d) sel=%d/%d",
+                (int)ev.u.css_entered.p1_cur_x, (int)ev.u.css_entered.p1_cur_y,
+                (int)ev.u.css_entered.p2_cur_x, (int)ev.u.css_entered.p2_cur_y,
+                (int)ev.u.css_entered.p1_sel, (int)ev.u.css_entered.p2_sel);
             break;
         case SessionEventType::SOUND_INIT:
             if (g_state.pb_boundary != State::PbBoundary::NONE) {

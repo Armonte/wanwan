@@ -151,7 +151,7 @@ void SendSessionEventsTo(const sockaddr_in& to,
                                                          ev.u.session_id);
                     break;
                 case SessionEventType::CSS_ENTERED:
-                    one_w = SessionEvent_EncodeCssEntered(one, sizeof(one));
+                    one_w = SessionEvent_EncodeCssEntered(one, sizeof(one), ev);
                     break;
             }
             if (one_w == 0) { ++ev_idx; continue; }   // unknown / unencodable

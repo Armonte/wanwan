@@ -298,6 +298,11 @@ struct SessionEvent {
         RoundEndPayload                      round_end;
         MatchEndPayload                      match_end;     // C7 (7 B)
         uint64_t                             session_id;    // C7 (8 B)
+        // Host's CSS start state, carried on CSS_ENTERED so a snapshot-join
+        // spectator can align its rematch-CSS replay walk to the host's (it
+        // never walked CSS1, so its own cursor/selected are stale). 6 B.
+        struct { int8_t p1_cur_x, p1_cur_y, p2_cur_x, p2_cur_y,
+                        p1_sel, p2_sel; }    css_entered;
         uint8_t                              raw[9];
     } u;
 };
@@ -313,7 +318,7 @@ size_t SessionEvent_EncodeInput            (uint8_t* out, size_t cap, uint16_t p
 size_t SessionEvent_EncodePinRng           (uint8_t* out, size_t cap, uint32_t seed);
 size_t SessionEvent_EncodeResetInputState  (uint8_t* out, size_t cap);
 size_t SessionEvent_EncodeSoundInit        (uint8_t* out, size_t cap);
-size_t SessionEvent_EncodeCssEntered       (uint8_t* out, size_t cap);
+size_t SessionEvent_EncodeCssEntered       (uint8_t* out, size_t cap, const SessionEvent& ev);
 size_t SessionEvent_EncodeMatchStart       (uint8_t* out, size_t cap,
                                             const uint8_t header[SESSION_EVENT_MATCH_HDR_SIZE]);
 size_t SessionEvent_EncodeMatchEnd         (uint8_t* out, size_t cap,

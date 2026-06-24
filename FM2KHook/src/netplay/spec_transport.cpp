@@ -215,7 +215,7 @@ void AppendEventToWire(std::vector<uint8_t>& out, const SessionEvent& ev,
             w = SessionEvent_EncodeSessionId(buf, sizeof(buf), ev.u.session_id);
             break;
         case SessionEventType::CSS_ENTERED:
-            w = SessionEvent_EncodeCssEntered(buf, sizeof(buf));
+            w = SessionEvent_EncodeCssEntered(buf, sizeof(buf), ev);
             break;
     }
     if (w > 0) out.insert(out.end(), buf, buf + w);

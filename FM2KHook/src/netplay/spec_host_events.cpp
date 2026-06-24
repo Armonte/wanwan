@@ -194,6 +194,18 @@ void SpectatorNode_AppendResetInputState() {
 void SpectatorNode_AppendCssEntered() {
     SessionEvent ev{};
     ev.type = SessionEventType::CSS_ENTERED;
+    // Capture the host's CSS start state (cursor x,y + selected, per player) so a
+    // snapshot-join spectator can align its rematch-CSS replay walk to the host's
+    // -- it never walked CSS1, so its own cursor/selected are stale and the pure
+    // replay otherwise lands on the wrong character. WW/FM2K addresses.
+    if constexpr (!FM2K::kIsFM95) {
+        ev.u.css_entered.p1_cur_x = (int8_t)*(int32_t*)0x424E50;
+        ev.u.css_entered.p1_cur_y = (int8_t)*(int32_t*)0x424E54;
+        ev.u.css_entered.p2_cur_x = (int8_t)*(int32_t*)0x424E58;
+        ev.u.css_entered.p2_cur_y = (int8_t)*(int32_t*)0x424E5C;
+        ev.u.css_entered.p1_sel   = (int8_t)*(int32_t*)0x470020;
+        ev.u.css_entered.p2_sel   = (int8_t)*(int32_t*)0x470024;
+    }
     AppendOpAndFlush(ev);
 }
 

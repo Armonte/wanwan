@@ -339,6 +339,7 @@ def main():
         # which mis-pairs the wrong match under multi-match autoplay.
         "FM2K_HOST_TRACE":       os.environ.get("FM2K_HOST_TRACE", "1"),
         "FM2K_SPECTATOR_DEBUG":  os.environ.get("FM2K_SPECTATOR_DEBUG", "1"),
+        "FM2K_CSS_TRACE":        os.environ.get("FM2K_CSS_TRACE", ""),
     }
     if args.rounds > 0:
         # Force N-round matches on both players (host writes g_default_round, the
@@ -396,7 +397,7 @@ def main():
         pty  = OUT_DIR / f"spec{k}_parity.pty"
         pty.unlink(missing_ok=True)
         env = {"FM2K_PARITY_RECORD_PATH": to_win(pty)}
-        for kk in ("FM2K_SPEC_DROP", "FM2K_SPEC_DROP_SEED",
+        for kk in ("FM2K_SPEC_DROP", "FM2K_SPEC_DROP_SEED", "FM2K_CSS_TRACE",
                    "FM2K_NET_DELAY_MS", "FM2K_NET_JITTER_MS", "FM2K_NET_LOSS", "FM2K_NET_SEED"):
             if os.environ.get(kk):
                 env[kk] = os.environ[kk]

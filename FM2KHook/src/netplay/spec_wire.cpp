@@ -79,7 +79,7 @@ size_t WirePayloadSize(SessionEventType t) {
         case SessionEventType::ROUND_START:       return sizeof(RoundStartPayload);  // 7
         case SessionEventType::ROUND_END:         return sizeof(RoundEndPayload);    // 9
         case SessionEventType::SESSION_ID:        return 8;   // u64
-        case SessionEventType::CSS_ENTERED:       return 0;
+        case SessionEventType::CSS_ENTERED:       return 6;   // cursor xy x2 + sel x2
     }
     return SIZE_MAX;  // unknown tag — caller treats as malformed
 }
@@ -120,10 +120,17 @@ size_t SessionEvent_EncodeSoundInit(uint8_t* out, size_t cap) {
     return 1;
 }
 
-size_t SessionEvent_EncodeCssEntered(uint8_t* out, size_t cap) {
-    if (cap < 1) return 0;
+size_t SessionEvent_EncodeCssEntered(uint8_t* out, size_t cap, const SessionEvent& ev) {
+    constexpr size_t need = 1 + 6;
+    if (cap < need) return 0;
     out[0] = static_cast<uint8_t>(SessionEventType::CSS_ENTERED);
-    return 1;
+    out[1] = static_cast<uint8_t>(ev.u.css_entered.p1_cur_x);
+    out[2] = static_cast<uint8_t>(ev.u.css_entered.p1_cur_y);
+    out[3] = static_cast<uint8_t>(ev.u.css_entered.p2_cur_x);
+    out[4] = static_cast<uint8_t>(ev.u.css_entered.p2_cur_y);
+    out[5] = static_cast<uint8_t>(ev.u.css_entered.p1_sel);
+    out[6] = static_cast<uint8_t>(ev.u.css_entered.p2_sel);
+    return need;
 }
 
 size_t SessionEvent_EncodeMatchStart(uint8_t* out, size_t cap,
@@ -220,7 +227,14 @@ size_t SessionEvent_Decode(const uint8_t* in, size_t in_len,
                 break;
             case SessionEventType::RESET_INPUT_STATE:
             case SessionEventType::SOUND_INIT:
+                break;
             case SessionEventType::CSS_ENTERED:
+                out_event->u.css_entered.p1_cur_x = (int8_t)in[1];
+                out_event->u.css_entered.p1_cur_y = (int8_t)in[2];
+                out_event->u.css_entered.p2_cur_x = (int8_t)in[3];
+                out_event->u.css_entered.p2_cur_y = (int8_t)in[4];
+                out_event->u.css_entered.p1_sel   = (int8_t)in[5];
+                out_event->u.css_entered.p2_sel   = (int8_t)in[6];
                 break;
         }
     }

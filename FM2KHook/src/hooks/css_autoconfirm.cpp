@@ -256,6 +256,27 @@ char __cdecl Hook_GameStateManager() {
         }
     }
 
+    // FM2K_CSS_TRACE: log the CSS grid (selected chars) on change, on EVERY peer
+    // (host + spectator), to compare rematch-CSS char alignment. Diagnostic only.
+    {
+        static int s_css_trace = []{
+            const char* v = std::getenv("FM2K_CSS_TRACE");
+            return (v && v[0]) ? 1 : 0;
+        }();
+        if (s_css_trace) {
+            const uint32_t gm = *(uint32_t*)ADDR_GAME_MODE;
+            const int s0 = *(int*)ADDR_SELECTED_CHAR;
+            const int s1 = *((int*)ADDR_SELECTED_CHAR + 1);
+            static uint32_t lgm = 0xFFFFFFFFu; static int ls0 = -99, ls1 = -99;
+            if (gm != lgm || s0 != ls0 || s1 != ls1) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "CSS-TRACE: mode=%u sel0=%d sel1=%d active=%d",
+                    gm, s0, s1, (int)g_active.load(std::memory_order_relaxed));
+                lgm = gm; ls0 = s0; ls1 = s1;
+            }
+        }
+    }
+
     if (g_active.load(std::memory_order_relaxed)) {
         const uint32_t game_mode = *(uint32_t*)ADDR_GAME_MODE;
         if (game_mode == 2000u) {

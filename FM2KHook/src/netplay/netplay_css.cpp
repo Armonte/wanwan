@@ -70,7 +70,10 @@ bool Netplay_ProcessCSS() {
         ControlChannel_SendBattleReady();
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Entered, signaling remote...");
         // Phase F seam mirror: mark the seam stream so viewers know where
-        // the results-screen inputs end and the CSS dance begins.
+        // the results-screen inputs end and the CSS dance begins. The marker
+        // captures the host's CSS start state (cursor + selected) so a
+        // snapshot-join spectator -- which carries stale CSS state into a rematch
+        // (it never walked CSS1) -- can align its replay walk to the host's.
         SpectatorNode_AppendCssEntered();
     }
 

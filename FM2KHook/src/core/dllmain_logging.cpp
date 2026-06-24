@@ -124,11 +124,23 @@ static void SDLCALL LogOutputFunction(void* userdata, int category, SDL_LogPrior
     fm2k::pii::ScrubInto(message ? message : "",
                          scrubbed_msg, sizeof(scrubbed_msg));
 
-    // Format: [HH:MM:SS.mmm] [PRIORITY] message
+    // Format: [HH:MM:SS.mmm] [TAG] [PRIORITY] message. FM2K_LOG_TAG overrides the
+    // default "P<index+1>" tag -- e.g. a spectator launches with FM2K_LOG_TAG=S1
+    // so its log reads [S1] not [P3], making multi-spectator output legible.
+    static const char* s_log_tag = []() -> const char* {
+        const char* t = std::getenv("FM2K_LOG_TAG");
+        return (t && t[0]) ? t : nullptr;
+    }();
     char formatted[2048];
-    snprintf(formatted, sizeof(formatted), "[%02d:%02d:%02d.%03d] [P%d] [%s] %s\n",
-             st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
-             g_player_index + 1, priority_str, scrubbed_msg);
+    if (s_log_tag) {
+        snprintf(formatted, sizeof(formatted), "[%02d:%02d:%02d.%03d] [%s] [%s] %s\n",
+                 st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                 s_log_tag, priority_str, scrubbed_msg);
+    } else {
+        snprintf(formatted, sizeof(formatted), "[%02d:%02d:%02d.%03d] [P%d] [%s] %s\n",
+                 st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+                 g_player_index + 1, priority_str, scrubbed_msg);
+    }
 
     // File-only by default — fputs to stdout is synchronous and lags the
     // sim under heavy log volume (SoundRollback / ROLLBACK stats /
@@ -214,7 +226,11 @@ void InitFileLogging() {
     fm2k::pii::Init();
 
     char base_name[64];
-    snprintf(base_name, sizeof(base_name), "FM2K_P%d_Debug.log", g_player_index + 1);
+    if (const char* tag = std::getenv("FM2K_LOG_TAG"); tag && tag[0]) {
+        snprintf(base_name, sizeof(base_name), "FM2K_%s_Debug.log", tag);
+    } else {
+        snprintf(base_name, sizeof(base_name), "FM2K_P%d_Debug.log", g_player_index + 1);
+    }
     char filename[MAX_PATH];
     if (!Fm2k_BuildLogPath(filename, sizeof(filename), base_name)) {
         // Fallback to cwd if the helper failed (extremely unlikely — only

@@ -396,7 +396,10 @@ def main():
         port = SPEC_PORT + k                      # 7002, 7003, ...
         pty  = OUT_DIR / f"spec{k}_parity.pty"
         pty.unlink(missing_ok=True)
-        env = {"FM2K_PARITY_RECORD_PATH": to_win(pty)}
+        # FM2K_LOG_TAG -> the spectator logs as [S1]/[S2]/... (file FM2K_S{n}_Debug.log)
+        # instead of [P3]/[P4], so multi-spectator output is readable + each is
+        # uniquely identifiable.
+        env = {"FM2K_PARITY_RECORD_PATH": to_win(pty), "FM2K_LOG_TAG": f"S{k+1}"}
         for kk in ("FM2K_SPEC_DROP", "FM2K_SPEC_DROP_SEED", "FM2K_CSS_TRACE",
                    "FM2K_NET_DELAY_MS", "FM2K_NET_JITTER_MS", "FM2K_NET_LOSS", "FM2K_NET_SEED"):
             if os.environ.get(kk):
@@ -409,9 +412,10 @@ def main():
                  "--spectate", f"127.0.0.1:{P1_PORT}",
                  "--port", str(port), "--player-index", str(idx)]
         specs.append({"k": k, "phase": phase, "idx": idx, "port": port,
+                      "tag": f"S{k+1}",
                       "pty": pty, "env": env, "args": sargs,
-                      "log": f"FM2K_P{idx+1}_Debug.log",
-                      "live": OUT_DIR / f"live_FM2K_P{idx+1}_Debug.log",
+                      "log": f"FM2K_S{k+1}_Debug.log",
+                      "live": OUT_DIR / f"live_FM2K_S{k+1}_Debug.log",
                       "rc": None})
     spec_pty = specs[0]["pty"]   # alias for the single-spec parity/replay code below
 
@@ -425,7 +429,7 @@ def main():
                "--port", str(P2_PORT)]
 
     print("[harness] launching P1 (host) + P2 (join); spectators: "
-          + ", ".join(f"P{s['idx']+1}:{s['phase']}@{s['port']}" for s in specs))
+          + ", ".join(f"{s['tag']}:{s['phase']}@{s['port']}" for s in specs))
     rcs = [None, None]   # P1, P2
     t1 = threading.Thread(target=lambda: rcs.__setitem__(0,
         launch("P1", p1_args, p1_env, OUT_DIR / "p1.log",
@@ -452,7 +456,7 @@ def main():
         return done
 
     def launch_spec(s):
-        s["rc"] = launch(f"SPEC{s['k']}", s["args"], s["env"],
+        s["rc"] = launch(s["tag"], s["args"], s["env"],
                          OUT_DIR / f"spec{s['k']}.log",
                          args.record_timeout + 60, make_spec_done(s))
 
@@ -495,36 +499,41 @@ def main():
     t2.start()
 
     spec_threads = []
-    # css-phase spectators dial in during the host's CSS (wall-clock delay).
-    time.sleep(args.spec_join_delay)
+    host_live = game_dir / "logs" / "FM2K_P1_Debug.log"
     # Fake spectators start loading the host now too (their own schedules then
     # stagger joins + churn through CSS into battle).
     if args.fake_spectators > 0:
         spawn_fakes()
-    for s in specs:
-        if s["phase"] == "css":
-            t = threading.Thread(target=launch_spec, args=(s,)); t.start()
-            spec_threads.append(t)
-            print(f"[harness] SPEC{s['k']} (css, P{s['idx']+1}) joining now")
-    # battle-phase spectators dial in AFTER the host's battle session is created
-    # = a true mid-battle CURRENT_MATCH snapshot join.
-    battle_specs = [s for s in specs if s["phase"] == "battle"]
-    if battle_specs:
-        host_live = game_dir / "logs" / "FM2K_P1_Debug.log"
-        marker = "GekkoNet battle session created"
+
+    def count_marker(marker):
+        try:
+            return open(host_live, errors="ignore").read().count(marker)
+        except OSError:
+            return 0
+
+    def schedule_spec(s):
+        # phase = "css[N]" or "battle[N]": dial in during the host's Nth CSS / Nth
+        # battle (default N=1). css[N] -> a FULL_SESSION/seam join while the host is
+        # in its Nth char-select; battle[N] -> a CURRENT_MATCH snapshot join mid the
+        # host's Nth battle. Keyed off host-log markers so it tracks the real phase
+        # under loss/jitter rather than a fixed wall clock.
+        phase = s["phase"]
+        kind = "css" if phase.startswith("css") else "battle"
+        suffix = phase[len(kind):]
+        n = int(suffix) if suffix.isdigit() else 1
+        marker = "CSS: Entered" if kind == "css" else "GekkoNet battle session created"
         deadline = time.time() + args.record_timeout
-        while time.time() < deadline:
-            try:
-                if marker in open(host_live, errors="ignore").read():
-                    break
-            except OSError:
-                pass
-            time.sleep(0.3)
-        time.sleep(args.battle_join_offset)
-        for s in battle_specs:
-            t = threading.Thread(target=launch_spec, args=(s,)); t.start()
-            spec_threads.append(t)
-            print(f"[harness] SPEC{s['k']} (battle, P{s['idx']+1}) joining mid-battle now")
+        while time.time() < deadline and count_marker(marker) < n:
+            time.sleep(0.25)
+        # Settle: a css spec waits spec_join_delay into the CSS; a battle spec waits
+        # battle_join_offset so the Nth battle session exists before the snapshot.
+        time.sleep(args.spec_join_delay if kind == "css" else args.battle_join_offset)
+        print(f"[harness] {s['tag']} ({phase}) dialing in -- host reached {kind} #{n}")
+        launch_spec(s)
+
+    for s in specs:
+        t = threading.Thread(target=schedule_spec, args=(s,)); t.start()
+        spec_threads.append(t)
 
     t1.join(); t2.join()
     for t in spec_threads:
@@ -542,7 +551,7 @@ def main():
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     kill_strays()
     print(f"[harness] rcs: P1={rcs[0]} P2={rcs[1]} "
-          + " ".join(f"SPEC{s['k']}={s['rc']}" for s in specs))
+          + " ".join(f"{s['tag']}={s['rc']}" for s in specs))
 
     # Preserve the live-phase debug logs IMMEDIATELY -- before any
     # assertion can bail (a coverage FAIL used to skip preservation and
@@ -560,8 +569,8 @@ def main():
         return 1
     if not spec_pty.exists():
         print("[harness] FAIL: spectator parity missing -- spectator never "
-              "joined or never captured (check .spec_selftest/spec.log and "
-              "logs/FM2K_P3_Debug.log)")
+              f"joined or never captured (check .spec_selftest/spec0.log and "
+              f"logs/{specs[0]['log']})")
         return 1
 
     host_n, spec_n = pty_snapshots(p1_pty), pty_snapshots(spec_pty)
@@ -666,7 +675,7 @@ def main():
         # consumed the once-per-battle init edge before the ops arrived --
         # match 2 ran with an unpinned RNG and nothing failed loudly
         # because the parity gate only covers match 1.
-        spec_log = OUT_DIR / "live_FM2K_P3_Debug.log"
+        spec_log = specs[0]["live"]
         if spec_log.exists():
             txt = spec_log.read_text(errors="replace")
             pins = txt.count("applied deferred PIN_RNG")
@@ -883,7 +892,7 @@ def main():
         s["gate"] = r
         s["ok"] = r["checked"] > 0 and r["bad"] == 0
         verdict = "PASS" if s["ok"] else ("INCONCLUSIVE" if r["checked"] == 0 else "FAIL")
-        print(f"[harness] GATE SPEC{s['k']} ({s['phase']}, P{s['idx']+1}): "
+        print(f"[harness] GATE {s['tag']} ({s['phase']}): "
               f"checked {r['checked']} (TRACE {r['ct']} rng + FP {r['cf']} hp/scripts); "
               f"{r['mt']} TRACE-rng + {r['mf']} FP-state not-in-host "
               f"(FP raw {r['mf_total']}, max-run {r['mx']}, tail {r['trailing']}) -> {verdict}")

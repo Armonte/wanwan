@@ -37,6 +37,14 @@ public:
     LauncherState GetState() const { return current_state_; }
     bool IsRunning() const { return running_; }
     void SetRunning(bool running) { running_ = running; }
+    // CLI direct-mode (--host/--connect/--spectate/--replay): there is no
+    // interactive lobby to return to, so when the hosted game process exits
+    // (clean end, desync-terminate, crash, or the spectator host-gone
+    // watchdog) the launcher must QUIT rather than zombie at the selection
+    // screen waiting for input that never comes (the "launcher didnt kill"
+    // stuck-window under the test harness). Default false = interactive lobby
+    // returns to selection on game end.
+    void SetExitOnGameEnd(bool v) { exit_on_game_end_ = v; }
 
     // True when the UI has a live animation (background-discovery spinner or an
     // open input-binder window showing live pad state) that must keep painting
@@ -106,6 +114,9 @@ private:
     NetworkConfig network_config_;
     LauncherState current_state_;
     bool running_;
+    // See SetExitOnGameEnd: quit instead of returning to the lobby when the
+    // hosted game process terminates (CLI direct-mode / harness).
+    bool exit_on_game_end_ = false;
     // True when SDL_SetRenderVSync(renderer_, 1) reported success AND
     // SDL_GetRenderVSync reads back enabled. When false (e.g. RDP /
     // software fallback / driver refused), SDL_AppIterate falls back to

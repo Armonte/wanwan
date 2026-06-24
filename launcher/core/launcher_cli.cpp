@@ -341,6 +341,7 @@ SDL_AppResult LauncherCli_ApplyLaunchMode(FM2KLauncher* launcher, LauncherCliArg
             std::cerr << "Replay: launch failed\n";
             return SDL_APP_FAILURE;
         }
+        g_launcher->SetExitOnGameEnd(true);  // no lobby: quit when replay ends
         std::cout << "Replay mode: playing " << replay_file_path
                   << " (game=" << game_exe_path << ")\n";
         // Fall through to the launcher's headless main loop so the
@@ -432,6 +433,7 @@ SDL_AppResult LauncherCli_ApplyLaunchMode(FM2KLauncher* launcher, LauncherCliArg
         g_launcher->SetSelectedGame(game_to_launch);
         g_launcher->StartStressSession();
         g_launcher->SetState(LauncherState::InGame);
+        g_launcher->SetExitOnGameEnd(true);  // no lobby: quit when game ends
         std::cout << "Stress mode: GekkoStressSession started for "
                   << game_to_launch.exe_path
                   << " — watch logs/FM2K_P1_Debug.log\n";
@@ -488,6 +490,7 @@ SDL_AppResult LauncherCli_ApplyLaunchMode(FM2KLauncher* launcher, LauncherCliArg
         g_launcher->SetSelectedGame(games[pick]);
         g_launcher->StartOfflineSession();
         g_launcher->SetState(LauncherState::InGame);
+        g_launcher->SetExitOnGameEnd(true);  // no lobby: quit when game ends
         std::cout << "Offline mode: native session started for "
                   << games[pick].exe_path
                   << " — watch logs/FM2K_P1_Debug.log [OFFLINE-SECT]/[FRAMETIME]\n";
@@ -579,6 +582,10 @@ SDL_AppResult LauncherCli_ApplyLaunchMode(FM2KLauncher* launcher, LauncherCliArg
         }
 
         g_launcher->SetState(LauncherState::InGame);
+        // Direct CLI launch (--host/--connect/--spectate): no interactive lobby
+        // to return to, so quit the launcher when the hosted game exits instead
+        // of zombie-ing the window (the harness "launcher didnt kill" hang).
+        g_launcher->SetExitOnGameEnd(true);
     }
 
     return SDL_APP_CONTINUE;

@@ -308,11 +308,31 @@ void FM2KLauncher::Update(float delta_time SDL_UNUSED) {
         if (ui_) ui_->SetSpecRelayStatus(st);
     }
 
-    // Check for game termination
-    if (game_instance_ && !game_instance_->IsRunning()) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Game process has terminated.");
-        // Game has ended, stop the session and return to selection
-        StopSession();
+    // Check for game termination. Players run under game_instance_; the
+    // --spectate / --replay paths run under spectator_instance_ -- the original
+    // check only watched game_instance_, so a spectator whose game exited (the
+    // host-gone watchdog, a desync-terminate, or a crash) left the LAUNCHER
+    // zombie-ing forever (the "launcher didnt kill" stuck window the harness
+    // then had to timeout-kill at 300s). Watch BOTH.
+    const bool game_gone = game_instance_ && !game_instance_->IsRunning();
+    const bool spec_gone = spectator_instance_ && !spectator_instance_->IsRunning();
+    if (game_gone || spec_gone) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "Hosted %s process has terminated.", game_gone ? "game" : "spectator");
+        if (game_gone) {
+            StopSession();              // player-session teardown -> GameSelection
+        } else {
+            spectator_instance_.reset();  // drop the dead spectator/replay handle
+            SetState(LauncherState::GameSelection);
+        }
+        // CLI direct-mode (harness / --host / --connect / --spectate / --replay):
+        // there is no lobby to return to, so the hosted process exiting means
+        // we're done. Quit instead of zombie-ing the window.
+        if (exit_on_game_end_) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "Direct-mode: hosted game ended — exiting launcher.");
+            running_ = false;
+        }
     }
 }
 

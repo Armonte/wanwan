@@ -941,10 +941,34 @@ bool SpectatorNode_PopFrameInputs(uint16_t* p1_input, uint16_t* p2_input) {
     const SessionEvent ev = g_state.pb_queue.front();
     g_state.pb_queue.erase(g_state.pb_queue.begin());
     g_state.pb_started    = true;
-    g_state.pb_current_p1 = ev.u.input.p1;
-    g_state.pb_current_p2 = ev.u.input.p2;
-    if (p1_input) *p1_input = ev.u.input.p1;
-    if (p2_input) *p2_input = ev.u.input.p2;
+    uint16_t fed_p1 = ev.u.input.p1;
+    uint16_t fed_p2 = ev.u.input.p2;
+    // Strip the carried title-skip confirm bit from the first replayed CSS
+    // frames. The host's recorded CSS frame 0 carries the title->CSS confirm
+    // edge (the 0x010 we feed to skip the title); replayed here with our cursor
+    // parked on char 0 it makes game_state_manager auto-confirm Ryu/Ryu (spawns
+    // the confirmed full-sprite, subtype 81) BEFORE the players ever confirmed.
+    // The css_autoconfirm seam-hold mask is meant to catch this but misses the
+    // exact mirror-start frame (confirm fires with in_changes=0x10 unmasked).
+    // The host's REAL confirms come many seconds later (after navigation), so a
+    // short strip window at CSS entry is safe and never eats a real lock-in.
+    {
+        static uint32_t s_mirror_css_strip = 0;
+        const uint32_t mode = *(uint32_t*)FM2K::ADDR_GAME_MODE;
+        if (mode == 2000u) {
+            if (s_mirror_css_strip < 30u) {
+                s_mirror_css_strip++;
+                fed_p1 &= ~0x3F0u;   // strip confirm/color bits
+                fed_p2 &= ~0x3F0u;
+            }
+        } else {
+            s_mirror_css_strip = 0;  // re-arm per CSS phase (rematch)
+        }
+    }
+    g_state.pb_current_p1 = fed_p1;
+    g_state.pb_current_p2 = fed_p2;
+    if (p1_input) *p1_input = fed_p1;
+    if (p2_input) *p2_input = fed_p2;
     return true;
 }
 

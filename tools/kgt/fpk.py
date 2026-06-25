@@ -80,11 +80,14 @@ def wav_to_opus(wav: bytes, bitrate_k: int) -> bytes:
         wp, op = os.path.join(td, "i.wav"), os.path.join(td, "o.opus")
         with open(wp, "wb") as f:
             f.write(wav)
+        # timeout= is load-bearing: a pathological stream can make libopus spin forever. On timeout
+        # subprocess.run raises TimeoutExpired AND kills the ffmpeg child (no orphan zombies), which
+        # callers (cc_pool.encode_audio) catch -> raw fallback. Legit encodes finish in well under this.
         subprocess.run(
             ["ffmpeg", "-y", "-loglevel", "error", "-i", wp,
              "-c:a", "libopus", "-b:a", f"{bitrate_k}k", "-vbr", "on",
              "-application", "audio", op],
-            check=True)
+            check=True, timeout=240)
         with open(op, "rb") as f:
             return f.read()
 
@@ -97,7 +100,7 @@ def opus_to_wav(opus: bytes, sr: int, ch: int) -> bytes:
         subprocess.run(
             ["ffmpeg", "-y", "-loglevel", "error", "-i", op,
              "-ar", str(sr), "-ac", str(ch), "-f", "wav", wp],
-            check=True)
+            check=True, timeout=240)
         with open(wp, "rb") as f:
             return f.read()
 

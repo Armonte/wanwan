@@ -498,7 +498,26 @@ void SpectatorNode_ApplyPendingSnapshot() {
     g_state.pb_boundary         = State::PbBoundary::NONE;
     g_state.pending_reset_input = false;
     g_state.pending_sound_init  = false;
-    CssAutoConfirm_SetSeamHold(false);
+    // A CSS-landing snapshot (first join while the host is NAVIGATING char
+    // select) drops us into mode 2000 with the parked cursor at char 0. If we
+    // clear the confirm mask here, the engine's CSS edge detector reads the
+    // first replayed input's carried confirm bit (0x10..0x200) as a RISING
+    // confirm for both players at char 0 -> the "Ryu/Ryu 0/0 confirm flash then
+    // un-confirm" on first join. The natboot mask (PopFrameInputs) only arms on
+    // the viewer's FIRST mode>=2000, which a boot-then-snapshot viewer already
+    // passed, so it never fires here. Re-arm the short confirm mask (same 10-pop
+    // window the lean-seam path uses; auto-released by the pb_post_css_mask_pops
+    // countdown) so that first edge is eaten. A battle-landing snapshot has no
+    // CSS edge to eat -- clear any stale seam as before.
+    if (game_mode >= 2000u && game_mode < 3000u) {
+        g_state.pb_post_css_mask_pops = 10;
+        CssAutoConfirm_SetSeamHold(true, 0xFF, 0xFF);  // mask confirm bits only
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "SpectatorNode: CSS-landing snapshot -- re-armed confirm mask "
+            "(10 pops) to eat the first-input rising-confirm (0/0 flash fix)");
+    } else {
+        CssAutoConfirm_SetSeamHold(false);
+    }
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
         "SpectatorNode: SNAPSHOT applied (match=%u, %zu bytes) — "

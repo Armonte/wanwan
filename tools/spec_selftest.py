@@ -408,6 +408,7 @@ def main():
                # no graceful SESSION_END) instead of spinning at [SPEC-Q] q=0.
                "FM2K_SPEC_HOST_GONE_MS": os.environ.get("FM2K_SPEC_HOST_GONE_MS", "5000")}
         for kk in ("FM2K_SPEC_DROP", "FM2K_SPEC_DROP_SEED", "FM2K_CSS_TRACE",
+                   "FM2K_SPECTATOR_DEBUG",
                    "FM2K_NET_DELAY_MS", "FM2K_NET_JITTER_MS", "FM2K_NET_LOSS", "FM2K_NET_SEED"):
             if os.environ.get(kk):
                 env[kk] = os.environ[kk]

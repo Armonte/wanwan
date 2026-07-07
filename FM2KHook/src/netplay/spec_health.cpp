@@ -107,9 +107,67 @@ void SpectatorNode_TickHealth() {
             }
         }
 
-        // (Removed: periodic INPUT_REQUEST poll — under TCP the kernel
-        // handles retransmit transparently, and there's no host-side
-        // RespondToInputRequest anymore.)
+        // Surgical gap-fill pull. The live stream is flowing but our
+        // admission cursor (next_expected_frame) has stalled behind
+        // buffered future batches (pb_reorder) whose lowest start_frame is
+        // AHEAD of the cursor -- a gap the drain loop can never bridge on
+        // its own. This is the mid-match snapshot-join gap: snapshot+
+        // backfill ride TCP, live rides RC, and under loss the RC endpoint
+        // comes up some frames after the bind, so [backfill-end..RC-live-
+        // start) arrives over neither channel. Pull exactly that range over
+        // the reliable conn via SPEC_JOIN_RESUME. This fires in <1s, well
+        // before the 15s silence-failover that used to tear the whole
+        // connection down and loop on a full re-snapshot under sustained
+        // loss. Idempotent: the host re-ships [cursor..live) and the
+        // viewer's positional dedup drops the RC overlap.
+        // Two failure shapes, both healed by the same reliable pull:
+        //   VARIANT 1 -- buffered future batches sit AHEAD of a stalled
+        //     cursor (the backfill-end..RC-live-start gap: some live
+        //     batches did arrive, keyed past next_expected, but the bridge
+        //     never did). pb_reorder is non-empty.
+        //   VARIANT 2 -- a mid-match snapshot applied in an ACTIVE battle
+        //     but the RC live stream delivered NOTHING at all (pb_reorder
+        //     EMPTY, sim starved, cursor frozen at the anchor). Nothing is
+        //     buffered to signal the gap, so variant-1 detection is blind.
+        // Firing when actually caught-up is a host-side no-op
+        // (SendSessionBackfillFromFrame ships nothing at-or-after the live
+        // edge), so an over-eager pull costs one ACK + empty backfill.
+        const bool gap_ahead = !g_state.pb_reorder.empty() &&
+            g_state.pb_reorder.begin()->first > g_state.next_expected_frame;
+        bool starved_battle = false;
+        if (!gap_ahead && g_state.playing_back &&
+            g_state.pb_snapshot_applied_once &&
+            SpectatorNode_PendingFrameCount() == 0) {
+            // Gate on battle mode: a starved queue at a match boundary /
+            // CSS is NORMAL and must not pull (the pull's JOIN_ACK carries
+            // the host's CURRENT kind -- a between-matches kind would abort
+            // the viewer's BTB). game_mode 3000 == in battle, where a live
+            // stream should always be feeding us.
+            const uint32_t gm = *(const uint32_t*)FM2K::ADDR_GAME_MODE;
+            starved_battle = (gm == 3000);
+        }
+        if (g_state.have_frame_baseline && (gap_ahead || starved_battle)) {
+            if (g_state.next_expected_frame != g_state.gap_fill_stall_frame) {
+                // Cursor moved (or first observation) -- (re)start the timer.
+                g_state.gap_fill_stall_frame    = g_state.next_expected_frame;
+                g_state.gap_fill_stall_since_ms = now;
+            } else if (now - g_state.gap_fill_stall_since_ms >=
+                           SPECTATOR_GAP_FILL_STALL_MS &&
+                       now - g_state.last_gap_fill_send_ms >=
+                           SPECTATOR_GAP_FILL_THROTTLE_MS) {
+                g_state.last_gap_fill_send_ms = now;
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "SpectatorNode: gap-fill pull -- cursor stalled at "
+                    "INPUT-frame=%u (%s, %zu buffered); requesting reliable "
+                    "re-ship",
+                    g_state.next_expected_frame,
+                    gap_ahead ? "gap ahead" : "live starved",
+                    g_state.pb_reorder.size());
+                SpectatorNode_RequestGapFill();
+            }
+        } else {
+            g_state.gap_fill_stall_frame = 0xFFFFFFFFu;  // no gap / not battle
+        }
 
         // Silence-based failover. TCP receive activity is the only
         // liveness signal — the bulk stream lives entirely there.
@@ -184,7 +242,23 @@ void SpectatorNode_TickHealth() {
     }
 
     // Reconnect path: not subscribed, but we have a root we can fall
-    // back to. Throttle so we don't spam JOIN_REQ.
+    // back to. Throttle with EXPONENTIAL BACKOFF so a genuinely-gone host
+    // isn't stormed with a fixed-rate JOIN_REQ every 500ms for the whole
+    // host-gone window (observed ~16 retries to a dead host before the
+    // watchdog fired). A real blip recovers on the first quick retry --
+    // recent admit resets the counter, so backoff only grows while the
+    // host stays unreachable.
+    if (SpectatorNode_MsSinceLastAdmit() > 0 &&
+        SpectatorNode_MsSinceLastAdmit() < 1000) {
+        g_state.reconnect_fail_count = 0;       // live again -> reset backoff
+    }
+    const uint32_t recon_base =
+        g_state.tcp_rejoin_pending ? 500u : (uint32_t)SPECTATOR_RECONNECT_BACKOFF_MS;
+    const uint32_t recon_shift =
+        g_state.reconnect_fail_count > 4 ? 4u : g_state.reconnect_fail_count;
+    uint32_t recon_interval = recon_base << recon_shift;
+    if (recon_interval > SPECTATOR_RECONNECT_MAX_BACKOFF_MS)
+        recon_interval = (uint32_t)SPECTATOR_RECONNECT_MAX_BACKOFF_MS;
     if (!g_state.session_ended &&            // host said SESSION_END: stop, no storm
         (!g_state.subscribed_upstream || g_state.tcp_rejoin_pending) &&
         g_state.root_addr.sin_port != 0 &&
@@ -193,15 +267,17 @@ void SpectatorNode_TickHealth() {
         // our addr, so a retry during an in-flight handshake/backfill
         // kills its own transfer ("End of stream" loop, 2026-06-11).
         !SpectatorTCP::IsUpstreamConnected() &&
-        now - g_state.last_reconnect_attempt_ms >=
-            (g_state.tcp_rejoin_pending ? 500u : SPECTATOR_RECONNECT_BACKOFF_MS))
+        now - g_state.last_reconnect_attempt_ms >= recon_interval)
     {
         char buf[48] = {}; FormatAddr(g_state.root_addr, buf, sizeof(buf));
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: reconnecting to root %s (mode=%s)", buf,
+                    "SpectatorNode: reconnecting to root %s (mode=%s, attempt %u, "
+                    "next backoff %ums)", buf,
                     g_state.last_requested_mode == SpecJoinMode::CURRENT_MATCH
-                        ? "CURRENT_MATCH" : "FULL_SESSION");
+                        ? "CURRENT_MATCH" : "FULL_SESSION",
+                    g_state.reconnect_fail_count + 1, recon_interval);
         g_state.last_reconnect_attempt_ms = now;
+        ++g_state.reconnect_fail_count;
         SpectatorNode_RequestJoin(g_state.root_addr, g_state.last_requested_mode);
     }
 

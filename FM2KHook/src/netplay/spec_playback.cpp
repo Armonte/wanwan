@@ -507,6 +507,19 @@ uint32_t SpectatorNode_MsSinceLastAdmit() {
     return (uint32_t)(GetTickCount64() - g_last_input_admit_ms);
 }
 
+// True once the spectator has admitted at least one frame (i.e. the JOIN
+// handshake + snapshot succeeded and the stream started). Distinguishes a
+// still-CONNECTING spectator (never admitted) from a mid-stream stall (admitted
+// then went quiet) so the connect-establishment deadline only fires on the
+// former -- see the watchdog in trampoline_spectator.cpp.
+bool SpectatorNode_HasEverAdmitted() { return g_first_input_admit_ms != 0; }
+
+// True once the upstream told us the whole session is OVER (SPEC_SESSION_END
+// — the host quit cleanly). Distinguishes a GRACEFUL stream end (drain what's
+// left, then close with "stream ended") from an ungraceful host vanish
+// (crash/drop, handled by the host-gone watchdog). See trampoline_spectator.
+bool SpectatorNode_SessionEnded() { return g_state.session_ended; }
+
 bool SpectatorNode_IsSubscribedUpstream() { return g_state.subscribed_upstream; }
 
 // True while the upstream TCP died but the subscription is riding on UDP

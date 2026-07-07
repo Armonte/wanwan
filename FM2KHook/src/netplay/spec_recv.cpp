@@ -7,6 +7,7 @@
 #include "spec_wire.h"            // zero-RLE codec (SessionEvent_* live in spectator_node.h)
 #include "spec_relay_queue.h"     // hub-relay outbound queue (Phase 2c)
 #include "spectator_tcp.h"        // TCP transport for INPUT_BATCH stream
+#include "reliable_channel_net.h" // RC_CHAN_SPEC / RC_CHAN_SPEC_SNAPSHOT (cross-channel reorder)
 #include "spec_impair.h"          // test-only spectator-downlink loss (FM2K_SPEC_DROP)
 #include "control_channel.h"
 #include "netplay.h"
@@ -32,8 +33,53 @@
 #include <cstdio>
 using namespace specnode;
 
+// Write one chunk into the blob (idempotent by offset; RC already dedups by seq).
+static void ApplySnapshotChunk(State::SnapshotInbox& inbox, size_t off,
+                               const uint8_t* data, size_t n) {
+    if (n == 0 || off + n > inbox.blob.size()) return;  // stray/bad -> ignore
+    std::memcpy(inbox.blob.data() + off, data, n);
+    inbox.bytes_received += n;
+}
+
+// Finalize once the full blob is present AND SNAPSHOT_END's checksum is known —
+// order-independent (unordered blob channel: END may precede the last chunks).
+// Decompress, verify fletcher32, mark pending_apply.
+static void TryFinalizeSnapshot(State::SnapshotInbox& inbox) {
+    if (!inbox.active || !inbox.end_seen || inbox.pending_apply) return;
+    const uint32_t expected_wire =
+        (inbox.meta.flags & SNAPSHOT_FLAG_ZERO_RLE)
+            ? inbox.meta.compressed_bytes : inbox.meta.total_bytes;
+    if (inbox.bytes_received != expected_wire) return;  // not all chunks yet
+    if (inbox.meta.flags & SNAPSHOT_FLAG_ZERO_RLE) {
+        std::vector<uint8_t> raw(inbox.meta.total_bytes);
+        if (!ZeroRleDecompress(inbox.blob.data(), inbox.blob.size(),
+                               raw.data(), raw.size())) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                "SpectatorNode: snapshot zero-RLE decompress failed (%zu -> %u) -- discarding",
+                inbox.blob.size(), inbox.meta.total_bytes);
+            inbox = State::SnapshotInbox{};
+            return;
+        }
+        inbox.blob.swap(raw);
+    }
+    const uint32_t local = Fletcher32(inbox.blob.data(), inbox.blob.size());
+    if (local != inbox.end_checksum) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+            "SpectatorNode: snapshot checksum mismatch (local=0x%08X expected=0x%08X) -- discarding",
+            local, inbox.end_checksum);
+        inbox = State::SnapshotInbox{};
+        return;
+    }
+    inbox.pending_apply = true;
+    inbox.active        = false;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "SpectatorNode: snapshot finalized (match=%u, %zu bytes, fletcher32=0x%08X) "
+        "anchor INPUT-frame=%u (deferred apply)",
+        inbox.meta.match_index, inbox.blob.size(), local, inbox.anchor_frame);
+}
+
 void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
-                                  const sockaddr_in& from)
+                                  const sockaddr_in& from, uint8_t rc_channel)
 {
     (void)from;
     if (len < sizeof(SpecDataHeader)) return;
@@ -126,6 +172,16 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
             inbox.bytes_received = 0;
             inbox.blob.assign(wire_bytes, 0);   // wire (possibly compressed) bytes
             inbox.active         = true;
+            inbox.end_seen       = false;
+            inbox.pending_apply  = false;
+            // Replay chunks that arrived before this BEGIN (unordered blob channel).
+            {
+                auto pend = std::move(inbox.pending_chunks);
+                inbox.pending_chunks.clear();
+                inbox.pending_bytes = 0;   // held bytes are now applied to the blob
+                for (auto& pc : pend)
+                    ApplySnapshotChunk(inbox, pc.first, pc.second.data(), pc.second.size());
+            }
 
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "SpectatorNode: SNAPSHOT_BEGIN match=%u, %u bytes, "
@@ -162,103 +218,53 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
             break;
         }
         case SpecDataType::SNAPSHOT_CHUNK: {
-            // hdr.start_frame = byte offset, hdr.flags = chunk byte count.
+            // hdr.start_frame = byte offset, hdr.flags = chunk byte count. Chunks
+            // arrive UNORDERED and are reassembled by offset (a lost chunk delays
+            // only itself). A chunk that beats BEGIN is held and replayed on BEGIN.
             auto& inbox = g_state.pb_snapshot_inbox;
-            if (!inbox.active) {
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: SNAPSHOT_CHUNK without active inbox — dropping");
-                break;
-            }
             const size_t   off     = hdr.start_frame;
             const size_t   chunk_n = hdr.flags;
             if (chunk_n == 0 || chunk_n > payload_len) {
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     "SpectatorNode: SNAPSHOT_CHUNK bad length (flags=%zu, payload=%zu)",
                     chunk_n, payload_len);
-                inbox = State::SnapshotInbox{};
                 break;
             }
-            if (off + chunk_n > inbox.blob.size()) {
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: SNAPSHOT_CHUNK overruns blob "
-                    "(off=%zu chunk=%zu, total=%zu)",
-                    off, chunk_n, inbox.blob.size());
-                inbox = State::SnapshotInbox{};
+            if (!inbox.active) {
+                // Hold chunks that arrive before SNAPSHOT_BEGIN (cross-channel
+                // reorder). Bound BOTH the count and the TOTAL BYTES so an
+                // attacker on the spectator input path can't pin memory with a
+                // flood of pre-BEGIN chunks. A legit snapshot is ~1MB raw
+                // (≤~66 chunks of 16KB); 256 chunks / 2MB is generous headroom.
+                constexpr size_t kMaxPendingChunks = 256;
+                constexpr size_t kMaxPendingBytes  = 2u * 1024 * 1024;
+                if (inbox.pending_chunks.size() < kMaxPendingChunks &&
+                    inbox.pending_bytes + chunk_n <= kMaxPendingBytes) {
+                    inbox.pending_chunks.emplace_back(
+                        static_cast<uint32_t>(off),
+                        std::vector<uint8_t>(payload, payload + chunk_n));
+                    inbox.pending_bytes += chunk_n;
+                }
                 break;
             }
-            std::memcpy(inbox.blob.data() + off, payload, chunk_n);
-            inbox.bytes_received += chunk_n;
+            ApplySnapshotChunk(inbox, off, payload, chunk_n);
+            TryFinalizeSnapshot(inbox);   // finalize now if this was the last chunk
             break;
         }
         case SpecDataType::SNAPSHOT_END: {
             // hdr.flags = 4, payload = uint32 fletcher32 over the host's blob.
+            // UNORDERED channel: END may arrive before the last chunks, so we only
+            // RECORD the checksum here; TryFinalizeSnapshot validates once the blob
+            // is complete (called here and from each CHUNK).
             auto& inbox = g_state.pb_snapshot_inbox;
-            if (!inbox.active) {
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: SNAPSHOT_END without active inbox — dropping");
-                break;
-            }
             if (payload_len < sizeof(uint32_t)) {
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: SNAPSHOT_END truncated (payload=%zu)",
-                    payload_len);
-                inbox = State::SnapshotInbox{};
+                    "SpectatorNode: SNAPSHOT_END truncated (payload=%zu)", payload_len);
                 break;
             }
-            uint32_t expected_checksum = 0;
-            std::memcpy(&expected_checksum, payload, sizeof(uint32_t));
-
-            const uint32_t expected_wire =
-                (inbox.meta.flags & SNAPSHOT_FLAG_ZERO_RLE)
-                    ? inbox.meta.compressed_bytes : inbox.meta.total_bytes;
-            if (inbox.bytes_received != expected_wire) {
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: SNAPSHOT_END byte-count mismatch "
-                    "(received %zu, want %u) — discarding",
-                    inbox.bytes_received, expected_wire);
-                inbox = State::SnapshotInbox{};
-                break;
-            }
-            if (inbox.meta.flags & SNAPSHOT_FLAG_ZERO_RLE) {
-                std::vector<uint8_t> raw(inbox.meta.total_bytes);
-                if (!ZeroRleDecompress(inbox.blob.data(), inbox.blob.size(),
-                                       raw.data(), raw.size())) {
-                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                        "SpectatorNode: SNAPSHOT_END zero-RLE decompress "
-                        "failed (%zu wire -> %u raw) — discarding",
-                        inbox.blob.size(), inbox.meta.total_bytes);
-                    inbox = State::SnapshotInbox{};
-                    break;
-                }
-                inbox.blob.swap(raw);
-            }
-            const uint32_t local_checksum =
-                Fletcher32(inbox.blob.data(), inbox.blob.size());
-            if (local_checksum != expected_checksum) {
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: SNAPSHOT_END checksum mismatch "
-                    "(local=0x%08X, expected=0x%08X) — discarding",
-                    local_checksum, expected_checksum);
-                inbox = State::SnapshotInbox{};
-                break;
-            }
-
-            // Validation passed. DON'T apply SaveState_LoadFromBytes yet —
-            // the spectator's local game may still be in pre-WinMain init
-            // (game_mode == 0). Smashing battle-state bytes into uninit'd
-            // engine memory crashes the next frame's render. Mark the inbox
-            // pending_apply; ApplyPendingSnapshot polls each spec tick and
-            // runs the actual apply once the engine has progressed past
-            // mode 0. inbox.blob + meta + anchor stay populated until then.
-            inbox.pending_apply = true;
-            inbox.active        = false;  // assembly is done; no more chunks
-
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "SpectatorNode: SNAPSHOT_END validated (match=%u, "
-                "%zu bytes, fletcher32=0x%08X) — anchor INPUT-frame=%u "
-                "(deferred apply pending game-mode != 0)",
-                inbox.meta.match_index, inbox.blob.size(),
-                local_checksum, inbox.anchor_frame);
+            std::memcpy(&inbox.end_checksum, payload, sizeof(uint32_t));
+            inbox.end_seen = true;
+            TryFinalizeSnapshot(inbox);   // validates now iff all chunks already present
             break;
         }
         case SpecDataType::OP_BASELINE: {
@@ -307,14 +313,13 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
             if (!g_state.subscribed_upstream) return;
             g_state.live_established = true;
 
-            const uint32_t expected_at_entry = g_state.have_frame_baseline
-                ? g_state.next_expected_frame : 0xFFFFFFFFu;
-
-            // Establish baseline on first batch.
-            if (!g_state.have_frame_baseline) {
-                g_state.have_frame_baseline = true;
-                g_state.next_expected_frame = hdr.start_frame;
-            }
+            // Process one batch's events in host-append order. Runs for the
+            // current batch and for reorder-buffered batches (drained in frame
+            // order), so cross-channel arrival order is normalized to append order.
+            auto process_events = [](uint32_t start_frame, uint16_t frame_count,
+                                     const uint8_t* payload, size_t payload_len) {
+                const uint32_t expected_at_entry = g_state.next_expected_frame;
+                (void)frame_count;
 
             // NOTE: there is deliberately NO "fully-consumed batch" early
             // skip here. AppendOpAndFlush emits op-only batches with
@@ -329,7 +334,7 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
             // cost ~8 decodes and nothing else.
 
             size_t off = 0;
-            uint32_t  cursor_input  = hdr.start_frame;  // next INPUT in this batch
+            uint32_t  cursor_input  = start_frame;  // next INPUT in this batch
             uint32_t  pushed_inputs = 0;
             uint32_t  skipped_inputs = 0;
             uint32_t  gap_first      = 0xFFFFFFFFu;
@@ -452,7 +457,7 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
                     "SpectatorNode: EVENT_BATCH out-of-order INPUT %u (expected=%u, "
                     "batch start=%u count=%u, pushed=%u skipped=%u)",
                     gap_first, expected_at_entry,
-                    hdr.start_frame, hdr.frame_count, pushed_inputs, skipped_inputs);
+                    start_frame, frame_count, pushed_inputs, skipped_inputs);
             }
             // pb_queue / batch / subs status — diagnostic (~1 line/sec).
             // Routed via SDL_LOG_CATEGORY_CUSTOM into quill's backtrace
@@ -464,10 +469,40 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
                 if (now - last_log_tick > 1000) {
                     SDL_LogInfo(SDL_LOG_CATEGORY_CUSTOM,
                         "SpectatorNode: pb_queue=%zu (batch inputs=%u, start=%u, subs=%zu)",
-                        g_state.pb_queue.size(), hdr.frame_count, hdr.start_frame,
+                        g_state.pb_queue.size(), frame_count, start_frame,
                         g_state.subscribers.size());
                     last_log_tick = now;
                 }
+            }
+            };  // end process_events lambda
+
+            // --- Cross-channel reorder dispatch ---
+            // Only the BULK stream (snapshot/backfill on RC_CHAN_SPEC_SNAPSHOT) or a
+            // single ordered stream (rc_channel==0, i.e. TCP) may establish the frame
+            // baseline. A live (RC_CHAN_SPEC) batch arriving before the baseline, or
+            // any batch ahead of next_expected_frame, is buffered by start_frame and
+            // drained in frame order — so ops+inputs resume host-append order.
+            const bool can_base = (rc_channel == 0 || rc_channel == RC_CHAN_SPEC_SNAPSHOT);
+            auto buffer_batch = [&]() {
+                if (g_state.pb_reorder.size() < 1024)
+                    g_state.pb_reorder[hdr.start_frame].assign(payload, payload + payload_len);
+            };
+            if (!g_state.have_frame_baseline) {
+                if (!can_base) { buffer_batch(); break; }   // hold live until bulk anchors
+                g_state.have_frame_baseline = true;
+                g_state.next_expected_frame = hdr.start_frame;
+            } else if (hdr.start_frame > g_state.next_expected_frame) {
+                buffer_batch(); break;                       // future -> reorder
+            }
+            process_events(hdr.start_frame, hdr.frame_count, payload, payload_len);
+            // Drain buffered batches now consumable, strictly in frame order.
+            while (!g_state.pb_reorder.empty()) {
+                auto it = g_state.pb_reorder.begin();
+                if (it->first > g_state.next_expected_frame) break;
+                uint32_t bf = it->first;
+                std::vector<uint8_t> b = std::move(it->second);
+                g_state.pb_reorder.erase(it);
+                process_events(bf, 0, b.data(), b.size());
             }
             break;
         }

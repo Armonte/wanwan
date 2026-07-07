@@ -79,6 +79,15 @@ using GetModuleFileNameA_t   = DWORD (WINAPI*)(HMODULE, LPSTR, DWORD);
 using GetCurrentDirectoryA_t = DWORD (WINAPI*)(DWORD, LPSTR);
 using GetFullPathNameA_t     = DWORD (WINAPI*)(LPCSTR, DWORD, LPSTR, LPSTR*);
 using GetCommandLineA_t      = LPSTR (WINAPI*)(void);
+// File-OPEN side: the game passes narrow paths (SJIS under our 932 spoof) to
+// these; the kernel's ANSI thunk converts them back with the REAL system ACP
+// (1252 on a US box), NOT our hooked GetACP — so kanji in the install DIRECTORY
+// path (D:\games\fm2k\闘闘\...) is mangled and the open fails. Convert the SJIS
+// bytes ourselves via CP932 and call the W variant. (The path-RETRIEVAL hooks
+// above only fixed the game GETTING its path; these fix it USING the path.)
+using CreateFileA_t          = HANDLE (WINAPI*)(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
+using FindFirstFileA_t       = HANDLE (WINAPI*)(LPCSTR, LPWIN32_FIND_DATAA);
+using FindNextFileA_t        = BOOL   (WINAPI*)(HANDLE, LPWIN32_FIND_DATAA);
 
 // Trampolines
 GetACP_t                     p_GetACP                    = nullptr;
@@ -105,6 +114,9 @@ GetModuleFileNameA_t         p_GetModuleFileNameA        = nullptr;
 GetCurrentDirectoryA_t       p_GetCurrentDirectoryA      = nullptr;
 GetFullPathNameA_t           p_GetFullPathNameA          = nullptr;
 GetCommandLineA_t            p_GetCommandLineA           = nullptr;
+CreateFileA_t                p_CreateFileA               = nullptr;
+FindFirstFileA_t             p_FindFirstFileA            = nullptr;
+FindNextFileA_t              p_FindNextFileA             = nullptr;
 
 bool g_installed = false;
 
@@ -517,6 +529,58 @@ LRESULT CALLBACK LocaleSpoofWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return CallWindowProcW(orig, hwnd, msg, wp, lp);
 }
 
+// --- kernel32 file-OPEN hooks (kanji install-path traversal) ---
+// Convert a narrow (CP932/SJIS) path to wide. Returns false if the caller's
+// path isn't valid SJIS (fall back to the original ANSI API then).
+static bool NarrowSjisToWide(LPCSTR name, std::vector<wchar_t>& out) {
+    if (!name) return false;
+    int wlen = MultiByteToWideChar(kSpoofedCodePage, 0, name, -1, nullptr, 0);
+    if (wlen <= 1) return false;   // empty or invalid
+    out.resize(wlen);
+    return MultiByteToWideChar(kSpoofedCodePage, 0, name, -1, out.data(), wlen) > 0;
+}
+
+static void FindDataW2A(const WIN32_FIND_DATAW& w, WIN32_FIND_DATAA& a) noexcept {
+    a.dwFileAttributes = w.dwFileAttributes;
+    a.ftCreationTime   = w.ftCreationTime;
+    a.ftLastAccessTime = w.ftLastAccessTime;
+    a.ftLastWriteTime  = w.ftLastWriteTime;
+    a.nFileSizeHigh    = w.nFileSizeHigh;
+    a.nFileSizeLow     = w.nFileSizeLow;
+    a.dwReserved0      = w.dwReserved0;
+    a.dwReserved1      = w.dwReserved1;
+    WideCharToMultiByte(kSpoofedCodePage, 0, w.cFileName, -1,
+                        a.cFileName, sizeof(a.cFileName), nullptr, nullptr);
+    WideCharToMultiByte(kSpoofedCodePage, 0, w.cAlternateFileName, -1,
+                        a.cAlternateFileName, sizeof(a.cAlternateFileName), nullptr, nullptr);
+}
+
+HANDLE WINAPI Hook_CreateFileA(LPCSTR name, DWORD access, DWORD share,
+                               LPSECURITY_ATTRIBUTES sa, DWORD disp,
+                               DWORD flags, HANDLE tmpl) {
+    std::vector<wchar_t> w;
+    if (!NarrowSjisToWide(name, w))
+        return p_CreateFileA(name, access, share, sa, disp, flags, tmpl);
+    return CreateFileW(w.data(), access, share, sa, disp, flags, tmpl);
+}
+
+HANDLE WINAPI Hook_FindFirstFileA(LPCSTR name, LPWIN32_FIND_DATAA fd) {
+    std::vector<wchar_t> w;
+    if (!fd || !NarrowSjisToWide(name, w)) return p_FindFirstFileA(name, fd);
+    WIN32_FIND_DATAW wfd;
+    HANDLE h = FindFirstFileW(w.data(), &wfd);   // W handle; FindNextFileW/FindClose accept it
+    if (h != INVALID_HANDLE_VALUE) FindDataW2A(wfd, *fd);
+    return h;
+}
+
+BOOL WINAPI Hook_FindNextFileA(HANDLE h, LPWIN32_FIND_DATAA fd) {
+    if (!fd) return p_FindNextFileA(h, fd);
+    WIN32_FIND_DATAW wfd;
+    BOOL r = FindNextFileW(h, &wfd);   // h came from our Hook_FindFirstFileA => a W handle
+    if (r) FindDataW2A(wfd, *fd);
+    return r;
+}
+
 void InstallLocaleProcOnWindow(HWND hwnd) noexcept {
     if (!hwnd) return;
     if (GetPropW(hwnd, kOrigWndProcProp)) return;  // already installed
@@ -828,6 +892,17 @@ bool InstallLocaleSpoof() {
     try_hook("kernel32.dll", "GetCurrentDirectoryA", (void*)&Hook_GetCurrentDirectoryA, p_GetCurrentDirectoryA);
     try_hook("kernel32.dll", "GetFullPathNameA",     (void*)&Hook_GetFullPathNameA,     p_GetFullPathNameA);
     try_hook("kernel32.dll", "GetCommandLineA",      (void*)&Hook_GetCommandLineA,      p_GetCommandLineA);
+
+    // File-OPEN hooks (CreateFileA / FindFirstFileA / FindNextFileA) for kanji
+    // install-path traversal are DISABLED: routing every file open through
+    // CreateFileW regressed graphics/sprite asset loading (black screen) on
+    // ASCII-path games, and they were never shown to be necessary (kanji-dir
+    // games load fine via the already-hooked CRT MultiByteToWideChar path). Left
+    // dead until a surgical, ASCII-passthrough + validated version is warranted.
+    //   try_hook("kernel32.dll", "CreateFileA",    &Hook_CreateFileA,    p_CreateFileA);
+    //   try_hook("kernel32.dll", "FindFirstFileA", &Hook_FindFirstFileA, p_FindFirstFileA);
+    //   try_hook("kernel32.dll", "FindNextFileA",  &Hook_FindNextFileA,  p_FindNextFileA);
+    (void)&Hook_CreateFileA; (void)&Hook_FindFirstFileA; (void)&Hook_FindNextFileA;
 
     // USER32 / GDI32 visible-text rendering — covers in-game text, error
     // popups, dialog labels, and window-creation titles. SetWindowTextA was

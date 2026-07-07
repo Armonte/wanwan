@@ -592,6 +592,18 @@ constexpr uint64_t SPECTATOR_SILENCE_FAILOVER_MS   = 15000;  // 15 s with no
                                                              // upstream → fall
                                                              // back to root
 constexpr uint64_t SPECTATOR_RECONNECT_BACKOFF_MS  = 2000;   // throttle JOIN_REQ
+// Cap for the exponential reconnect backoff (base doubled per consecutive
+// failure). A genuinely-gone host is retried at most this often, so the
+// spectator stops storming it while it waits out the host-gone watchdog.
+constexpr uint64_t SPECTATOR_RECONNECT_MAX_BACKOFF_MS = 4000;
+// Surgical gap-fill (mid-match snapshot join under loss). When the
+// admission cursor stalls behind buffered future batches for this long,
+// pull the missing range over the reliable conn. Kept small so the gap
+// heals in well under a second -- far below the 15s silence-failover that
+// would otherwise tear down and loop on a full re-snapshot. Throttle
+// bounds the pull rate while the host re-ships the (idempotent) range.
+constexpr uint64_t SPECTATOR_GAP_FILL_STALL_MS     = 250;    // stall before pull
+constexpr uint64_t SPECTATOR_GAP_FILL_THROTTLE_MS  = 500;    // min between pulls
 constexpr uint64_t SPECTATOR_SUBSCRIBER_EXPIRY_MS  = 30000;  // upstream-side
                                                              // sweep: drop
                                                              // subscribers
@@ -669,6 +681,14 @@ std::vector<sockaddr_in> SpectatorNode_GetSubscriberAddrs();
 bool SpectatorNode_RequestJoin(const sockaddr_in& upstream,
                                SpecJoinMode mode = SpecJoinMode::FULL_SESSION);
 
+// Surgical gap-fill pull. Sends a SPEC_JOIN_REQ carrying SPEC_JOIN_RESUME
+// with resume=next_expected_frame to the CURRENT upstream, WITHOUT clearing
+// subscription/bind state (unlike RequestJoin). The host re-ships exactly
+// [next_expected .. live-cursor) over the existing reliable conn so a
+// mid-match snapshot-join gap ([backfill-end..RC-live-start)) heals in one
+// round trip while the live stream keeps flowing. See TickHealth.
+void SpectatorNode_RequestGapFill();
+
 // Set the always-on failback root address. TickHealth will reconnect to
 // root if our current upstream goes silent. Called once at spectator init
 // from Netplay_InitAsSpectator.
@@ -701,8 +721,15 @@ void SpectatorNode_HandleJoinRedirect(const sockaddr_in& from,
 // SNAPSHOT_BEGIN/CHUNK/END group runs SaveState_LoadFromBytes on
 // completion. Called by the UDP poll path in control_channel.cpp when
 // it sees SPEC_DATA_MAGIC.
+// Registers the ReliableChannel deliver dispatcher (routes RC_CHAN_SPEC ->
+// HandleSpecData) for the FM2K_SPEC_RC A/B path. Called from SpectatorNode_Init.
+void SpectatorNode_RegisterRcDeliver();
+
+// `rc_channel`: 0 = single ordered stream (TCP / unified — no cross-channel
+// reorder). RC_CHAN_SPEC (live) / RC_CHAN_SPEC_SNAPSHOT (bulk) enable the
+// cross-channel EVENT_BATCH reorder + bulk-only baseline (see spec_recv.cpp).
 void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
-                                  const sockaddr_in& from);
+                                  const sockaddr_in& from, uint8_t rc_channel = 0);
 
 // Narrow handler for raw 0xCE datagrams arriving on the shared control
 // UDP socket (Phase F accelerator). Accepts ONLY UDP_INPUT_BATCH, and only
@@ -730,6 +757,8 @@ bool SpectatorNode_QueueHasPendingOp();
 // (0 until the first admission). The jitter floor uses this to detect
 // genuine starvation and play out its held frames instead of freezing.
 uint32_t SpectatorNode_MsSinceLastAdmit();
+bool     SpectatorNode_HasEverAdmitted();   // false while still connecting (never admitted)
+bool     SpectatorNode_SessionEnded();      // upstream sent SPEC_SESSION_END (host quit cleanly)
 void SpectatorNode_StampInputAdmit();
 // Layer-2 render pacing: the spectator's outer-tick sleep target in ms, =
 // clamp(measured host production period, 10, 20). Lets the spectator render at

@@ -27,7 +27,7 @@
 // upstream-INPUT_BATCH/INITIAL_MATCH/MATCH_END), so we pass a zeroed sockaddr.
 extern void SpectatorNode_OnUpstreamTcpDead();
 extern void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
-                                         const sockaddr_in& from);
+                                         const sockaddr_in& from, uint8_t rc_channel);
 
 namespace SpectatorTCP {
 

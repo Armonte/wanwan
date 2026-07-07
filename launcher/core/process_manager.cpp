@@ -99,14 +99,25 @@ bool FM2KLauncher::LaunchLocalClient(const std::string& game_path, bool is_host,
     // Set environment variables BEFORE launching process (OnlineSession style)
     (*target_instance)->SetEnvironmentVariable("FM2K_PLAYER_INDEX", std::to_string(player_index));  // Host=0, Guest=1
     (*target_instance)->SetEnvironmentVariable("FM2K_LOCAL_PORT", std::to_string(port));  // Keep port different (required for networking)
-    (*target_instance)->SetEnvironmentVariable("FM2K_REMOTE_ADDR", "127.0.0.1:" + std::to_string(is_host ? 7001 : 7000));  // Restore correct remote addressing
+    // LOCAL-TEST PATH ONLY. LaunchLocalClient spawns two instances on this
+    // machine over loopback for hands-on testing — hence the hardcoded
+    // 127.0.0.1 remote and the FIXED RNG seed (both local instances must agree
+    // on the seed). The real matchmaked/networked path is session_control.cpp,
+    // which sets FM2K_REMOTE_ADDR from the actual peer and NEVER sets
+    // FM2K_FORCE_RNG_SEED (real matches derive their seed from the match). Do
+    // NOT route production matches through here.
+    (*target_instance)->SetEnvironmentVariable("FM2K_REMOTE_ADDR", "127.0.0.1:" + std::to_string(is_host ? 7001 : 7000));  // loopback (local test)
 
-    // Add production mode and input recording settings
-    (*target_instance)->SetEnvironmentVariable("FM2K_PRODUCTION_MODE", "0");  // Default to debug mode for now
+    // FM2K_PRODUCTION_MODE=0 keeps verbose desync diagnostics on during the
+    // debug->production transition. LAUNCH CHECKLIST: flip to "1" for release
+    // builds (here AND in session_control.cpp) so shipped clients aren't in
+    // debug mode.
+    (*target_instance)->SetEnvironmentVariable("FM2K_PRODUCTION_MODE", "0");
     (*target_instance)->SetEnvironmentVariable("FM2K_INPUT_RECORDING", "1");  // Enable input recording by default
 
-    // CRITICAL: Force identical RNG seed for both clients to prevent desync
-    (*target_instance)->SetEnvironmentVariable("FM2K_FORCE_RNG_SEED", "12345678");  // Fixed seed for testing
+    // Fixed seed — SAFE here (local loopback test, both instances identical).
+    // Never set on the matchmaked path.
+    (*target_instance)->SetEnvironmentVariable("FM2K_FORCE_RNG_SEED", "12345678");
 
     // Launch clients simultaneously - no delay needed
     // The GekkoNet synchronization will handle timing differences

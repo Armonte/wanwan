@@ -397,6 +397,13 @@ bool Netplay_StartCSSSession() {
     // Allow up to 4 spectators per session; spectator_delay sized for full
     // CSS catch-up. CSS sessions are short (a few hundred frames at most
     // before battle entry), so default is plenty.
+    // GekkoNet NATIVE-spectator actor cap (a SECONDARY confirmed-input path).
+    // This is intentionally NOT the same number as SPECTATOR_DEFAULT_CAPACITY
+    // (=32), which is the SpectatorNode direct-subscriber cap (TCP/RC — the
+    // PRIMARY spectator transport). SpectatorNode serves everyone up to 32;
+    // the native actor path is a small extra and is separately hard-bounded in
+    // spec_join.cpp (kMaxGekkoSpectators). Keep low — GekkoNet iterates all
+    // actors per tick.
     config.max_spectators           = 4;
     config.spectator_delay          = 0;    // see battle-session comment — disables pause-buffer
     // input_history_size: host keeps every confirmed CSS input frame in

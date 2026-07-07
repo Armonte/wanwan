@@ -103,7 +103,9 @@ struct FM2KSharedMemData {
     uint32_t rollback_count;  // Total rollbacks this session
     uint32_t desync_count;    // Total desyncs detected
     float    frames_ahead;    // Frame advantage (gekko_frames_ahead)
-    uint32_t ping_ms;         // RTT placeholder
+    uint32_t ping_ms;         // NOT wired here — placeholder, not populated by the hook.
+                              // The live RTT the HUD shows comes from fc_hud SetStats
+                              // (ControlChannel_GetRttMs), not this field. Don't read this.
 
     uint32_t rng_seed;        // Current RNG seed (for monitoring)
     uint32_t render_fps;      // Render FPS
@@ -288,6 +290,20 @@ struct FM2KSharedMemData {
     uint8_t  session_kind;       // 0=menu, 1=css, 2=battle
     uint8_t  _pad_session_kind[3];
     uint32_t session_kind_seq;
+
+    // Hook → launcher: the client's own GLOBAL IPv6 endpoint (addr + bound
+    // UDP port), discovered at NAT init via the connected-UDP source-address
+    // trick (the address the OS uses to reach a global v6 destination — i.e.
+    // the address a peer should punch back to, so v6 firewall pinholes align).
+    // Launcher polls local_v6_seq for changes and forwards (addr, port) to the
+    // hub via WS; the lobby hands it to the peer as an IPv6 punch candidate
+    // (StartPunch's peer_v6_addr path). IPv6 usually has no NAT, so when both
+    // peers have global v6 this is a DIRECT, relay-free, NAT-free path. All-zero
+    // addr + seq=0 = "no global v6" (v4-only host). Mirrors the tcp_stun block.
+    uint8_t  local_v6_addr[16];  // in6_addr, network byte order
+    uint16_t local_v6_port;      // our bound UDP port, network byte order
+    uint16_t _pad_local_v6;
+    uint32_t local_v6_seq;
 };
 
 // Bumped to 1024 to fit the v9 HUD block. Still under 4 KB which is
@@ -368,6 +384,12 @@ void SharedMem_PublishSpectatorPunchTarget(uint32_t ip_be, uint16_t udp_port,
 // Idempotent — safe to call repeatedly with the same value (won't bump
 // seq if values unchanged).
 void SharedMem_PublishExternalTcp(uint32_t ip_be, uint16_t port);
+
+// Hook → launcher: publish the client's own global IPv6 endpoint (16-byte
+// in6_addr network-order + bound UDP port network-order). Bumps local_v6_seq
+// on change so the launcher forwards it to the hub for the peer's v6 punch
+// candidate. Pass all-zero addr to signal "no global v6" (harmless).
+void SharedMem_PublishLocalV6(const uint8_t addr[16], uint16_t port_be);
 
 // Publish the current session phase so the launcher can forward to hub.
 // Called from Hook_CheckGameModeTransition at every game_mode change.

@@ -9,10 +9,15 @@
 #include <cstdlib>
 #include <windows.h>
 
-// --- TEMP per-region save sub-profiler (FM2K_PERF_PROFILE=1) -------------
-// Attributes the 1.58ms/save cost to specific memcpy blocks so #62 can
-// target the heaviest one. Same env gate as the netplay-side [PERF] line.
-// Reports avg microsec/region every 500 saves. Remove once #62 lands.
+// --- Per-region save sub-profiler (FM2K_PERF_PROFILE=1) ------------------
+// Attributes per-save cost to specific memcpy blocks. Same env gate as the
+// netplay-side [PERF] line. Reports avg microsec/region every 500 saves.
+// MEASURED 2026-07-06 (1v1, ~active slots): ~105us/save total —
+// afterimage=37 char=27 obj=22 sound=10 (+ throttled fullcrc ~1/sec 180us).
+// The active-slot char/obj optimizations already cut this ~15x from the
+// original full-copy cost; per-frame save is ~1% of the 10ms budget, not a
+// bottleneck. Remaining lever is the ~1MB *transmission* blob (reserved
+// struct), not per-frame work.
 namespace {
 struct SBucket { uint64_t ns = 0; uint32_t n = 0; };
 static const bool g_ss_perf_on = [] {

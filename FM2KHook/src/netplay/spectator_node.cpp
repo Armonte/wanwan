@@ -78,6 +78,11 @@ void SpectatorNode_Init() {
     g_state = State{};
     g_state.capacity = SPECTATOR_DEFAULT_CAPACITY;
 
+    // Wire the ReliableChannel deliver dispatcher for the FM2K_SPEC_RC A/B path
+    // (harmless if nothing ever arrives on RC_CHAN_SPEC). Runs regardless of
+    // transport mode below.
+    SpectatorNode_RegisterRcDeliver();
+
     // FM2K_SPEC_TRANSPORT (Phase 2b of v0.3 spec rebuild). "relay" =
     // route spec data through hub WS binary frames instead of P2P TCP.
     // When set, we skip the entire TCP-listener + TCP-STUN dance below
@@ -487,6 +492,10 @@ void SpectatorNode_ApplyPendingSnapshot() {
     {
         g_state.pb_queue.clear();
         g_state.pb_match_headers.clear();
+        // Drop reorder-buffered batches BELOW the anchor (superseded by the
+        // snapshot); batches >= anchor stay and drain as the cursor reaches them.
+        g_state.pb_reorder.erase(g_state.pb_reorder.begin(),
+                                 g_state.pb_reorder.lower_bound(anchor));
         g_state.next_expected_frame = anchor;
     }
     g_state.have_frame_baseline    = true;

@@ -70,6 +70,9 @@ set(FM2KHOOK_SOURCES
     src/netplay/control_channel_io.cpp     # RawSend/RawReceive + race guard (split from control_channel)
     src/netplay/control_channel_send.cpp   # ControlChannel_Send* packet builders (split from control_channel)
     src/netplay/control_channel_gekko.cpp  # GekkoNet MultiplexAdapter (split from control_channel)
+    src/netplay/host_clock.cpp             # host-clock sync + rift frame pacing (FM2K_HOST_CLOCK)
+    src/netplay/reliable_channel.cpp       # reliable-ordered + XOR-FEC channel layer over reliable.io
+    src/netplay/reliable_channel_net.cpp   # control-channel glue: 0xCB demux + RawSend egress + poll Update
     src/netplay/savestate.cpp           # common: lifecycle + buffers + RNG-trace + hashing
     src/netplay/savestate_fm95.cpp      # FM95 save/load body (#if ENGINE_FM95)
     src/netplay/savestate_fm2k_save.cpp # FM2K SaveState_Save + save profiler (#if !ENGINE_FM95)
@@ -131,6 +134,11 @@ set(FM2KHOOK_SOURCES
     # pattern as the SafetyHook/Zydis singles above. Gives ZSTD_decompress +
     # ZSTD_getFrameContentSize for fpk_reader.cpp; nothing links -lzstd.
     ${CMAKE_SOURCE_DIR}/vendored/zstd-singlefile/zstddeclib.c
+    # reliable.io (Mas Bandwidth LLC, BSD-3) — per-packet sequence/ack +
+    # fragmentation/reassembly. Base transport for the ReliableChannel layer
+    # (src/netplay/reliable_channel.cpp): reliable-ordered UDP without TCP's
+    # head-of-line blocking. Compiled straight in, same as the singles above.
+    ${CMAKE_SOURCE_DIR}/vendored/reliable/reliable.c
 )
 
 set(FM2KHOOK_INCLUDES
@@ -160,6 +168,8 @@ set(FM2KHOOK_INCLUDES
     # (so fpk_reader.cpp's `#include <zstd.h>` resolves to the singlefile copy).
     ${CMAKE_CURRENT_SOURCE_DIR}/src/vfs
     ${CMAKE_SOURCE_DIR}/vendored/zstd-singlefile
+    # reliable.io header for the ReliableChannel layer.
+    ${CMAKE_SOURCE_DIR}/vendored/reliable
     # Vendored i686 opus/ogg/opusfile (cross-built static, vendored/opus-i686/
     # build.sh) for fpk_reader.cpp's FPK_WITH_OPUS path. opusfile.h lives in
     # include/opus and pulls <ogg/ogg.h> from include, so both are on the path.

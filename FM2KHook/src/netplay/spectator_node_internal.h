@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <vector>
 #include <cstdint>
+#include <map>
 
 // Broadcast cadence: emit a batch every N newly-confirmed frames.
 constexpr size_t BROADCAST_BATCH_FRAMES = 8;
@@ -34,7 +35,11 @@ constexpr size_t REDUNDANCY_WINDOW = 32;
 struct Subscriber {
     sockaddr_in  addr;
     uint64_t     last_seen_ms;
-    uint32_t     ack_frame;    // Last frame we know this subscriber has. TODO: fill on SPEC_ACK.
+    uint32_t     ack_frame;    // RESERVED for per-subscriber flow control. NOT wired:
+                               // only ever set to 0, never read/gated. Do NOT make a
+                               // backfill/pacing decision off this until a SPEC_ACK
+                               // message actually populates it (would let the host see
+                               // how far behind each subscriber is — a real future win).
     bool         tcp_bound;    // True once SpectatorTCP::RegisterAcceptedClient(addr)
                                // has paired this sub with an accepted TCP socket.
                                // Until then, INITIAL_MATCH + backfill are deferred —
@@ -223,6 +228,14 @@ struct State {
         // on Vanguard Princess (1.08 MB snapshots arrived 12ms after
         // JOIN_ACK, before mode flipped 0→1000).
         bool                 pending_apply   = false;
+        // Unordered blob channel (RC pure-UDP): SNAPSHOT_END may arrive before all
+        // chunks, and chunks may arrive before BEGIN. Validate when bytes_received
+        // == wire size AND end seen (not on END arrival). Chunks before BEGIN are
+        // held here and replayed once BEGIN allocates the blob.
+        bool                 end_seen        = false;
+        uint32_t             end_checksum    = 0;
+        std::vector<std::pair<uint32_t, std::vector<uint8_t>>> pending_chunks;  // (offset, data)
+        size_t               pending_bytes   = 0;   // sum of held pre-BEGIN chunk sizes (memory bound)
     } pb_snapshot_inbox;
 
     // Viewer-side state (this node subscribed upstream).
@@ -253,6 +266,12 @@ struct State {
     sockaddr_in               root_addr           = {};
     uint64_t                  last_heartbeat_send_ms = 0;
     uint64_t                  last_reconnect_attempt_ms = 0;
+    // Consecutive failed reconnect attempts (JOIN_REQ fired, no admit since).
+    // Drives exponential backoff so a genuinely-gone host isn't stormed with
+    // a fixed-rate JOIN_REQ every 500ms for the whole host-gone window. Reset
+    // to 0 the moment new content is admitted again (a real blip recovers on
+    // the first quick retry, before the interval grows).
+    uint32_t                  reconnect_fail_count = 0;
     // De-dup gate. Backfill from a reconnected upstream replays history
     // from frame 0; frames at or below this counter were already consumed
     // locally and would re-render the past. Updated by PopFrameInputs.
@@ -262,10 +281,31 @@ struct State {
     // first batch received after JOIN_ACK; subsequent batches increment.
     bool                      have_frame_baseline = false;
     uint32_t                  next_expected_frame = 0;  // session-relative INPUT-frame index
+    // Cross-channel reorder buffer (ReliableChannel: snapshot/backfill on
+    // RC_CHAN_SPEC_SNAPSHOT, live on RC_CHAN_SPEC — independently ordered). Under
+    // loss the two channels' ARRIVAL order != host-append order, so we buffer
+    // out-of-order EVENT_BATCH payloads keyed by start_frame and drain them in
+    // frame order — restoring host-append order for both inputs AND ops. Empty
+    // (no cost) on a single ordered stream (TCP). Bounded to avoid unbounded hold.
+    std::map<uint32_t, std::vector<uint8_t>> pb_reorder;
     // Pull-based gap recovery: periodic + on-demand INPUT_REQUEST
     // (spectator → upstream) for the missing frame range. Closes any
     // gap that the push-based redundancy window can't recover from.
     uint64_t                  last_input_request_send_ms = 0;
+
+    // Surgical gap-fill (mid-match snapshot join under loss). On a
+    // CURRENT_MATCH join the snapshot+backfill ride TCP while the live
+    // stream rides RC; under loss the RC endpoint comes up some frames
+    // AFTER the bind, so [backfill-end .. RC-live-start) is delivered by
+    // neither channel. next_expected_frame then stalls behind buffered
+    // pb_reorder batches that can never drain. These track the stall so
+    // TickHealth can pull exactly that range over the reliable conn
+    // (SPEC_JOIN_RESUME) before the silence-failover tears everything
+    // down and loops on a full re-snapshot. gap_fill_stall_frame ==
+    // 0xFFFFFFFF means "no gap currently observed".
+    uint32_t                  gap_fill_stall_frame    = 0xFFFFFFFFu;
+    uint64_t                  gap_fill_stall_since_ms = 0;
+    uint64_t                  last_gap_fill_send_ms   = 0;
 
     // Viewer-side playback driver state.
     // Populated by HandleSpecData (INITIAL_MATCH / EVENT_BATCH / MATCH_END);

@@ -26,6 +26,7 @@
 #include <cstddef>
 
 #include <winsock2.h>
+#include <ws2tcpip.h>   // sockaddr_in6 (IPv6 punch candidate + local v6 endpoint)
 
 namespace fm2k::nat {
 
@@ -34,6 +35,24 @@ namespace fm2k::nat {
 // configured (we're not on a hub session). Safe to call repeatedly;
 // the hub binds idempotently.
 bool SendStunProbe();
+
+// Discover the client's own GLOBAL IPv6 endpoint (2000::/3) via the
+// connected-UDP source-address trick: connect() a scratch v6 socket to a
+// global v6 destination (sends nothing) and read getsockname() — that is the
+// source address the OS uses outbound, i.e. the address a peer should send to
+// so v6 firewall pinholes line up. Fills `out` (addr + our bound UDP port) and
+// returns true on a global v6; false on a v4-only host. Idempotent, no wire I/O.
+bool DiscoverGlobalV6(sockaddr_in6& out);
+
+// Discover our global v6 (DiscoverGlobalV6), cache it, log it, and publish it
+// to shared memory (SharedMem_PublishLocalV6) so the launcher forwards it to
+// the hub as our IPv6 punch candidate. Safe to call once at NAT init; a no-op
+// beyond logging on v4-only hosts. Call after NetSocket_Init (needs the port).
+void DiscoverAndPublishLocalV6();
+
+// The cached global v6 endpoint from the last DiscoverAndPublishLocalV6, or
+// nullptr if the host has no global v6.
+const sockaddr_in6* GetLocalGlobalV6();
 
 // Burst-punch toward (peer_ip, peer_port). Sends ~30 packets over
 // ~300 ms with priority boost. Idempotent — if Punch_Tick has

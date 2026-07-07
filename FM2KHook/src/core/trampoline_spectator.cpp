@@ -296,13 +296,58 @@ void RunSpectatorTick() {
             const char* v = std::getenv("FM2K_SPEC_HOST_GONE_MS");
             return (v && v[0]) ? (uint32_t)std::atoi(v) : 8000u;
         }();
+        // GRACEFUL stream end: the upstream sent SPEC_SESSION_END (the host
+        // quit cleanly). Drain whatever is still queued, then close PROMPTLY
+        // with a clear "stream ended" message instead of waiting out the
+        // full host-gone window below. Only after we were actually live.
+        if (SpectatorNode_SessionEnded() &&
+            SpectatorNode_HasEverAdmitted() &&
+            SpectatorNode_PendingFrameCount() == 0) {
+            static std::atomic<bool> s_ended_armed{false};
+            if (!s_ended_armed.exchange(true)) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "SpectatorNode: stream ended — host left the session "
+                    "cleanly; closing");
+                ExitProcess(0);
+            }
+        }
         const uint32_t since_admit = SpectatorNode_MsSinceLastAdmit();
         if (since_admit > s_gone_ms) {
             static std::atomic<bool> s_gone_armed{false};
             if (!s_gone_armed.exchange(true)) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: no new content for %ums (host gone or wedged)"
-                    " — exiting process", since_admit);
+                // UNGRACEFUL vanish (crash / network drop / TerminateProcess):
+                // no SESSION_END arrived, we just stopped receiving. The
+                // reconnect path has been backing off (exponential) rather
+                // than storming; give up now and close cleanly.
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "SpectatorNode: host disconnected — no new content for %ums "
+                    "(host crashed/left ungracefully or wedged); closing stream",
+                    since_admit);
+                ExitProcess(0);
+            }
+        }
+        // CONNECT-ESTABLISHMENT DEADLINE. MsSinceLastAdmit is 0 until the FIRST
+        // admit (so the host-gone watchdog above can't false-fire during a normal
+        // connect/snapshot), which means a spectator whose JOIN handshake never
+        // completes under loss hung on "Connecting..." FOREVER (had to be closed
+        // by hand). If we've NEVER admitted a frame after a generous window, the
+        // connect failed — exit cleanly instead of hanging. Tunable via
+        // FM2K_SPEC_CONNECT_TIMEOUT_MS (default 30s: covers a slow boot-walk +
+        // retried join under heavy loss with wide margin).
+        static const uint32_t s_connect_ms = []{
+            const char* v = std::getenv("FM2K_SPEC_CONNECT_TIMEOUT_MS");
+            return (v && v[0]) ? (uint32_t)std::atoi(v) : 30000u;
+        }();
+        static uint64_t s_spectate_start_ms = 0;
+        if (s_spectate_start_ms == 0) s_spectate_start_ms = GetTickCount64();
+        if (!SpectatorNode_HasEverAdmitted() &&
+            GetTickCount64() - s_spectate_start_ms > s_connect_ms) {
+            static std::atomic<bool> s_connect_armed{false};
+            if (!s_connect_armed.exchange(true)) {
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "SpectatorNode: connect never established after %ums "
+                    "(join handshake failed / host unreachable) — exiting process",
+                    s_connect_ms);
                 ExitProcess(0);
             }
         }
@@ -583,16 +628,35 @@ void RunSpectatorTick() {
         RenderFrameWithSnapshot();
         return;
     }
-    // Gentle drain: one extra sim step per tick above the live band --
-    // 2x playback, barely perceptible, converges a multi-second lag in
-    // tens of seconds. This is the ONLY drain mechanism at CSS (see
-    // needs_css_catchup above); battle additionally has the emergency
-    // turbo. Skipped for offline replay (whole file queued at boot --
-    // permanent 2x is not "playback").
-    if (!s_offline_replay_env_active &&
-        SpectatorNode_PendingFrameCount() >
-        SpectatorTargetDelayFrames() + 100) {
-        SpectatorSimOneFrame();
+    // FIXED-TIMESTEP CATCH-UP (2026-07-06). The outer tick is paced to 10ms
+    // (100fps) via SleepToTarget, but under load — RC retransmit/FEC + render
+    // overrunning 10ms at 20% loss — a tick takes ~12-14ms, so the effective
+    // advance rate falls BELOW the host's 100fps production (measured ~70-90
+    // pops/s) and the spectator drowns with no recovery. SleepToTarget can only
+    // pad a fast tick UP; it can't speed a slow one. Fix: advance on the WALL
+    // CLOCK, not 1-per-tick — if this tick took N×10ms, advance N frames so the
+    // effective playout stays locked to 100fps and can't fall behind. Fractional
+    // accumulator; the extra is CAPPED (never a turbo) and stops on underrun
+    // (qd==0) so it can't over-drain. Offline replay stays 1:1 (whole file
+    // queued at boot). This is the missing symmetric speed-up — steady, invisible,
+    // and keyed on the RIGHT signal (wall-clock deficit), not queue depth.
+    if (!s_offline_replay_env_active) {
+        static uint64_t s_last_step_ms = 0;
+        static double   s_step_accum   = 0.0;
+        const uint64_t now_ms = GetTickCount64();
+        if (s_last_step_ms != 0) {
+            // frames this tick SHOULD have advanced, minus the 1 already done.
+            double owed = (double)(now_ms - s_last_step_ms) / 10.0 - 1.0;
+            if (owed > 3.0) owed = 3.0;      // hard cap: never a jarring turbo
+            if (owed > 0.0)  s_step_accum += owed;
+        }
+        s_last_step_ms = now_ms;
+        int extra = (int)s_step_accum;
+        s_step_accum -= extra;
+        for (int k = 0; k < extra; ++k) {
+            if (SpectatorNode_PendingFrameCount() == 0) { s_step_accum = 0.0; break; }
+            if (!SpectatorSimOneFrame())                { s_step_accum = 0.0; break; }
+        }
     }
 
     RenderFrameWithSnapshot();

@@ -7,6 +7,7 @@
 #include "../hooks/hooks.h"   // Hook_ApplySOCD_Public for SOCD-pre-apply on spec capture
 #include "../hooks/css_autoconfirm.h"  // CssAutoConfirm_OnReplayMatchStart (TEST_CSS_CHAR pin)
 #include "control_channel.h"
+#include "host_clock.h"
 #include "game_hash.h"
 #include "input.h"
 #include "savestate.h"
@@ -335,6 +336,7 @@ bool Netplay_Init(int player_index, uint16_t local_port, const char* remote_addr
     g_netplay_frame = 0;
     g_p1_input = 0;
     g_p2_input = 0;
+    fm2k::hostclock::Reset();   // fresh clock offset + rift window per session
 
     // Reset CSS state — input transport now lives in the CSS GekkoSession,
     // so the legacy ring-buffer fields are gone. The session itself is
@@ -420,6 +422,12 @@ bool Netplay_Init(int player_index, uint16_t local_port, const char* remote_addr
         if (hub_udp && hub_user_id) {
             ::fm2k::nat::SendStunProbe();
         }
+
+        // Discover + advertise our own global IPv6 endpoint (independent of the
+        // v4 hub STUN — v6 needs no reflection). When both peers have global v6
+        // this opens a DIRECT, NAT-free, relay-free path; the burst already
+        // punches the peer's v6 candidate (StartPunch), this supplies OUR half.
+        ::fm2k::nat::DiscoverAndPublishLocalV6();
 
         // Read relay env vars early so the post-burst fallback in
         // StartPunch's worker thread can engage relay mode the
@@ -779,15 +787,23 @@ uint32_t Netplay_GetRollbackCount() {
 }
 
 float Netplay_GetFramesAhead() {
-    if (g_session) {
-        return gekko_frames_ahead(g_session);
+    if (!g_session) return 0.0f;
+    float ahead = gekko_frames_ahead(g_session);
+    // Host-clock rift pacing (A/B via FM2K_HOST_CLOCK): blend the host-clock rift
+    // with GekkoNet's frame-advantage for smoother pacing under high/asymmetric
+    // latency. This is the value the live loop feeds SleepToTarget. GekkoNet still
+    // owns rollback (the "behind => speed up" half); this only refines the
+    // "ahead => slow down" sleep. Called once per tick, so the rift ring advances
+    // exactly once per frame.
+    if (fm2k::hostclock::Enabled()) {
+        ahead = fm2k::hostclock::PacingFramesAhead(
+            g_netplay_frame, ControlChannel_GetRttMs(), ahead);
     }
-    return 0.0f;
+    return ahead;
 }
 
 void Netplay_HandleFrameTime() {
-    float ahead = g_session ? gekko_frames_ahead(g_session) : 0.0f;
-    HandleFrameTime(ahead);
+    HandleFrameTime(Netplay_GetFramesAhead());
 }
 
 // ============================================================================

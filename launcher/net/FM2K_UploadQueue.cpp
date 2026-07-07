@@ -295,6 +295,15 @@ bool HttpPostMultipart(const std::string& url,
         return false;
     }
 
+    // SECURITY: X-FM2K-Log-Secret is a SHARED secret compiled into every
+    // client (kLogUploadSecret) — it is OBFUSCATION, NOT authentication. Any
+    // user can extract it and forge/flood/poison the endpoint. The hub log-
+    // ingest MUST therefore: (1) rate-limit + size-cap per source IP, (2) treat
+    // every upload as untrusted (never index/execute its contents), and
+    // (3) ideally issue a per-session upload token bound to the WS-authed
+    // session instead of relying on this. Uploaded logs also carry match
+    // tokens + peer IPs, so the secret leaking compounds the relay/STUN
+    // findings — scrub or gate those server-side.
     std::wstring headers = L"Content-Type: multipart/form-data; boundary=";
     headers.append(boundary.begin(), boundary.end());
     headers += L"\r\nX-FM2K-Log-Secret: ";

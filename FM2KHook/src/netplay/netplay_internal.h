@@ -20,6 +20,10 @@ struct PendingConfirmInput { uint32_t frame; uint16_t p1, p2; };
 
 // ---- compile-time constants (were file-static constexpr) ----
 inline constexpr int CSS_LOCAL_DELAY = 6;
+// Ceiling for a manually-pinned local input delay (FM2K_LOCAL_DELAY). Not a
+// gameplay clamp -- the player owns their delay; this only keeps it clear of
+// GekkoNet's input ring (DEFAULT_BUFF_SIZE=128).
+inline constexpr int MAX_LOCAL_DELAY = 120;
 inline constexpr int CSS_CONFIRM_LOCKOUT = 150;   // block confirm for first N frames
 inline constexpr uint32_t PENDING_CONFIRM_RING = 128;
 inline constexpr uint32_t SWAP_FRAME_BUFFER = 8;  // barrier swap-frame lead

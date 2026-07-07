@@ -35,7 +35,11 @@ constexpr uintptr_t CHAR_SLOT_BASE = 0x4D1D90;    // g_character_data_base (corr
 
 // ============================================================================
 // SAVE STATE DATA
-//   FM2K: ~420KB per slot (Wave C audit captures multiple subsystems).
+//   FM2K: sizeof(SaveStateData) ~1MB RESERVED (all 8 char slots + 1024 object
+//         slots + afterimage), but the per-frame SAVE only memcpys ACTIVE slots
+//         (~2 char + ~10 obj in 1v1) => ~105us/save measured (see the profiler
+//         in savestate_fm2k_save.cpp). The ~1MB is the reserved struct = the
+//         one-time spectator-join/replay TRANSMISSION blob, NOT per-frame cost.
 //   FM95: ~50KB per slot (object pool + input rings + minimal scalars).
 //         FM95 doesn't have FM2K's afterimage_pool / input_tracking_state /
 //         palette flash arithmetic regions — fewer subsystems to mirror.
@@ -154,7 +158,12 @@ struct SaveStateData {
         static constexpr size_t OBJ_SLOT_COUNT = FM2K::OBJECT_POOL_COUNT;   // 256
 #else
         static constexpr size_t OBJ_SLOT_SIZE  = 382;
-        static constexpr size_t OBJ_SLOT_COUNT = 1023;
+        // FIX (frame-764 rollback gap): pool is 1024 slots (OBJECT_POOL_COUNT),
+        // but this was 1023 -> the active-slot save/load loops
+        // (savestate_fm2k_save.cpp:374 / savestate_fm2k_load.cpp:187) never
+        // touched slot index 1023, so any object landing there kept its
+        // pre-rollback state on Load -> divergence only under forced rollback.
+        static constexpr size_t OBJ_SLOT_COUNT = 1024;
 #endif
         uint32_t object_slot_crcs[OBJ_SLOT_COUNT];
 

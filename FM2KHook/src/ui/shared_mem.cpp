@@ -200,6 +200,18 @@ void SharedMem_PublishExternalTcp(uint32_t ip_be, uint16_t port) {
     g_shared_mem->tcp_stun_seq      += 1;
 }
 
+void SharedMem_PublishLocalV6(const uint8_t addr[16], uint16_t port_be) {
+    if (!g_shared_mem) return;
+    if (std::memcmp(g_shared_mem->local_v6_addr, addr, 16) == 0 &&
+        g_shared_mem->local_v6_port == port_be &&
+        g_shared_mem->local_v6_seq  != 0) {
+        return;  // unchanged — don't bump seq
+    }
+    std::memcpy(g_shared_mem->local_v6_addr, addr, 16);
+    g_shared_mem->local_v6_port = port_be;
+    g_shared_mem->local_v6_seq += 1;
+}
+
 void SharedMem_PublishSessionKind(uint8_t kind) {
     if (!g_shared_mem) return;
     if (g_shared_mem->session_kind == kind &&

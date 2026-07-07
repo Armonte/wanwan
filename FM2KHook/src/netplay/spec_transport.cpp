@@ -6,6 +6,7 @@
 #include "spec_wire.h"            // zero-RLE codec (SessionEvent_* live in spectator_node.h)
 #include "spec_relay_queue.h"     // hub-relay outbound queue (Phase 2c)
 #include "spectator_tcp.h"        // TCP transport for INPUT_BATCH stream
+#include "reliable_channel_net.h" // A/B: reliable-ordered+FEC spectator stream (FM2K_SPEC_RC)
 #include "control_channel.h"
 #include "netplay.h"
 #include "replay.h"
@@ -82,7 +83,33 @@ void FormatAddr(const sockaddr_in& a, char* out, size_t out_sz);
 //     drop with warn log. Means hub didn't forward user_id (older
 //     hub) or this sub came in via a pre-Phase-2c spec_incoming.
 //   - ring full: counted in Ring.total_dropped, no inline log.
+// A/B: route the ordered spectator bulk stream (EVENT_BATCH / SNAPSHOT / OP_BASELINE)
+// through the ReliableChannel layer (reliable-ordered + FEC over UDP) instead of
+// TCP, to avoid TCP head-of-line blocking under loss. Gated by FM2K_SPEC_RC=1 so
+// we can A/B against the TCP baseline. Returns true if it handled the send.
+static bool RcSpectatorBroadcast(const void* buf, size_t len) {
+    static int s_rc_enabled = -1;
+    if (s_rc_enabled < 0) {
+        const char* v = std::getenv("FM2K_SPEC_RC");
+        s_rc_enabled = (v && v[0] == '1' && v[1] == '\0') ? 1 : 0;
+    }
+    if (!s_rc_enabled) return false;
+    // Same backfill fence as the TCP/relay paths: only bound subs get live events.
+    int sent = 0;
+    for (const auto& sub : g_state.subscribers) {
+        if (!sub.tcp_bound) continue;
+        sockaddr_storage ss{};
+        std::memcpy(&ss, &sub.addr, sizeof(sub.addr));
+        ReliableChannel_SendTo(ss, RC_CHAN_SPEC, RC_CLASS_RELIABLE_ORDERED,
+                               reinterpret_cast<const uint8_t*>(buf), static_cast<int>(len));
+        sent++;
+    }
+    (void)sent;
+    return true;
+}
+
 void OutboundBroadcast(const void* buf, size_t len) {
+    if (RcSpectatorBroadcast(buf, len)) return;
     if (g_state.spec_transport_relay) {
         if (!g_state.spec_relay_out) return;
         // Per-bound-sub direct send rather than hub-side broadcast.
@@ -121,10 +148,49 @@ void OutboundBroadcast(const void* buf, size_t len) {
 }
 
 void OutboundSendTo(const sockaddr_in& to, const void* buf, size_t len) {
+    // Snapshot + backfill (this path) is BULK: a ~1MB snapshot ships as ~66 chunks
+    // + 352 backfill events in one burst. By default it stays on TCP (flow control
+    // is exactly right for a one-time bulk join transfer), and only the LIVE event
+    // stream (OutboundBroadcast) goes through RC. The app layer sequences
+    // snapshot-before-events (backfill_done gate + pb_snapshot_inbox), so mixed
+    // transport is correct.
+    //
+    // FM2K_SPEC_RC_SNAPSHOT=1 opts snapshot+backfill onto RC too (pure-UDP
+    // transport goal): RC's send pacing (token bucket + cwnd) now bounds the burst
+    // so it can't self-flood, and CRC + RC-level acks keep it correct under loss.
+    {
+        static int s_rc_snap = -1;
+        if (s_rc_snap < 0) {
+            const char* r = std::getenv("FM2K_SPEC_RC");
+            const char* s = std::getenv("FM2K_SPEC_RC_SNAPSHOT");
+            s_rc_snap = (r && r[0] == '1' && r[1] == '\0' && s && s[0] == '1' && s[1] == '\0') ? 1 : 0;
+        }
+        if (s_rc_snap) {
+            sockaddr_storage ss{};
+            std::memcpy(&ss, &to, sizeof(to));
+            // SNAPSHOT_BEGIN/CHUNK/END are content-addressed (reassembled by byte
+            // offset), so they ride an UNORDERED channel — a lost chunk delays only
+            // itself, not the other 65 (no head-of-line block on the 1MB transfer).
+            // Backfill EVENT_BATCH + OP_BASELINE stay on the ORDERED bulk channel.
+            uint8_t rc_chan = RC_CHAN_SPEC_SNAPSHOT;
+            int     rc_cls  = RC_CLASS_RELIABLE_ORDERED;
+            if (len >= static_cast<int>(sizeof(SpecDataHeader))) {
+                SpecDataType t = reinterpret_cast<const SpecDataHeader*>(buf)->type;
+                if (t == SpecDataType::SNAPSHOT_BEGIN || t == SpecDataType::SNAPSHOT_CHUNK ||
+                    t == SpecDataType::SNAPSHOT_END) {
+                    rc_chan = RC_CHAN_SPEC_BLOB;
+                    rc_cls  = RC_CLASS_RELIABLE_UNORDERED;
+                }
+            }
+            ReliableChannel_SendTo(ss, rc_chan, rc_cls,
+                                   reinterpret_cast<const uint8_t*>(buf), static_cast<int>(len));
+            return;
+        }
+    }
     if (g_state.spec_transport_relay) {
         if (!g_state.spec_relay_out) return;
         // Look up spec_user_id from the addr. Subscriber list is short
-        // (capacity-bounded; SPECTATOR_DEFAULT_CAPACITY = 4 today), so
+        // (capacity-bounded by SPECTATOR_DEFAULT_CAPACITY = 32), so a
         // linear scan is fine.
         const char* spec_uid = nullptr;
         for (const auto& sub : g_state.subscribers) {
@@ -284,13 +350,28 @@ void FlushBatch() {
 
 // ─── Phase F: UDP input accelerator (host side) ──────────────────────────
 
-// Kill switch: FM2K_SPEC_UDP=0 disables both the host sender and the
-// viewer admission. Default ON.
+// Kill switch: FM2K_SPEC_UDP=0 disables both the host sender and the viewer
+// admission. Default ON — EXCEPT when the ReliableChannel carries the spectator
+// stream (FM2K_SPEC_RC=1): RC+Reed-Solomon+CRC is a single reliable-ordered,
+// low-latency, integrity-checked input path that makes this accelerator obsolete.
+// The accelerator is a SECOND, non-CRC-protected input path; under loss it can
+// admit a marginally-wrong input (observed 1-frame desync at 15% loss), so we
+// turn it off under RC. FM2K_SPEC_UDP=1 explicitly forces it back on (A/B).
 bool SpecUdpEnabled() {
     static int s_state = -1;
     if (s_state < 0) {
-        const char* v = std::getenv("FM2K_SPEC_UDP");
-        s_state = (v && v[0] == '0' && v[1] == '\0') ? 0 : 1;
+        const char* u  = std::getenv("FM2K_SPEC_UDP");
+        if (u) {
+            s_state = (u[0] == '0' && u[1] == '\0') ? 0 : 1;  // explicit override wins
+        } else {
+            // DEFAULT OFF. This is a SECOND, non-CRC-protected input path; under
+            // loss it can admit a marginally-wrong input (observed 1-frame
+            // desync at 15% loss). A desync is worse than the HOL latency it was
+            // meant to hide, so it must be opt-in (FM2K_SPEC_UDP=1). The
+            // reliable-ordered + Reed-Solomon path (FM2K_SPEC_RC=1) is the
+            // recommended fast-AND-safe spectator transport for lossy links.
+            s_state = 0;
+        }
     }
     return s_state != 0;
 }
@@ -384,3 +465,23 @@ void SendOpBaselineTo(const sockaddr_in& to, uint32_t baseline) {
 }
 
 }  // namespace specnode
+
+// --- Global-scope (not specnode): ReliableChannel consumer glue -------------
+// RC delivery -> the same handler TCP-arrived spec data uses. Ordered channel
+// guarantees ops-before-inputs and contiguous frames, which HandleSpecData
+// already assumes — so the consumer contract is preserved by construction.
+static void RcSpectatorDeliver(void* /*ctx*/, const sockaddr_storage& from,
+                               uint8_t channel, const uint8_t* data, int len) {
+    // Live (ch1, ordered), backfill/op (ch2, ordered), and snapshot blob (ch3,
+    // unordered offset-reassembled) all carry SpecData framing; the consumer
+    // demuxes by SpecDataType and reorders EVENT_BATCH by frame across channels.
+    if ((channel != RC_CHAN_SPEC && channel != RC_CHAN_SPEC_SNAPSHOT &&
+         channel != RC_CHAN_SPEC_BLOB) || len <= 0) return;
+    sockaddr_in from4{};
+    std::memcpy(&from4, &from, sizeof(from4));
+    SpectatorNode_HandleSpecData(data, static_cast<size_t>(len), from4, channel);
+}
+
+void SpectatorNode_RegisterRcDeliver() {
+    ReliableChannel_SetDeliver(&RcSpectatorDeliver, nullptr);
+}

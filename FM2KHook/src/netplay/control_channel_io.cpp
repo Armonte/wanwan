@@ -5,6 +5,7 @@
 // mutates g_gekko_packet_queue / g_recv_buffer). ENGINE-AGNOSTIC.
 #include "control_channel.h"
 #include "control_channel_internal.h"
+#include "host_clock.h"         // host-clock sync sampling on PING/PONG
 #include "globals.h"            // g_player_index (peer-addr learning context)
 #include "nat_traversal.h"      // fm2k::nat relay wrap/unwrap + 0xCD datagrams
 #include <SDL3/SDL_log.h>
@@ -195,14 +196,36 @@ void RawReceive() {
 
                 // Handle PING/PONG internally before callback
                 if (packet->header.type == CtrlMsg::PING) {
-                    // Respond with PONG containing the sender's timestamp
+                    // Sample the sender's host-clock stamp + frame (clock sync +
+                    // frame projection), then respond with a PONG carrying our own.
+                    if (fm2k::hostclock::Enabled()) {
+                        uint64_t their = ((uint64_t)packet->data.ping.host_us_hi << 32)
+                                       | packet->data.ping.host_us_lo;
+                        if (their) fm2k::hostclock::OnInboundTimestamp(
+                                       their, packet->data.ping.frame,
+                                       fm2k::hostclock::LocalMicros());
+                    }
                     CtrlPacket pong = {};
                     pong.header.type = CtrlMsg::PONG;
-                    pong.data.sync.frame = packet->data.sync.frame;  // Echo back sender's time
+                    pong.data.ping.send_ms = packet->data.ping.send_ms;  // echo for RTT
+                    uint64_t h = fm2k::hostclock::Enabled()
+                               ? fm2k::hostclock::StampOutbound() : 0;
+                    pong.data.ping.host_us_lo = (uint32_t)(h & 0xFFFFFFFFu);
+                    pong.data.ping.host_us_hi = (uint32_t)(h >> 32);
+                    pong.data.ping.frame      = fm2k::hostclock::Enabled()
+                                              ? fm2k::hostclock::LocalFrame() : 0;
                     ControlChannel_Send(pong);
                 } else if (packet->header.type == CtrlMsg::PONG) {
-                    // Calculate RTT from echoed timestamp
-                    ControlChannel_HandlePong(packet->data.sync.frame);
+                    // Calculate RTT from echoed timestamp, then sample the peer's
+                    // host-clock stamp + frame.
+                    ControlChannel_HandlePong(packet->data.ping.send_ms);
+                    if (fm2k::hostclock::Enabled()) {
+                        uint64_t their = ((uint64_t)packet->data.ping.host_us_hi << 32)
+                                       | packet->data.ping.host_us_lo;
+                        if (their) fm2k::hostclock::OnInboundTimestamp(
+                                       their, packet->data.ping.frame,
+                                       fm2k::hostclock::LocalMicros());
+                    }
                 } else if (packet->header.type == CtrlMsg::DELAY_PROPOSAL) {
                     // Stash the peer's delay candidate (#24). Battle
                     // start adopts max(local, this) so both peers run
@@ -227,6 +250,17 @@ void RawReceive() {
             // Defined in nat_traversal.h. Returning here keeps the byte
             // out of GekkoNet's queue and the spectator path.
             ::fm2k::nat::HandleDatagram(eff_data, eff_len, from_addr);
+        } else if (eff_len >= 1 && first == 0xCB) {
+            // ReliableChannel datagram (0xCB) — reliable-ordered + FEC message
+            // layer over UDP (reliable.io endpoint). Body after the tag goes to
+            // the RC endpoint; delivery is dispatched by channel. Runs under
+            // g_poll_mutex (this loop's contract), which RC requires.
+            extern void ReliableChannel_OnDatagram(const sockaddr_storage& from,
+                                                   const uint8_t* body, int body_len);
+            ReliableChannel_OnDatagram(
+                from_addr,
+                reinterpret_cast<const uint8_t*>(eff_data) + 1,
+                static_cast<int>(eff_len) - 1);
         } else if (eff_len >= 1 && first == 0xCE) {
             // Spectator UDP input accelerator (Phase F). Narrow handler:
             // accepts ONLY UDP_INPUT_BATCH from the current upstream;

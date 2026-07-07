@@ -289,32 +289,39 @@ bool Netplay_StartBattle() {
 
     // Per-player input delay (#24 -- Melancholy/Spooder, bug bumbler).
     //
-    // Peers used to compute delay INDEPENDENTLY off their own RTT
-    // samples. On jittery links the two means drifted apart and the
-    // peers ran different delays (Melancholy 10 / Spooder 5); a manual-
-    // delay challenger likewise desynced a computed-delay opponent.
+    // TWO paths:
+    //  * MANUAL (FM2K_LOCAL_DELAY set): the value is authoritative and PURELY
+    //    LOCAL -- run verbatim, never pulled up to the peer's. Each player owns
+    //    their delay and the two sides may run different values. This is safe:
+    //    GekkoNet injects local input as frame+delay and transmits it
+    //    frame-tagged, so the peer needs no knowledge of our delay (input.cpp
+    //    AddInput(frame + _input_delay, ...); advantage uses GetMinLocalDelay()).
+    //    A lower-than-warranted delay just costs more rollback / teleportation
+    //    on the chooser's side -- their trade-off, not the opponent's problem.
     //
-    // Now each peer broadcasts a DELAY_PROPOSAL over the control channel
-    // through CSS (ControlChannel_SendDelayProposal on the ping cadence)
-    // and we adopt max(local candidate, remote candidate) here. max is
-    // commutative, so both peers land on the SAME delay. The candidate
-    // already folds in a manual FM2K_LOCAL_DELAY override, so a peer who
-    // pins 14 pulls the other peer up to 14 instead of desyncing.
+    //  * AUTO (no override): peers exchange a DELAY_PROPOSAL over the control
+    //    channel through CSS (ControlChannel_SendDelayProposal on the ping
+    //    cadence) and adopt max(local candidate, remote candidate). max is
+    //    commutative, so both AUTO peers land on the SAME smooth delay -- the
+    //    right default when neither side expressed a preference. (History: peers
+    //    once computed delay independently and drifted apart on jittery links;
+    //    the shared-max fixed that. It does NOT override a manual choice.)
     //
-    // ControlChannel computes the local candidate from measured RTT per
-    // the delay mode (FM2K_DELAY_MODE: avg = mean RTT, peak = worst
-    // RTT) at FM2K's 100 Hz, where 10 ms is one frame budget:
+    // ControlChannel computes the local candidate from measured RTT per the
+    // delay mode (FM2K_DELAY_MODE: avg = mean RTT, peak = worst RTT) at FM2K's
+    // 100 Hz, where 10 ms is one frame budget:
     //   candidate = clamp(ceil(one_way_ms / 10), 2, 15)
-    // A manual override instead yields the user's 0..16 verbatim.
     //
-    // The negotiated value is pinned for the connection lifetime
-    // (g_session_delay_cached) so it stays stable across every CSS->
-    // battle transition. A manual override bypasses the cache so the
-    // user can still flip it mid-session.
+    // The AUTO value is pinned for the connection lifetime
+    // (g_session_delay_cached) so it stays stable across every CSS-> battle
+    // transition. A manual override bypasses the cache so it can flip mid-session.
     bool has_manual_delay = false;
+    int  manual_delay     = 0;
     if (const char* env = std::getenv("FM2K_LOCAL_DELAY"); env && env[0]) {
         int v = std::atoi(env);
-        if (v >= 0 && v <= 16) has_manual_delay = true;
+        // No small clamp: a player owns their local delay. The only ceiling is
+        // GekkoNet's input ring (DEFAULT_BUFF_SIZE=128) -- stay clear of it.
+        if (v >= 0 && v <= MAX_LOCAL_DELAY) { has_manual_delay = true; manual_delay = v; }
     }
     const uint32_t rtt_mean_ms  = ControlChannel_GetRttMs();
     const uint32_t rtt_worst_ms = ControlChannel_GetWorstRttMs();
@@ -323,21 +330,31 @@ bool Netplay_StartBattle() {
 
     int local_delay;
     enum DelaySource { DS_MANUAL, DS_COMPUTED, DS_CACHED } delay_source;
-    if (g_session_delay_cache_valid && !has_manual_delay) {
+    if (has_manual_delay) {
+        // The user's explicit local delay is authoritative and PURELY LOCAL --
+        // never pulled up to the peer's value. Asymmetric delay is safe:
+        // GekkoNet tags each local input with frame+delay and transmits it
+        // frame-tagged, so the peer needs no knowledge of our delay. Choosing a
+        // lower delay than the link warrants simply means more rollback /
+        // teleportation on our side -- the player's own trade-off. Bypasses the
+        // negotiation cache so it can be flipped mid-session.
+        local_delay  = manual_delay;
+        delay_source = DS_MANUAL;
+    } else if (g_session_delay_cache_valid) {
         local_delay  = g_session_delay_cached;
         delay_source = DS_CACHED;
     } else {
-        // local_cand is -1 only when no RTT has been measured AND no
-        // manual override -- fall back to the conservative CSS delay.
+        // Auto path (no manual override): size from RTT and adopt
+        // max(local, remote) so both auto peers land on the same smooth delay.
+        // local_cand is -1 only when no RTT has been measured -- fall back to
+        // the conservative CSS delay.
         const int lc = (local_cand < 0) ? CSS_LOCAL_DELAY : local_cand;
         local_delay  = (remote_cand > lc) ? remote_cand : lc;
-        delay_source = has_manual_delay ? DS_MANUAL : DS_COMPUTED;
-        if (!has_manual_delay) {
-            g_session_delay_cached      = local_delay;
-            g_session_delay_cache_valid = true;
-            // Fresh worst-RTT window for the next match's diagnostics.
-            ControlChannel_ResetWorstRttMs();
-        }
+        delay_source = DS_COMPUTED;
+        g_session_delay_cached      = local_delay;
+        g_session_delay_cache_valid = true;
+        // Fresh worst-RTT window for the next match's diagnostics.
+        ControlChannel_ResetWorstRttMs();
     }
 
     // prediction_window: how far GekkoNet will speculatively rewind

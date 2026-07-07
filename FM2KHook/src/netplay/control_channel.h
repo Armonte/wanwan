@@ -95,10 +95,11 @@ void     ControlChannel_ResetWorstRttMs();
 
 // --- Input-delay negotiation (#24) -------------------------------------
 // Each peer periodically broadcasts its own delay candidate over the
-// control channel during CSS; Netplay_StartBattleSession then adopts
-// max(local, remote) so both peers always run identical input delay.
-// Fixes the asymmetric-delay bug where two peers computed different
-// values off their own RTT samples (Melancholy/Spooder, bug bumbler).
+// control channel during CSS. Netplay_StartBattleSession then EITHER runs a
+// manual FM2K_LOCAL_DELAY verbatim (purely local -- each player owns their
+// delay; asymmetric is safe, just more rollback for the lower side) OR, when
+// neither side pinned a value, adopts max(local, remote) so both AUTO peers
+// land on the same smooth delay.
 
 // Delay-mode formula: 0 = avg ping (mean RTT), 1 = peak ping (worst
 // RTT). Set once at init from the launcher's FM2K_DELAY_MODE env var.

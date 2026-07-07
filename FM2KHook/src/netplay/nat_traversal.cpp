@@ -1,4 +1,5 @@
-// FM2K NAT traversal — STUN probe + 0xCD demux. Phase-1 scaffold.
+// FM2K NAT traversal — 0xCD STUN probe + 0xCD demux + burst hole-punch +
+// relay fallback + dual-stack IPv6 (global-v6 discover/advertise).
 //
 // Reads:
 //   FM2K_HUB_UDP_ADDR    — "ip:port" of the hub's UDP STUN responder.
@@ -11,14 +12,18 @@
 //                           via match_start. Used to authenticate
 //                           inbound CTRL_PUNCH packets.
 //
-// Real burst-punch driver (port of bbbr_holepunch.cpp's burst+priority
-// approach) is the next deliverable; see docs/FM2K_Matchmaking_Design.md
-// §15.4. For now StartPunch/HandleDatagram log intent and don't yet
-// open the pinhole.
+// The burst-punch driver (port of bbbr_holepunch.cpp's burst+priority
+// approach) IS implemented: StartPunch fires a 30-packet priority burst over
+// v4 + same-LAN + native IPv6 candidates in parallel, HandleDatagram latches
+// the first authenticated peer, and the worker falls back to the hub relay
+// (0xCF envelope) if no direct path latches. DiscoverAndPublishLocalV6
+// advertises our own global v6 so the peer can punch us directly (no NAT).
+// See docs/FM2K_Matchmaking_Design.md.
 
 #include "nat_traversal.h"
 #include "control_channel.h"
 #include "addr6_util.h"        // Sendto4or6 (dual-stack v4-mapped send)
+#include "../ui/shared_mem.h"  // SharedMem_PublishLocalV6 (hook -> launcher -> hub)
 
 #include <SDL3/SDL_log.h>
 
@@ -46,6 +51,11 @@ constexpr size_t MATCH_TOKEN_LEN = 16;
 
 bool g_have_reflexive = false;
 sockaddr_in g_reflexive{};
+
+// Our own global IPv6 endpoint (addr + bound UDP port), discovered at NAT
+// init. Advertised to the peer so it can punch us directly over v6 (no NAT).
+bool         g_have_local_v6 = false;
+sockaddr_in6 g_local_v6{};
 
 uint8_t g_match_token[MATCH_TOKEN_LEN] = {};
 bool    g_match_token_set = false;
@@ -161,6 +171,76 @@ bool SendStunProbe() {
         "NAT: STUN probe sent to %s:%u (user_id=%s)",
         host.c_str(), (unsigned)port, user_id);
     return true;
+}
+
+bool DiscoverGlobalV6(sockaddr_in6& out) {
+    // Connected-UDP source-address trick. connect() to a global v6 dest does
+    // NOT send anything; it makes the OS pick the source address it would use
+    // outbound, which getsockname() then reveals. That address is exactly what
+    // a peer should send to (it matches our real outbound source, so the peer's
+    // v6 firewall opens the right pinhole when we burst-punch). No dependency
+    // on GetAdaptersAddresses / iphlpapi, and it naturally excludes link-local,
+    // ULA, and loopback (the OS won't pick those to reach a global dest).
+    SOCKET s = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+    if (s == INVALID_SOCKET) return false;
+
+    sockaddr_in6 dst{};
+    dst.sin6_family = AF_INET6;
+    dst.sin6_port   = htons(53);
+    // A well-known global v6 address (Google public DNS) purely to steer
+    // source-address selection. Nothing is sent to it.
+    inet_pton(AF_INET6, "2001:4860:4860::8888", &dst.sin6_addr);
+
+    bool ok = false;
+    if (connect(s, reinterpret_cast<sockaddr*>(&dst), sizeof(dst)) == 0) {
+        sockaddr_in6 name{};
+        int nlen = sizeof(name);
+        if (getsockname(s, reinterpret_cast<sockaddr*>(&name), &nlen) == 0) {
+            // Global unicast is 2000::/3 (first 3 bits == 001). Anything else
+            // (link-local fe80::/10, ULA fc00::/7, loopback ::1, v4-mapped) is
+            // not a routable v6 endpoint a remote peer can reach.
+            const uint8_t first = name.sin6_addr.s6_addr[0];
+            if ((first & 0xE0) == 0x20) {
+                out = name;
+                ok = true;
+            }
+        }
+    }
+    closesocket(s);
+    return ok;
+}
+
+void DiscoverAndPublishLocalV6() {
+    sockaddr_in6 v6{};
+    if (!DiscoverGlobalV6(v6)) {
+        g_have_local_v6 = false;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "NAT: no global IPv6 on this host — v4/relay only (no direct v6 path)");
+        // Publish an all-zero addr so the launcher can clear any stale value.
+        uint8_t zero[16] = {};
+        SharedMem_PublishLocalV6(zero, 0);
+        return;
+    }
+    // Stamp OUR bound UDP port onto the endpoint (getsockname above returned
+    // the scratch socket's ephemeral port, not the game socket's). The peer
+    // punches (our global v6 addr : our game UDP port).
+    const uint16_t port_be = htons(NetSocket_GetLocalPort());
+    v6.sin6_port = port_be;
+    g_local_v6      = v6;
+    g_have_local_v6 = true;
+
+    char v6s[INET6_ADDRSTRLEN] = {};
+    inet_ntop(AF_INET6, &v6.sin6_addr, v6s, sizeof(v6s));
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "NAT: global IPv6 [%s]:%u — advertising as a DIRECT v6 punch candidate "
+        "(no NAT); publishing to launcher for the peer",
+        v6s, (unsigned)NetSocket_GetLocalPort());
+
+    SharedMem_PublishLocalV6(v6.sin6_addr.s6_addr, port_be);
+}
+
+const sockaddr_in6* GetLocalGlobalV6() {
+    return g_have_local_v6 ? &g_local_v6 : nullptr;
 }
 
 void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,

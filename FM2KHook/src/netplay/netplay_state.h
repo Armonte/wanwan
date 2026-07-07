@@ -210,6 +210,21 @@ struct CtrlPacket {
             uint8_t  pad[2];
         } sync;
 
+        // PING / PONG timing. send_ms overlaps sync.frame (same offset-0 uint32)
+        // so RTT stays wire-compatible with peers that never learned host-clock
+        // sync. host_us_{lo,hi} carry the sender's host-clock send stamp (µs) as
+        // two 32-bit halves (no uint64 in the union → alignment/size unchanged).
+        // host_us == 0 => sender has no host clock → receiver uses RTT/2.
+        // frame = the sender's current battle sim frame at send time: the receiver
+        // projects the remote's frame forward by the elapsed host-clock time for a
+        // JITTER-FREE frame-advantage (pacing off production time, not arrival time).
+        struct {
+            uint32_t send_ms;
+            uint32_t host_us_lo;
+            uint32_t host_us_hi;
+            uint32_t frame;
+        } ping;
+
         // CHAT data — short messages (gg, wp, ez, etc.). Longer chat goes
         // over the lobby TCP channel. Null-terminated within the 24 bytes.
         struct {

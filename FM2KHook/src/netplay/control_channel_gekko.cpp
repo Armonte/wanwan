@@ -64,9 +64,16 @@ static void MultiplexAdapter_Send(GekkoNetAddress* addr, const char* data, int l
 
     // In relay mode all gameplay traffic must still go through the relay
     // wrapper. RawSend handles that path internally; we keep the explicit
-    // peer address only for direct (non-relay) sends. TODO: spectators
-    // through a relay are a separate problem (the relay only knows about
-    // one session_id pair); for now spectators go direct only.
+    // peer address only for direct (non-relay) sends.
+    //
+    // KNOWN LIMITATION (cross-region 40k): spectators go DIRECT ONLY. The 0xCF
+    // relay is a 2-slot A<->B pair keyed by one session_id, so it can't fan a
+    // host out to many spectators. A spectator behind symmetric/CGNAT that
+    // can't hole-punch the host is therefore currently UNREACHABLE. The real
+    // fix is a spectator-aware relay (hub multiplexes one host to N spec
+    // session_ids) or the existing hub WS-fanout path (FM2K_SPEC_TRANSPORT=
+    // relay) — NOT this P2P 0xCF envelope. Until then, symmetric-NAT specs
+    // must use the WS-relay transport.
     if (::fm2k::nat::IsRelayMode()) {
         RawSend(data, length);
         return;

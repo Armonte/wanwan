@@ -166,6 +166,24 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
                 addr_str);
             return;
         }
+        // Hard bound on native GekkoSpectator actors per session. GekkoNet has
+        // no remove_actor, so a NAT-remapped reconnect (new ip:port each time)
+        // would otherwise add a PERMANENT actor per churn cycle -> O(N)/tick
+        // event fan-out that crushes the host frame budget to single-digit FPS.
+        // Well above any real spectator count; a joiner past the cap still gets
+        // the full stream over the SpectatorNode TCP/RC path (this native actor
+        // is a secondary confirmed-input delivery, not the primary transport).
+        constexpr size_t kMaxGekkoSpectators = 64;
+        if (g_gekko_spectator_addrs.size() >= kMaxGekkoSpectators) {
+            static uint32_t s_cap_log = 0;
+            if ((s_cap_log++ & 0x1F) == 0) {
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "SpectatorNode: GekkoSpectator actor cap %zu reached (%zu addrs this "
+                    "session) — %s served via SpectatorNode stream only (no native actor)",
+                    kMaxGekkoSpectators, g_gekko_spectator_addrs.size(), addr_str);
+            }
+            return;
+        }
         GekkoNetAddress addr = {};
         addr.data = (void*)addr_str;
         addr.size = (int)strlen(addr_str);
@@ -191,6 +209,33 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
     // doesn't cull this slot mid-rebind.
     for (auto& sub : g_state.subscribers) {
         if (AddrEqual(sub.addr, from)) {
+            // Surgical gap-fill: a still-live viewer (TCP conn up) declared
+            // a resume cursor BEHIND our live edge. This is the mid-match
+            // snapshot-join gap -- the viewer's RC live stream started past
+            // the snapshot anchor (RC endpoint-up delay under loss) and the
+            // frames between its TCP backfill's end and the RC live start
+            // reached it over neither channel. Re-ship exactly
+            // [resume_frame .. live-cursor) over the EXISTING reliable conn
+            // (SendSessionBackfillFromFrame -> TCP by default) without
+            // resetting bind state, dropping the conn, or re-sending the
+            // snapshot. The viewer's positional dedup drops any overlap
+            // with the RC stream, so the gap heals in one round trip. The
+            // old recovery (SPEC_LEAVE + full re-JOIN + re-snapshot) looped
+            // forever under sustained loss.
+            if (resume_frame > 0 && sub.tcp_bound &&
+                !g_state.spec_transport_relay &&
+                SpectatorTCP::HasLiveConnFor(sub.addr)) {
+                sub.last_seen_ms = GetTickCount64();
+                sub.udp_ok       = udp_ok;
+                CtrlPacket ack = BuildJoinAckPacket();
+                ControlChannel_SendTo(ack, sub.addr);
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "SpectatorNode: gap-fill for %s from INPUT-frame=%u "
+                    "(live conn -- reliable re-ship, no reset)",
+                    addr_buf, resume_frame);
+                SendSessionBackfillFromFrame(sub.addr, resume_frame);
+                return;
+            }
             if (sub.tcp_bound && !g_state.spec_transport_relay &&
                 SpectatorTCP::HasLiveConnFor(sub.addr)) {
                 // Live stream already flowing: this JOIN_REQ is a dup or
@@ -480,6 +525,28 @@ bool SpectatorNode_RequestJoin(const sockaddr_in& upstream, SpecJoinMode mode) {
     }
     ControlChannel_SendTo(req, upstream);
     return true;
+}
+
+void SpectatorNode_RequestGapFill() {
+    // Surgical gap-fill: the live stream is flowing (we're still
+    // subscribed) but our admission cursor stalled behind a gap that
+    // neither the backfill nor the mid-stream live channel filled. Ask
+    // the host to re-ship [next_expected .. live-cursor) over the reliable
+    // conn. Unlike RequestJoin this leaves subscribed_upstream / bind state
+    // untouched -- the host's HandleJoinReq recognises resume_frame>0 on a
+    // still-live sub and ships the gap WITHOUT dropping the connection or
+    // re-sending the snapshot.
+    if (g_state.upstream_addr.sin_port == 0) return;
+    CtrlPacket req = {};
+    req.header.type             = CtrlMsg::SPEC_JOIN_REQ;
+    req.data.spec_join_req.mode = static_cast<uint8_t>(g_state.last_requested_mode);
+    if (SpecUdpEnabled()) {
+        req.data.spec_join_req.reserved[0] |= SPEC_JOIN_UDP_OK;
+    }
+    req.data.spec_join_req.reserved[0] |= SPEC_JOIN_RESUME;
+    const uint32_t resume = g_state.next_expected_frame;
+    std::memcpy(&req.data.spec_join_req.reserved[1], &resume, 4);
+    ControlChannel_SendTo(req, g_state.upstream_addr);
 }
 
 void SpectatorNode_HandleJoinAck(const sockaddr_in& from, uint8_t host_session_kind,

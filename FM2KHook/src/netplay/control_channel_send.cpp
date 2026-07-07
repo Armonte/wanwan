@@ -4,6 +4,7 @@
 // ENGINE-AGNOSTIC.
 #include "control_channel.h"
 #include "control_channel_internal.h"
+#include "host_clock.h"
 #include <SDL3/SDL_log.h>
 #include <cstring>
 
@@ -38,7 +39,13 @@ void ControlChannel_SendHelloAck(uint8_t player_id) {
 void ControlChannel_SendPing() {
     CtrlPacket pkt = {};
     pkt.header.type = CtrlMsg::PING;
-    pkt.data.sync.frame = GetTimeMs();  // Include send time for RTT calculation
+    pkt.data.ping.send_ms = GetTimeMs();  // overlaps sync.frame — send time for RTT
+    // Carry this node's host-clock send stamp + current battle frame so the peer can
+    // sync its clock and project our frame (jitter-free frame-advantage).
+    uint64_t h = fm2k::hostclock::Enabled() ? fm2k::hostclock::StampOutbound() : 0;
+    pkt.data.ping.host_us_lo = (uint32_t)(h & 0xFFFFFFFFu);
+    pkt.data.ping.host_us_hi = (uint32_t)(h >> 32);
+    pkt.data.ping.frame      = fm2k::hostclock::Enabled() ? fm2k::hostclock::LocalFrame() : 0;
     ControlChannel_Send(pkt);
     g_ping_send_time = GetTimeMs();
 }

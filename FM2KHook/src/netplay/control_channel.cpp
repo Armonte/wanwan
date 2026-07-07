@@ -348,6 +348,9 @@ bool NetSocket_Init(uint16_t local_port, const char* remote_addr) {
     }
 
     g_socket_initialized = true;
+    // ReliableChannel endpoint (0xCB) up once the socket is live.
+    extern void ReliableChannel_NetInit();
+    ReliableChannel_NetInit();
     g_local_player_id = static_cast<uint8_t>(g_player_index);
     g_last_recv_time = GetTimeMs();
     // 0 sentinel — the first ControlChannel_Poll call sees this and
@@ -373,6 +376,9 @@ void NetSocket_Shutdown() {
     if (!g_socket_initialized) return;
 
     KeepaliveTimer_Stop();
+
+    extern void ReliableChannel_NetShutdown();
+    ReliableChannel_NetShutdown();
 
     if (g_socket != INVALID_SOCKET) {
         closesocket(g_socket);
@@ -457,6 +463,12 @@ static void PollImplLocked() {
 
     // Receive all pending packets
     RawReceive();
+
+    // ReliableChannel: process acks + retransmit unacked reliable messages.
+    // Runs under g_poll_mutex (this fn's contract); inbound 0xCB datagrams were
+    // already fed to the RC endpoint inside RawReceive above.
+    extern void ReliableChannel_NetUpdate();
+    ReliableChannel_NetUpdate();
 
     // TCP path for the spectator INPUT_BATCH stream. Host-side: drain
     // the listener accept queue + read-discard from connected subs.
@@ -621,13 +633,15 @@ int ControlChannel_GetDelayMode() {
 }
 
 int ControlChannel_GetLocalDelayCandidate() {
-    // A manual FM2K_LOCAL_DELAY override is the user's explicit choice
-    // and is exchanged like any other candidate, so a peer who pins
-    // delay 14 pulls the other peer up to 14 via the max() at battle
-    // start instead of leaving them on a desynced computed value.
+    // A manual FM2K_LOCAL_DELAY override is the user's explicit choice. It is
+    // still advertised as this peer's candidate so an AUTO opponent can factor
+    // it into their max(); it does NOT force a manual opponent (who runs their
+    // own value verbatim -- see Netplay_StartBattle).
     if (const char* env = std::getenv("FM2K_LOCAL_DELAY"); env && env[0]) {
         int v = std::atoi(env);
-        if (v >= 0 && v <= 16) return v;
+        // No small clamp -- the player owns their delay. Only ceiling is
+        // GekkoNet's input ring (DEFAULT_BUFF_SIZE=128); keep clear of it.
+        if (v >= 0 && v <= 120) return v;
     }
     // No override: size from the measured RTT window. avg mode uses the
     // mean (lower delay, spikes can rollback); peak mode uses the p90

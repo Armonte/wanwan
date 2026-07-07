@@ -108,3 +108,13 @@ CLAUDE.md
 
 # release runbook -- local only, not published
 RELEASING.md
+
+# Test-run output (spec_selftest / gate_runs / capture tools) — transient, never commit
+/logs/
+tools/.spec_selftest/
+
+# Cheat Engine tables — RE artifacts, never commit
+*.CT
+
+# Internal design/RE/AI docs — kept local, not published
+/docs/

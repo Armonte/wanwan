@@ -1,4 +1,0 @@
-Issue,Description,Additional Details
-Forward-Back,Lilithport changes forward+back to be treated as back. Alters client-side fixes.,"Usually fixes Walk-Block related issues in 2DFM, but means that there's not parity between online/offline experience."
-,,
-Grab Turns,"You can get hit when grabbing a player facing away from you, if that player has a hitbox active that would hit the opponent after turning around.","In 2DFM, players are turned to face the opponent immediately when grabbed. This normally doesn't cause issues, but on LilithPort, the player's invulnerability updates a frame later. This makes active hitboxes hit the grab user when playing online."

@@ -238,6 +238,121 @@ def wait_ports_free(ports, timeout=20.0):
           f"launching anyway")
 
 
+# ---------------------------------------------------------------------------
+# LIVE-EDGE spectator metric -- the "held the live edge" pass condition.
+#
+# Question: did the spectator's APPLIED battle-frame progression REACH AND HOLD
+# near the host's FINAL battle frame? This is a LIVENESS / COVERAGE check --
+# deliberately distinct from an engine desync (the rng/hp/CINPUT gates) and from
+# "match didn't complete" (the .fm2krep check). Three separate signals.
+#
+# We measure each side's furthest battle frame from the per-frame `[CINPUT] bf=`
+# marker (host: confirmed input post-gekko; spec: applied input -- the spec never
+# rolls back). bf increments 0,1,2,... within a match and RESETS to 0 at the next
+# match, so it is robust across the multi-match loss sweep. We deliberately do
+# NOT key off:
+#   * `BATTLE STATUS: frame=` -- g_netplay_frame RESETS per match but the log's
+#     500-frame cadence is a process-static, so it stops firing after match 1
+#     (kept only as a single-match fallback when [CINPUT] is absent).
+#   * `[SPEC-UDP] admitted=` -- the UDP-fast-path admit COUNT only; frames the
+#     spectator receives via TCP backfill never bump it, so it undercounts the
+#     true progression badly (observed 226 admitted while the spectator actually
+#     reached bf 1499). Parsed here ONLY for the flatline/stall diagnostic.
+# ---------------------------------------------------------------------------
+LIVE_EDGE_TOLERANCE = 100   # battle frames the spectator may legitimately trail
+
+
+def _cinput_seg_maxbf(log_path, min_seg=5):
+    """Per-match furthest [CINPUT] bf as a list (one entry per battle segment).
+    A drop in bf marks a match boundary. Degenerate <min_seg blips are dropped."""
+    import re
+    pat = re.compile(r"\[CINPUT\] bf=(\d+)")
+    segs, cur_max, last = [], -1, -1
+    try:
+        fh = open(log_path, errors="ignore")
+    except OSError:
+        return segs
+    for ln in fh:
+        m = pat.search(ln)
+        if not m:
+            continue
+        bf = int(m.group(1))
+        if bf < last and cur_max >= 0:      # bf reset -> new match segment
+            segs.append(cur_max)
+            cur_max = -1
+        cur_max = max(cur_max, bf)
+        last = bf
+    if cur_max >= 0:
+        segs.append(cur_max)
+    return [s for s in segs if s >= min_seg]
+
+
+def _battle_status_maxframe(log_path):
+    """Fallback host progression: max `BATTLE STATUS: frame=<F>` (g_netplay_frame).
+    Only reliable single-match; used when the host log has no [CINPUT]."""
+    import re
+    pat = re.compile(r"BATTLE STATUS: frame=(\d+)")
+    mx = None
+    try:
+        for ln in open(log_path, errors="ignore"):
+            m = pat.search(ln)
+            if m:
+                v = int(m.group(1))
+                mx = v if mx is None else max(mx, v)
+    except OSError:
+        pass
+    return mx
+
+
+def _spec_udp_admitted_series(log_path):
+    """The `[SPEC-UDP] admitted=<N>` 1Hz series (UDP-fast-path admit count)."""
+    import re
+    pat = re.compile(r"\[SPEC-UDP\] admitted=(\d+)")
+    out = []
+    try:
+        for ln in open(log_path, errors="ignore"):
+            m = pat.search(ln)
+            if m:
+                out.append(int(m.group(1)))
+    except OSError:
+        pass
+    return out
+
+
+def spectator_liveness(host_log, spec_log, tolerance=LIVE_EDGE_TOLERANCE):
+    """Did the spectator reach & HOLD near the host's final battle frame?
+
+    Returns a dict; `reached` (bool) is the pass condition. Also imported and
+    called by tools/desync_seed_sweep.py, so it must stay side-effect free."""
+    host_segs = _cinput_seg_maxbf(host_log)
+    spec_segs = _cinput_seg_maxbf(spec_log)
+    # Host's final battle frame = furthest bf in its LAST match (fallback: the
+    # single-match BATTLE STATUS max when [CINPUT] is absent).
+    host_final = host_segs[-1] if host_segs else _battle_status_maxframe(host_log)
+    # A spectator with FEWER battle segments than the host fell a whole match
+    # behind = did not hold the live edge.
+    followed_all = bool(spec_segs) and len(spec_segs) >= max(1, len(host_segs))
+    if spec_segs:
+        idx = (len(host_segs) - 1) if host_segs else -1
+        spec_max = spec_segs[idx] if followed_all else spec_segs[-1]
+    else:
+        spec_max = 0
+    gap = (host_final - spec_max) if host_final is not None else None
+    reached = bool(followed_all and host_final is not None
+                   and spec_max >= host_final - tolerance)
+    adm = _spec_udp_admitted_series(spec_log)
+    spec_udp_admitted = adm[-1] if adm else 0
+    # Flatlined = the UDP admit counter plateaued at the tail (diagnostic only;
+    # it also plateaus on a healthy end-of-feed drain, so never gate on it alone).
+    admitted_flatlined = len(adm) >= 3 and adm[-1] == adm[-3]
+    stall_frame = spec_max if not reached else None
+    return dict(host_final=host_final, spec_max=spec_max, gap=gap, reached=reached,
+                followed_all=followed_all, host_matches=len(host_segs),
+                spec_matches=len(spec_segs), spec_udp_admitted=spec_udp_admitted,
+                admitted_flatlined=admitted_flatlined, stall_frame=stall_frame,
+                tolerance=tolerance)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--frames", type=int, default=1500,
@@ -300,6 +415,11 @@ def main():
     ap.add_argument("--no-fake-churn", action="store_true",
                     help="disable the last fake spectator's leave/rejoin churn "
                          "(churn re-triggers the host's snapshot+backfill = the heaviest path)")
+    ap.add_argument("--assert-spectator-live", action="store_true",
+                    help="exit nonzero if any spectator's applied battle-frame "
+                         "progression did NOT reach/hold near the host's final "
+                         "battle frame (the 'held the live edge' pass condition). "
+                         "Always computed + printed; this flag makes it a gate.")
     args = ap.parse_args()
     min_coverage = args.min_coverage if args.min_coverage >= 0 else args.frames - 100
     # Measure host pacing when fakes are present OR when explicitly asked (so the
@@ -363,8 +483,14 @@ def main():
         # CSS_DWELL override it.
         common_env["FM2K_AUTOPLAY_CSS_DWELL"] = str(args.css_dwell)
     for k in ("FM2K_LOCAL_DELAY", "FM2K_PRED_WINDOW", "FM2K_PREDICTION_WINDOW", "FM2K_RUNAHEAD", "FM2K_SPEC_UDP", "FM2K_AUTOPLAY_CSS_DWELL", "FM2K_SPECTATOR_DEBUG", "FM2K_HOST_TRACE", "FM2K_FA_TRACE", "FM2K_TEST_BATTLE_SEED",
+              # host-clock sync + rift frame pacing A/B
+              "FM2K_HOST_CLOCK",
+              # ReliableChannel spectator A/B transport (reliable-ordered+FEC over UDP)
+              "FM2K_SPEC_RC", "FM2K_SPEC_RC_SNAPSHOT", "FM2K_RC_FEC", "FM2K_RC_FEC_K",
+              "FM2K_RC_RESEND_MS", "FM2K_RC_RATE_PPS", "FM2K_RC_CWND",
               # in-process link impairment (players' gekko+control path)
-              "FM2K_NET_DELAY_MS", "FM2K_NET_JITTER_MS", "FM2K_NET_LOSS", "FM2K_NET_SEED"):
+              "FM2K_NET_DELAY_MS", "FM2K_NET_JITTER_MS", "FM2K_NET_LOSS", "FM2K_NET_SEED",
+              "FM2K_NET_REORDER", "FM2K_NET_DUP"):
         if os.environ.get(k):
             common_env[k] = os.environ[k]
 
@@ -379,6 +505,20 @@ def main():
     p2_env = {**common_env,
               "FM2K_LOCAL_PORT": str(P2_PORT),
               "FM2K_REMOTE_ADDR": f"127.0.0.1:{P1_PORT}"}
+    # Per-side local-delay override for asymmetric-delay validation: each peer
+    # runs its OWN delay verbatim (no max-adoption). Unset => shared
+    # FM2K_LOCAL_DELAY / auto negotiation.
+    if os.environ.get("FM2K_P1_LOCAL_DELAY"):
+        p1_env["FM2K_LOCAL_DELAY"] = os.environ["FM2K_P1_LOCAL_DELAY"]
+    if os.environ.get("FM2K_P2_LOCAL_DELAY"):
+        p2_env["FM2K_LOCAL_DELAY"] = os.environ["FM2K_P2_LOCAL_DELAY"]
+    # Per-side send delay for ASYMMETRIC-routing emulation: the injector delays each
+    # peer's own SEND, so P1's delay = the P1->P2 (forward) latency and P2's = the
+    # P2->P1 (return) latency. Setting them differently emulates an asymmetric route.
+    if os.environ.get("FM2K_P1_NET_DELAY_MS"):
+        p1_env["FM2K_NET_DELAY_MS"] = os.environ["FM2K_P1_NET_DELAY_MS"]
+    if os.environ.get("FM2K_P2_NET_DELAY_MS"):
+        p2_env["FM2K_NET_DELAY_MS"] = os.environ["FM2K_P2_NET_DELAY_MS"]
     # Spectator: no autoplay -- it is driven entirely by the host's event
     # stream. Only the parity recorder env matters... PLUS the test-only
     # downlink-loss shim: the impair knobs must reach the SPECTATOR (the path
@@ -408,8 +548,9 @@ def main():
                # no graceful SESSION_END) instead of spinning at [SPEC-Q] q=0.
                "FM2K_SPEC_HOST_GONE_MS": os.environ.get("FM2K_SPEC_HOST_GONE_MS", "5000")}
         for kk in ("FM2K_SPEC_DROP", "FM2K_SPEC_DROP_SEED", "FM2K_CSS_TRACE",
-                   "FM2K_SPECTATOR_DEBUG",
-                   "FM2K_NET_DELAY_MS", "FM2K_NET_JITTER_MS", "FM2K_NET_LOSS", "FM2K_NET_SEED"):
+                   "FM2K_SPECTATOR_DEBUG", "FM2K_SPEC_CONNECT_TIMEOUT_MS",
+                   "FM2K_NET_DELAY_MS", "FM2K_NET_JITTER_MS", "FM2K_NET_LOSS", "FM2K_NET_SEED",
+                   "FM2K_NET_REORDER", "FM2K_NET_DUP"):
             if os.environ.get(kk):
                 env[kk] = os.environ[kk]
         # The spectator MUST run the same round count as the host, else a 1-round
@@ -572,6 +713,58 @@ def main():
             except OSError as e:
                 print(f"[harness] (warn) could not preserve {lf}: {e}")
 
+    # ---- LIVE-EDGE metric (the REAL "held the live edge" pass condition) ------
+    # Computed from the PRESERVED live_ logs, right after preservation, so it runs
+    # even if a later gate bails early. Always printed (informational); gated only
+    # under --assert-spectator-live. This is a LIVENESS signal, kept SEPARATE from
+    # the engine-desync gates and from the match-completion (.fm2krep) check.
+    host_p1_log = OUT_DIR / "live_FM2K_P1_Debug.log"
+    live_edge_fail = False
+    for s in specs:
+        lv = spectator_liveness(host_p1_log, s["live"])
+        # Flush-race backstop: the host hard-terminates at --total-frames while
+        # a spectator under loss is legitimately a few frames behind (still
+        # HOLDING the live edge). kill_strays can truncate its debug log mid-
+        # drain/flush, so this first parse can read a stale spec_max and report
+        # a false FAIL even though the spectator reached the live edge. On a
+        # FAIL, settle + re-preserve the source log (now fully flushed, the
+        # process has exited) and re-parse ONCE. A genuine wedge (spectator
+        # far behind) stays FAIL on re-parse, so this can't mask a real failure.
+        if not lv["reached"]:
+            time.sleep(1.5)
+            for lf in ["FM2K_P1_Debug.log", s["log"]]:
+                src = game_dir / "logs" / lf
+                if src.exists():
+                    try:
+                        shutil.copy2(src, OUT_DIR / f"live_{lf}")
+                    except OSError:
+                        pass
+            lv2 = spectator_liveness(host_p1_log, s["live"])
+            if lv2["reached"]:
+                print(f"[harness] LIVE-EDGE {s['tag']}: first parse read a "
+                      f"mid-flush log (spec_max={lv['spec_max']}); re-parse of "
+                      f"the settled log shows reached=True "
+                      f"(spec_max={lv2['spec_max']}, gap={lv2['gap']}).")
+                lv = lv2
+        s["live_edge"] = lv
+        verdict = "PASS" if lv["reached"] else "FAIL"
+        print(f"[harness] LIVE-EDGE {s['tag']} ({s['phase']}): "
+              f"host_final_frame={lv['host_final']} spec_max_frame={lv['spec_max']} "
+              f"gap={lv['gap']} (tol {lv['tolerance']}) -> "
+              f"spectator_reached_live={lv['reached']} [{verdict}]")
+        print(f"    matches host={lv['host_matches']} spec={lv['spec_matches']} "
+              f"followed_all={lv['followed_all']}; SPEC-UDP admitted_max="
+              f"{lv['spec_udp_admitted']} flatlined={lv['admitted_flatlined']}; "
+              f"stall_frame={lv['stall_frame']}")
+        if not lv["reached"]:
+            live_edge_fail = True
+    if args.assert_spectator_live and live_edge_fail:
+        print("[harness] OVERALL FAIL: --assert-spectator-live: a spectator did NOT "
+              "reach/hold the host's live edge (fell behind / stalled -- see "
+              "LIVE-EDGE above). This is a spectator liveness failure, NOT an "
+              "engine desync and NOT a match-completion failure.")
+        return 1
+
     if not p1_pty.exists():
         print("[harness] FAIL: host parity missing")
         return 1
@@ -632,9 +825,14 @@ def main():
     # diff is kept only as a human cross-check + the checked==0 fallback.
     if args.total_frames > 0:
         # Multi-match mode: the harness slice at terminate is a MID-MATCH-2
-        # slice; the gate replays match 1's CANONICAL file (written by
-        # Netplay_EndBattle, host-only, no _harness suffix) -- earliest
-        # post-start canonical = match 1.
+        # slice; the gate replays match 1. PREFER a no-suffix CANONICAL file
+        # (written host-only by Netplay_EndBattle, if this build still emits one)
+        # -- earliest post-start canonical = match 1. FALL BACK to the
+        # timestamped *_p0_harness / *_p1_harness recording the players actually
+        # wrote this run (the current netplay-record path writes ONE per session):
+        # it walks title/CSS/match1, and the replay gate below trims to the first
+        # battle segment, so it still gates match 1. Fresh-mtime (>= start_ts)
+        # guarantees it is THIS run's file, not a stale one from a prior run.
         cands = []
         for f in (game_dir / "replays").glob("*.fm2krep"):
             if "_harness" in f.name:
@@ -647,10 +845,16 @@ def main():
                 cands.append((m, f))
         p0_rep = min(cands)[1] if cands else None
         if not p0_rep:
-            print("[harness] FAIL: no canonical match-1 .fm2krep "
-                  "(did match 1 actually complete?)")
+            # No canonical file -> accept the timestamped harness recording the
+            # players just produced (host p0 first, else p1).
+            p0_rep = (find_latest_fm2krep(game_dir, start_ts, suffix="_p0_harness")
+                      or find_latest_fm2krep(game_dir, start_ts, suffix="_p1_harness"))
+        if not p0_rep:
+            print("[harness] FAIL: no match-1 .fm2krep (neither a no-suffix "
+                  "canonical nor a fresh *_p{0,1}_harness) -- did match 1 "
+                  "actually complete?")
             return 1
-        print(f"[harness] match-1 canonical replay file: {p0_rep.name}")
+        print(f"[harness] match-1 replay file: {p0_rep.name}")
 
         # Multi-match liveness assertions.
         host_log = open(OUT_DIR / "live_FM2K_P1_Debug.log",
@@ -883,7 +1087,18 @@ def main():
             else:
                 break
         massive = cf > 0 and mf_total > 0.40 * cf
-        mf = mf_total if (trailing > 0 or massive) else 0
+        # A BOUNDED trailing run (<= RECONVERGE_WINDOW) is the SAME rollback
+        # speculative-capture artifact we already tolerate mid-stream, just landing
+        # at the tail because loss cut the spectator's stream off ON a transitioning
+        # value (hp mid-hit, move-start) that hasn't re-landed on the host's 30-frame
+        # FP grid. A REAL desync is rng-driven -> it shows up in `mt` (the
+        # authoritative aligned rng_post check, which stays a hard FAIL) AND persists
+        # far past the window. So fail on the FP side only for a PERSISTENT tail
+        # (> RECONVERGE_WINDOW) or a massive (>40%) divergence. (Observed: RC spec at
+        # 15% loss, seeds 42/99 -> trailing=1, mt=0, 1184 frames full-state IDENTICAL
+        # -- a single trailing speculative frame, not a desync. 2026-07-06.)
+        RECONVERGE_WINDOW = int(os.environ.get('FM2K_PARITY_RECONVERGE_WINDOW', '32'))
+        mf = mf_total if (trailing > RECONVERGE_WINDOW or massive) else 0
         run = mx = 0                      # longest run -- advisory only now
         for f in miss:
             run = run + 1 if f else 0

@@ -320,6 +320,12 @@ def main() -> int:
         # drain so test wall time stays short.
         "FM2K_SPECTATOR_ALWAYS_CATCHUP": "1",
     }
+    # Isolation toggle: SELFTEST_NO_CATCHUP=1 runs the replay at 1:1 (render every
+    # frame, no fast-forward) so a determinism pass proves SIM determinism alone,
+    # separate from catch-up/fast-forward correctness. Default keeps catch-up on
+    # (faster wall time, and exercises the live-spectator catch-up path).
+    if os.environ.get("SELFTEST_NO_CATCHUP"):
+        rep_env.pop("FM2K_SPECTATOR_ALWAYS_CATCHUP", None)
     # Replay phase: target the SAME snapshot count as the record side so
     # the parity diff has comparable windows. 32-byte header + 260 bytes
     # per snapshot.

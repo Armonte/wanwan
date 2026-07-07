@@ -47,6 +47,50 @@ STUN_PROBE_TAG = 0x01
 STUN_ACK_TAG   = 0x02
 
 
+def _assert_in_sync_with_hub() -> None:
+    """Fail loudly if these wire constants have drifted from hub/hub.py.
+
+    The stub reproduces the hub's data plane byte-for-byte; if a protocol byte
+    changes in hub.py but not here (or vice-versa), the selftest would pass
+    against a relay the real hub no longer matches. Rather than a stale "keep
+    in sync" comment, actually verify it at startup. Best-effort: if hub.py
+    isn't co-located (stub copied elsewhere), warn and continue.
+    """
+    import os
+    import re
+    hub_path = os.path.join(os.path.dirname(__file__), "..", "hub", "hub.py")
+    try:
+        with open(hub_path, "r", encoding="utf-8", errors="ignore") as fh:
+            src = fh.read()
+    except OSError:
+        print(f"[relay_stub] WARN: hub.py not found at {hub_path} — "
+              f"skipping wire-constant sync check", file=sys.stderr)
+        return
+    expected = {
+        "RELAY_MAGIC":          RELAY_MAGIC,
+        "RELAY_TAG_DATA":       RELAY_TAG_DATA,
+        "RELAY_SESSION_ID_LEN": RELAY_SESSION_ID_LEN,
+        "STUN_MAGIC":           STUN_MAGIC,
+        "STUN_PROBE_TAG":       STUN_PROBE_TAG,
+    }
+    drift = []
+    for name, ours in expected.items():
+        m = re.search(rf"^{name}\s*=\s*(0x[0-9A-Fa-f]+|\d+)", src, re.MULTILINE)
+        if not m:
+            continue  # hub may name it differently; don't false-alarm
+        theirs = int(m.group(1), 0)
+        if theirs != ours:
+            drift.append(f"{name}: stub={ours:#x} hub={theirs:#x}")
+    if drift:
+        raise SystemExit(
+            "[relay_stub] FATAL: wire constants have DRIFTED from hub/hub.py:\n  "
+            + "\n  ".join(drift)
+            + "\nThe stub no longer reproduces the real hub — fix before testing.")
+
+
+_assert_in_sync_with_hub()
+
+
 class RelaySession:
     """Two-slot dynamic peer learning -- identical policy to hub.py's
     RelaySession.route(): first source fills A, second fills B, each

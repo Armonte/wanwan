@@ -167,16 +167,22 @@ void LauncherUI::RenderHubPanel() {
         const char* def   = (env_h && env_h[0]) ? env_h : "hub.2dfm.org";
         std::snprintf(hub_host_, sizeof(hub_host_), "%s", def);
     }
-    // Delay override panel. Both peers exchange their delay candidate
-    // over the control channel and adopt max(both), so delay is always
-    // identical on both sides (#24). This combo picks how THIS peer's
-    // candidate is sized:
+    // Delay override panel (#24). Peers exchange a delay candidate over the
+    // control channel; a peer on a COMPUTED mode adopts max(local, remote) so
+    // two computed peers land on the same delay. A MANUAL pin runs verbatim and
+    // purely local -- it is advertised (so a computed opponent can max() it in)
+    // but is never itself raised, so two manual peers may run different delays.
+    // This combo picks how THIS peer's candidate is sized:
     //   index 0 "computed (avg ping)"  -> FM2K_DELAY_MODE=0, mean RTT
     //   index 1 "computed (peak ping)" -> FM2K_DELAY_MODE=1, worst RTT
     //   index 2..18 manual 0..16       -> FM2K_LOCAL_DELAY=N
     // FM2K_LOCAL_DELAY is cleared for the two computed modes so the hook
-    // computes from RTT; a manual pick still rides the exchange, so a
-    // peer who pins a high value pulls the other peer up to match.
+    // computes from RTT. A manual pick runs VERBATIM and PURELY LOCAL -- it is
+    // never pulled up to the peer's value. Your manual value is still
+    // advertised as this peer's candidate, but that only matters to an opponent
+    // on a COMPUTED mode (they factor it into their max()); it does NOT force a
+    // manual opponent, who runs their own value. Two manual players can run
+    // DIFFERENT delays (asymmetric is fine -- inputs are frame-tagged).
     static int s_delay_override = 0;
     {
         // Manual delay range: 0..16. 0 is opt-in for sub-1ms LAN /
@@ -196,15 +202,17 @@ void LauncherUI::RenderHubPanel() {
                      IM_ARRAYSIZE(delay_items));
         ImGui::PopItemWidth();
         ImGui::SetItemTooltip(
-            "Input delay (frames at 100 Hz). Both peers exchange their "
-            "pick and adopt the higher one, so delay is always the "
-            "same on both sides. \"computed (avg ping)\" sizes delay to "
-            "mean RTT -- lower delay, but spikes can cause rollbacks. "
-            "\"computed (peak ping)\" sizes to the worst RTT seen -- "
-            "higher delay, rides out jitter. Pin 0..16 to force a "
-            "manual value. 0 = same-frame input, only safe on near-"
-            "zero-latency links (LAN / loopback / hotseat). 16 = 160 "
-            "ms, upper limit of playable delay-only netcode.");
+            "Input delay (frames at 100 Hz). \"computed (avg ping)\" sizes "
+            "delay to mean RTT -- lower delay, but spikes can cause rollbacks. "
+            "\"computed (peak ping)\" sizes to the worst RTT seen -- higher "
+            "delay, rides out jitter. Two computed peers exchange picks and "
+            "adopt the higher, so their delay matches. Pin 0..16 to force a "
+            "MANUAL value: yours runs exactly as set and is NEVER raised to the "
+            "opponent's -- if they also pin manual, the two sides can differ "
+            "(that's fine). 0 = same-frame input, only safe on near-zero-"
+            "latency links (LAN / loopback / hotseat) -- any jitter rolls back "
+            "every frame. 16 = 160 ms, upper limit of playable delay-only "
+            "netcode.");
         if (s_delay_override >= 2) {
             // Manual override: index 2 -> "0", index 3 -> "1", ...
             char buf[8];

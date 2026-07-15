@@ -1,0 +1,6 @@
+build/
+dist/
+tests/kgt_gate
+tests/model/model_test
+core/audio/test/audio_test
+tests/xref/xref_test

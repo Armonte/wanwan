@@ -3,15 +3,25 @@
 
 Packs the common-resource prefix of a .player/.stage/.demo into a slim .fpk:
   - sprites: SOLID zstd (lossless, byte-exact round-trip) -- preserves the ~7.9x
-  - audio  : WAVE -> Opus (lossy, aggressive: 96k stereo / 64k mono), decoded
-             back to PCM-WAV at the original sample rate on reconstruct
+  - audio  : the WAV's PCM payload -> Opus (lossy: 96k stereo / 64k mono);
+             the WAV CONTAINER (all header/chunk bytes around the data-chunk
+             payload) is stored verbatim. Reconstruction splices decoded PCM
+             back into the original container, padded/trimmed to the exact
+             original payload length -- so every reconstructed sound is
+             BYTE-LENGTH-IDENTICAL and byte-exact outside PCM sample values.
   - everything else (scripts, palettes, per-file tail): zstd, byte-exact
 
 The reconstructor synthesizes the byte stream the engine's player_data_file_loader
 would read. This is the pure-Python model of the runtime VFS. The `verify`
-command proves sprites/scripts/palettes/tail are BYTE-IDENTICAL and audio is
-structurally valid (same channels/rate), which is the correctness gate for the
-whole runtime path.
+command proves the reconstruction is the SAME SIZE as the original and
+byte-identical everywhere except PCM sample bytes inside opus-coded sounds,
+which is the correctness gate for the whole runtime path.
+
+Format history: FPK2 (current) = exact-length audio splice. FPK1 rewrote
+whole WAVs at whatever size/format the decoder produced; the drift (e.g.
+Nogaku.player -22840 B across 73 sounds) broke the engine's loader ("Player
+Read error" -> half-cleared slot -> heap corruption). FPK1 files can still
+be unpacked/inflated, but pack always writes FPK2.
 
 Commands:
     fpk.py pack    IN.player  OUT.fpk   [--level 19] [--bitrate-stereo 96] [--bitrate-mono 64]
@@ -31,7 +41,8 @@ import tempfile
 import zstandard as zstd
 import kgt
 
-MAGIC = b"FPK1"
+MAGIC = b"FPK2"
+MAGIC_V1 = b"FPK1"
 
 
 # ── byte helpers ────────────────────────────────────────────────────────
@@ -62,17 +73,31 @@ def r_raw(inp) -> bytes:
 # ── WAV / Opus ──────────────────────────────────────────────────────────
 def wav_fmt(data: bytes):
     """(channels, sample_rate, bits) from a RIFF/WAVE blob, or None."""
+    span = wav_data_span(data)
+    return (span[1], span[2], span[3]) if span else None
+
+
+def wav_data_span(data: bytes):
+    """(format_tag, channels, sample_rate, bits, payload_off, payload_len)
+    of a RIFF/WAVE blob's fmt + first data chunk, or None. Walks chunks the
+    way the engine's ParseRIFFWaveFormat does (bounded by the RIFF size
+    field, 2-byte aligned)."""
     if len(data) < 44 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
         return None
-    pos = 12
-    while pos + 8 <= len(data):
+    end = min(8 + _u32(data, 4), len(data))
+    pos, fmt, span = 12, None, None
+    while pos + 8 <= end:
         cid = data[pos:pos + 4]
         csz = _u32(data, pos + 4)
-        if cid == b"fmt ":
-            _af, ch, sr, _br, _ba, bits = struct.unpack_from("<HHIIHH", data, pos + 8)
-            return (ch, sr, bits)
+        if cid == b"fmt " and fmt is None and csz >= 16:
+            tag, ch, sr, _br, _ba, bits = struct.unpack_from("<HHIIHH", data, pos + 8)
+            fmt = (tag, ch, sr, bits)
+        elif cid == b"data" and span is None:
+            span = (pos + 8, csz)
         pos += 8 + csz + (csz & 1)
-    return None
+    if fmt is None or span is None or span[0] + span[1] > len(data):
+        return None
+    return fmt + span
 
 
 def wav_to_opus(wav: bytes, bitrate_k: int) -> bytes:
@@ -92,17 +117,35 @@ def wav_to_opus(wav: bytes, bitrate_k: int) -> bytes:
             return f.read()
 
 
-def opus_to_wav(opus: bytes, sr: int, ch: int) -> bytes:
+def opus_to_wav(opus: bytes, sr: int, ch: int, bits: int = 16) -> bytes:
+    codec = "pcm_u8" if bits == 8 else "pcm_s16le"
     with tempfile.TemporaryDirectory() as td:
         op, wp = os.path.join(td, "i.opus"), os.path.join(td, "o.wav")
         with open(op, "wb") as f:
             f.write(opus)
         subprocess.run(
             ["ffmpeg", "-y", "-loglevel", "error", "-i", op,
-             "-ar", str(sr), "-ac", str(ch), "-f", "wav", wp],
+             "-ar", str(sr), "-ac", str(ch), "-c:a", codec, "-f", "wav", wp],
             check=True, timeout=240)
         with open(wp, "rb") as f:
             return f.read()
+
+
+def opus_to_pcm_payload(opus: bytes, sr: int, ch: int, bits: int,
+                        payload_len: int) -> bytes:
+    """Decode Opus to raw PCM matching the original fmt, fitted to EXACTLY
+    payload_len bytes (Opus pre-skip/padding drifts the sample count by a
+    few frames; we trim or pad with digital silence -- 0x80 for 8-bit PCM,
+    0x00 otherwise)."""
+    wav = opus_to_wav(opus, sr, ch, bits)
+    span = wav_data_span(wav)
+    if span is None:
+        raise ValueError("decoder produced an unreadable WAV")
+    off, ln = span[4], span[5]
+    pcm = wav[off:off + ln]
+    if len(pcm) > payload_len:
+        return pcm[:payload_len]
+    return pcm + (b"\x80" if bits == 8 else b"\x00") * (payload_len - len(pcm))
 
 
 # ── parse the common-resource prefix, recording exact byte regions ──────
@@ -183,22 +226,28 @@ def pack(in_path: str, out_path: str, level: int, br_st: int, br_mo: int):
     out.write(struct.pack("<I", c.sound_n))
     for hdr42, sd in c.sounds:
         low = sd.sound_type & 0x0F
-        fmt = wav_fmt(sd.data) if low == 1 else None
+        span = wav_data_span(sd.data) if low == 1 else None
         encoded = None
-        if fmt is not None and len(sd.data) > 4096:
-            ch, sr, _bits = fmt
-            br = br_st if ch >= 2 else br_mo
-            try:
-                encoded = wav_to_opus(sd.data, br)
-                stats["opus"] += len(encoded)
-                stats["opus_in"] += len(sd.data)
-            except Exception as e:
-                sys.stderr.write(f"  opus encode failed ({e}); storing raw\n")
-                encoded = None
+        if span is not None:
+            tag, ch, sr, bits, p_off, p_len = span
+            # only plain PCM 8/16-bit takes the lossy path; anything odd
+            # (ADPCM, float, 24-bit, tiny) passes through verbatim
+            if tag == 1 and bits in (8, 16) and p_len > 4096:
+                br = br_st if ch >= 2 else br_mo
+                try:
+                    encoded = wav_to_opus(sd.data, br)
+                    stats["opus"] += len(encoded)
+                    stats["opus_in"] += len(sd.data)
+                except Exception as e:
+                    sys.stderr.write(f"  opus encode failed ({e}); storing raw\n")
+                    encoded = None
         if encoded is not None:
-            out.write(struct.pack("<B", 1))          # codec 1 = opus
+            out.write(struct.pack("<B", 1))          # codec 1 = opus splice
             out.write(hdr42)
-            out.write(struct.pack("<IH", sr, ch))    # original sr / channels
+            # payload span + original fmt (decode target)
+            out.write(struct.pack("<IIIHH", p_off, p_len, sr, ch, bits))
+            # original WAV minus the PCM payload, verbatim (split at p_off)
+            w_zblob(out, sd.data[:p_off] + sd.data[p_off + p_len:], level)
             w_raw(out, encoded)
         else:
             out.write(struct.pack("<B", 0))          # codec 0 = raw passthrough
@@ -225,8 +274,10 @@ def pack(in_path: str, out_path: str, level: int, br_st: int, br_mo: int):
 # ── reconstruct (the runtime-VFS model) ────────────────────────────────
 def reconstruct(fpk: bytes) -> bytes:
     inp = io.BytesIO(fpk)
-    if inp.read(4) != MAGIC:
+    magic = inp.read(4)
+    if magic not in (MAGIC, MAGIC_V1):
         raise ValueError("not an .fpk")
+    v1 = magic == MAGIC_V1
     (_level,) = struct.unpack("<I", inp.read(4))
 
     out = io.BytesIO()
@@ -258,15 +309,25 @@ def reconstruct(fpk: bytes) -> bytes:
     for _ in range(sound_n):
         (codec,) = struct.unpack("<B", inp.read(1))
         hdr42 = inp.read(42)
-        if codec == 1:
+        if codec == 1 and v1:
+            # legacy FPK1: whole-WAV rewrite; size drifts (known-broken for
+            # the engine, kept only so old .fpk files remain inspectable)
             sr, ch = struct.unpack("<IH", inp.read(6))
             opus = r_raw(inp)
             wav = opus_to_wav(opus, sr, ch)
-            # patch the 42-byte header's size field (+36) to the new data length
             hdr = bytearray(hdr42)
             struct.pack_into("<i", hdr, 36, len(wav))
             out.write(bytes(hdr))
             out.write(wav)
+        elif codec == 1:
+            p_off, p_len, sr, ch, bits = struct.unpack("<IIIHH", inp.read(16))
+            container = r_zblob(inp)
+            opus = r_raw(inp)
+            pcm = opus_to_pcm_payload(opus, sr, ch, bits, p_len)
+            out.write(hdr42)  # verbatim: size field is the original size
+            out.write(container[:p_off])
+            out.write(pcm)
+            out.write(container[p_off:])
         else:
             data = r_raw(inp)
             out.write(hdr42)
@@ -314,19 +375,38 @@ def verify(in_path: str, level: int):
     allok &= eq("palettes region", src.palettes_region, rc.palettes_region, True)
     allok &= eq("tail region", src.tail, rc.tail, True)
 
-    # audio: cannot be byte-exact (lossy); verify structure + channels/rate
+    # audio HARD gate: every sound must be byte-length-identical with an
+    # identical 42B header, and byte-exact outside the PCM payload of
+    # opus-coded sounds (raw-codec sounds must be fully identical)
     aud_ok = (src.sound_n == rc.sound_n)
-    delta = 0
-    for (sh, ss), (rh, rs) in zip(src.sounds, rc.sounds):
-        if (ss.sound_type & 0x0F) == 1:
-            sf, rf = wav_fmt(ss.data), wav_fmt(rs.data)
-            if sf and rf and (sf[0] != rf[0]):  # channel mismatch is a real bug
-                aud_ok = False
-            delta += len(rs.data) - len(ss.data)
+    lossy = 0
+    for i, ((sh, ss), (rh, rs)) in enumerate(zip(src.sounds, rc.sounds)):
+        if sh != rh or len(ss.data) != len(rs.data):
+            print(f"  [FAIL] sound[{i}]: header/size drift "
+                  f"({len(ss.data)} vs {len(rs.data)} B)")
+            aud_ok = False
+            continue
+        if ss.data == rs.data:
+            continue
+        span = wav_data_span(ss.data)
+        if span is None:
+            print(f"  [FAIL] sound[{i}]: bytes differ on a non-spliceable sound")
+            aud_ok = False
+            continue
+        p_off, p_len = span[4], span[5]
+        if (ss.data[:p_off] != rs.data[:p_off]
+                or ss.data[p_off + p_len:] != rs.data[p_off + p_len:]):
+            print(f"  [FAIL] sound[{i}]: container bytes differ outside "
+                  f"the PCM payload")
+            aud_ok = False
+        else:
+            lossy += 1
+    size_ok = len(orig_data) == len(recon)
     print(f"  [{'OK ' if aud_ok else 'FAIL'}] audio: {src.sound_n} sounds, "
-          f"channels/rate preserved, reconstructed PCM delta "
-          f"{delta/1048576:+.1f} MB (lossy, expected)")
-    allok &= aud_ok
+          f"{lossy} lossy PCM payloads, containers/headers/lengths exact")
+    print(f"  [{'OK ' if size_ok else 'FAIL'}] total size: "
+          f"{len(orig_data)} -> {len(recon)} bytes")
+    allok &= aud_ok and size_ok
 
     verdict = "ALL PASS -- runtime VFS path is byte-safe" if allok else "FAILURES ABOVE"
     print(f"  => {verdict}")

@@ -4,7 +4,9 @@
 // back into the exact byte stream FM2K's player_data_file_loader would read for a
 // .player/.stage/.demo. The non-audio regions (header, scripts, script_items,
 // sprite headers, sprite contents, palettes, tail) are byte-identical to the
-// original; audio is lossy (Opus) and only structurally equivalent.
+// original. FPK2 audio is byte-LENGTH-identical with the original WAV container
+// bytes preserved verbatim -- only PCM sample values are lossy (Opus). Legacy
+// FPK1 audio drifts in size (whole-WAV rewrite) and is kept read-only.
 //
 // No windows.h -- this is the portable core shared by the i686 DLL and the native
 // test harness. Depends only on the standard library + zstd (decompress) and,

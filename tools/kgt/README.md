@@ -233,6 +233,34 @@ via the `CommonHeader` dataclass. The tails:
 `.player` decoding is a future research project — Unity's
 `PlayerFileReader.cs` only reads the common section too.
 
+## Sound modding — `soundtool.py`
+
+Modder-facing tool to list / extract / replace sounds in
+`.player` / `.stage` / `.demo` / `.kgt` files **without touching any
+script block** — scripts reference sounds by index into the flat
+`sounds[]` table, so an in-place payload swap is invisible to game logic.
+
+```bash
+python3 soundtool.py list    Char.player                     # every slot: type, size, WAV format, name
+python3 soundtool.py extract Char.player -o out_dir/         # dump all sounds as WAV/MID
+python3 soundtool.py extract Char.player --sound 7 -o s.wav  # one sound (index or name)
+python3 soundtool.py replace Char.player --sound punch1.wav new.wav      # in-place, keeps Char.player.bak
+python3 soundtool.py replace Char.player --sound 7 new.wav -o Out.player
+```
+
+Replacement WAVs are validated against the **engine's actual RIFF
+walker** (`ParseRIFFWaveFormat` @0x416043 in WW 0946): RIFF/WAVE magic,
+a truthful RIFF size field (the engine trusts it as its walk bound; an
+overstated value reads out of bounds in-game), a `fmt ` chunk ≥ 14
+bytes, and a `data` chunk. The fmt chunk is handed raw to DirectSound
+`CreateSoundBuffer`, so non-PCM / 24-bit / >2-channel files are refused
+unless `--force`. MIDI slots accept `.mid` (MThd check).
+
+Safety rails: the file must round-trip byte-exact *before* editing
+(aborts otherwise), and after editing the output is re-parsed and every
+untouched sound is compared byte-for-byte. Replacing a sound with its
+own extracted bytes produces a byte-identical file.
+
 ### Coverage
 
 All three formats use the same `2DKGT2K\0` / `2DKGT2G\0` signatures as

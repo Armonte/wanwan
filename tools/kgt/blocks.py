@@ -65,17 +65,18 @@ def var_name(v: int) -> str:
 # BaseParser.cs to ease cross-referencing.
 
 def _parse_settings(p: bytes) -> Dict[str, Any]:
-    # First block of every skill — type-tagged HUD/UI element settings.
-    # Xem catalog: 0=user/cursor, 1=none/cursor, 3=cursor position,
-    # 9=stage layout/life/special bars, 33=default, 57=timed,
-    # 65=time number, 97=hit mark, 129=special bar, 131=Pos:timer,
-    # 193=victory mark, 195=Pos:p1 icon, 259=Pos:p2 icon,
-    # 323=Pos:Special Stock 1P, 387=Pos:Special Stock 2P,
-    # 451=Pos:Victory Mark 1P, 515=Pos:Victory Mark 2P.
+    # First block of every skill. NOTE (editor-IDB verified 2026-07-15,
+    # docs/dev/2dfm_studio_re_notes.md): Xem's "settings_type" catalog
+    # (0,1,3,9,33,57,...,515) is NOT in this payload -- it is the SCRIPT
+    # entry's special_flag (editor: KgtScript.roleFlags), which selects
+    # the payload layout. For character skills: p[1] = "Sk Level" u8.
+    # Timed .kgt scripts (roleFlags & 0x10): u16@0 = display time
+    # (100 = 1 sec). Pos rows (& 0x02): i16 X @0, i16 Y @2 (+-999) etc.
+    # Full per-roleFlags table in the RE notes.
     return {
-        "settings_type": p[0],
-        "unknown_byte": p[1],
-        "level": p[2],
+        "settings_type_note": "see script.special_flag (roleFlags)",
+        "time_or_pos_word": _u16(p, 0),
+        "level": p[1],
     }
 
 
@@ -101,9 +102,13 @@ def _parse_ds(p: bytes) -> Dict[str, Any]:
 
 
 def _parse_s(p: bytes) -> Dict[str, Any]:
-    # 3 — Sound (skill byte + u16 sound index)
+    # 3 — Sound: just u16 sound index @1. p[0] is NOT a command byte --
+    # the editor never writes it (0 in 6886 S blocks across 38 files);
+    # loop/type flags live in the sound TABLE entry's sound_type byte
+    # (0x10 = loop -> DSBPLAY_LOOPING). Editor-IDB verified 2026-07-15,
+    # docs/dev/2dfm_studio_re_notes.md.
     return {
-        "unknown": p[0],
+        "always_zero": p[0],
         "sound_number": _u16(p, 1),
     }
 

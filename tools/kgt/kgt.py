@@ -359,8 +359,31 @@ class Sound:
 
     def pack(self) -> bytes:
         assert len(self.name) == 32
+        if self.size != len(self.data):
+            raise ValueError(
+                f"sound {_try_decode(self.name).strip()!r}: size field "
+                f"({self.size}) != data length ({len(self.data)}); the engine "
+                f"reads exactly `size` bytes, so a mismatch corrupts every "
+                f"record after this one")
         return (_pi32(self.unknown1) + self.name + _pi32(self.size)
                 + _pu8(self.sound_type) + _pu8(self.sound_track) + self.data)
+
+    @classmethod
+    def from_dict(cls, s: dict, idx: int = -1) -> "Sound":
+        """Build from the JSON dict shape. `size` is derived from the decoded
+        data; a stale hand-edited size field is fixed with a warning instead
+        of producing a corrupt file."""
+        data = base64.b64decode(s["data_b64"])
+        size = s["size"]
+        if size != len(data):
+            name = _try_decode(bytes.fromhex(s["name"])).strip()
+            print(f"WARN sound[{idx}] {name!r}: JSON size field ({size}) != "
+                  f"decoded data length ({len(data)}); using data length",
+                  file=sys.stderr)
+            size = len(data)
+        return cls(unknown1=s["unknown1"], name=bytes.fromhex(s["name"]),
+                   size=size, sound_type=s["sound_type"],
+                   sound_track=s["sound_track"], data=data)
 
 
 @dataclass
@@ -832,11 +855,7 @@ class Kgt:
             palettes=[Palette(
                 colors=bytes.fromhex(p["colors"]),
                 gap=bytes.fromhex(p["gap"])) for p in d["palettes"]],
-            sounds=[Sound(
-                unknown1=s["unknown1"], name=bytes.fromhex(s["name"]),
-                size=s["size"], sound_type=s["sound_type"],
-                sound_track=s["sound_track"],
-                data=base64.b64decode(s["data_b64"])) for s in d["sounds"]],
+            sounds=[Sound.from_dict(s, i) for i, s in enumerate(d["sounds"])],
             player_name_gap=d["player_name_gap"],
             player_infos=[bytes.fromhex(pi["raw"]) for pi in d["player_infos"]],
             reactions=[Reaction(

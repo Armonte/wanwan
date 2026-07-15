@@ -148,12 +148,7 @@ class CommonHeader:
             palettes=[Palette(
                 colors=bytes.fromhex(p["colors"]),
                 gap=bytes.fromhex(p["gap"])) for p in d["palettes"]],
-            sounds=[Sound(
-                unknown1=s["unknown1"], name=bytes.fromhex(s["name"]),
-                size=s["size"], sound_type=s["sound_type"],
-                sound_track=s["sound_track"],
-                data=base64.b64decode(s["data_b64"]))
-                for s in d["sounds"]],
+            sounds=[Sound.from_dict(s, i) for i, s in enumerate(d["sounds"])],
         )
 
 

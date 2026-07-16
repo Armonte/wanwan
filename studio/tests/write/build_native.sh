@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# build_native.sh -- native x86_64 build + run of the real-model gate.
+# build_native.sh -- native x86_64 build + run of the write-path gate
+# (edit_session + the RealModel write wrappers; Phase 4 contract).
 #
-# Links the FULL data layer: kgt_file + xref + audio_convert + real_model.
-# real_model/app_state pull no SDL or ImGui headers -- this compiling and
-# running natively is exactly what the gate proves (playback/dialogs live
-# in the app layer: audio_player.cpp, main.cpp).
+# Links the FULL data layer -- kgt_file + xref + audio_convert +
+# real_model + edit_session -- with no SDL and no ImGui, same separation
+# proof as tests/model/. The test copies the corpus file into a fresh
+# temp dir and never opens the source for writing.
 #
 # Usage: ./build_native.sh [PLAYER_FILE]
 #   (default: /mnt/d/games/fm2k/_NODEV/pkmncc/Bewear.player)
@@ -12,7 +13,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STUDIO="$HERE/../.."
-OUT="$HERE/model_test"
+OUT="$HERE/write_test"
 
 set -x
 g++ -O2 -std=c++20 -Wall -Wextra \
@@ -22,7 +23,7 @@ g++ -O2 -std=c++20 -Wall -Wextra \
     "$STUDIO/core/audio/audio_convert.cpp" \
     "$STUDIO/app/real_model.cpp" \
     "$STUDIO/app/edit_session.cpp" \
-    "$HERE/model_test.cpp" \
+    "$HERE/write_test.cpp" \
     -o "$OUT"
 set +x
 

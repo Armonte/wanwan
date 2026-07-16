@@ -1,12 +1,13 @@
-// real_model.cpp -- see real_model.h. All derived data is computed here,
-// once, at Load(): row projections (format probe via DecodeEngineWav,
-// xref use counts, engine-validity, RMS), per-sound use lists (script
-// names resolved + trimmed), and mono waveform previews.
+// real_model.cpp -- see real_model.h. All derived data is computed here:
+// row projections (tiered validity via kgt::ProbeWav, format probe via
+// DecodeEngineWav with a DecodeAudio fallback for WARN slots, xref use
+// counts, RMS), per-sound use lists (script names resolved + trimmed),
+// and mono waveform previews. File IO and the write path live in
+// EditSession (edit_session.cpp).
 #include "real_model.h"
 
 #include <cstdio>
 #include <cstring>
-#include <fstream>
 #include <utility>
 
 #include "../core/xref.h"
@@ -14,31 +15,19 @@
 namespace studio {
 namespace {
 
-bool ReadAll(const std::string& path, std::vector<uint8_t>* out,
-             std::string* err) {
-    std::ifstream in(path, std::ios::binary | std::ios::ate);
-    if (!in) {
-        *err = "cannot open file: " + path;
-        return false;
-    }
-    const std::streamoff n = in.tellg();
-    if (n < 0) {
-        *err = "cannot size file: " + path;
-        return false;
-    }
-    out->resize(static_cast<size_t>(n));
-    in.seekg(0);
-    if (n > 0 && !in.read(reinterpret_cast<char*>(out->data()), n)) {
-        *err = "read failed: " + path;
-        return false;
-    }
-    return true;
-}
-
 // CP932 name fields are space-padded in the 2dfm editor (e.g. Bewear's
 // "Start "); trim for display.
 std::string TrimTrailingSpaces(std::string s) {
     while (!s.empty() && s.back() == ' ') s.pop_back();
+    return s;
+}
+
+std::string JoinLines(const std::vector<std::string>& v) {
+    std::string s;
+    for (const std::string& p : v) {
+        if (!s.empty()) s += "\n";
+        s += p;
+    }
     return s;
 }
 
@@ -94,91 +83,23 @@ std::vector<float> BuildWaveform(const kgt::PcmAudio& a) {
 }  // namespace
 
 bool RealModel::Load(const std::string& path, std::string* err) {
-    auto bail = [&](std::string msg) {
-        if (err) *err = std::move(msg);
-        return false;
-    };
+    if (!session_.Load(path, err)) return false;
 
-    kgt::FileType type;
-    if (!kgt::FileTypeFromPath(path, &type))
-        return bail("unsupported extension (want .player/.stage/.demo/.kgt)");
-
-    std::vector<uint8_t> bytes;
-    {
-        std::string e;
-        if (!ReadAll(path, &bytes, &e)) return bail(std::move(e));
-    }
-    if (kgt::IsFm95(bytes.data(), bytes.size()))
-        return bail("FM95-family file (KGTGAME/2DKGT95 signature) -- "
-                    "2dfm Studio only opens FM2K files");
-
-    kgt::KgtFile f;
-    {
-        std::string e;
-        if (!kgt::Parse(bytes.data(), bytes.size(), type, &f, &e))
-            return bail("parse failed: " + e);
-    }
-
-    // Build every cache into locals first: a throw/early-out must not
-    // leave the model half-swapped (Parse itself never partially succeeds).
-    const kgt::SoundXref x = kgt::BuildSoundXref(f);
+    // The session committed; rebuild every cache from its file. Rows are
+    // reset first so RebuildSlot writes onto clean defaults.
+    const kgt::KgtFile& f = session_.File();
     const size_t n = f.sounds.size();
-    std::vector<SoundRow> sounds;
-    std::vector<std::vector<UseRow>> uses(n);
-    std::vector<kgt::PcmAudio> pcm(n);
-    std::vector<std::vector<float>> wave(n);
-    sounds.reserve(n);
+    sounds_.assign(n, SoundRow{});
+    uses_.assign(n, {});
+    pcm_.assign(n, {});
+    wave_.assign(n, {});
 
+    const kgt::SoundXref x = kgt::BuildSoundXref(f);
     for (size_t i = 0; i < n; ++i) {
-        const kgt::Sound& sd = f.sounds[i];
-        SoundRow r;
-        r.name = kgt::SoundName(sd);
-        r.sound_type = sd.sound_type;
-        r.size = sd.data.size();
-
-        const uint8_t nib = sd.sound_type & 0x0F;
-        if (nib == 1) {  // WAV: probe with the engine's own RIFF walk
-            if (sd.data.empty()) {
-                r.fmt = "(empty slot)";
-            } else {
-                std::string werr;
-                if (kgt::DecodeEngineWav(sd.data.data(), sd.data.size(),
-                                         &pcm[i], &werr)) {
-                    char buf[64];
-                    std::snprintf(buf, sizeof buf, "PCM %uHz %u-bit %s",
-                                  unsigned(pcm[i].rate), unsigned(pcm[i].bits),
-                                  pcm[i].channels == 2 ? "stereo" : "mono");
-                    r.fmt = buf;
-                    r.rms_dbfs = kgt::RmsDbfs(pcm[i]);
-                    wave[i] = BuildWaveform(pcm[i]);
-                } else {
-                    r.fmt = werr;  // e.g. "engine wav: RIFF size overstates..."
-                    r.valid = false;
-                }
-            }
-        } else if (nib == 0) {
-            r.fmt = sd.data.empty() ? "stop-all slot (no data)"
-                                    : "stop-all slot";
-        } else if (nib == 2) {
-            if (sd.data.empty())
-                r.fmt = "MIDI (empty slot)";
-            else if (sd.data.size() >= 4 &&
-                     std::memcmp(sd.data.data(), "MThd", 4) == 0)
-                r.fmt = "MIDI (MThd)";
-            else
-                r.fmt = "MIDI (no MThd header)";
-        } else if (nib == 3) {
-            r.fmt = "CD audio";
-        } else {
-            char buf[32];
-            std::snprintf(buf, sizeof buf, "unknown type 0x%02X",
-                          unsigned(sd.sound_type));
-            r.fmt = buf;
-        }
-
+        RebuildSlot(int(i));
         auto it = x.uses.find(int(i));
         if (it != x.uses.end()) {
-            uses[i].reserve(it->second.size());
+            uses_[i].reserve(it->second.size());
             for (const kgt::SoundUse& u : it->second) {
                 UseRow ur;
                 ur.action =
@@ -189,30 +110,130 @@ bool RealModel::Load(const std::string& path, std::string* err) {
                 ur.tick = u.tick;
                 ur.sprite = u.sprite;
                 ur.tick_estimated = u.tick_estimated;
-                uses[i].push_back(std::move(ur));
+                uses_[i].push_back(std::move(ur));
             }
         }
-        r.use_count = int(uses[i].size());
-        sounds.push_back(std::move(r));
+        sounds_[i].use_count = int(uses_[i].size());
     }
+    return true;
+}
 
-    // Commit.
-    file_ = std::move(f);
-    sounds_ = std::move(sounds);
-    uses_ = std::move(uses);
-    pcm_ = std::move(pcm);
-    wave_ = std::move(wave);
-    path_ = path;
-    loaded_ = true;
+void RealModel::RebuildSlot(int i) {
+    const kgt::Sound& sd = session_.File().sounds[size_t(i)];
+    SoundRow& r = sounds_[size_t(i)];
+    const int keep_uses = r.use_count;  // xref is payload-independent
+    r = SoundRow{};
+    r.use_count = keep_uses;
+    r.name = kgt::SoundName(sd);
+    r.sound_type = sd.sound_type;
+    r.size = sd.data.size();
+    r.modified = session_.SlotModified(i);
+    pcm_[size_t(i)] = {};
+    wave_[size_t(i)].clear();
+
+    const uint8_t nib = sd.sound_type & 0x0F;
+    if (nib == 1) {  // WAV: tiered verdict + preview
+        if (sd.data.empty()) {
+            r.fmt = "(empty slot)";
+            return;
+        }
+        const kgt::WavValidity v = kgt::ProbeWav(sd.data.data(), sd.data.size());
+        if (v.Fatal()) {
+            r.validity = Validity::Fatal;
+            std::vector<std::string> all = v.fatal;
+            all.insert(all.end(), v.warnings.begin(), v.warnings.end());
+            r.validity_msg = JoinLines(all);
+        } else if (v.Warn()) {
+            r.validity = Validity::Warn;
+            r.validity_msg = JoinLines(v.warnings);
+        }
+
+        std::string werr;
+        kgt::PcmAudio& pcm = pcm_[size_t(i)];
+        if (kgt::DecodeEngineWav(sd.data.data(), sd.data.size(), &pcm, &werr)) {
+            char buf[64];
+            std::snprintf(buf, sizeof buf, "PCM %uHz %u-bit %s",
+                          unsigned(pcm.rate), unsigned(pcm.bits),
+                          pcm.channels == 2 ? "stereo" : "mono");
+            r.fmt = buf;
+            r.rms_dbfs = kgt::RmsDbfs(pcm);
+            wave_[size_t(i)] = BuildWaveform(pcm);
+        } else if (r.validity != Validity::Fatal) {
+            // WARN slots stay auditable: fall back to the general decoder
+            // (dr_wav handles float32/24-bit) for waveform/play/RMS.
+            r.fmt = kgt::ProbeDesc(v);
+            std::string derr;
+            if (kgt::DecodeAudio(sd.data.data(), sd.data.size(), &pcm, &derr)) {
+                r.rms_dbfs = kgt::RmsDbfs(pcm);
+                wave_[size_t(i)] = BuildWaveform(pcm);
+            } else {
+                pcm = {};  // undecodable even leniently: preview-less
+            }
+        } else {
+            r.fmt = werr;  // Fatal: engine refusal text doubles as format
+        }
+    } else if (nib == 0) {
+        r.fmt = sd.data.empty() ? "stop-all slot (no data)" : "stop-all slot";
+    } else if (nib == 2) {
+        if (sd.data.empty())
+            r.fmt = "MIDI (empty slot)";
+        else if (sd.data.size() >= 4 &&
+                 std::memcmp(sd.data.data(), "MThd", 4) == 0)
+            r.fmt = "MIDI (MThd)";
+        else
+            r.fmt = "MIDI (no MThd header)";
+    } else if (nib == 3) {
+        r.fmt = "CD audio";
+    } else {
+        char buf[32];
+        std::snprintf(buf, sizeof buf, "unknown type 0x%02X",
+                      unsigned(sd.sound_type));
+        r.fmt = buf;
+    }
+}
+
+void RealModel::RefreshModifiedFlags() {
+    for (size_t i = 0; i < sounds_.size(); ++i)
+        sounds_[i].modified = session_.SlotModified(int(i));
+}
+
+bool RealModel::ApplyReplace(const ReplacePlan& plan, std::string* err) {
+    if (!session_.ApplyReplace(plan, err)) return false;
+    RebuildSlot(plan.slot);
+    return true;
+}
+
+int RealModel::Undo() {
+    const int slot = session_.Undo();
+    if (slot >= 0) RebuildSlot(slot);
+    return slot;
+}
+
+int RealModel::Redo() {
+    const int slot = session_.Redo();
+    if (slot >= 0) RebuildSlot(slot);
+    return slot;
+}
+
+bool RealModel::SaveCopy(const std::string& dest, std::string* err) {
+    if (!session_.SaveCopy(dest, err)) return false;
+    RefreshModifiedFlags();
+    return true;
+}
+
+bool RealModel::SaveOverwrite(std::string* err) {
+    if (!session_.SaveOverwrite(err)) return false;
+    RefreshModifiedFlags();
     return true;
 }
 
 std::string RealModel::CountsLabel() const {
+    const kgt::KgtFile& f = session_.File();
     char buf[96];
     std::snprintf(buf, sizeof buf, "%lu scripts, %lu sprites, %lu sounds",
-                  static_cast<unsigned long>(file_.scripts.size()),
-                  static_cast<unsigned long>(file_.sprites.size()),
-                  static_cast<unsigned long>(file_.sounds.size()));
+                  static_cast<unsigned long>(f.scripts.size()),
+                  static_cast<unsigned long>(f.sprites.size()),
+                  static_cast<unsigned long>(f.sounds.size()));
     return buf;
 }
 

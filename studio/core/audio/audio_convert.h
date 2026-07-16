@@ -40,6 +40,44 @@ bool DecodeAudio(const uint8_t* data, size_t len, PcmAudio* out, std::string* er
 // for playback/RMS. Accepts what the engine accepts (proper chunk walk).
 bool DecodeEngineWav(const uint8_t* data, size_t len, PcmAudio* out, std::string* err);
 
+// Tiered engine-truth verdict for a WAV blob -- the chunk walk of
+// tools/kgt/soundtool.py walk_wav (itself a mirror of the engine's
+// ParseRIFFWaveFormat @0x416043), with the tiers kept exactly:
+//   FATAL -- the walk itself breaks: not RIFF/WAVE, RIFF size field
+//   overstating the buffer, fmt chunk under 14 bytes, missing fmt/data,
+//   data chunk past the RIFF bound. The loader mis-reads these in-game.
+//   WARN  -- walk passes but the format is outside the classic envelope
+//   (fmt tag != 1, bits not 8/16, channels not 1-2). The official editor
+//   imports WAVs with zero validation (AddSoundEntry @0x4336E0 is a raw
+//   file slurp) and the engine hands fmt RAW to CreateSoundBuffer
+//   @0x415C20; a legacy DirectSound stack that rejects the format leaves
+//   a NULL buffer stored unchecked and the first script play crashes
+//   (StopAllSoundsInBufferArray @0x415F19). Modern Windows (WASAPI-
+//   wrapped dsound) plays these fine -- hence WARN, not FATAL.
+// DecodeEngineWav stays strict (refuses WARN formats); ProbeWav is the
+// classifier the UI tiers ('!' column) and preview fallback key off.
+struct WavValidity {
+    std::vector<std::string> fatal;     // red tier
+    std::vector<std::string> warnings;  // yellow tier
+    // fmt fields as walked (meaningful when have_fmt).
+    bool have_fmt = false;
+    bool have_data = false;
+    uint16_t format_tag = 0;
+    uint16_t channels = 0;
+    uint32_t rate = 0;
+    int bits = -1;                      // -1 = fmt chunk too short to carry bits
+    uint32_t data_size = 0;             // first data chunk's size field
+
+    bool Fatal() const { return !fatal.empty(); }
+    bool Warn() const { return fatal.empty() && !warnings.empty(); }
+    bool Ok() const { return fatal.empty() && warnings.empty(); }
+};
+WavValidity ProbeWav(const uint8_t* data, size_t len);
+
+// "PCM 22050Hz 16-bit mono" / "tag=3 44100Hz 32-bit stereo" from a probe
+// (the CLI's fmt_desc) -- format cell text when DecodeEngineWav refused.
+std::string ProbeDesc(const WavValidity& v);
+
 // Resample/fold/convert to the target format. Any field 0 = keep source.
 PcmAudio Normalize(const PcmAudio& in, uint32_t rate, uint16_t channels, uint16_t bits);
 

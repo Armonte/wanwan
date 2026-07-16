@@ -1,10 +1,11 @@
 // app_state.h -- 2dfm Studio UI shell: view-model seam.
 //
-// Panels bind to StudioModel ONLY. The production implementation is
+// Panels bind to StudioModel for reads. The production implementation is
 // RealModel (real_model.h): kgt::KgtFile + kgt::BuildSoundXref +
-// kgt::PcmAudio projected into the row shapes below. This header stays
-// free of SDL/ImGui includes so the data layer compiles headlessly
-// (studio/tests/model/).
+// kgt::PcmAudio projected into the row shapes below. Write actions go
+// through AppState::real (RealModel wraps EditSession, the UI-free write
+// path). This header stays free of SDL/ImGui includes so the data layer
+// compiles headlessly (studio/tests/model/, studio/tests/write/).
 #pragma once
 
 #include <cstdint>
@@ -12,6 +13,8 @@
 #include <mutex>
 #include <string>
 #include <vector>
+
+#include "edit_session.h"  // ReplacePlan (UI-free)
 
 struct SDL_Window;
 
@@ -22,16 +25,25 @@ struct PcmAudio;
 namespace studio {
 
 class AudioPlayer;
+class RealModel;
+
+// Engine-walk verdict tier for a WAV slot (kgt::ProbeWav, mirroring
+// soundtool.py walk_wav): Fatal = the loader genuinely breaks/OOB-reads;
+// Warn = plays on modern Windows but crashes legacy DirectSound stacks
+// and wastes size (float32/24-bit/multichannel -- offer convert).
+enum class Validity : uint8_t { Ok, Warn, Fatal };
 
 // One sound-table row. Mirrors kgt::Sound + what the real binding
-// derives per slot (format probe, xref count, engine-validity, RMS).
+// derives per slot (format probe, xref count, validity tier, RMS).
 struct SoundRow {
     std::string name;        // kgt::SoundName() (CP932 -> UTF-8)
     uint8_t sound_type = 1;  // low nibble 0=stop-all 1=WAV 2=MIDI 3=CD; 0x10=loop
     size_t size = 0;         // Sound.data.size()
     std::string fmt;         // "PCM 32728Hz 16-bit mono" (audio_convert probe)
     int use_count = 0;       // xref uses across all scripts
-    bool valid = true;       // engine RIFF-walker verdict
+    Validity validity = Validity::Ok;  // tiered engine RIFF-walker verdict
+    std::string validity_msg;          // '!' column tooltip (probe messages)
+    bool modified = false;   // payload differs from the loaded baseline
     double rms_dbfs = 0.0;   // kgt::RmsDbfs
 };
 
@@ -44,7 +56,7 @@ struct UseRow {
     bool tick_estimated = false;  // SF/SG/SC preceded it -> shown as '~tick'
 };
 
-// The one seam between panels and data.
+// The one seam between panels and data (reads).
 struct StudioModel {
     virtual ~StudioModel() = default;
     virtual const std::vector<SoundRow>& Sounds() const = 0;
@@ -59,19 +71,39 @@ struct StudioModel {
 // Cross-panel state, owned by main().
 struct AppState {
     StudioModel* model = nullptr;
+    RealModel* real = nullptr;      // same object as model; write actions
     AudioPlayer* player = nullptr;  // owned by main(); null = audio unavailable
     SDL_Window* window = nullptr;   // dialog parent
     int selected = 0;
     bool playing = false;
-    std::string opened_path;        // shown in the title bar
-    std::string replace_path;       // last Replace pick (not applied yet)
     std::string load_error;         // nonempty -> "Open failed" modal
     bool quit = false;
 
-    // SDL file-dialog results land here; the callback may run off-thread
-    // (see SDL_ShowOpenFileDialog docs), main loop consumes under the lock.
+    // ── write path (Phase 4) ──
+    // Replace flow: the picker targets the slot selected when it was
+    // opened (selection may change while the async dialog is up).
+    int replace_slot = -1;
+    ReplacePlan replace_plan;       // valid while replace_modal_open
+    bool replace_modal_open = false;
+    std::string replace_error;      // nonempty -> "Replace failed" modal
+
+    bool confirm_overwrite = false; // "Save (overwrite)" confirmation modal
+    std::string save_error;         // nonempty -> "Save failed" modal
+
+    // Unsaved-changes confirm (Open/Quit with a dirty file): what to do
+    // once the user resolves it, and whether a Save-As-Copy is the
+    // in-flight resolution (its completion continues the action).
+    enum class AfterConfirm : uint8_t { None, OpenDialog, OpenPath, Quit };
+    AfterConfirm after_confirm = AfterConfirm::None;
+    std::string after_confirm_path; // for AfterConfirm::OpenPath (drag-drop)
+    bool confirm_unsaved = false;   // modal visible
+    bool save_as_continues = false; // Save Copy picked in the confirm
+
+    // SDL file-dialog results land here; the callbacks may run off-thread
+    // (see SDL_dialog.h docs), main loop consumes under the lock.
     std::mutex dlg_mutex;
-    std::string pending_open, pending_replace;
+    std::string pending_open, pending_replace, pending_save_as;
+    bool pending_save_cancel = false;  // save dialog dismissed
 };
 
 std::string TypeLabel(uint8_t sound_type);  // "WAV", "MIDI loop", ...
@@ -80,5 +112,13 @@ std::string SizeLabel(size_t bytes);        // "73,772 B"
 void DrawSoundTable(AppState& st);
 void DrawSoundDetail(AppState& st);
 void DrawUsagePanel(AppState& st);
+
+// sound_detail.cpp: build a ReplacePlan for `slot` from raw file bytes and
+// raise either the confirm modal or the error modal. Shared by the picker
+// path, drag-drop, and the WARN row's "Convert to 16-bit PCM" action.
+void StartReplace(AppState& st, int slot, const uint8_t* data, size_t len);
+// sound_detail.cpp: the confirm + error modals for the replace flow.
+// Called at frame scope (main.cpp) so a collapsed panel can't eat them.
+void DrawReplaceModals(AppState& st);
 
 }  // namespace studio

@@ -1,6 +1,8 @@
 // sound_table.cpp -- left panel: the sound table.
 // Columns per the MVP list: index, name, type, format, size, used-by
-// count, validity flag. Row click selects for the detail/usage panels.
+// count, modified marker, validity flag ('!' yellow = WARN, red = FATAL,
+// tooltip carries the probe messages). Row click selects for the
+// detail/usage panels.
 #include "imgui.h"
 
 #include "app_state.h"
@@ -32,10 +34,11 @@ void DrawSoundTable(AppState& st) {
         return;
     }
     const auto& sounds = st.model->Sounds();
-    ImGui::TextDisabled("%d sounds  (! = engine-invalid)", int(sounds.size()));
+    ImGui::TextDisabled("%d sounds  (* = modified, ! = validity)",
+                        int(sounds.size()));
     ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
                             ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable;
-    if (ImGui::BeginTable("sound_table", 7, flags)) {
+    if (ImGui::BeginTable("sound_table", 8, flags)) {
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, 28.f);
         ImGui::TableSetupColumn("name", ImGuiTableColumnFlags_WidthStretch, 2.f);
@@ -43,6 +46,7 @@ void DrawSoundTable(AppState& st) {
         ImGui::TableSetupColumn("format", ImGuiTableColumnFlags_WidthStretch, 3.f);
         ImGui::TableSetupColumn("size", ImGuiTableColumnFlags_WidthFixed, 78.f);
         ImGui::TableSetupColumn("uses", ImGuiTableColumnFlags_WidthFixed, 38.f);
+        ImGui::TableSetupColumn("*", ImGuiTableColumnFlags_WidthFixed, 18.f);
         ImGui::TableSetupColumn("!", ImGuiTableColumnFlags_WidthFixed, 18.f);
         ImGui::TableHeadersRow();
         for (int i = 0; i < int(sounds.size()); ++i) {
@@ -70,8 +74,25 @@ void DrawSoundTable(AppState& st) {
             else
                 ImGui::TextDisabled("0");
             ImGui::TableNextColumn();
-            if (!s.valid)
-                ImGui::TextColored(ImVec4(1.f, .35f, .3f, 1.f), "!");
+            if (s.modified) {
+                ImGui::TextColored(ImVec4(.55f, .85f, 1.f, 1.f), "*");
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                    ImGui::SetTooltip("modified (unsaved)");
+            }
+            ImGui::TableNextColumn();
+            if (s.validity != Validity::Ok) {
+                const ImVec4 col = s.validity == Validity::Fatal
+                                       ? ImVec4(1.f, .35f, .3f, 1.f)    // red
+                                       : ImVec4(1.f, .85f, .35f, 1.f);  // yellow
+                ImGui::TextColored(col, "!");
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip) &&
+                    !s.validity_msg.empty()) {
+                    ImGui::SetNextWindowSize(ImVec2(420.f, 0.f), ImGuiCond_Always);
+                    ImGui::BeginTooltip();
+                    ImGui::TextWrapped("%s", s.validity_msg.c_str());
+                    ImGui::EndTooltip();
+                }
+            }
         }
         ImGui::EndTable();
     }

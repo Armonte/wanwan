@@ -1,7 +1,10 @@
 // sound_detail.cpp -- right-top panel: waveform strip (ImDrawList over
 // the model's PCM preview), play/stop through AudioPlayer (SDL3 audio,
-// playhead follows the actual device position), format + RMS text,
-// Replace via SDL_ShowOpenFileDialog.
+// playhead follows the actual device position), format + RMS + validity
+// tier text, and the replace pipeline UI: picker via
+// SDL_ShowOpenFileDialog -> StartReplace (PlanReplace) -> old-vs-new
+// confirm modal -> ApplyReplace. WARN slots get a one-click "Convert to
+// 16-bit PCM" that runs the same pipeline over the slot's own bytes.
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h"
 
@@ -9,6 +12,7 @@
 
 #include "app_state.h"
 #include "audio_player.h"
+#include "real_model.h"
 
 namespace studio {
 namespace {
@@ -69,6 +73,21 @@ void WaveformStrip(AppState& st, const std::vector<float>& wf, double secs) {
 
 }  // namespace
 
+void StartReplace(AppState& st, int slot, const uint8_t* data, size_t len) {
+    st.replace_error.clear();
+    st.replace_modal_open = false;
+    if (!st.real) return;
+    ReplacePlan plan;
+    std::string err;
+    if (!st.real->PlanReplace(slot, data, len, &plan, &err)) {
+        st.replace_error = err.empty() ? std::string("replace failed") : err;
+        return;
+    }
+    // Apply happens from the modal, never on file-pick (workflow item 8).
+    st.replace_plan = std::move(plan);
+    st.replace_modal_open = true;
+}
+
 void DrawSoundDetail(AppState& st) {
     if (!ImGui::Begin("Sound")) {
         ImGui::End();
@@ -81,7 +100,14 @@ void DrawSoundDetail(AppState& st) {
         return;
     }
     const SoundRow& s = sounds[st.selected];
+    const bool editable = st.real && st.real->Editable();
+    const uint8_t nib = s.sound_type & 0x0F;
+
     ImGui::Text("#%d  %s", st.selected, s.name.c_str());
+    if (s.modified) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(.55f, .85f, 1.f, 1.f), "* modified");
+    }
 
     WaveformStrip(st, st.model->Waveform(st.selected), st.model->Seconds(st.selected));
 
@@ -102,20 +128,132 @@ void DrawSoundDetail(AppState& st) {
         }
     }
     ImGui::SameLine();
+    const bool replaceable = editable && (nib == 1 || nib == 2);
+    ImGui::BeginDisabled(!replaceable);
     if (ImGui::Button("replace...")) {
+        // Target the slot selected NOW: the dialog is async and the
+        // selection may move before the pick lands.
+        st.replace_slot = st.selected;
         SDL_ShowOpenFileDialog(ReplaceCb, &st, st.window, kAudioFilters,
                                int(SDL_arraysize(kAudioFilters)), nullptr, false);
+    }
+    ImGui::EndDisabled();
+    if (!replaceable &&
+        ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip |
+                             ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip(editable
+                              ? "only WAV and MIDI slots can be replaced"
+                              : "browse-only: this file failed the round-trip "
+                                "gate, editing is disabled");
     }
 
     ImGui::Text("%s  %s  %s", TypeLabel(s.sound_type).c_str(), s.fmt.c_str(),
                 SizeLabel(s.size).c_str());
     if (pcm) ImGui::Text("RMS %.1f dBFS", s.rms_dbfs);
-    if (!s.valid)
-        ImGui::TextColored(ImVec4(1.f, .35f, .3f, 1.f), "engine RIFF walk: INVALID");
-    if (!st.replace_path.empty())
-        ImGui::TextDisabled("pending replace: %s (not applied -- write milestone)",
-                            st.replace_path.c_str());
+
+    if (s.validity == Validity::Fatal) {
+        ImGui::TextColored(ImVec4(1.f, .35f, .3f, 1.f),
+                           "engine RIFF walk: FATAL -- breaks in-game");
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextColored(ImVec4(1.f, .55f, .5f, 1.f), "%s",
+                           s.validity_msg.c_str());
+        ImGui::PopTextWrapPos();
+    } else if (s.validity == Validity::Warn) {
+        ImGui::TextColored(ImVec4(1.f, .85f, .35f, 1.f),
+                           "nonstandard format (WARN)");
+        ImGui::PushTextWrapPos(0.f);
+        ImGui::TextColored(ImVec4(1.f, .9f, .6f, 1.f), "%s",
+                           s.validity_msg.c_str());
+        ImGui::PopTextWrapPos();
+        if (editable && nib == 1) {
+            if (ImGui::Button("Convert to 16-bit PCM")) {
+                // Same pipeline, source = the slot's own bytes; the
+                // confirm modal shows the conversion before it applies.
+                const kgt::Sound& sd =
+                    st.real->Session().File().sounds[size_t(st.selected)];
+                st.replace_slot = st.selected;
+                StartReplace(st, st.selected, sd.data.data(), sd.data.size());
+            }
+        }
+    }
     ImGui::End();
+}
+
+// Replace modals live at frame scope (main.cpp calls this after the
+// panels) so a collapsed detail panel cannot swallow an open modal.
+void DrawReplaceModals(AppState& st) {
+    // Error first: PlanReplace refusals (FATAL WAVs, wrong slot type, ...).
+    if (!st.replace_error.empty()) {
+        if (!ImGui::IsPopupOpen("Replace failed"))
+            ImGui::OpenPopup("Replace failed");
+        if (ImGui::BeginPopupModal("Replace failed", nullptr,
+                                   ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::PushTextWrapPos(420.f);
+            ImGui::TextWrapped("%s", st.replace_error.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::Spacing();
+            if (ImGui::Button("OK", ImVec2(120.f, 0.f))) {
+                st.replace_error.clear();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+        return;
+    }
+
+    if (!st.replace_modal_open) return;
+    if (!ImGui::IsPopupOpen("Replace sound"))
+        ImGui::OpenPopup("Replace sound");
+    if (!ImGui::BeginPopupModal("Replace sound", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    const ReplacePlan& plan = st.replace_plan;
+    const auto& sounds = st.model->Sounds();
+    const bool slot_ok = plan.slot >= 0 && plan.slot < int(sounds.size());
+    if (!slot_ok) {  // model reloaded under the modal: bail out safely
+        st.replace_modal_open = false;
+        st.replace_plan = ReplacePlan{};
+        ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
+    const SoundRow& s = sounds[plan.slot];
+    ImGui::Text("Replace #%d  %s", plan.slot, s.name.c_str());
+    ImGui::Separator();
+    if (plan.is_midi) {
+        ImGui::Text("old: %s  %s", s.fmt.c_str(), SizeLabel(s.size).c_str());
+        ImGui::Text("new: %s  %s", plan.dst_desc.c_str(),
+                    SizeLabel(plan.payload.size()).c_str());
+    } else {
+        ImGui::Text("old: %s  %s  %.2f s  RMS %.1f dBFS", s.fmt.c_str(),
+                    SizeLabel(s.size).c_str(), st.model->Seconds(plan.slot),
+                    s.rms_dbfs);
+        ImGui::Text("new: %s", plan.src_desc.c_str());
+        ImGui::Text("  -> stored as %s  %s  %.2f s  RMS %.1f dBFS",
+                    plan.dst_desc.c_str(), SizeLabel(plan.payload.size()).c_str(),
+                    plan.seconds, plan.rms_dbfs);
+    }
+    ImGui::Spacing();
+    if (ImGui::Button("Apply", ImVec2(120.f, 0.f))) {
+        std::string err;
+        if (st.real && st.real->ApplyReplace(plan, &err)) {
+            st.playing = false;  // slot audio changed: stop stale playback
+            st.selected = plan.slot;
+        } else {
+            st.replace_error = err.empty() ? std::string("apply failed") : err;
+        }
+        st.replace_modal_open = false;
+        st.replace_plan = ReplacePlan{};
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120.f, 0.f))) {
+        st.replace_modal_open = false;
+        st.replace_plan = ReplacePlan{};
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
 }
 
 }  // namespace studio

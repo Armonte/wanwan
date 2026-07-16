@@ -18,7 +18,9 @@
 
 #include "audio_convert.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 // ── vendored decoders (implementations live in this TU only) ────────────
@@ -259,6 +261,139 @@ bool DecodeEngineWav(const uint8_t* data, size_t len, PcmAudio* out,
     const size_t block = static_cast<size_t>(ch) * (bits / 8);
     out->pcm.assign(pcm_beg, pcm_beg + (pcm_len / block) * block);
     return true;
+}
+
+WavValidity ProbeWav(const uint8_t* data, size_t len) {
+    // Mirrors soundtool.py walk_wav statement-for-statement, including its
+    // quirks (a truncating fmt<14 break still reports "no fmt chunk"; a
+    // past-bound data chunk is fatal yet still counts as found).
+    WavValidity v;
+    char buf[256];
+    if (!data || len < 12 || std::memcmp(data, "RIFF", 4) != 0 ||
+        std::memcmp(data + 8, "WAVE", 4) != 0) {
+        v.fatal.push_back("not a RIFF/WAVE file");
+        return v;
+    }
+    const uint32_t riff_size = rd_u32(data + 4);
+    if (static_cast<uint64_t>(riff_size) + 8 > len) {
+        std::snprintf(buf, sizeof buf,
+                      "RIFF size field (%u) overstates the buffer (%zu bytes "
+                      "follow the header): the engine trusts this field as "
+                      "its walk bound and would read out of bounds in-game "
+                      "-- re-export the WAV",
+                      riff_size, len - 8);
+        v.fatal.push_back(buf);
+    }
+    const size_t end = static_cast<size_t>(
+        std::min<uint64_t>(static_cast<uint64_t>(riff_size) + 8, len));
+
+    size_t pos = 12;
+    while (pos + 8 <= end) {
+        const uint8_t* cid = data + pos;
+        const uint32_t csize = rd_u32(data + pos + 4);
+        const size_t body = pos + 8;
+        if (!v.have_fmt && std::memcmp(cid, "fmt ", 4) == 0) {
+            if (csize < 14) {
+                std::snprintf(buf, sizeof buf,
+                              "fmt chunk is %u bytes; engine requires >= 14",
+                              csize);
+                v.fatal.push_back(buf);
+                break;
+            }
+            if (body + 14 > len) {  // safety only: walk_wav would throw here
+                v.fatal.push_back("fmt chunk truncated at end of buffer");
+                break;
+            }
+            v.format_tag = rd_u16(data + body);
+            v.channels = rd_u16(data + body + 2);
+            v.rate = rd_u32(data + body + 4);
+            v.bits = (csize >= 16 && body + 16 <= len)
+                         ? int(rd_u16(data + body + 14))
+                         : -1;
+            v.have_fmt = true;
+        } else if (!v.have_data && std::memcmp(cid, "data", 4) == 0) {
+            v.data_size = csize;
+            v.have_data = true;
+            if (static_cast<uint64_t>(body) + csize > end) {
+                std::snprintf(buf, sizeof buf,
+                              "data chunk (%u bytes at offset %zu) runs past "
+                              "the RIFF bound; the engine would copy "
+                              "garbage/OOB",
+                              csize, body);
+                v.fatal.push_back(buf);
+            }
+        }
+        // 64-bit stepping: body + csize can wrap size_t on 32-bit targets.
+        const uint64_t next = static_cast<uint64_t>(body) +
+                              ((static_cast<uint64_t>(csize) + 1) & ~1ull);
+        if (next > end) break;
+        pos = static_cast<size_t>(next);
+    }
+    if (!v.have_fmt)
+        v.fatal.push_back("no fmt chunk found within the RIFF bound");
+    if (!v.have_data)
+        v.fatal.push_back("no data chunk found within the RIFF bound "
+                          "(engine treats the WAV as unplayable)");
+    if (v.have_fmt) {
+        // WARN wording is engine-proven (see audio_convert.h): the editor
+        // imports these unvalidated, modern Windows plays them, legacy
+        // DirectSound stacks reject the buffer and the game crashes on
+        // first play.
+        if (v.format_tag != 1) {
+            std::snprintf(buf, sizeof buf,
+                          "format tag %u is not PCM (1): the engine hands "
+                          "fmt raw to DirectSound -- plays on modern "
+                          "Windows, but crashes the game on audio stacks "
+                          "that reject it; convert to 16-bit PCM",
+                          v.format_tag);
+            v.warnings.push_back(buf);
+        }
+        if (v.bits != 8 && v.bits != 16) {
+            if (v.bits < 0) {
+                v.warnings.push_back(
+                    "fmt chunk carries no bits-per-sample field; "
+                    "DirectSound wants 8 or 16-bit -- convert to 16-bit PCM");
+            } else {
+                std::snprintf(buf, sizeof buf,
+                              "%d-bit samples (engine envelope is 8/16-bit): "
+                              "plays on modern Windows, crashes the game on "
+                              "audio stacks that reject it, and wastes file "
+                              "size -- convert to 16-bit PCM",
+                              v.bits);
+                v.warnings.push_back(buf);
+            }
+        }
+        if (v.channels != 1 && v.channels != 2) {
+            std::snprintf(buf, sizeof buf,
+                          "%u channels; engine envelope is mono or stereo",
+                          v.channels);
+            v.warnings.push_back(buf);
+        }
+    }
+    return v;
+}
+
+std::string ProbeDesc(const WavValidity& v) {
+    if (!v.have_fmt) return "?";
+    char buf[96];
+    char tag[24];
+    if (v.format_tag == 1)
+        std::snprintf(tag, sizeof tag, "PCM");
+    else
+        std::snprintf(tag, sizeof tag, "tag=%u", v.format_tag);
+    char ch[16];
+    if (v.channels == 1)
+        std::snprintf(ch, sizeof ch, "mono");
+    else if (v.channels == 2)
+        std::snprintf(ch, sizeof ch, "stereo");
+    else
+        std::snprintf(ch, sizeof ch, "%uch", v.channels);
+    if (v.bits >= 0)
+        std::snprintf(buf, sizeof buf, "%s %uHz %d-bit %s", tag, v.rate,
+                      v.bits, ch);
+    else
+        std::snprintf(buf, sizeof buf, "%s %uHz ?-bit %s", tag, v.rate, ch);
+    return buf;
 }
 
 PcmAudio Normalize(const PcmAudio& in, uint32_t rate, uint16_t channels,

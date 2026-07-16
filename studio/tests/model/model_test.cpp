@@ -86,10 +86,12 @@ void TestBewear(studio::RealModel& m, const std::string& path) {
     CHECK_EQ(sounds[21].use_count, 0);
     CHECK(m.Uses(21).empty());
 
-    // Row 2 format probe (engine RIFF walk): 22050Hz 16-bit.
+    // Row 2 format probe (engine RIFF walk): 22050Hz 16-bit, clean tier.
     CHECK(sounds[2].fmt.find("22050") != std::string::npos);
     CHECK(sounds[2].fmt.find("16-bit") != std::string::npos);
-    CHECK(sounds[2].valid);
+    CHECK(sounds[2].validity == studio::Validity::Ok);
+    CHECK(sounds[2].validity_msg.empty());
+    CHECK(!sounds[2].modified);
 
     // RMS for row 7: finite, sane dBFS range.
     CHECK(std::isfinite(sounds[7].rms_dbfs));

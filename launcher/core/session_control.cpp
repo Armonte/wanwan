@@ -10,6 +10,7 @@
 #include "FM2K_GameInstance.h"
 #include "FM2K_Integration.h"
 #include "FM2K_GameIni.h"
+#include "../ui/launcher_ui_internal.h"  // lui::NeutralizeGamePatchEnvVars
 
 #include <memory>
 #include <string>
@@ -78,11 +79,25 @@ void FM2KLauncher::StartStressSession() {
 
     game_instance_ = std::make_unique<FM2KGameInstance>();
 
+    // Stress is a determinism harness — a leaked offline per-game patch
+    // (damage mult, team size...) would perturb the baseline sim.
+    lui::NeutralizeGamePatchEnvVars();
+
     // Env vars: stress mode ON, true-offline OFF (we still need GekkoNet running)
     game_instance_->SetEnvironmentVariable("FM2K_TRUE_OFFLINE", "0");
     game_instance_->SetEnvironmentVariable("FM2K_STRESS_MODE", "1");
     game_instance_->SetEnvironmentVariable("FM2K_PLAYER_INDEX", "0");  // irrelevant in stress mode but keep consistent
     game_instance_->SetEnvironmentVariable("FM2K_PRODUCTION_MODE", "0");  // verbose logging so we see desync diagnostics
+
+    // FM95's rollback driver only runs under FM95_TRAMPOLINE=1 (the hook
+    // rides TrampolineFrameTick inside CPW's native WinMain loop). Stress
+    // mode IS the rollback driver, so a CPW stress session must enable it —
+    // otherwise there's no Save/Load/Advance and the (protection-less,
+    // dedup-less) Hook_RenderGame path runs instead. Per-instance env, so no
+    // leakage to other spawns. No-op on FM2K.
+    if (selected_game_.engine == FM2K::Engine::FM95) {
+        game_instance_->SetEnvironmentVariable("FM95_TRAMPOLINE", "1");
+    }
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
         "Starting STRESS session: GekkoStressSession will force rollbacks "
@@ -111,6 +126,22 @@ void FM2KLauncher::StartOnlineSession(const NetworkConfig& config, bool is_host)
 
     // Create new instance and set env vars BEFORE launch
     game_instance_ = std::make_unique<FM2KGameInstance>();
+
+    // Netplay must not inherit per-game patch envs from a prior OFFLINE
+    // launch (they're launcher-process-level): a one-sided team-size or
+    // damage-multiplier is a guaranteed desync. Online = vanilla + hook
+    // defaults until per-game patches are host-synced.
+    lui::NeutralizeGamePatchEnvVars();
+
+    // FM95 rollback runs only under FM95_TRAMPOLINE=1 (the hook rides
+    // TrampolineFrameTick inside CPW's WinMain loop). Netplay IS the rollback
+    // driver, so a CPW online match must enable it — same as stress. Offline
+    // deliberately does NOT set it (CPW runs natively at title→CSS→battle).
+    // Per-instance env; no-op on FM2K.
+    if (selected_game_.engine == FM2K::Engine::FM95) {
+        game_instance_->SetEnvironmentVariable("FM95_TRAMPOLINE", "1");
+    }
+
     ApplyPendingConfigToInstance(game_instance_.get());
 
     uint8_t player_index = is_host ? 0 : 1;

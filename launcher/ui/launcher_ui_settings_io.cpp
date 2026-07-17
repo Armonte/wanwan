@@ -257,10 +257,43 @@ std::string GameIdForExePath(const std::string& exe_path_utf8) {
     return fm2k::utf8path::StemUtf8(p);
 }
 
-// Apply per-game patch env vars before launching the game. Called by
-// every launch path (offline / online / dual-client / hub challenge)
-// so the hook DLL sees consistent settings. Each new patch added to
-// the per-game INI gets a corresponding env var set here.
+// Every env var ApplyGamePatchEnvVars owns. Neutralize and Apply share
+// this table so a patch added to one can't silently drift out of the
+// other (a stale var surviving Neutralize = the leak described below).
+static const char* const kGamePatchEnvVars[] = {
+    "FM2K_KEEP_GAMESPEED_PIC",
+    "FM2K_TEAM_CSS_DUPE_LOCK",
+    "FM2K_TEAM_KOF_RETENTION",
+    "FM2K_TEAM_SIZE",
+    "FM2K_DAMAGE_MULT_PCT",
+    "FM2K_VS_CPU_MODE",
+    "FM2K_CPU_VS_CPU_MODE",
+    "FM2K_TRAINING_MODE",
+    "FM2K_OPTION_MODE_SELECTOR",
+};
+
+// Clear every per-game patch env var. MUST run before any NON-offline
+// launch (online, stress, spectate): these vars are process-level on
+// the launcher and inherited by every spawned game, so without this a
+// prior OFFLINE launch's settings (training mode, team size, damage
+// multiplier...) leaked into the next netplay match — sim-affecting
+// ones (team_size, damage_mult) only on THIS peer's side, i.e. a
+// guaranteed desync; training/vs-cpu leaks zeroed P2-style inputs.
+// Online stays "vanilla + hook defaults" by design until per-game
+// patches are host-synced. (FM2K_KEEP_GAMESPEED_PIC is opt-out — the
+// hook's render fix defaults ON, so clearing keeps the fix active.)
+void NeutralizeGamePatchEnvVars() {
+    for (const char* v : kGamePatchEnvVars) {
+        ::SetEnvironmentVariableA(v, nullptr);
+    }
+}
+
+// Apply per-game patch env vars before launching the game OFFLINE (the
+// netcfg Play-Offline button). Online / stress / spectate paths call
+// NeutralizeGamePatchEnvVars() instead — per-game patches are local
+// house rules and are not synced between peers yet. Each new patch
+// added to the per-game INI gets a corresponding env var set here AND
+// an entry in kGamePatchEnvVars above.
 void ApplyGamePatchEnvVars(const std::string& game_id) {
     // ---- IMPLEMENTED ----
 

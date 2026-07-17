@@ -10,6 +10,7 @@
 #include "FM2K_GameInstance.h"
 #include "FM2K_Integration.h"
 #include "FM2KHook/src/ui/shared_mem.h"
+#include "../ui/launcher_ui_internal.h"  // lui::NeutralizeGamePatchEnvVars
 
 #include <memory>
 #include <string>
@@ -234,6 +235,12 @@ bool FM2KLauncher::LaunchRemoteSpectator(const std::string& game_path,
     }
 
     spectator_instance_ = std::make_unique<FM2KGameInstance>();
+
+    // Spectators re-sim the host's match — a leaked offline per-game
+    // patch env (team size / damage mult) would fork their sim from the
+    // stream. Same neutralize the online session start does.
+    lui::NeutralizeGamePatchEnvVars();
+
     ApplyPendingConfigToInstance(spectator_instance_.get());
 
     const std::string remote_addr = host_ip + ":" + std::to_string(host_port);

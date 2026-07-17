@@ -33,6 +33,12 @@ void SaveGamePatchBool(const std::string& game_id, const char* key, bool value);
 void SaveGamePatchInt(const std::string& game_id, const char* key, int value);
 std::string GameIdForExePath(const std::string& exe_path_utf8);
 void ApplyGamePatchEnvVars(const std::string& game_id);
+// Clear every ApplyGamePatchEnvVars-owned env var. MUST be called by the
+// non-offline session paths (online / stress / spectate) before spawning:
+// the vars are launcher-process-level and inherited by every child, so a
+// prior offline launch's per-game patches (team size, damage multiplier,
+// training...) would otherwise leak into a netplay match one-sided.
+void NeutralizeGamePatchEnvVars();
 
 // settings.ini primitives (notifications, SOCD, random-stage all share it).
 std::string NotifySettingsPath();

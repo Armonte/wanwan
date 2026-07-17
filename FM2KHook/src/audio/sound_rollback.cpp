@@ -1,4 +1,5 @@
 #include "sound_rollback.h"
+#include "globals.h"  // FM2K::ADDR_SOUND_* / ADDR_CONTROL_SOUND (engine-routed)
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -8,16 +9,22 @@
 #include <windows.h>  // GetTickCount
 
 // ============================================================================
-// Constants from FM2K binary (verified via IDA, 2026-04-23).
+// Engine-routed constants (globals.h). FM2K values verified via IDA 2026-04-23:
 //   g_sound_channel_table     @ 0x430640 — array of SoundBufferArray*
 //   g_sound_channel_table_end @ 0x433240 — end marker (used by ReleaseAllSoundBuffers)
 //   PlaySoundFromBufferArray  @ 0x415DF0 — core DSound play + round-robin
 //   StopAllSoundsInBufferArray@ 0x415F00 — stop every buffer in one array
+// FM95: the play/stop/control FUNCTIONS are known (0x401590 / 0x4016A0 /
+// 0x4020A0) but the channel TABLE is not yet RE'd (RE-1 in
+// docs/FM95_Support_Status.md) -- its ADDR_SOUND_CHANNEL_TABLE is a 0 sentinel,
+// which makes CHANNEL_TABLE_SLOTS 0 so Init()/ChannelFor() scans no-op and the
+// SFX desired/actual layer is inert-but-safe. The BGM desired path has no
+// table dependency and stays live on both engines.
 // ============================================================================
 namespace {
 
-constexpr uintptr_t ADDR_CHANNEL_TABLE     = 0x430640;
-constexpr uintptr_t ADDR_CHANNEL_TABLE_END = 0x433240;
+constexpr uintptr_t ADDR_CHANNEL_TABLE     = FM2K::ADDR_SOUND_CHANNEL_TABLE;
+constexpr uintptr_t ADDR_CHANNEL_TABLE_END = FM2K::ADDR_SOUND_CHANNEL_TABLE_END;
 constexpr size_t    CHANNEL_TABLE_SLOTS    =
     (ADDR_CHANNEL_TABLE_END - ADDR_CHANNEL_TABLE) / sizeof(void*);
 
@@ -43,11 +50,33 @@ uint32_t g_stat_record_known = 0;
 uint32_t g_stat_record_unknown = 0;
 uint32_t g_stat_last_log_tick = 0;
 
-// Music-path dedup state (MIDI/CD). Cleared by OnBattleEnd so each match
-// starts with a blank slate.
-uint32_t g_last_music_cmd = 0xFFFFFFFFu;
-uint32_t g_last_music_payload = 0;
-bool     g_last_music_valid = false;
+// BGM (MIDI/CD/stop) rollback state — single global stream. desired is written
+// by the dispatcher hook and saved in the ring; actual is what MCI is really
+// playing (NOT saved — reconstructed by SyncAfterAdvance). Cleared by
+// OnBattleEnd. Replaces the old (cmd,payload) dedup with a proper
+// desired-vs-actual reconcile, so music survives save-ring scroll + rollback.
+SoundRollback::DesiredBgm g_desired_bgm = {};
+SoundRollback::DesiredBgm g_actual_bgm  = {};
+
+// The engine's own sound control (FM2K ControlSound @ 0x4034D0 / FM95
+// ControlSoundSystem @ 0x4020A0 -- routed via globals.h): 0 = stop all channels
+// + MIDI + CD (scene-transition teardown — safe/idempotent, only Stop calls,
+// no free), 2 = stop MIDI, 3 = stop CD. Used for battle-end stop and the
+// (rare) rollback-erased-music case.
+using ControlSoundFn = int(__cdecl*)(int);
+ControlSoundFn ControlSound = reinterpret_cast<ControlSoundFn>(FM2K::ADDR_CONTROL_SOUND);
+
+bool BgmEqual(const SoundRollback::DesiredBgm& a, const SoundRollback::DesiredBgm& b) {
+    return a.valid == b.valid && a.cmd_low == b.cmd_low && a.payload == b.payload;
+}
+
+// Optional BGM event trace (FM2K_BGM_TRACE=1) so we can see, in the log, every
+// BGM dispatch + whether it deferred or played immediately + reconcile plays.
+bool BgmTrace() {
+    static int s = -1;
+    if (s < 0) { const char* v = std::getenv("FM2K_BGM_TRACE"); s = (v && v[0] == '1'); }
+    return s == 1;
+}
 
 // Mute state — atomic so launcher-driven toggles are visible without
 // locks. The launcher writes %APPDATA%\FM2K_Rollback\audio.ini and the
@@ -145,22 +174,33 @@ void RefreshMuteFromDisk() {
     }
 }
 
-bool IsRedundantMusicDispatch(uint8_t cmd, uint32_t payload) {
-    // Skip only when BOTH cmd and payload match the previous non-replay
-    // dispatch. Any change — a new track, a stop-then-same-track, a switch
-    // to CD audio, a round-end fanfare — updates the stored key and fires.
-    // So mid-match music transitions work normally; only the exact same
-    // (cmd, payload) repeating (which is what GekkoNet's save-ring scroll
-    // causes) gets filtered out.
-    if (g_last_music_valid &&
-        g_last_music_cmd == static_cast<uint32_t>(cmd) &&
-        g_last_music_payload == payload) {
-        return true;
-    }
-    g_last_music_valid   = true;
-    g_last_music_cmd     = static_cast<uint32_t>(cmd);
-    g_last_music_payload = payload;
-    return false;
+void TraceWavMusicDispatch(uint32_t frame, bool in_battle) {
+    if (BgmTrace())
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "BGM-WAV: loop-WAV music dispatch frame=%u in_battle=%d", frame,
+            (int)in_battle);
+}
+
+void TraceBgmDispatch(uint8_t cmd, bool netplay_active, bool in_battle) {
+    if (BgmTrace())
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "BGM-DISP: cmd=0x%02X cmd_low=%u loop=%d netplay=%d in_battle=%d",
+            cmd, cmd & 0xF, (cmd & 0x10) != 0, (int)netplay_active,
+            (int)in_battle);
+}
+
+bool RecordDesiredBgm(int script_item, uint8_t cmd_low, uint32_t payload,
+                      uint32_t current_frame) {
+    g_desired_bgm.script_item_ptr = static_cast<uint32_t>(script_item);
+    g_desired_bgm.payload         = payload;
+    g_desired_bgm.play_frame      = current_frame;
+    g_desired_bgm.cmd_low         = cmd_low;
+    g_desired_bgm.valid           = 1;
+    if (BgmTrace())
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "BGM: record desired cmd_low=%u payload=0x%08X frame=%u (deferred)",
+            cmd_low, payload, current_frame);
+    return true;  // deferred to SyncAfterAdvance (caller only reaches here in-battle)
 }
 
 void Init() {
@@ -169,7 +209,11 @@ void Init() {
     std::memset(g_actual,  0, sizeof(g_actual));
     g_seq_counter = 0;
     g_seq_anchor_frame = 0;
+    g_desired_bgm = {};
+    g_actual_bgm  = {};
 
+    // FM95: CHANNEL_TABLE_SLOTS == 0 (table unmapped, RE-1) -- the scan
+    // no-ops and `table` is never dereferenced.
     void** table = reinterpret_cast<void**>(ADDR_CHANNEL_TABLE);
     int populated = 0;
     for (int i = 0; i < static_cast<int>(CHANNEL_TABLE_SLOTS); i++) {
@@ -192,9 +236,17 @@ void OnBattleEnd() {
     g_stat_record_known = 0;
     g_stat_record_unknown = 0;
     g_stat_last_log_tick = 0;
-    g_last_music_valid = false;       // next match's first music dispatch always fires
-    g_last_music_cmd = 0xFFFFFFFFu;
-    g_last_music_payload = 0;
+    if (BgmTrace())
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "BGM: OnBattleEnd -> clear desired (no stop-all)");
+    // Do NOT stop sound here. The game stops the battle BGM with its own
+    // cmd_low=0 dispatch on the battle->CSS transition, then its freshly
+    // re-created CSS controller re-dispatches the CSS BGM (game_mode==2000).
+    // An earlier ControlSoundSystem(0) here ran AFTER that and silenced the
+    // CSS-return music — we respect the game's own stop/start and just reset our
+    // per-battle BGM tracking for the next match.
+    g_desired_bgm = {};
+    g_actual_bgm  = {};
     g_ptr_to_chan.clear();
     std::memset(g_desired, 0, sizeof(g_desired));
     std::memset(g_actual,  0, sizeof(g_actual));
@@ -230,6 +282,11 @@ bool RecordDesired(void* arr, int script_item, uint32_t current_frame) {
 }
 
 void SyncAfterAdvance(uint32_t earliest_frame, uint32_t current_frame) {
+    // SFX desired/actual reconcile needs the engine's channel table. On FM95
+    // it is unmapped (RE-1, ADDR_SOUND_CHANNEL_TABLE == 0) so this whole
+    // layer is compiled out there -- inert-but-safe. The BGM reconcile at the
+    // bottom has no table dependency and stays live on both engines.
+    if constexpr (FM2K::ADDR_SOUND_CHANNEL_TABLE != 0) {
     void** table = reinterpret_cast<void**>(ADDR_CHANNEL_TABLE);
 
     // Once-per-second coverage log. If unknown >> known, the Mike Z layer is
@@ -287,10 +344,10 @@ void SyncAfterAdvance(uint32_t earliest_frame, uint32_t current_frame) {
                 if (arr) {
                     // Re-invoke the dispatcher with a synthesised "stop" script
                     // item would require allocation; instead just clobber the
-                    // channel's buffers directly. For FM2K we can do this via
-                    // the existing StopAllSoundsInBufferArray @ 0x415F00.
+                    // channel's buffers directly via the engine's own
+                    // StopAllSoundsInBufferArray (engine-routed, globals.h).
                     using StopFn = int(__cdecl*)(void*);
-                    ((StopFn)0x415F00)(arr);
+                    ((StopFn)FM2K::ADDR_STOP_ALL_SOUNDS_IN_BUFFER_ARRAY)(arr);
                 }
                 g_actual[chan].script_item_ptr = 0;
                 g_actual[chan].wave_ptr        = 0;
@@ -317,7 +374,7 @@ void SyncAfterAdvance(uint32_t earliest_frame, uint32_t current_frame) {
                 void* arr = table[chan];
                 if (arr) {
                     using StopFn = int(__cdecl*)(void*);
-                    ((StopFn)0x415F00)(arr);
+                    ((StopFn)FM2K::ADDR_STOP_ALL_SOUNDS_IN_BUFFER_ARRAY)(arr);
                 }
             }
             g_actual[chan] = g_desired[chan];
@@ -331,6 +388,46 @@ void SyncAfterAdvance(uint32_t earliest_frame, uint32_t current_frame) {
             earliest_frame, current_frame, branch_plays, branch_stops, branch_skips);
         s_branch_log_tick = now_tick;
     }
+    }  // if constexpr (ADDR_SOUND_CHANNEL_TABLE != 0) -- end SFX reconcile
+
+    // --- BGM (MIDI/CD/stop) reconcile: single global stream, same window rule
+    // as SFX. Identity is (cmd_low, payload): an unchanged desired == actual is
+    // a no-op, so the save-ring scrolling forward across the music-trigger frame
+    // no longer restarts MCI (the old cut-in/out). A rollback restores desired
+    // from the ring (RestoreBgm) -> reconcile brings the real MCI stream back to
+    // the confirmed track.
+    if (!BgmEqual(g_desired_bgm, g_actual_bgm)) {
+        const bool des_in =
+            FrameInWindow(g_desired_bgm.play_frame, earliest_frame, current_frame);
+        if (des_in) {
+            // Confirmed new/changed BGM this batch — issue the real MCI play/stop
+            // via the game's own dispatcher (WriteTempMIDIAndPlay /
+            // InitializeCDAudio / ControlSoundSystem(0) for cmd_low 0), once.
+            if (BgmTrace())
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "BGM: sync PLAY cmd_low=%u payload=0x%08X frame=%u",
+                    g_desired_bgm.cmd_low, g_desired_bgm.payload,
+                    g_desired_bgm.play_frame);
+            if (g_desired_bgm.valid && g_original_dispatcher &&
+                g_desired_bgm.script_item_ptr) {
+                g_original_dispatcher(static_cast<int>(g_desired_bgm.script_item_ptr));
+            }
+        } else {
+            // Desired stable (set outside the window) but actual diverged — a
+            // play landed in the window then got rolled back. Restore truth: a
+            // real track re-asserts via the dispatcher; a stop stops MCI.
+            // (Music starts almost never land in the rollback window; degenerate
+            // but kept correct.)
+            if (g_desired_bgm.valid && g_desired_bgm.cmd_low != 0 &&
+                g_original_dispatcher && g_desired_bgm.script_item_ptr) {
+                g_original_dispatcher(static_cast<int>(g_desired_bgm.script_item_ptr));
+            } else if (ControlSound) {
+                ControlSound(2);  // stop MIDI
+                ControlSound(3);  // stop CD
+            }
+        }
+        g_actual_bgm = g_desired_bgm;
+    }
 }
 
 void CaptureDesired(DesiredState* out) {
@@ -339,6 +436,17 @@ void CaptureDesired(DesiredState* out) {
 
 void RestoreDesired(const DesiredState* in) {
     std::memcpy(g_desired, in, sizeof(g_desired));
+}
+
+// BGM desired is deterministic (cmd_low/payload/play_frame + a script_item_ptr
+// into saved sim memory). actual is NOT saved — SyncAfterAdvance reconstructs
+// the real MCI stream from desired after a load.
+void CaptureBgm(DesiredBgm* out) {
+    std::memcpy(out, &g_desired_bgm, sizeof(g_desired_bgm));
+}
+
+void RestoreBgm(const DesiredBgm* in) {
+    std::memcpy(&g_desired_bgm, in, sizeof(g_desired_bgm));
 }
 
 } // namespace SoundRollback

@@ -37,6 +37,24 @@ struct DesiredState {
     uint8_t  _pad;
 };
 
+// BGM (MIDI cmd_low 2 / CD cmd_low 3 / full-stop cmd_low 0) desired state — a
+// SINGLE global stream (unlike SFX's per-channel array). Same rollback model as
+// SFX: the dispatcher only records `desired`; SyncAfterAdvance reconciles it to
+// the actually-playing MCI stream once per displayed frame, so the save-ring's
+// forward-replay across a music-trigger frame no longer restarts MCI (the old
+// cutoff), and a rollback that crosses a music start restores the pre-rollback
+// desired from the ring instead of losing it (the old dedup couldn't).
+// Looping-WAV BGM (cmd_low 1 + loop) is NOT here — it rides the per-channel SFX
+// layer already; battle-end stop covers it via ControlSoundSystem(0).
+struct DesiredBgm {
+    uint32_t script_item_ptr;  // re-invoke the dispatcher at sync time (game plays MCI)
+    uint32_t payload;          // identity: (script_item+36) ^ (script_item+41)
+    uint32_t play_frame;       // frame this BGM command was recorded on
+    uint8_t  cmd_low;          // 0=stop 2=MIDI 3=CD
+    uint8_t  valid;            // 0 = no BGM command recorded this battle yet
+    uint8_t  _pad[2];
+};
+
 constexpr int MAX_CHANNELS = 2816;  // = (0x433240 - 0x430640) / 4
 
 // Lifecycle — called from Netplay_StartBattle / Netplay_EndBattle.
@@ -96,13 +114,21 @@ void SyncAfterAdvance(uint32_t earliest_frame, uint32_t current_frame);
 // Savestate integration — called from SaveState_Save / SaveState_Load.
 void CaptureDesired(DesiredState* out);
 void RestoreDesired(const DesiredState* in);
+void CaptureBgm(DesiredBgm* out);
+void RestoreBgm(const DesiredBgm* in);
 
-// Music-path dedup. MIDI/CD dispatches use MCI which hates repeated open+play
-// cycles; the GekkoNet save ring scrolls the forward advance across music
-// trigger frames many times per match, so without dedup music cuts in and out.
-// Returns true if (cmd, payload) matches the most recent non-replay dispatch
-// and should be skipped; false means it's new — caller fires the original
-// dispatcher. State is cleared by OnBattleEnd so next match always plays.
-bool IsRedundantMusicDispatch(uint8_t cmd, uint32_t payload);
+// Diagnostic (FM2K_BGM_TRACE=1): looping-WAV music dispatch from the SFX branch.
+void TraceWavMusicDispatch(uint32_t frame, bool in_battle);
+
+// Diagnostic (FM2K_BGM_TRACE=1): top-of-dispatcher log of EVERY BGM/stop
+// dispatch BEFORE any routing, with netplay + in-battle-phase state.
+void TraceBgmDispatch(uint8_t cmd, bool netplay_active, bool in_battle);
+
+// Called from Hook_DispatchScriptSoundCommand on the BGM branch (cmd_low 2/3)
+// ONLY while in the battle phase. Records the desired MIDI/CD stream; the real
+// MCI play is deferred to SyncAfterAdvance. `payload` is
+// (script_item+36) ^ (script_item+41). Always returns true (caller defers).
+bool RecordDesiredBgm(int script_item, uint8_t cmd_low, uint32_t payload,
+                      uint32_t current_frame);
 
 } // namespace SoundRollback

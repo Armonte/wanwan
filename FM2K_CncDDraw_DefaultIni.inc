@@ -174,7 +174,12 @@ refresh_rate=0
 keytogglefullscreen=0x0D
 
 ; Switch between windowed and fullscreen mode (single key) = ???
-keytogglefullscreen2=0x73
+; F4 (0x73) is deliberately NOT bound here: cnc-ddraw's single-key
+; matcher has no Alt check, so binding F4 makes its keyboard hook
+; swallow Alt+F4 (the close chord). Our hook's wndproc subclass owns
+; the F4 fullscreen toggle instead (wndproc_subclass.cpp), which
+; leaves Alt+F4 free to close the game.
+keytogglefullscreen2=0x00
 
 ; Maximize window = [Alt] + ???
 keytogglemaximize=0x22

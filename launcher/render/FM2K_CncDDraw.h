@@ -6,12 +6,14 @@
 // renamed cnc-ddraw build (`2DFMD.dll`) plus its `ddraw.ini` and
 // `Shaders/`. `FM2K_DDrawRedirect` patches the suspended game's IAT to
 // look for that name and prepends this folder to the child PATH. This
-// module owns getting the bits onto disk: downloading the latest GitHub
-// release, extracting it, and renaming `ddraw.dll` → `2DFMD.dll`.
+// module owns getting the bits onto disk: downloading the PINNED GitHub
+// release (`kPinnedTag` in the .cpp — the hook DLL's fullscreen-toggle
+// offsets are validated against that exact build), extracting it, and
+// renaming `ddraw.dll` → `2DFMD.dll`.
 //
 // Strict download-only — no embedded fallback. First run requires
 // network. Subsequent launches skip the work if `version.txt` matches
-// the latest release.
+// the pinned release (no network needed once installed).
 //
 // Mirrors `FM2K_Updater`'s state-machine + worker-thread shape so the UI
 // pill can be rendered identically. All HTTP via WinHTTP, all archive
@@ -28,9 +30,9 @@ namespace fm2k::cnc_ddraw {
 
 enum class State {
     Idle,             // boot — no check yet
-    Checking,         // GitHub /releases/latest GET in flight
+    Checking,         // comparing local version.txt against the pinned tag
     NotInstalled,     // checked but no local install + offline / failed
-    UpToDate,         // local version == latest GitHub release
+    UpToDate,         // local version == pinned release
     UpdateAvailable,  // local < remote (or no local)
     Downloading,      // zip download in flight
     Extracting,       // unzipping + renaming ddraw.dll -> 2DFMD.dll
@@ -68,9 +70,11 @@ std::string ReadLocalVersion();
 // the launcher uses to decide "install is good."
 std::string DllPath();
 
-// Background "make sure cnc-ddraw is installed and up-to-date." Pulls
-// the latest release tag from the GitHub API; if local version differs
-// (or no install present), downloads and extracts. Idempotent: no-op
+// Background "make sure cnc-ddraw is installed at the pinned version."
+// If the local version differs from the pin (or no install present),
+// downloads and extracts — newer local installs are intentionally
+// snapped BACK to the pin. Also migrates managed ddraw.ini keys in
+// place (see MigrateManagedIniKeys in the .cpp). Idempotent: no-op
 // if a worker is already running. UI polls Get() each frame.
 void EnsureInstalled();
 

@@ -218,9 +218,10 @@ void LauncherUI::RenderMenuBar() {
             s_did_update_check = true;
             fm2k::updater::CheckForUpdates();
             // Same first-frame slot also kicks the cnc-ddraw bundled
-            // installer. Idempotent; if the install is up-to-date the
-            // worker bails after one HTTPS round-trip. New installs
-            // get auto-fetched without any user click.
+            // installer. Idempotent; version is PINNED so an up-to-date
+            // install bails with no network at all (and managed ini
+            // keys get migrated in the same pass). New installs get
+            // auto-fetched without any user click.
             fm2k::cnc_ddraw::EnsureInstalled();
         }
 

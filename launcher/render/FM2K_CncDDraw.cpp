@@ -42,6 +42,15 @@ constexpr const char* kRepoOwner = "FunkyFr3sh";
 constexpr const char* kRepoName  = "cnc-ddraw";
 constexpr const char* kAssetName = "cnc-ddraw.zip";
 
+// PINNED release. The hook DLL hard-depends on this exact build: the F4
+// fullscreen toggle calls util_toggle_fullscreen at 2DFMD.dll+0x8770
+// (signature-guarded) and the toggle diagnostics read RVAs from the
+// 2DFMD IDB — a different upstream build moves those and silently kills
+// the F4 hotkey. Tracking releases/latest meant any upstream release
+// could do that without us shipping anything. Bump this tag ONLY after
+// re-verifying the offsets in wndproc_subclass.cpp against the new build.
+constexpr const char* kPinnedTag = "v7.1.0.0";
+
 // File that lives in the install dir — its presence + 2DFMD.dll's
 // presence + version.txt's content tell us "install is good."
 constexpr const char* kRenamedDll = "2DFMD.dll";
@@ -105,82 +114,6 @@ bool ParseHttpsUrl(const std::string& url,
     path_out = widen(path);
     port_out = port;
     return true;
-}
-
-struct GetResp {
-    int         status = 0;
-    std::string body;
-};
-
-// HTTP GET, follows redirects, returns body. Sends an explicit
-// User-Agent — GitHub's API returns 403 without one.
-GetResp HttpGetText(const std::string& url, int timeout_ms = 8000) {
-    GetResp out;
-    bool https = false;
-    std::wstring host, path;
-    uint16_t port = 0;
-    if (!ParseHttpsUrl(url, https, host, port, path)) return out;
-
-    HINTERNET hSes = WinHttpOpen(L"FM2K_CncDDraw/0.1",
-        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,  // not AUTOMATIC: that needs Win8.1+ (WinHttpOpen -> 87 on Win8.0); DEFAULT works on every OS + honors system proxy
-        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!hSes) return out;
-    // Win8.0/7: enable TLS 1.2 (WinHTTP defaults to TLS 1.0 there). No-op on 8.1+.
-    { DWORD sp = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_1 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
-      WinHttpSetOption(hSes, WINHTTP_OPTION_SECURE_PROTOCOLS, &sp, sizeof(sp)); }
-    WinHttpSetTimeouts(hSes, timeout_ms, timeout_ms, timeout_ms, timeout_ms);
-
-    HINTERNET hCon = WinHttpConnect(hSes, host.c_str(), port, 0);
-    if (!hCon) { WinHttpCloseHandle(hSes); return out; }
-
-    DWORD flags = https ? WINHTTP_FLAG_SECURE : 0;
-    HINTERNET hReq = WinHttpOpenRequest(hCon, L"GET", path.c_str(), nullptr,
-        WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
-    if (!hReq) { WinHttpCloseHandle(hCon); WinHttpCloseHandle(hSes); return out; }
-
-    DWORD redirect_policy = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
-    WinHttpSetOption(hReq, WINHTTP_OPTION_REDIRECT_POLICY,
-                     &redirect_policy, sizeof(redirect_policy));
-
-    // Required by GitHub API (rejects requests without an Accept hint
-    // for the v3 schema; `application/vnd.github+json` is the canonical
-    // one but plain JSON is also accepted).
-    static const wchar_t kHeaders[] =
-        L"Accept: application/vnd.github+json\r\n"
-        L"X-GitHub-Api-Version: 2022-11-28\r\n";
-
-    BOOL ok = WinHttpSendRequest(hReq, kHeaders, (DWORD)-1L,
-        WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
-    if (ok) ok = WinHttpReceiveResponse(hReq, nullptr);
-    if (!ok) {
-        WinHttpCloseHandle(hReq);
-        WinHttpCloseHandle(hCon);
-        WinHttpCloseHandle(hSes);
-        return out;
-    }
-
-    DWORD status = 0, sz = sizeof(status);
-    WinHttpQueryHeaders(hReq,
-        WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-        WINHTTP_HEADER_NAME_BY_INDEX, &status, &sz, WINHTTP_NO_HEADER_INDEX);
-    out.status = (int)status;
-
-    std::vector<char> buf;
-    for (;;) {
-        DWORD avail = 0;
-        if (!WinHttpQueryDataAvailable(hReq, &avail) || avail == 0) break;
-        size_t off = buf.size();
-        buf.resize(off + avail);
-        DWORD got = 0;
-        if (!WinHttpReadData(hReq, buf.data() + off, avail, &got)) break;
-        buf.resize(off + got);
-    }
-    out.body.assign(buf.begin(), buf.end());
-
-    WinHttpCloseHandle(hReq);
-    WinHttpCloseHandle(hCon);
-    WinHttpCloseHandle(hSes);
-    return out;
 }
 
 // Streamed file download with progress. Returns true on success.
@@ -273,28 +206,6 @@ bool HttpDownloadFile(const std::string& url,
     WinHttpCloseHandle(hCon);
     WinHttpCloseHandle(hSes);
     return ok_all;
-}
-
-// ---------------------------------------------------------------------------
-// JSON tag_name extractor. The GitHub releases-latest payload is large
-// (assets, body markdown, etc.) but we only need `tag_name`. Rather than
-// pulling in a JSON library, do a tight substring search:
-//   ..."tag_name":"v6.6.0.4"...
-// Returns the value sans surrounding quotes, or empty on parse failure.
-// Tag values in cnc-ddraw are simple ASCII so we don't need to handle
-// JSON escapes.
-// ---------------------------------------------------------------------------
-std::string ExtractTagName(const std::string& json) {
-    const char* key = "\"tag_name\"";
-    size_t p = json.find(key);
-    if (p == std::string::npos) return {};
-    p += std::strlen(key);
-    while (p < json.size() && (json[p] == ' ' || json[p] == ':' || json[p] == '\t')) ++p;
-    if (p >= json.size() || json[p] != '"') return {};
-    ++p;
-    size_t end = json.find('"', p);
-    if (end == std::string::npos) return {};
-    return json.substr(p, end - p);
 }
 
 // "v6.6.0.4" -> "6.6.0.4". Pass-through for anything that doesn't have
@@ -409,31 +320,48 @@ bool ExtractZip(const std::string& zip_path, const std::string& dst_dir) {
 // Worker entry points.
 // ---------------------------------------------------------------------------
 
-// Runs the GitHub /releases/latest GET and stages the install dir if
-// remote != local. `force` skips the version compare and always
-// installs. On success, ends in State::Ready (newly installed) or
-// State::UpToDate (no work needed). On failure, ends in State::Failed.
+// Fixes managed keys in an EXISTING ddraw.ini in place. Updates that
+// preserve a user-tuned ini (and installs that predate a default change)
+// keep old key values alive forever otherwise. Runs on every worker pass,
+// before any network I/O, so offline launchers still get migrated.
+//
+// Current migrations:
+//   keytogglefullscreen2: 0x73 (F4) -> 0x00. cnc-ddraw's single-key
+//   hotkey matcher has no Alt check and swallows the key at the
+//   WH_KEYBOARD hook (keyboard.c) — with F4 bound there, Alt+F4 toggled
+//   fullscreen instead of closing the game. Our wndproc subclass owns F4
+//   now (wndproc_subclass.cpp); cnc-ddraw itself passes Alt+F4 through
+//   to the normal close chain once nothing binds F4. Only the exact old
+//   default 0x73 is rewritten, so a deliberate custom binding survives.
+void MigrateManagedIniKeys() {
+    const std::string ini = InstallDir() + "\\ddraw.ini";
+    std::error_code ec;
+    if (!std::filesystem::exists(ini, ec)) return;
+    // GetPrivateProfileIntA parses the 0x-prefixed hex these keys use.
+    const int fs2 = (int)GetPrivateProfileIntA("ddraw", "keytogglefullscreen2",
+                                               0, ini.c_str());
+    if (fs2 == 0x73) {
+        WritePrivateProfileStringA("ddraw", "keytogglefullscreen2", "0x00",
+                                   ini.c_str());
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "CncDDraw: migrated keytogglefullscreen2 0x73 -> 0x00 "
+            "(F4 is hook-owned now; frees Alt+F4 to close the game)");
+    }
+}
+
+// Stages the install dir if the PINNED release != local. `force` skips
+// the version compare and always installs. On success, ends in
+// State::Ready (newly installed) or State::UpToDate (no work needed).
+// On failure, ends in State::Failed.
 void InstallWorkerImpl(bool force) {
     SetState(State::Checking);
 
-    // 1. Resolve latest tag from GitHub API.
-    char api_url[256];
-    std::snprintf(api_url, sizeof(api_url),
-        "https://api.github.com/repos/%s/%s/releases/latest",
-        kRepoOwner, kRepoName);
-    GetResp api = HttpGetText(api_url);
-    if (api.status != 200) {
-        SetFail("GitHub API HTTP " + std::to_string(api.status) +
-                " — couldn't reach " + api_url);
-        g_st.busy.store(false);
-        return;
-    }
-    const std::string tag = ExtractTagName(api.body);
-    if (tag.empty()) {
-        SetFail("Couldn't parse `tag_name` from GitHub API response");
-        g_st.busy.store(false);
-        return;
-    }
+    MigrateManagedIniKeys();
+
+    // 1. Target version is the pinned tag — no releases/latest query.
+    // (Also removes the GitHub-API-rate-limit failure mode on every
+    // launcher start; an up-to-date install now needs no network at all.)
+    const std::string tag = kPinnedTag;
     const std::string remote = StripLeadingV(tag);
     const std::string local  = ReadLocalVersion();
     {

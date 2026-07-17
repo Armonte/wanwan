@@ -263,11 +263,14 @@ void LauncherUI::RenderDisplayBody() {
         // the click, then capture the next VK that goes down. Esc =
         // cancel, Backspace = clear binding to 0 (disabled).
         //
-        // We poll GetAsyncKeyState across VK 0x07..0xFE (skip mouse
-        // buttons 0x01..0x06 so the click isn't read back). Each
-        // capture stores the resolved VK back into the IniConfig field
-        // and writes through fm2k::cnc_ddraw::SaveHex so the ini
-        // matches the format the cnc-ddraw stock ini ships in (0xNN).
+        // We poll GetKeyState across VK 0x07..0xFE (skip mouse
+        // buttons 0x01..0x06 so the click isn't read back). GetKeyState
+        // is synchronized to this thread's message queue, so keys typed
+        // while the launcher ISN'T focused can never bind (the desktop-
+        // global GetAsyncKeyState could grab those). Each capture stores
+        // the resolved VK back into the IniConfig field and writes
+        // through fm2k::cnc_ddraw::SaveHex so the ini matches the
+        // format the cnc-ddraw stock ini ships in (0xNN).
         static const char* s_capture_key   = nullptr;  // ini key being captured
         static int*        s_capture_field = nullptr;  // pointer into ddraw_cfg_
         static bool        s_capture_armed = false;    // released since click?
@@ -288,7 +291,7 @@ void LauncherUI::RenderDisplayBody() {
 
         auto any_key_held = []() {
             for (int vk = 0x01; vk <= 0xFE; ++vk) {
-                if ((GetAsyncKeyState(vk) & 0x8000) != 0) return true;
+                if ((GetKeyState(vk) & 0x8000) != 0) return true;
             }
             return false;
         };
@@ -301,11 +304,11 @@ void LauncherUI::RenderDisplayBody() {
                 if (!any_key_held()) s_capture_armed = true;
             } else {
                 // Esc cancels without writing.
-                if ((GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0) {
+                if ((GetKeyState(VK_ESCAPE) & 0x8000) != 0) {
                     s_capture_key = nullptr;
                     s_capture_field = nullptr;
                     s_capture_armed = false;
-                } else if ((GetAsyncKeyState(VK_BACK) & 0x8000) != 0) {
+                } else if ((GetKeyState(VK_BACK) & 0x8000) != 0) {
                     // Backspace clears the binding.
                     *s_capture_field = 0;
                     cd::SaveHex(s_capture_key, 0);
@@ -317,7 +320,7 @@ void LauncherUI::RenderDisplayBody() {
                     // started capture would re-trigger). All other VKs
                     // are fair game.
                     for (int vk = 0x07; vk <= 0xFE; ++vk) {
-                        if ((GetAsyncKeyState(vk) & 0x8000) != 0) {
+                        if ((GetKeyState(vk) & 0x8000) != 0) {
                             *s_capture_field = vk;
                             cd::SaveHex(s_capture_key, vk);
                             s_capture_key = nullptr;

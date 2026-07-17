@@ -121,6 +121,17 @@ bool Netplay_IsBattleEndSynced();
 // Valid once g_local_battle_end_signaled is true.
 uint32_t Netplay_GetBattleEndSwapFrame();
 
+// FM95 deterministic battle-end signal: propose swap_frame from the CONFIRMED
+// battle-end edge (identical both peers) instead of the per-peer live frame.
+void Netplay_SignalBattleEndAtFrame(uint32_t end_frame);
+
+// FM95 per-frame phase ring (written in the gekko advance handler): scan up to
+// the confirmed horizon for the first battle->non-battle edge. Returns true
+// (latched) with the deterministic end frame. Reset via the companion fn on
+// each new battle session.
+bool Netplay_Fm95PollConfirmedBattleEnd(uint32_t* out_end_frame);
+void Netplay_Fm95ResetBattleEndScan();
+
 // Poll for battle-end sync messages (call while waiting for sync).
 void Netplay_PollBattleEndSync();
 
@@ -254,6 +265,9 @@ bool Netplay_IsConnected();
 
 // Get current frame counter
 uint32_t Netplay_GetFrame();
+
+// Highest confirmed (non-rollbackable) battle frame; == live frame if no session.
+uint32_t Netplay_GetConfirmedFrame();
 
 // Get round-trip time in milliseconds
 uint32_t Netplay_GetPingMs();

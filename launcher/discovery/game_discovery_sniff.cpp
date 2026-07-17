@@ -96,6 +96,27 @@ namespace Utils {
         return FM2K::Engine::FM2K;  // default — covers the 1.1-1.7 MB FM2K cluster
     }
 
+    // One-shot engine identification for a single exe. CLI direct-path
+    // launches (--stress/--offline/--host/--connect <path>) bypass the
+    // DiscoverGames scan entirely, so they need the same cascade the scan
+    // runs on a cache miss: known-hash registry -> engine string sniff ->
+    // file-size heuristic. Reads the exe twice (full hash + 256 KB head);
+    // fine for a once-per-launch call.
+    FM2K::Engine DetectEngineForExe(const std::string& exe_path) {
+        if (const KnownExe* known = FindKnownExe(HashFileXXH64(exe_path))) {
+            return known->engine;
+        }
+        if (auto sniffed = SniffEngineFromStrings(exe_path)) {
+            return *sniffed;
+        }
+        uint64_t size = 0;
+        int64_t  mtime = 0;
+        if (StatFile(exe_path, size, mtime)) {
+            return GuessEngineFromSize(size);
+        }
+        return FM2K::Engine::FM2K;  // unreadable exe -- launch will fail anyway
+    }
+
     // Detect known PE packers by walking the section table. Returns a label
     // ("Enigma", "UPX", "MoleBox", "ASPack", "Themida", "PECompact") when a
     // packer signature is found, or "" for clean PEs. This is the actual

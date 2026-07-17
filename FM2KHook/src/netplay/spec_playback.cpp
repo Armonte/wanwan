@@ -37,14 +37,18 @@ namespace specnode {
 
 void ApplyResetInputState() {
     // Mirror Netplay_StartBattle's first-call SaveState_Save reset
-    // (savestate.cpp:223-237). FM2K addresses; FM95 will need its own
-    // mapping if/when spectator support extends to CPW.
-    *(uint32_t*)0x447EE0 = 0;            // g_input_buffer_index
-    *(uint32_t*)0x4456FC = 0;            // render frame counter
-    std::memset((void*)0x447F00, 0, 0x20);    // g_prev_input_state
-    std::memset((void*)0x447F40, 0, 0x20);    // g_processed_input
-    std::memset((void*)0x447F60, 0, 0x20);    // g_input_changes
-    std::memset((void*)0x4280D8, 0, 0x2008);  // input_history rings (P1+P2)
+    // (savestate.cpp:223-237). FM2K addresses, gated: the FM95 spectator
+    // port (Gap-4d in docs/FM95_Support_Status.md) must remap these to the
+    // FM95 equivalents -- buf_idx 0x437700, frame counter 0x4DD7A8, input
+    // edge state 0x4255A8 (see savestate_fm95.cpp Block D).
+    if constexpr (FM2K::kIsFM2K) {
+        *(uint32_t*)0x447EE0 = 0;            // g_input_buffer_index
+        *(uint32_t*)0x4456FC = 0;            // render frame counter
+        std::memset((void*)0x447F00, 0, 0x20);    // g_prev_input_state
+        std::memset((void*)0x447F40, 0, 0x20);    // g_processed_input
+        std::memset((void*)0x447F60, 0, 0x20);    // g_input_changes
+        std::memset((void*)0x4280D8, 0, 0x2008);  // input_history rings (P1+P2)
+    }
 }
 
 void ApplySessionEvent(const SessionEvent& ev) {

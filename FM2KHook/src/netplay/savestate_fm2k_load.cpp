@@ -483,9 +483,14 @@ bool SaveState_Load(int frame) {
     // own forward sim re-records fresh entries with LOCAL pointers.
     if (!is_spec_apply) {
         SoundRollback::RestoreDesired(state->sound_desired);
+        SoundRollback::RestoreBgm(&state->bgm_desired);
     } else {
         static const SoundRollback::DesiredState s_zero_desired[SoundRollback::MAX_CHANNELS] = {};
         SoundRollback::RestoreDesired(s_zero_desired);
+        // Same carve-out: bgm_desired.script_item_ptr is a host-heap pointer;
+        // zero it on a spectator apply so the sync step doesn't deref host mem.
+        static const SoundRollback::DesiredBgm s_zero_bgm = {};
+        SoundRollback::RestoreBgm(&s_zero_bgm);
     }
 
     return true;

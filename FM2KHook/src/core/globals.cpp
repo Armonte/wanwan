@@ -62,3 +62,12 @@ bool g_spectator_ff_user = false;
 // host's natural render_game pump. Cleared at the top of Hook_RenderGame
 // after the skip fires.
 bool g_fm95_skip_next_render = false;
+bool g_fm95_in_sim_tick = false;
+
+// FM95 loop-ownership: set true once the inline patch at the WinMain loop head
+// (0x40AD67) is installed, so TrampolineMainLoop owns the loop exactly like
+// FM2K owns main_game_loop. When true, the host-driven Hook_UpdateGameState
+// dispatch is bypassed and timeGetTime virtualizes like FM2K (no g_fm95_in_sim
+// _tick gate -- there is no host WinMain pacing left to protect). If the patch
+// fails to install this stays false and we fall back to the host-driven path.
+bool g_fm95_loop_owned = false;

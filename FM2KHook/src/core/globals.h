@@ -98,6 +98,21 @@ namespace FM2K {
     constexpr uintptr_t ADDR_PROCESS_INPUTS = 0x408FF0;
     constexpr uintptr_t ADDR_DISPATCH_SCRIPT_SOUND = 0x401FF0;
 
+    // Sound-system entry points (rollback sound layer). IDA-verified on CPW:
+    // PlaySoundFromBufferArray @ 0x401590, StopAllSoundsInBufferArray @
+    // 0x4016A0, ControlSoundSystem @ 0x4020A0 (0=stop all, 2=stop MIDI,
+    // 3=stop CD -- same cmd contract as FM2K's ControlSound @ 0x4034D0).
+    constexpr uintptr_t ADDR_PLAY_SOUND_FROM_BUFFER_ARRAY    = 0x401590;
+    constexpr uintptr_t ADDR_STOP_ALL_SOUNDS_IN_BUFFER_ARRAY = 0x4016A0;
+    constexpr uintptr_t ADDR_CONTROL_SOUND                   = 0x4020A0;
+    // Sound channel registry -- the FM95 equivalent of FM2K's
+    // g_sound_channel_table is NOT yet RE'd (RE-1 in
+    // docs/FM95_Support_Status.md). 0 sentinels keep the SFX desired/actual
+    // layer inert-but-safe (Init/scan paths no-op); the BGM desired path has
+    // no table dependency and stays live.
+    constexpr uintptr_t ADDR_SOUND_CHANNEL_TABLE     = 0;
+    constexpr uintptr_t ADDR_SOUND_CHANNEL_TABLE_END = 0;
+
     // Game state addresses
     constexpr uintptr_t ADDR_FRAME_COUNTER = 0x4DD7A8;       // FM95: g_game_tick_counter
     constexpr uintptr_t ADDR_GAME_MODE = 0x425558;           // values 0/1/10/0x10 — see FM95_Integration.h delta #2
@@ -169,6 +184,10 @@ namespace FM2K {
     // No global CSS_ACTIVE_PLAYER on FM95; phase classification walks the pool.
     constexpr uintptr_t ADDR_CSS_ACTIVE_PLAYER = 0;
     constexpr uintptr_t ADDR_PLAYER_STAGE_POSITIONS = 0;
+
+    // g_frame_time_ms -- ms per sim step, read by the engine's frame-skip
+    // math. FM95_Integration.h ADDR_FRAME_TIME_MS.
+    constexpr uintptr_t ADDR_FRAME_TIME_MS = 0x422F7C;
 
     // Character data — FM95 has 5 slots × 229844 bytes at 0x509100.
     // Static (don't save during rollback).
@@ -242,6 +261,15 @@ namespace FM2K {
     constexpr uintptr_t ADDR_PROCESS_INPUTS = 0x4146D0;
     constexpr uintptr_t ADDR_DISPATCH_SCRIPT_SOUND = 0x403430;  // SFX dispatcher — rollback sound hook
 
+    // Sound-system entry points (rollback sound layer, IDA-verified 2026-04-23).
+    constexpr uintptr_t ADDR_PLAY_SOUND_FROM_BUFFER_ARRAY    = 0x415DF0;  // core DSound play + round-robin
+    constexpr uintptr_t ADDR_STOP_ALL_SOUNDS_IN_BUFFER_ARRAY = 0x415F00;  // stop every buffer in one array
+    constexpr uintptr_t ADDR_CONTROL_SOUND                   = 0x4034D0;  // 0=stop all, 2=stop MIDI, 3=stop CD
+    // g_sound_channel_table -- array of SoundBufferArray* (end marker used by
+    // ReleaseAllSoundBuffers). Channel identity for the Mike Z SFX layer.
+    constexpr uintptr_t ADDR_SOUND_CHANNEL_TABLE     = 0x430640;
+    constexpr uintptr_t ADDR_SOUND_CHANNEL_TABLE_END = 0x433240;
+
     // Game state addresses
     constexpr uintptr_t ADDR_FRAME_COUNTER = 0x4456FC;
     constexpr uintptr_t ADDR_GAME_MODE = 0x470054;
@@ -299,7 +327,13 @@ namespace FM2K {
     constexpr size_t    SIZE_OBJECT_POOL      = 0x5F800;   // OBJECT_POOL_COUNT * OBJECT_POOL_STRIDE
 
     // Input ring — 1024 entries × 4 bytes (10-bit modulo idx).
-    constexpr uintptr_t ADDR_INPUT_BUFFER_INDEX = 0x470000;
+    // g_input_buffer_index @ 0x447EE0 -- matches savestate_internal.h and every
+    // live buf_idx read in the hooks (rings at 0x4280E0/0x4290E0). The previous
+    // value here (0x470000) had zero consumers in the FM2K build and did not
+    // match the ring index the game actually advances. Corrected 2026-07-11
+    // (fm95 parity workplan 0d) so FM95's 0x437700 twin pairs with the real
+    // FM2K global.
+    constexpr uintptr_t ADDR_INPUT_BUFFER_INDEX = 0x447EE0;
     constexpr uintptr_t ADDR_P1_INPUT_HISTORY   = 0x470200;
     constexpr uintptr_t ADDR_P2_INPUT_HISTORY   = 0x470400;
     constexpr size_t    INPUT_HISTORY_LEN       = 1024;
@@ -377,6 +411,10 @@ namespace FM2K {
     constexpr uintptr_t ADDR_CHARSLOT0_COLOR_PICK = 0x4DFD8B;
     constexpr size_t    CHARSLOT_STRIDE           = 0xE03F;
 
+    // g_frame_time_ms -- ms per sim step; main_game_loop @ 0x405AD3 sets it
+    // to 10 and the CSS frame-skip math / BATTLE STATUS debug log read it.
+    constexpr uintptr_t ADDR_FRAME_TIME_MS = 0x41E2F0;
+
     // Engine tag — runtime check for code that needs to branch on engine.
     constexpr bool kIsFM95 = false;
     constexpr bool kIsFM2K = true;
@@ -439,6 +477,14 @@ extern bool g_spectator_ff_user;
 // (the trampoline tick's RenderFrameWithSnapshot already rendered).
 // Cleared by Hook_RenderGame on consumption.
 extern bool g_fm95_skip_next_render;
+
+// FM95: true only while a trampoline sim tick is executing (set around the
+// TrampolineFrameTickHostDriven dispatch). Hook_timeGetTime uses it to
+// virtualize the clock ONLY during the sim — CPW's own WinMain pacing loop
+// also consumes timeGetTime, and virtualizing THAT warps the loop
+// (catchup-spin/stall). Unused on FM2K (its TrampolineMainLoop owns pacing).
+extern bool g_fm95_in_sim_tick;
+extern bool g_fm95_loop_owned;   // FM95 owns its loop via the 0x40AD67 inline patch
 
 // ============================================================================
 // LOG-FILE PATH HELPER

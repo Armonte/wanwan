@@ -759,6 +759,19 @@ uint32_t Netplay_GetFrame() {
     return g_netplay_frame;
 }
 
+// Highest battle frame gekko has REAL (non-predicted) inputs for from BOTH
+// players -- i.e. the frame is locked and can never roll back. Returns the
+// live frame when no session is up so non-netplay callers never gate on it.
+// FM95 uses this to detect the battle->CSS phase edge on a CONFIRMED frame so
+// both peers signal battle-end at the SAME deterministic frame (the live pool
+// each peer classifies is post-prediction and differs per peer -> the two
+// were tearing down 16 frames apart, blowing past the negotiated swap_frame).
+uint32_t Netplay_GetConfirmedFrame() {
+    if (!g_session) return g_netplay_frame;
+    const int cf = gekko_confirmed_frame(g_session);
+    return cf < 0 ? 0u : (uint32_t)cf;
+}
+
 uint32_t Netplay_GetPingMs() {
     return ControlChannel_GetRttMs();
 }

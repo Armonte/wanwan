@@ -489,6 +489,8 @@ bool SaveState_Save(int frame) {
     // should be playing. Actual DSound plays are driven post-advance by the
     // sync step; hardware state is deliberately not rolled back.
     { SScope _s(&g_ss_sound); SoundRollback::CaptureDesired(state->sound_desired); }
+    // BGM (MIDI/CD/stop) desired — single global stream, same rationale.
+    SoundRollback::CaptureBgm(&state->bgm_desired);
 
     // Checksum path split for perf:
     //   - Always compute the cheap gameplay fingerprint (~44 B hash). This

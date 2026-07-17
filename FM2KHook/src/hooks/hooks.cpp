@@ -110,8 +110,25 @@ static DWORD WINAPI Hook_timeGetTime() {
     // particle pacing, etc.) sees wall-clock time and diverges from the
     // host's recorded execution every single frame. RunSpectatorTick is
     // responsible for bumping g_virtual_time_ms each successful advance.
-    if (Netplay_IsActive() || SpectatorNode_IsPlayingBack()) {
-        return g_virtual_time_ms;
+    if constexpr (FM2K::kIsFM2K) {
+        if (Netplay_IsActive() || SpectatorNode_IsPlayingBack()) {
+            return g_virtual_time_ms;
+        }
+    } else {
+        // FM95: two regimes.
+        //  - Loop OWNED (g_fm95_loop_owned): TrampolineMainLoop replaced CPW's
+        //    WinMain loop, so there is no host pacing to protect -- virtualize
+        //    exactly like FM2K (deterministic 10 ms/frame during any session).
+        //  - Host-driven fallback: CPW's WinMain still runs its own timeGetTime
+        //    pacing loop and calls our update hook from inside it. Virtualizing
+        //    those pacing reads warps the loop (unsigned now-last arithmetic ->
+        //    max-speed catchup or stall), so only hand back the virtual clock
+        //    while a sim tick is actually running (g_fm95_in_sim_tick).
+        const bool virtualize = g_fm95_loop_owned ? true : g_fm95_in_sim_tick;
+        if (virtualize &&
+            (Netplay_IsActive() || SpectatorNode_IsPlayingBack())) {
+            return g_virtual_time_ms;
+        }
     }
     return original_timeGetTime ? original_timeGetTime() : 0;
 }
@@ -287,8 +304,20 @@ bool InitializeHooks() {
             return false;
         }
     } else {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "Hooks: SKIP RunGameLoop hook on FM95 — frame loop is inlined into WinMain");
+#if defined(ENGINE_FM95)
+        // CPW's frame loop is inlined into WinMain, so there is no function
+        // entry to detour. Own it with an inline patch at the loop head
+        // (0x40AD67) -- TrampolineMainLoop then drives pacing + gekko exactly
+        // like FM2K. If the patch fails we leave g_fm95_loop_owned false and
+        // fall back to the host-driven Hook_UpdateGameState path.
+        if (Fm95InstallOwningLoop()) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Hooks: FM95 owns the loop via inline patch @0x40AD67");
+        } else {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "Hooks: FM95 loop-patch FAILED — falling back to host-driven tick");
+        }
+#endif
     }
 
     InstallVfsHooks();  // hooks_vfs.cpp (non-fatal hooks)

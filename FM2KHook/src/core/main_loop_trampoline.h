@@ -27,6 +27,13 @@ enum class LoopPhase {
 // abnormal. Pumps messages, calls TrampolineFrameTick, paces with QPC.
 BOOL TrampolineMainLoop();
 
+#if defined(ENGINE_FM95)
+// FM95: install the inline patch at CPW's WinMain loop head (0x40AD67) so
+// TrampolineMainLoop owns the loop the way FM2K owns main_game_loop. Call from
+// Setup_Hooks before WinMain runs. Sets g_fm95_loop_owned on success.
+bool Fm95InstallOwningLoop();
+#endif
+
 // Per-frame engine work — extracted body callable from either
 // TrampolineMainLoop (FM2K, host loop replaced) or Hook_UpdateGameState
 // (FM95, where the host's WinMain owns the message pump and timing).
@@ -35,6 +42,14 @@ BOOL TrampolineMainLoop();
 // (BATTLE / CSS — the tick already drove update + render via AdvanceEvent
 // / RenderFrameWithSnapshot).
 LoopPhase TrampolineFrameTick();
+
+// FM95 host-driven variant. Classifies the phase and dispatches the tick for
+// BATTLE / CSS / SPECTATOR only; for NATIVE it does NOTHING and returns
+// NATIVE, letting the caller's own fall-through drive the single host update.
+// TrampolineFrameTick() would RunNativeTick() (a full update) for NATIVE, and
+// the FM95 caller then falls through to original_update_game() = double-tick
+// on title/menus. Use this from Hook_UpdateGameState's FM95 branch.
+LoopPhase TrampolineFrameTickHostDriven();
 
 // [EB]-OPCODE DIAGNOSTIC: log shake-effect timer + camera position at the
 // given render-boundary phase (PRE-SAVE / PRE-RENDER / POST-RENDER /

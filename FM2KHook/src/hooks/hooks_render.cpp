@@ -66,7 +66,10 @@ static BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam) {
     if (pid == GetCurrentProcessId()) {
         char class_name[64];
         if (GetClassNameA(hwnd, class_name, sizeof(class_name))) {
-            if (strcmp(class_name, "KGT2KGAME") == 0) {
+            // FM2K registers "KGT2KGAME"; FM95/CPW registers "KGT95GAME"
+            // (same convention as wndproc_subclass.cpp / input.cpp).
+            const char* expect_cls = FM2K::kIsFM95 ? "KGT95GAME" : "KGT2KGAME";
+            if (strcmp(class_name, expect_cls) == 0) {
                 *(HWND*)lParam = hwnd;
                 return FALSE;
             }
@@ -396,6 +399,10 @@ int __cdecl Hook_DispatchScriptSoundCommand(int script_item) {
                             (cmd_low == 3) ||
                             (cmd_low == 1 && looping);
         const bool is_sfx = (cmd_low == 1 && !looping);
+        // Diagnostic: log EVERY BGM/stop dispatch (before any routing).
+        if (is_bgm || cmd_low == 0)
+            SoundRollback::TraceBgmDispatch(cmd_byte, Netplay_IsActive(),
+                IsBattleMode(*reinterpret_cast<uint32_t*>(FM2K::ADDR_GAME_MODE)));
         if (is_bgm && SoundRollback::IsMusicMuted()) return 0;
         if (is_sfx && SoundRollback::IsSfxMuted())   return 0;
     }
@@ -404,35 +411,63 @@ int __cdecl Hook_DispatchScriptSoundCommand(int script_item) {
         return original_dispatch_script_sound(script_item);
     }
 
+    // Defer sound to the rollback sync layer ONLY while the game is actually in
+    // the battle phase (game_mode 3000-3999), where SyncAfterAdvance runs. We key
+    // on the LIVE game phase, not a battle-session latch that lingers past the
+    // transition. That matters on the battle->CSS transition frame: the game
+    // stops the battle BGM (cmd 0) and its freshly re-created CSS controller
+    // re-dispatches the CSS BGM at game_mode==2000 — keying on the live phase lets
+    // that CSS BGM play IMMEDIATELY instead of being deferred into a battle sync
+    // that's ending (which silenced CSS-return music).
+    const bool in_battle_phase =
+        IsBattleMode(*reinterpret_cast<uint32_t*>(FM2K::ADDR_GAME_MODE));
+
     uint8_t cmd = *reinterpret_cast<uint8_t*>(script_item + 40);
-    if ((cmd & 0xF) != 1) {
-        // Not SFX — MIDI (case 2), CD audio (case 3), or full stop (case 0).
-        // These paths use MCI (mciSendCommandA), which is heavy/stateful and
-        // doesn't survive the rapid-fire repeats that rollback replays cause.
-        // In stress mode every displayed frame replays ~10 sim frames, so if
-        // a music trigger is anywhere in that window it fires ~10 times per
-        // displayed frame (1 forward + 9 replay). Even after we suppress the
-        // replay branch, the FORWARD pass still re-fires every time the save
-        // ring scrolls past that frame — music cuts in and out.
-        //
-        // Apply a "dedup by payload" filter: a (cmd, buf_ptr_or_track)
-        // dispatch identical to the previous non-replay dispatch is treated
-        // as a no-op. Any change — new track, stop-then-same-track, fanfare
-        // switch, CD ↔ MIDI — updates the stored key and fires normally, so
-        // mid-match music transitions still work. Only the GekkoNet save-ring
-        // scroll's identical re-trigger gets filtered.
-        // Also skip during replay so the forward-first dispatch wins.
-        if (g_is_rolling_back) {
-            return 0;
+    const uint8_t cmd_low = cmd & 0xF;
+
+    if (cmd_low == 0) {
+        // Full stop-all (ControlSoundSystem(0)). This MUST run in order at its
+        // sim frame — the game issues it to clear pre-round audio right before
+        // the battle BGM starts. Deferring it to SyncAfterAdvance ran it AFTER
+        // the SFX layer replayed the battle BGM, silencing the whole battle
+        // (observed: cmd_low=0 @ bf182 every match). Fire immediately on the
+        // forward pass; skip during rollback replay so it isn't re-applied.
+        // Re-firing on the save-ring forward re-scroll is harmless — a repeated
+        // stop is just silence (no audible cut, unlike a repeated play).
+        if (!g_is_rolling_back)
+            return original_dispatch_script_sound(script_item);
+        return 0;
+    }
+
+    if (cmd_low != 1) {
+        // BGM play — MIDI (case 2) or CD audio (case 3). DEFER to the rollback
+        // layer only while the battle sync tick is live: there the desired-vs-
+        // actual identity check stops the save-ring scroll from restarting MCI
+        // (the old cut-in/out), and bgm_desired rides the save ring so a
+        // rollback across a music start restores it. OUTSIDE battle there is no
+        // sync tick, so play immediately or it is recorded and never heard.
+        if (in_battle_phase) {
+            //   +36 = buffer_array ptr (unused by MIDI/CD but valid to read)
+            //   +41 = CD track number (case 3 only)
+            uint32_t payload = *reinterpret_cast<uint32_t*>(script_item + 36)
+                             ^ *reinterpret_cast<uint8_t*> (script_item + 41);
+            SoundRollback::RecordDesiredBgm(script_item, cmd_low, payload,
+                                            Netplay_GetFrame());
+            return 1;  // deferred to SyncAfterAdvance
         }
-        // +36 = buffer_array ptr (MIDI/CD paths don't use it but reading is
-        // harmless since the script item is always 42 bytes of valid memory)
-        // +41 = CD track number (case 3 only)
-        uint32_t payload = *reinterpret_cast<uint32_t*>(script_item + 36)
-                         ^ *reinterpret_cast<uint8_t*> (script_item + 41);
-        if (SoundRollback::IsRedundantMusicDispatch(cmd, payload)) {
-            return 0;  // identical music command as last time — leave MCI alone
-        }
+        return original_dispatch_script_sound(script_item);  // immediate (non-battle)
+    }
+
+    // SFX (cmd 1, incl. looping-WAV BGM). The loop bit (0x10) marks looping-WAV
+    // music (CSS/battle BGM) vs a one-shot SFX — trace it to see the CSS-return
+    // dispatch behaviour.
+    if ((cmd & 0x10) != 0)
+        SoundRollback::TraceWavMusicDispatch(Netplay_GetFrame(), in_battle_phase);
+    // Same gate as BGM: only defer to the Mike-Z desired/actual layer while the
+    // battle sync tick is live. Outside battle (CSS cursor SFX, CSS looping-WAV
+    // music — incl. the CSS-BGM re-dispatch on the battle->CSS return) play
+    // immediately — else the deferred dispatch is recorded and never heard.
+    if (!in_battle_phase) {
         return original_dispatch_script_sound(script_item);
     }
 
@@ -651,7 +686,16 @@ void __cdecl Hook_RenderGame() {
     // were rolled back on host. RNG drifted by exactly that delta over time,
     // showing up as paired [HOST-FP]/[SPEC-FP] divergence with all other
     // sim state matching (HP/timer/pos/input identical, only RNG differed).
-    bool protect_regions = Netplay_IsActive() || SpectatorNode_IsPlayingBack();
+    // FM2K-ONLY. The protect save/restore below memcpys the afterimage pool
+    // (WaveCAddrs::AFTERIMAGE_POOL) and the input-tracking block at 0x447EE0 —
+    // both FM2K addresses. On FM95 AFTERIMAGE_POOL / _SZ are 0-sentinels, so
+    // the slices become a read from null + a ~4GB size_t underflow + a write
+    // to the FM2K input-tracking address = guaranteed AV the first render
+    // frame with an active session. FM95's render-side protected regions are
+    // RE-4 pending; until then FM95 renders without protection (acceptable —
+    // same as RenderFrameWithSnapshot, which gates its own block on kIsFM2K).
+    [[maybe_unused]] bool protect_regions =
+        Netplay_IsActive() || SpectatorNode_IsPlayingBack();
 
     static uint8_t s_saved_object_pool[0x5F800];
     static uint8_t s_saved_afterimage_pool[WaveCAddrs::AFTERIMAGE_POOL_SZ];
@@ -672,7 +716,7 @@ void __cdecl Hook_RenderGame() {
     constexpr size_t    kShakeOffset   = kShakeAddr - WaveCAddrs::AFTERIMAGE_POOL;  // 0x479
     constexpr size_t    kShakeEnd      = kShakeOffset + kShakeSize;
     static_assert(kPflash1End <= kShakeOffset, "EFFECT_SYS1 must end before shake block");
-    if (protect_regions) {
+    if constexpr (FM2K::kIsFM2K) if (protect_regions) {
         // RNG intentionally NOT saved/restored — render's game_rand calls
         // need to propagate so palette mode 3 / shake mode 4 produce
         // animated random values matching vanilla. See trampoline comment.
@@ -714,7 +758,7 @@ void __cdecl Hook_RenderGame() {
     }
     EbDiag_Dump("POST-RENDER");
 
-    if (protect_regions) {
+    if constexpr (FM2K::kIsFM2K) if (protect_regions) {
         // (RNG and object_pool restores removed — see save block.)
         // Afterimage restore: mirror of the 3-slice split save — both
         // EFFECT_SYS1 and shake regions in live memory keep whatever

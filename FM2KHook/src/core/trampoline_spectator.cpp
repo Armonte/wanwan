@@ -98,7 +98,7 @@ static bool SpectatorSimOneFrame() {
     static uint32_t s_spec_trace_bf = 0;
     static bool     s_spec_trace_in_battle = false;
     const uint32_t mode_pre = *(uint32_t*)FM2K::ADDR_GAME_MODE;
-    const uint32_t rng_pre_pgi_spec = *(uint32_t*)0x41FB1C;
+    const uint32_t rng_pre_pgi_spec = *(uint32_t*)FM2K::ADDR_RANDOM_SEED;
     if (mode_pre >= 3000 && mode_pre < 4000) {
         if (!s_spec_trace_in_battle) {
             s_spec_trace_in_battle = true;
@@ -134,7 +134,7 @@ static bool SpectatorSimOneFrame() {
             "[SPEC-TRACE] bf=%u rng_pre=0x%08X rng_post=0x%08X "
             "p1=0x%03X p2=0x%03X",
             s_spec_trace_bf, rng_pre_pgi_spec,
-            *(uint32_t*)0x41FB1C, p1, p2);
+            *(uint32_t*)FM2K::ADDR_RANDOM_SEED, p1, p2);
         s_spec_trace_bf++;
     }
 
@@ -187,14 +187,19 @@ static bool SpectatorSimOneFrame() {
             // Last 4096 such lines stay in memory; auto-flushed to file
             // when any LOG_ERROR fires (great for desync post-mortems).
             // FM2K_SPECTATOR_DEBUG=1 routes CUSTOM to disk for live tail.
-            if ((bf % 30) == 0) {
-                const uint32_t rng     = *(uint32_t*)0x41FB1C;
-                const uint32_t buf_idx = *(uint32_t*)0x447EE0;
-                const uint32_t p1_hp   = *(uint32_t*)0x4DFC85;
-                const uint32_t p2_hp   = *(uint32_t*)0x4EDCC4;
-                const uint32_t timer   = *(uint32_t*)0x470044;
-                constexpr uintptr_t POOL = 0x4701E0;
-                constexpr size_t    SLOT = 382;
+            // [FM2K-DIAG] FM2K-layout fingerprint: global HP scalars + pool
+            // slot fields at FM2K offsets. FM95 has no global HP scalar (HP
+            // lives at pool slot +72 -- RE-5 wiring) and its round/timer
+            // globals are unmapped (RE-2); port with the FM95 spectator
+            // (Gap-4d in docs/FM95_Support_Status.md).
+            if constexpr (FM2K::kIsFM2K) if ((bf % 30) == 0) {
+                const uint32_t rng     = *(uint32_t*)FM2K::ADDR_RANDOM_SEED;
+                const uint32_t buf_idx = *(uint32_t*)FM2K::ADDR_INPUT_BUFFER_INDEX;
+                const uint32_t p1_hp   = *(uint32_t*)0x4DFC85;  // FM2K P1 HP scalar
+                const uint32_t p2_hp   = *(uint32_t*)0x4EDCC4;  // FM2K P2 HP scalar
+                const uint32_t timer   = *(uint32_t*)FM2K::ADDR_GAME_TIMER;
+                constexpr uintptr_t POOL = FM2K::ADDR_OBJECT_POOL;
+                constexpr size_t    SLOT = FM2K::OBJECT_POOL_STRIDE;
                 const int32_t p1_x = *(int32_t*)(POOL + 0 * SLOT + 0x08);
                 const int32_t p1_y = *(int32_t*)(POOL + 0 * SLOT + 0x0C);
                 const int32_t p2_x = *(int32_t*)(POOL + 1 * SLOT + 0x08);

@@ -581,6 +581,9 @@ bool Netplay_StartBattle() {
     g_netplay_frame = 0;
     g_highest_recorded_frame = 0;  // monotonic dedup gate, reset per battle
     ResetConfirmRing();
+    if constexpr (FM2K::kIsFM95) {
+        Netplay_Fm95ResetBattleEndScan();  // fresh phase ring + scan per battle
+    }
     g_rollback_count = 0;
     g_last_rollback_frame = 0;
     g_desync_count = 0;

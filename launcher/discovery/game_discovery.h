@@ -23,4 +23,9 @@ namespace Utils {
     void SaveGamesRootPaths(const std::vector<std::string>& paths);
     std::vector<FM2K::FM2KGameInfo> LoadGameCache();
     void SaveGameCache(const std::vector<FM2K::FM2KGameInfo>& games);
+    // Engine identification for a single exe (known-hash registry -> string
+    // sniff -> size heuristic). For launch paths that bypass the discovery
+    // scan (CLI direct-path launches) -- the FM2KGameInfo engine default is
+    // FM2K, which would inject the wrong hook DLL into an FM95 exe.
+    FM2K::Engine DetectEngineForExe(const std::string& exe_path);
 }

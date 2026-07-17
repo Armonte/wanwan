@@ -55,7 +55,14 @@ static LoopPhase ClassifyPhase() {
     // calling Netplay_EndBattle. Without this, the battle session sticks
     // forever and Netplay_StartCSSSession spins in a "session already exists"
     // retry loop.
-    if (Netplay_GetSessionKind() == NetplaySessionKind::BATTLE) {
+    // STRESS pins too: the stress session lives across the whole match, but
+    // on FM95 IsBattleMode only returns true for round-ACTIVE substates
+    // (type-16 sub_state in [10,31]); round-result / round-intro substates
+    // would classify NATIVE and drop the live stress session mid-match →
+    // double-tick + un-skipped host render. FM2K stress rides the raw
+    // game_mode 3000 so it never flapped; pin both engines here.
+    if (Netplay_GetSessionKind() == NetplaySessionKind::BATTLE ||
+        Netplay_GetSessionKind() == NetplaySessionKind::STRESS) {
         return LoopPhase::TRAMPOLINE_BATTLE;
     }
 
@@ -105,8 +112,7 @@ static bool PumpMessages() {
         }();
         const bool is_key = (msg.message == WM_KEYDOWN || msg.message == WM_KEYUP
             || msg.message == WM_SYSKEYDOWN || msg.message == WM_SYSKEYUP);
-        const bool is_fkey = is_key && msg.wParam >= VK_F1 && msg.wParam <= VK_F24;
-        if (is_fkey || (s_msg_diag && (is_key || msg.message == WM_CHAR)))
+        if (s_msg_diag && (is_key || msg.message == WM_CHAR))
         {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "[MSG] msg=0x%04X wParam=0x%02X (%u) lParam=0x%08lX hwnd=%p",
@@ -167,6 +173,26 @@ LoopPhase TrampolineFrameTick() {
             RunSpectatorTick();
             break;
     }
+    return phase;
+}
+
+LoopPhase TrampolineFrameTickHostDriven() {
+    // Same as TrampolineFrameTick but NEVER runs RunNativeTick — the FM95
+    // host's WinMain owns the native update, so we'd double-tick title/menus
+    // if we ran it here too. Non-NATIVE phases sim via gekko/CSS and suppress
+    // the host render; NATIVE returns immediately for the caller to fall
+    // through to its single original_update_game().
+    LoopPhase phase = ClassifyPhase();
+    // Mark the sim-tick window so Hook_timeGetTime virtualizes the clock only
+    // here (not for CPW's WinMain pacing reads outside the tick).
+    g_fm95_in_sim_tick = true;
+    switch (phase) {
+        case LoopPhase::TRAMPOLINE_BATTLE:   RunBattleTick();     break;
+        case LoopPhase::CSS:                 RunCssTick();        break;
+        case LoopPhase::SPECTATOR_PLAYBACK:  RunSpectatorTick();  break;
+        case LoopPhase::NATIVE:              /* host drives it */ break;
+    }
+    g_fm95_in_sim_tick = false;
     return phase;
 }
 
@@ -236,12 +262,14 @@ BOOL TrampolineMainLoop() {
         if (t) CloseHandle(t);  // detached
     }
 
-    // g_frame_time_ms @ 0x41E2F0 was set to 10 by the original main_game_loop
-    // at 0x405AD3. We no longer run that code, so this global stays at
-    // whatever the DLL-load-time default was (0 or garbage). Any game code
-    // still reading it (CSS frame-skip math, debug BATTLE STATUS log) would
-    // misbehave. Set it to the expected 100-fps target on trampoline entry.
-    *(uint32_t*)0x41E2F0 = 10;
+    // g_frame_time_ms (FM2K 0x41E2F0 / FM95 0x422F7C, routed via globals.h)
+    // was set to 10 by the original main_game_loop at 0x405AD3. We no longer
+    // run that code, so this global stays at whatever the DLL-load-time
+    // default was (0 or garbage). Any game code still reading it (CSS
+    // frame-skip math, debug BATTLE STATUS log) would misbehave. Set it to
+    // the expected 100-fps target on trampoline entry. (TrampolineMainLoop
+    // itself only runs on FM2K; routed anyway so no bare literal remains.)
+    *(uint32_t*)FM2K::ADDR_FRAME_TIME_MS = 10;
 
     // Parity recorder: if FM2K_PARITY_RECORD_PATH is set, open the .pty file
     // here (DllMain runs too early — the game globals aren't initialized yet,
@@ -256,8 +284,13 @@ BOOL TrampolineMainLoop() {
 
     // One-time warmup — matches main_game_loop's 8× update_game_state at
     // 0x405AF3. Required to initialize game subsystems before any input.
-    if (original_update_game) {
-        for (int i = 0; i < 8; i++) original_update_game();
+    // FM2K-only: FM95's WinMain does init_game_state ONCE then loops (no 8x
+    // warmup), and we take over AT the loop head (0x40AD67) after that init has
+    // already run, so an extra 8x here would diverge from CPW's boot cadence.
+    if constexpr (FM2K::kIsFM2K) {
+        if (original_update_game) {
+            for (int i = 0; i < 8; i++) original_update_game();
+        }
     }
 
     // Main loop. Runs forever until WM_QUIT.
@@ -341,3 +374,64 @@ BOOL TrampolineMainLoop() {
         }
     }
 }
+
+#if defined(ENGINE_FM95)
+// ============================================================================
+// FM95 LOOP OWNERSHIP
+//
+// FM2K owns the loop by MinHook-ing main_game_loop (a standalone function).
+// CPW's frame loop is INLINED inside WinMain (@0x40AB60), so there is no
+// function entry to detour. Instead we inline-patch a 5-byte `jmp rel32` at the
+// loop head 0x40AD67 (the `mov eax, g_quit_flag` that begins each iteration --
+// exactly 5 bytes). WinMain's init (window/heap/init_game_state/frame-time
+// setup, through 0x40AD62) all runs first; when execution reaches the loop head
+// it jumps here and never returns to CPW's loop. On WM_QUIT we replicate
+// WinMain's cleanup tail (0x40AEB0) and exit the process.
+// ============================================================================
+namespace {
+    constexpr uintptr_t kFm95LoopHead            = 0x40AD67;  // while(1) head
+    constexpr uintptr_t kFm95DirectDrawCleanup   = 0x41A380;  // directdraw_cleanup
+    constexpr uintptr_t kFm95ShutdownResources   = 0x408440;  // ShutdownGameResources
+    constexpr uintptr_t kFm95MainHeapHandle      = 0x437764;  // g_main_heap_handle
+}
+
+// Entered via the inline jmp from WinMain's loop head (no return address is
+// pushed -- that is fine, we never RET; the loop runs until WM_QUIT and then we
+// ExitProcess). [[noreturn]] so the compiler emits no reachable tail return.
+[[noreturn]] static void __cdecl Fm95OwningLoopEntry() {
+    TrampolineMainLoop();   // owns the loop; returns TRUE only on WM_QUIT
+
+    // Replicate WinMain's cleanup tail so a clean quit restores the display
+    // and frees the heap, matching CPW's own exit path.
+    reinterpret_cast<void(__cdecl*)()>(kFm95DirectDrawCleanup)();
+    reinterpret_cast<void(__cdecl*)()>(kFm95ShutdownResources)();
+    HGLOBAL h = *reinterpret_cast<HGLOBAL*>(kFm95MainHeapHandle);
+    if (h) { GlobalUnlock(h); GlobalFree(h); }
+    ExitProcess(0);
+}
+
+// Install the inline patch. Called from Setup_Hooks (before WinMain runs), so
+// the jmp is in place by the time CPW's WinMain reaches the loop head.
+bool Fm95InstallOwningLoop() {
+    uint8_t* p = reinterpret_cast<uint8_t*>(kFm95LoopHead);
+    // rel32 from the end of our 5-byte jmp to the entry thunk. On 32-bit the
+    // whole address space is < 4 GB so a DLL->EXE rel32 always reaches.
+    const intptr_t rel = reinterpret_cast<intptr_t>(&Fm95OwningLoopEntry)
+                       - static_cast<intptr_t>(kFm95LoopHead + 5);
+    DWORD old = 0;
+    if (!VirtualProtect(p, 5, PAGE_EXECUTE_READWRITE, &old)) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "FM95 loop-patch: VirtualProtect(0x%08X) failed", (unsigned)kFm95LoopHead);
+        return false;
+    }
+    p[0] = 0xE9;  // jmp rel32
+    *reinterpret_cast<int32_t*>(p + 1) = static_cast<int32_t>(rel);
+    VirtualProtect(p, 5, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), p, 5);
+    g_fm95_loop_owned = true;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "FM95 loop-patch: jmp @0x%08X -> owning loop (rel=%d)",
+                (unsigned)kFm95LoopHead, (int)rel);
+    return true;
+}
+#endif  // ENGINE_FM95

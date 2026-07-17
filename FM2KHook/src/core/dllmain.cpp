@@ -54,14 +54,32 @@ extern void NeuterFullscreenTogglesForCncDdraw();
 // =============================================================================
 
 // Forward declarations for game patches (from original game_patches.cpp)
-static void BypassMultiInstanceCheck() {
-    // At 0x405d05: jz loc_405D15 (0x74 0x0E) - jump if no window found
-    // Change to: jmp loc_405D15 (0xEB 0x0E) - always jump (bypass instance check)
-    uint8_t* jz_addr = (uint8_t*)0x405d05;
 
+// Both engines refuse to start when another instance's window exists:
+// WinMain does FindWindowA(<class>, 0) and, if found, MessageBox + exit.
+// Patch the guarding `jz short` (0x74) into `jmp short` (0xEB) so the
+// "already running" body is always skipped — required for 2-instance
+// local testing on one PC. Runs from DllMain before ResumeThread, so it
+// lands before WinMain executes.
+//
+//   FM2K (WonderfulWorld_ver_0946): FindWindowA("KGT2KGAME") gate,
+//     jz at 0x405D05 (74 0E).
+//   FM95 (CPW): FindWindowA("KGT95GAME") gate in _WinMain@16 @0x40AB60,
+//     test eax; jz short loc_40ABA9 at 0x40AB7F (74 28).
+static void BypassMultiInstanceCheck() {
+    constexpr uintptr_t kJzSite = FM2K::kIsFM95 ? 0x40AB7F : 0x405D05;
+    uint8_t* jz_addr = (uint8_t*)kJzSite;
+
+    if (IsBadReadPtr(jz_addr, 1) || *jz_addr != 0x74) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "PATCH: multi-instance jz site 0x%08X has 0x%02X (expected 0x74) — "
+            "binary doesn't match the validated build; skipping bypass",
+            (unsigned)kJzSite, IsBadReadPtr(jz_addr, 1) ? 0u : *jz_addr);
+        return;
+    }
     DWORD old_protect;
     if (VirtualProtect(jz_addr, 1, PAGE_EXECUTE_READWRITE, &old_protect)) {
-        *jz_addr = 0xEB;  // Change jz (0x74) to jmp short (0xEB)
+        *jz_addr = 0xEB;  // jz -> jmp short
         VirtualProtect(jz_addr, 1, old_protect, &old_protect);
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Patch: Bypassed multi-instance check");
     }
@@ -116,6 +134,49 @@ static void ApplyBootToCharacterSelectPatches() {
             boot_type);
     }
 }
+
+#if defined(ENGINE_FM95)
+// FM95 counterpart of ApplyBootToCharacterSelectPatches. CPW's obj_init_main_
+// state (type 3 @0x40F0D0) spawns the 3-logo splash (type 30 obj_logo_intro_
+// state, ~700 frames / ~7 s) on a normal boot via `push 0x1E` @0x40F1B9. Patch
+// the immediate 0x1E -> 0x0F so it spawns type 15 (obj_title_demo_loop) =
+// TITLE-DIRECT: skips the logos but STILL runs scan_player_files + the full
+// roster/demo/round init, so the versus CSS that follows is safe. (CSS-direct
+// -- imm 0x13/type-19 -- is UNSAFE: only type 15 calls scan_player_files, so
+// the roster stays unpopulated and the versus-CSS scan loop reads garbage; we
+// deliberately never take that route.) Escape hatch: FM95_KEEP_LOGOS=1.
+static void Fm95ApplyBootSkip() {
+    // OPT-IN. Title-direct is NOT yet validated across CPW builds -- real-play
+    // testing surfaced a "player error" (title-15 may skip demo/roster setup
+    // the logo path establishes on some builds), so the default is the vanilla
+    // 3-logo boot (known-good). Enable with FM95_SKIP_LOGOS=1 once a build is
+    // confirmed clean. Netplay works without it (entry just waits out the
+    // attract path), so this is a pure entry-latency optimization, not required.
+    if (const char* e = std::getenv("FM95_SKIP_LOGOS"); !(e && e[0] == '1')) {
+        return;  // default: vanilla boot
+    }
+    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+        "PATCH: FM95_SKIP_LOGOS=1 — applying title-direct boot-skip (opt-in)");
+    uint8_t* imm = (uint8_t*)0x40F1BA;   // imm8 of `push 0x1E` at 0x40F1B9
+    DWORD old = 0;
+    if (!VirtualProtect(imm, 1, PAGE_EXECUTE_READWRITE, &old)) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "Patch: FM95 boot-skip VirtualProtect failed @0x40F1BA");
+        return;
+    }
+    const uint8_t was = *imm;
+    if (was == 0x1E) {                   // byte-guard: only patch the expected push imm
+        *imm = 0x0F;                     // type 30 (logos) -> type 15 (title-direct)
+        FlushInstructionCache(GetCurrentProcess(), imm, 1);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "Patch: FM95 boot -> title-direct (skip logos), push 0x1E->0x0F @0x40F1BA");
+    } else {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "Patch: FM95 boot-skip SKIPPED — unexpected byte 0x%02X @0x40F1BA (want 0x1E)", was);
+    }
+    VirtualProtect(imm, 1, old, &old);
+}
+#endif  // ENGINE_FM95
 
 static void ApplyCharacterSelectModePatches() {
     if (const char* e = std::getenv("FM2K_SKIP_VS_MODE_PATCH"); e && std::strcmp(e, "1") == 0) {
@@ -266,6 +327,97 @@ static void ApplyPerGameRuntimePatches() {
     PerGamePatches_ApplyRuntime();
 }
 
+// ---------------------------------------------------------------------------
+// DirectDrawCreate IAT-thunk repair (SJIS-folder silent-fallback fix)
+//
+// FM2K statically imports exactly one ddraw function — DirectDrawCreate — at a
+// single IAT slot. The launcher renames the import descriptor DDRAW.dll ->
+// 2DFMD.dll before injection so the loader resolves cnc-ddraw. But the loader
+// binds that thunk on the FM2KHook injection thread (process-init runs there),
+// and we observed that on SJIS-folder launches the *bound function pointer*
+// ends up in STOCK ddraw even though the descriptor name reads 2DFMD.dll and
+// 2DFMD is loaded — so the game's DirectDrawCreate call silently bypasses
+// cnc-ddraw (no D3D9 device, no F4 fullscreen, no overlay). Renaming the
+// descriptor is not enough; the already-bound pointer wins.
+//
+// We run in DllMain on the injection thread — AFTER import binding but BEFORE
+// ResumeThread — so the game hasn't called DirectDrawCreate yet. Read the
+// bound thunk, log where it points, and if it isn't 2DFMD's DirectDrawCreate,
+// rewrite it. Idempotent (no-op when already correct) and folder-path-agnostic.
+static void RepairDDrawImportThunk() {
+    HMODULE exe = GetModuleHandleA(nullptr);
+    if (!exe) return;
+    auto* base = reinterpret_cast<uint8_t*>(exe);
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return;
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS32*>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return;
+    const DWORD imp_rva =
+        nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+    if (!imp_rva) return;
+
+    HMODULE wrapper = GetModuleHandleA("2DFMD.dll");
+    if (!wrapper) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "DDrawThunk: 2DFMD.dll not loaded — cannot repair (redirect off?).");
+        return;
+    }
+    auto* correct = reinterpret_cast<void*>(GetProcAddress(wrapper, "DirectDrawCreate"));
+    if (!correct) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "DDrawThunk: 2DFMD.dll exports no DirectDrawCreate — cannot repair.");
+        return;
+    }
+    auto* desc = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(base + imp_rva);
+    for (; desc->Name; ++desc) {
+        const char* dllname = reinterpret_cast<const char*>(base + desc->Name);
+        std::string low = dllname;
+        for (auto& c : low) c = (char)tolower((unsigned char)c);
+        if (low.find("2dfmd") == std::string::npos &&
+            low.find("ddraw") == std::string::npos)
+            continue;
+
+        auto* iat = reinterpret_cast<void**>(base + desc->FirstThunk);
+        auto* oft = desc->OriginalFirstThunk
+            ? reinterpret_cast<IMAGE_THUNK_DATA32*>(base + desc->OriginalFirstThunk)
+            : nullptr;
+        for (int i = 0; iat[i]; ++i) {
+            const char* fname = "?";
+            if (oft && oft[i].u1.AddressOfData &&
+                !(oft[i].u1.Ordinal & IMAGE_ORDINAL_FLAG32)) {
+                auto* ibn = reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(
+                    base + oft[i].u1.AddressOfData);
+                fname = reinterpret_cast<const char*>(ibn->Name);
+            }
+            // FM2K imports only DirectDrawCreate from this DLL. When we can read
+            // the name, restrict the rewrite to it; otherwise (bound-only IAT)
+            // fix the single slot regardless — a ddraw-wrapper descriptor only
+            // matters for DirectDrawCreate anyway.
+            const bool is_ddc = (std::strcmp(fname, "?") == 0) ||
+                                (std::strcmp(fname, "DirectDrawCreate") == 0);
+            void* cur = iat[i];
+            // Common case: thunk already bound to 2DFMD — stay silent, no-op.
+            // Only log/repair when a DirectDrawCreate slot is actually misbound
+            // (would silently route the game to stock ddraw → GDI-ish fallback).
+            if (cur == correct || !is_ddc) continue;
+            DWORD op = 0;
+            if (VirtualProtect(&iat[i], sizeof(void*), PAGE_READWRITE, &op)) {
+                iat[i] = correct;
+                VirtualProtect(&iat[i], sizeof(void*), op, &op);
+                FlushInstructionCache(GetCurrentProcess(), &iat[i], sizeof(void*));
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "DDrawThunk: RE-POINTED %s::DirectDrawCreate %p -> 2DFMD %p "
+                    "(was misbound to stock ddraw; game now wraps through cnc-ddraw)",
+                    dllname, cur, correct);
+            } else {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                    "DDrawThunk: VirtualProtect failed on slot %p: %lu",
+                    (void*)&iat[i], GetLastError());
+            }
+        }
+    }
+}
+
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
     case DLL_PROCESS_ATTACH:
@@ -337,24 +489,58 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                         "DDrawDiag: %lu modules loaded; scanning for ddraw/2dfmd:",
                         (unsigned long)count);
                     bool any_match = false;
+                    bool has_our_wrapper = false;   // 2DFMD.dll = our renamed cnc-ddraw
+                    bool has_stock_ddraw = false;   // a ddraw.dll resolved from a Windows system dir
+                    char stock_ddraw_path[MAX_PATH] = {};
                     for (DWORD i = 0; i < count; ++i) {
                         char name[MAX_PATH] = {};
                         if (GetModuleBaseNameA(proc, mods[i], name, sizeof(name))) {
                             // Case-insensitive substring match
                             std::string lower = name;
                             for (auto& c : lower) c = (char)tolower((unsigned char)c);
-                            if (lower.find("ddraw") != std::string::npos ||
-                                lower.find("2dfmd") != std::string::npos) {
+                            const bool is_2dfmd = lower.find("2dfmd") != std::string::npos;
+                            const bool is_ddraw = lower.find("ddraw") != std::string::npos;
+                            if (is_ddraw || is_2dfmd) {
                                 char path[MAX_PATH] = {};
                                 GetModuleFileNameExA(proc, mods[i], path, sizeof(path));
                                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                                     "DDrawDiag:   MATCH base='%s' path='%s' handle=0x%p",
                                     name, path, (void*)mods[i]);
                                 any_match = true;
+                                if (is_2dfmd) has_our_wrapper = true;
+                                if (is_ddraw && !is_2dfmd) {
+                                    // A module literally named ddraw.dll — classify by
+                                    // its path. Resolved from a Windows system dir means
+                                    // the loader picked STOCK DirectDraw (the redirect
+                                    // never took), which renders exclusive-fullscreen.
+                                    std::string lp = path;
+                                    for (auto& c : lp) c = (char)tolower((unsigned char)c);
+                                    if (lp.find("\\windows\\")  != std::string::npos ||
+                                        lp.find("\\system32\\") != std::string::npos ||
+                                        lp.find("\\syswow64\\") != std::string::npos) {
+                                        has_stock_ddraw = true;
+                                        std::strncpy(stock_ddraw_path, path,
+                                                     sizeof(stock_ddraw_path) - 1);
+                                    }
+                                }
                             }
                         }
                     }
-                    if (!any_match) {
+                    // Loud verdict — the silent-fullscreen class (June 2026: SJIS-folder
+                    // games "went fullscreen" with no error because nothing flagged that
+                    // the cnc-ddraw redirect had missed). Never fail silently again.
+                    if (has_our_wrapper) {
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                            "DDrawDiag: OK — cnc-ddraw (2DFMD.dll) is loaded; the game "
+                            "renders through our wrapper (windowed presentation).");
+                    } else if (has_stock_ddraw) {
+                        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                            "DDrawDiag: *** cnc-ddraw redirect FAILED *** game loaded "
+                            "STOCK DirectDraw ('%s') — it will render EXCLUSIVE-FULLSCREEN "
+                            "with no rollback overlay. Check: cnc-ddraw installed next to "
+                            "the launcher, and the IAT patch DDRAW.dll->2DFMD.dll applied.",
+                            stock_ddraw_path);
+                    } else if (!any_match) {
                         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                             "DDrawDiag: NO ddraw/2dfmd module loaded — "
                             "neither system DDRAW.dll nor our 2DFMD.dll "
@@ -365,6 +551,16 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                         "DDrawDiag: EnumProcessModulesEx failed: %lu",
                         GetLastError());
                 }
+            }
+
+            // Repair the DirectDrawCreate IAT thunk if the loader mis-bound it
+            // to stock ddraw (the SJIS-folder silent-fallback class). Runs here
+            // — after import binding, before ResumeThread — so the fix lands
+            // before the game's first DirectDrawCreate call. FM2K-only: the
+            // 0x41c000 import layout is engine-specific, and the helper keys on
+            // the ddraw/2dfmd descriptor name so it's a no-op on anything else.
+            if constexpr (FM2K::kIsFM2K) {
+                RepairDDrawImportThunk();
             }
 
             // Locale spoofing — Japanese codepage / LCID + GDI/USER32 ANSI
@@ -390,19 +586,29 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                 }
             }
 
-            // FM2K-only binary patches. The literal addresses (0x405d05,
-            // 0x409CD9, 0x470058, 0x4049e0/e6) are FM2K-engine-specific —
-            // applying them to FM95 (CPW) just stomps random bytes in its
-            // address space and breaks the host. Gate on the engine flag
-            // so the FM95 build is a no-op here.
+            // Multi-instance bypass is engine-aware (FM2K 0x405D05 /
+            // FM95 0x40AB7F) and expected-byte-guarded — runs on both.
+            BypassMultiInstanceCheck();
+
+            // FM2K-only binary patches. The literal addresses (0x409CD9,
+            // 0x470058, 0x4049e0/e6) are FM2K-engine-specific — applying
+            // them to FM95 (CPW) just stomps random bytes in its address
+            // space and breaks the host. Gate on the engine flag so the
+            // FM95 build is a no-op here.
             if constexpr (FM2K::kIsFM2K) {
-                BypassMultiInstanceCheck();
                 ApplyBootToCharacterSelectPatches();
                 ApplyCharacterSelectModePatches();
                 DisableCursorHiding();
                 FixGameSpeedDesync();
                 ApplyPerGameRuntimePatches();
             }
+#if defined(ENGINE_FM95)
+            // FM95 boot-skip: title-direct (skip the 3-logo splash). Byte-
+            // guarded + FM95_KEEP_LOGOS escape hatch. Its address (0x40F1BA) is
+            // CPW-specific, so it lives behind the engine macro like the FM2K
+            // block above.
+            Fm95ApplyBootSkip();
+#endif
             // Neuter F4 / Alt+Enter game-side fullscreen toggles when
             // cnc-ddraw is loaded — its keyboard hook owns those keys
             // now, the game's redundant toggle would fight cnc-ddraw's

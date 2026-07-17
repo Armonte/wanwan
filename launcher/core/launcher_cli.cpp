@@ -368,10 +368,13 @@ SDL_AppResult LauncherCli_ApplyLaunchMode(FM2KLauncher* launcher, LauncherCliArg
         if (is_direct_path) {
             FM2K::FM2KGameInfo info{};
             info.exe_path = stress_game_filter;
-            // Other fields (engine, clean_label, etc) take their defaults
-            // — discovery normally populates them but for a direct-path
-            // launch the launcher only needs exe_path to drive
-            // StartStressSession.
+            // Discovery normally sniffs the engine; a direct-path launch
+            // bypasses the scan and the FM2KGameInfo default (FM2K) would
+            // inject FM2KHook.dll into an FM95 exe. Run the same cascade
+            // (known-hash -> string sniff -> size heuristic) here. Other
+            // fields (clean_label, etc) keep their defaults -- the launcher
+            // only needs exe_path + engine to drive StartStressSession.
+            info.engine = Utils::DetectEngineForExe(info.exe_path);
             games.push_back(info);
             stress_game_filter.clear();  // suppress the substring matcher below
         } else {
@@ -454,6 +457,10 @@ SDL_AppResult LauncherCli_ApplyLaunchMode(FM2KLauncher* launcher, LauncherCliArg
         if (is_direct_path) {
             FM2K::FM2KGameInfo info{};
             info.exe_path = offline_game_filter;
+            // Direct-path launch bypasses discovery's engine sniff; the
+            // default (FM2K) would inject the wrong hook DLL into an FM95
+            // exe. Same fix as --stress above.
+            info.engine = Utils::DetectEngineForExe(info.exe_path);
             games.push_back(info);
             offline_game_filter.clear();
         } else {
@@ -510,6 +517,10 @@ SDL_AppResult LauncherCli_ApplyLaunchMode(FM2KLauncher* launcher, LauncherCliArg
         FM2K::FM2KGameInfo selected{};
         if (is_direct_path) {
             selected.exe_path = direct_game_filter;
+            // Direct-path launch bypasses discovery's engine sniff; the
+            // default (FM2K) would inject the wrong hook DLL into an FM95
+            // exe. Same fix as --stress above.
+            selected.engine = Utils::DetectEngineForExe(selected.exe_path);
         } else {
             if (g_launcher->GetDiscoveredGames().empty()) {
                 std::cerr << "No FM2K games found for direct mode\n";

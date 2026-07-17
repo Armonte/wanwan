@@ -236,6 +236,28 @@ void Netplay_SignalBattleEnd() {
         g_netplay_frame, g_battle_end_swap_frame);
 }
 
+// FM95 deterministic variant. `end_frame` is the confirmed battle->non-battle
+// edge, identical on both peers (scanned from the phase ring up to the confirmed
+// horizon), so both propose the SAME swap_frame with no per-peer live component.
+// FM95_END_SWAP_BUFFER clears the prediction-window lead so swap_frame is ahead
+// of both live frames -> both run gekko to it and tear down at one frame.
+void Netplay_SignalBattleEndAtFrame(uint32_t end_frame) {
+    if (g_local_battle_end_signaled) {
+        return;
+    }
+    const uint32_t local_proposal = end_frame + FM95_END_SWAP_BUFFER;
+    if (local_proposal > g_battle_end_swap_frame) {
+        g_battle_end_swap_frame = local_proposal;
+    }
+    g_local_battle_end_signaled = true;
+    ControlChannel_SendBattleEnd(g_battle_end_swap_frame, g_end_epoch, 0);
+    BroadcastSwapToSubscribers(CtrlMsg::BATTLE_END, g_battle_end_swap_frame);
+
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "BATTLE END SYNC: FM95 confirmed end_frame=%u (deterministic) swap_frame=%u "
+        "live=%u", end_frame, g_battle_end_swap_frame, g_netplay_frame);
+}
+
 bool Netplay_IsBattleEndSynced() {
     // Same chicken-and-egg as the entry direction: once game_mode leaves
     // the [3000,4000) battle range, the phase classifier flips to CSS and

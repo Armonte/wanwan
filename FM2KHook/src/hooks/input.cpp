@@ -30,7 +30,11 @@ extern int g_player_index;
 // Cache our game window handle
 static HWND g_our_window = NULL;
 
-// Find our game window by matching process ID and class name
+// Find our game window by matching process ID and class name.
+// FM2K registers "KGT2KGAME"; FM95/CPW registers "KGT95GAME" (same
+// convention wndproc_subclass.cpp uses). The old hardcoded KGT2KGAME
+// meant the FM95 build never found its window, so the focus check was
+// permanently false there.
 static BOOL CALLBACK FindOurWindowCallback(HWND hwnd, LPARAM lParam) {
     DWORD pid;
     GetWindowThreadProcessId(hwnd, &pid);
@@ -38,7 +42,8 @@ static BOOL CALLBACK FindOurWindowCallback(HWND hwnd, LPARAM lParam) {
     if (pid == GetCurrentProcessId()) {
         char class_name[64];
         if (GetClassNameA(hwnd, class_name, sizeof(class_name))) {
-            if (strcmp(class_name, "KGT2KGAME") == 0) {
+            const char* expect_cls = FM2K::kIsFM95 ? "KGT95GAME" : "KGT2KGAME";
+            if (strcmp(class_name, expect_cls) == 0) {
                 *(HWND*)lParam = hwnd;
                 return FALSE;  // Found it, stop enumeration
             }

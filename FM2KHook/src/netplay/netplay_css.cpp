@@ -236,6 +236,15 @@ bool Netplay_ProcessCSS() {
             s_np_autoplay_css = (v && v[0] && v[0] != '0') ? 1 : 0;
         }
         if (s_np_autoplay_css == 1) {
+            if constexpr (FM2K::kIsFM95) {
+                // FM95 CSS nav = attack pulse off the input ring (RE-9). The
+                // FM2K Hook_ComputeAutoplayCssInput reads game_mode==2000
+                // (never true on FM95) → would feed 0 and both peers stall in
+                // CSS with p1/p2=0x0000. Fall back to 0 pre-battle if nav is
+                // off (shouldn't happen — this branch is autoplay-gated).
+                const int nav = Fm95ComputeAutoplayNav();
+                local_raw = (nav >= 0) ? (uint16_t)nav : 0u;
+            } else
             local_raw = Hook_ComputeAutoplayCssInput((int)g_player_index);
         }
     }

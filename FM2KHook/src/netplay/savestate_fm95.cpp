@@ -3,6 +3,7 @@
 #include "savestate.h"
 #include "savestate_internal.h"
 #include "globals.h"
+#include "../core/fm95_structs.h"   // Fm95RoundStateBlock -> anchor the region
 #include <SDL3/SDL_log.h>
 #include <cstring>
 #include <cstdio>
@@ -35,8 +36,35 @@ namespace fm95save {
     constexpr uintptr_t INPUT_EDGE_STATE     = 0x4255A8;
     constexpr size_t    INPUT_EDGE_STATE_SZ  = 0x10;        // p1/p2 current + pressed, 4 dwords
     // Block E + F merged
-    constexpr uintptr_t PLAYER_ROUND_STATE   = 0x5E98A0;
-    constexpr size_t    PLAYER_ROUND_STATE_SZ = 0x1A0;      // through 0x5E9A40 inclusive of round_count_max+4
+    // Anchored to the typed mirror so the region can't drift from the RE:
+    // fm95::Fm95RoundStateBlock = 4x per-player block (win counters, meters,
+    // pos/facing snaps) + round tail (time limit, round_count_max). 0x1A0.
+    constexpr uintptr_t PLAYER_ROUND_STATE   = fm95::kRoundStateAddr;        // 0x5E98A0
+    constexpr size_t    PLAYER_ROUND_STATE_SZ = sizeof(fm95::Fm95RoundStateBlock);  // 0x1A0
+    static_assert(PLAYER_ROUND_STATE_SZ == 0x1A0, "round-state block size drift");
+    // Block G — round/match transition scalars outside every block above.
+    constexpr uintptr_t SCORE_ROUND_COUNT    = 0x4DD268;
+    constexpr uintptr_t ROUND_INDEX_CLUSTER  = 0x426934;    // round_starting_player, choices[0/1], round_active_flag
+    constexpr size_t    ROUND_INDEX_CLUSTER_SZ = 0x10;
+    constexpr uintptr_t PRACTICE_MODE_FLAG   = 0x426704;
+    constexpr uintptr_t ACTIVE_DEMO_ID       = 0x471188;
+    constexpr uintptr_t FRAME_SKIP_SPEEDUP   = 0x509060;
+}
+
+// FM95 half of SaveState_DoInitialSync (called from savestate.cpp's engine
+// split). Zero the FM95 input rings + buf_idx + edge state + current inputs
+// so input-change detection produces identical streams pre-first-AdvanceEvent
+// — the FM95 analog of the FM2K 0x447EE0/0x447F00../0x4280D8 reset.
+void SaveState_Fm95ResetInputSync() {
+    *(uint32_t*)fm95save::INPUT_BUF_IDX      = 0;
+    std::memset((void*)fm95save::P1_INPUT_HISTORY,    0, fm95save::HISTORY_RING_SZ);
+    std::memset((void*)fm95save::P2_INPUT_HISTORY,    0, fm95save::HISTORY_RING_SZ);
+    std::memset((void*)fm95save::INPUT_HISTORY_EXTRA, 0, fm95save::HISTORY_RING_SZ);
+    std::memset((void*)fm95save::INPUT_EDGE_STATE,    0, fm95save::INPUT_EDGE_STATE_SZ);
+    *(uint32_t*)fm95save::P1_INPUT_CURRENT   = 0;
+    *(uint32_t*)fm95save::P2_INPUT_CURRENT   = 0;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "SaveState(FM95): initial sync -- reset buf_idx + input rings + edge state");
 }
 
 bool SaveState_Save(int frame) {
@@ -67,9 +95,17 @@ bool SaveState_Save(int frame) {
                 fm95save::INPUT_EDGE_STATE_SZ);
     std::memcpy(s->player_round_state,  (const void*)fm95save::PLAYER_ROUND_STATE,
                 fm95save::PLAYER_ROUND_STATE_SZ);
+    // Block G — round/match transition scalars.
+    s->score_round_count = *(uint32_t*)fm95save::SCORE_ROUND_COUNT;
+    std::memcpy(s->round_index_cluster, (const void*)fm95save::ROUND_INDEX_CLUSTER,
+                fm95save::ROUND_INDEX_CLUSTER_SZ);
+    s->practice_mode_flag = *(uint32_t*)fm95save::PRACTICE_MODE_FLAG;
+    s->active_demo_id     = *(uint32_t*)fm95save::ACTIVE_DEMO_ID;
+    s->frame_skip_speedup = *(uint32_t*)fm95save::FRAME_SKIP_SPEEDUP;
 
     // Mike Z sound desired — engine-agnostic snapshot.
     SoundRollback::CaptureDesired(s->sound_desired);
+    SoundRollback::CaptureBgm(&s->bgm_desired);
 
     // Combined Fletcher32 over all captured regions for desync detection.
     s->checksum = Fletcher32((const uint8_t*)s->object_pool,
@@ -119,8 +155,16 @@ bool SaveState_Load(int frame) {
                 fm95save::INPUT_EDGE_STATE_SZ);
     std::memcpy((void*)fm95save::PLAYER_ROUND_STATE,  s->player_round_state,
                 fm95save::PLAYER_ROUND_STATE_SZ);
+    // Block G — round/match transition scalars.
+    *(uint32_t*)fm95save::SCORE_ROUND_COUNT = s->score_round_count;
+    std::memcpy((void*)fm95save::ROUND_INDEX_CLUSTER, s->round_index_cluster,
+                fm95save::ROUND_INDEX_CLUSTER_SZ);
+    *(uint32_t*)fm95save::PRACTICE_MODE_FLAG = s->practice_mode_flag;
+    *(uint32_t*)fm95save::ACTIVE_DEMO_ID     = s->active_demo_id;
+    *(uint32_t*)fm95save::FRAME_SKIP_SPEEDUP = s->frame_skip_speedup;
 
     SoundRollback::RestoreDesired(s->sound_desired);
+    SoundRollback::RestoreBgm(&s->bgm_desired);
     return true;
 }
 
@@ -131,8 +175,22 @@ uint32_t SaveState_CalculateFingerprint() {
     uint32_t h = *(uint32_t*)fm95save::RNG_SEED;
     h ^= *(uint32_t*)fm95save::GAME_TICK_COUNTER;
     h ^= *(uint32_t*)fm95save::GAME_MODE;
+    // Deliberately NARROW — mirrors FM2K's proven fingerprint (rng/HP/timers/
+    // inputs; savestate_fm2k_diag.cpp:90). The object pool is intentionally
+    // NOT hashed: it carries render-scratch (per-object color-interpolation
+    // fields written by the render pass) that diverges benignly under rollback
+    // because re-sim frames don't render — including it false-positives on the
+    // first rollback (verified: full-pool fingerprint desynced at f=2 on pure
+    // render-scratch). HP lives in player_round_state (g_p1/p2_damage_taken),
+    // so the gameplay-critical state IS covered; a position divergence that
+    // matters propagates into HP/rng and is caught there — same as FM2K.
     h ^= Fletcher32((const uint8_t*)fm95save::PLAYER_ROUND_STATE,
                     fm95save::PLAYER_ROUND_STATE_SZ);
+    // Round-transition scalars (Block G) — so a round-boundary divergence is
+    // caught directly, not only via its downstream RNG drift.
+    h ^= *(uint32_t*)fm95save::SCORE_ROUND_COUNT;
+    h ^= Fletcher32((const uint8_t*)fm95save::ROUND_INDEX_CLUSTER,
+                    fm95save::ROUND_INDEX_CLUSTER_SZ);
     return h;
 }
 

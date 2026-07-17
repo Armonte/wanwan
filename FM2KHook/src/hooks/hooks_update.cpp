@@ -66,7 +66,9 @@ int __cdecl Hook_UpdateGameState() {
     // the spectator on best-of-3 while the host ran 1-round, so they diverged at
     // the host's round-1 match-end (the spec thought it was round 2). Forcing it
     // here keeps all peers on the same round count. Test harness only; no-op unset.
-    {
+    // FM2K-only: g_default_round's FM95 equivalent is unmapped (RE-3 in
+    // docs/FM95_Support_Status.md) -- the harness override is inert there.
+    if constexpr (FM2K::kIsFM2K) {
         static const int s_test_rounds = []{
             const char* v = std::getenv("FM2K_TEST_ROUNDS");
             return (v && v[0]) ? std::atoi(v) : 0;
@@ -91,8 +93,16 @@ int __cdecl Hook_UpdateGameState() {
                         e ? e : "(unset)", on ? "ACTIVE" : "off (host-driven)");
             return on;
         }();
-        if (s_use_trampoline) {
-            LoopPhase phase = TrampolineFrameTick();
+        // Only the LEGACY host-driven path. Once the inline loop-patch owns the
+        // loop (g_fm95_loop_owned), TrampolineMainLoop drives every phase via
+        // TrampolineFrameTick and calls original_update_game directly, so this
+        // hook is no longer the driver -- running the host-driven dispatch here
+        // too would double-tick. Kept as a fallback for when the patch fails.
+        if (s_use_trampoline && !g_fm95_loop_owned) {
+            // Host-driven variant: dispatches BATTLE/CSS/SPECTATOR but NOT
+            // NATIVE (the fall-through below runs the single host update for
+            // NATIVE — running RunNativeTick here too would double-tick).
+            LoopPhase phase = TrampolineFrameTickHostDriven();
             // Log first-seen-per-phase so the log shows the engine-aware
             // classifier picking up FM95 phase transitions in real time.
             static LoopPhase s_last_logged_phase = LoopPhase::NATIVE;

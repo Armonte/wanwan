@@ -196,6 +196,73 @@ void Netplay_HandleLoadEvent(GekkoGameEvent* update, int& load_events_in_batch) 
     g_netplay_frame = (uint32_t)frame;
 }
 
+// ---------------------------------------------------------------------------
+// FM95 deterministic battle-end detection.
+//
+// FM2K leaves battle when the game_mode scalar drops out of [3000,4000) -- a
+// value both peers advance identically inside the deterministic sim, so both
+// detect the exit at the SAME confirmed frame and the both-signaled end barrier
+// is sufficient. FM95 keeps game_mode ~0 and our phase classifier walks the
+// LIVE object pool, which each peer reads post-prediction: the leading peer
+// (up to prediction_window frames ahead) classifies match-end at a HIGHER frame
+// than the trailing peer (observed 200 vs 184). The lower proposal wins the
+// swap-frame race, the leading peer is torn down mid-battle, its EndBattle drain
+// times out, and the next match re-enters mis-aligned.
+//
+// Fix: record the phase classification per battle frame HERE in the advance
+// handler -- after the authoritative sim tick, keyed by gekko's frame, so a
+// rollback re-sim OVERWRITES the speculative pass (identical convergence to the
+// g_pending_confirm input ring below). Scanning the ring only up to gekko's
+// confirmed horizon yields the SAME first battle->non-battle edge frame on both
+// peers, so both signal end at one deterministic frame.
+static constexpr int FM95_PHASE_RING = 256;   // >> prediction_window + delay
+static uint8_t  g_fm95_phase_ring[FM95_PHASE_RING] = {0};
+static uint32_t g_fm95_phase_scan_frame = 0;   // next confirmed frame to scan
+static int      g_fm95_phase_scan_prev  = -1;  // phase of last scanned frame
+static bool     g_fm95_end_edge_found    = false;
+static uint32_t g_fm95_end_edge_frame    = 0;
+
+static bool     g_fm95_seen_battle       = false;
+
+void Netplay_Fm95ResetBattleEndScan() {
+    for (int i = 0; i < FM95_PHASE_RING; ++i) g_fm95_phase_ring[i] = 0;
+    g_fm95_phase_scan_frame = 0;
+    g_fm95_phase_scan_prev  = -1;
+    g_fm95_end_edge_found    = false;
+    g_fm95_end_edge_frame    = 0;
+    g_fm95_seen_battle       = false;
+}
+
+// Called every battle tick (FM95). Scans the match-decision ring (1 = active
+// round play observed, 2 = match DECIDED via win-counter >= cap, 0 = neither)
+// from the last scanned frame up to gekko's confirmed horizon; returns true
+// (once) with the frame where the match is first DECIDED after real play. The
+// win counters are monotonic deterministic sim scalars, so the 1-then-2 edge
+// fires exactly once, at the true match end, on the identical frame on both
+// peers -- never at a round boundary. See Fm95MatchPhaseByte / RE-2b.
+bool Netplay_Fm95PollConfirmedBattleEnd(uint32_t* out_end_frame) {
+    // One-shot: reports the edge exactly once so the caller can signal without
+    // needing to inspect netplay-internal barrier state. Latched until reset.
+    if (g_fm95_end_edge_found) {
+        return false;
+    }
+    const uint32_t confirmed = Netplay_GetConfirmedFrame();
+    for (; g_fm95_phase_scan_frame <= confirmed; ++g_fm95_phase_scan_frame) {
+        const int ph = (int)g_fm95_phase_ring[g_fm95_phase_scan_frame % FM95_PHASE_RING];
+        if (ph == 1) g_fm95_seen_battle = true;   // active round play observed
+        // Match decided (a win counter reached the cap) after real play.
+        if (g_fm95_seen_battle && ph == 2) {
+            g_fm95_end_edge_found = true;
+            g_fm95_end_edge_frame = g_fm95_phase_scan_frame;
+            g_fm95_phase_scan_prev = ph;
+            if (out_end_frame) *out_end_frame = g_fm95_end_edge_frame;
+            return true;
+        }
+        g_fm95_phase_scan_prev = ph;
+    }
+    return false;
+}
+
 void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
                                 uint32_t& earliest_advance) {
     // Authoritative frame label straight from gekko (task #34
@@ -425,6 +492,22 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
         slot.frame = f;
         slot.p1 = Hook_ApplySOCD_Public(g_p1_input);
         slot.p2 = Hook_ApplySOCD_Public(g_p2_input);
+    }
+
+    // FM95 deterministic battle-end: record this frame's authoritative phase
+    // (the sim tick above left the object pool at frame f's state). Rollback
+    // re-sims overwrite the speculative pass, so the ring converges to truth by
+    // the time f is confirmed. running_ahead ticks are excluded (their pool is
+    // a throwaway look-ahead, not a real frame). FM95-only; the FM2K path leaves
+    // battle on the deterministic game_mode scalar and never scans this ring.
+    if constexpr (FM2K::kIsFM95) {
+        if (!g_stress_mode && !update->data.adv.running_ahead) {
+            const uint32_t f = (uint32_t)update->data.adv.frame;
+            // 1 = active round play, 2 = match DECIDED (win-counter >= cap),
+            // 0 = neither. Monotonic decision scalar -> single 1->2 edge = the
+            // true match end (never a round boundary). See Fm95MatchPhaseByte.
+            g_fm95_phase_ring[f % FM95_PHASE_RING] = (uint8_t)Fm95MatchPhaseByte();
+        }
     }
 
     g_is_rolling_back = false;
@@ -829,23 +912,29 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
         if (g_netplay_frame >= last_status_frame + 500) {
             last_status_frame = g_netplay_frame;
             float fa = g_session ? gekko_frames_ahead(g_session) : 0.0f;
+            // frame_time_ms is engine-gated (FM2K 0x41E2F0 / FM95 0x422F7C);
+            // the second field (0x4246F4) has no FM95 analog → 0 there. The
+            // useful fields (frame/rb/desync/ahead) are engine-agnostic.
+            const uint32_t frame_time = *(uint32_t*)FM2K::ADDR_FRAME_TIME_MS;
+            const uint32_t skip_field = FM2K::kIsFM2K ? *(uint32_t*)0x4246F4 : 0u;
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "BATTLE STATUS: frame=%u rb=%u desync=%u ahead=%.1f frame_time_ms=%u skip=%u",
                 g_netplay_frame, g_rollback_count, g_desync_count, fa,
-                *(uint32_t*)0x41E2F0,
-                *(uint32_t*)0x4246F4);
+                frame_time, skip_field);
         }
 
         static uint32_t last_state_frame = 0;
         if (g_netplay_frame >= last_state_frame + 1000) {
             last_state_frame = g_netplay_frame;
+            // rng + render_fc engine-gated; the two timers (0x470044/0x424F00)
+            // are FM2K-only → 0 on FM95 (no clean analog, RE-5).
+            const uint32_t rng       = *(uint32_t*)FM2K::ADDR_RANDOM_SEED;
+            const uint32_t render_fc = *(uint32_t*)FM2K::ADDR_FRAME_COUNTER;
+            const uint32_t game_tmr  = FM2K::kIsFM2K ? *(uint32_t*)0x470044 : 0u;
+            const uint32_t round_ctr = FM2K::kIsFM2K ? *(uint32_t*)0x424F00 : 0u;
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "STATE f=%u: rng=0x%08X game_timer=%u round_timer_ctr=%u render_fc=%u",
-                g_netplay_frame,
-                *(uint32_t*)0x41FB1C,
-                *(uint32_t*)0x470044,
-                *(uint32_t*)0x424F00,
-                *(uint32_t*)0x4456FC);
+                g_netplay_frame, rng, game_tmr, round_ctr, render_fc);
         }
     }
 }

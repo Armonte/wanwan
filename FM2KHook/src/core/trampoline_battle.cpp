@@ -90,7 +90,10 @@ void RunBattleTick() {
         // sim sequence is byte-identical (same inputs, same order; render never
         // feeds the sim), and the netplay + spectator paths above never reach
         // this offline-only branch.
-        constexpr uintptr_t REF_ADDR = 0x424718;
+        // [FM2K-DIAG] g_round_end_flag / score globals below are FM2K-only;
+        // FM95 equivalents are unmapped (RE-2 in docs/FM95_Support_Status.md).
+        // The reads fold to 0 on FM95 so the trip-warnings stay inert there.
+        constexpr uintptr_t REF_ADDR = 0x424718;  // FM2K g_round_end_flag (FM95: RE-2)
         const uint64_t qpc_freq = SDL_GetPerformanceFrequency();
         const uint64_t step_qpc = qpc_freq / 100;  // 10ms = one 100fps step
         static uint64_t s_logical_qpc = 0;
@@ -113,13 +116,13 @@ void RunBattleTick() {
 
         uint64_t sim_ns = 0;
         for (int _sf = 0; _sf < sim_steps; ++_sf) {
-            const uint32_t ref_before = *(volatile uint32_t*)REF_ADDR;
-            const int32_t  pre_score = *(int32_t*)0x470050;
-            const uint32_t pre_ref   = *(uint32_t*)0x424718;
+            const uint32_t ref_before = FM2K::kIsFM2K ? *(volatile uint32_t*)REF_ADDR : 0;
+            const int32_t  pre_score = FM2K::kIsFM2K ? *(int32_t*)0x470050 : 0;
+            const uint32_t pre_ref   = FM2K::kIsFM2K ? *(uint32_t*)0x424718 : 0;
             const uint32_t pre_mode  = *(uint32_t*)FM2K::ADDR_GAME_MODE;
             const uint64_t _s0 = SDL_GetPerformanceCounter();
             if (original_process_game_inputs) original_process_game_inputs();
-            const uint32_t ref_after_pgi = *(volatile uint32_t*)REF_ADDR;
+            const uint32_t ref_after_pgi = FM2K::kIsFM2K ? *(volatile uint32_t*)REF_ADDR : 0;
             if (ref_after_pgi != ref_before && ref_after_pgi != 0)
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     "[REF-TRIP] round_end_flag flipped %u->%u during PGI",
@@ -128,12 +131,12 @@ void RunBattleTick() {
             ++g_sim_step_count;   // sim-fps: one logic tick (offline frame-skip)
             const uint64_t _s1 = SDL_GetPerformanceCounter();
             sim_ns += _s1 - _s0;
-            const uint32_t ref_after_ug = *(volatile uint32_t*)REF_ADDR;
+            const uint32_t ref_after_ug = FM2K::kIsFM2K ? *(volatile uint32_t*)REF_ADDR : 0;
             if (ref_after_ug != ref_after_pgi && ref_after_ug != 0)
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     "[REF-TRIP] round_end_flag flipped %u->%u during UG",
                     ref_after_pgi, ref_after_ug);
-            const int32_t post_score = *(int32_t*)0x470050;
+            const int32_t post_score = FM2K::kIsFM2K ? *(int32_t*)0x470050 : 0;
             if (pre_mode >= 3000 && pre_mode < 4000) {
                 if (pre_score >= 0 && post_score < 0)
                     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
@@ -268,7 +271,19 @@ void RunBattleTick() {
         // before tearing down the GekkoNet battle session, so the swap
         // is observed at the same logical point on every node.
         Netplay_PollBattleEndSync();
-        if (Netplay_IsBattleEndSynced()) {
+        bool end_ready = Netplay_IsBattleEndSynced();
+        if constexpr (FM2K::kIsFM95) {
+            // FM95: both peers agreed on ONE deterministic swap_frame (derived
+            // from the confirmed battle-end edge, ahead of both live frames).
+            // Actually WAIT until our sim reaches it before tearing down, so
+            // both nodes swap at the identical frame and the drain never orphans
+            // frames. FM2K keeps its both-signaled semantics (detection there is
+            // already frame-deterministic via the game_mode scalar).
+            if (end_ready && Netplay_GetFrame() < Netplay_GetBattleEndSwapFrame()) {
+                end_ready = false;
+            }
+        }
+        if (end_ready) {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "Trampoline: battle-end swap_frame reached — destroying battle session");
             Netplay_EndBattle();

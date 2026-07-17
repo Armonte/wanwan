@@ -104,6 +104,28 @@ static CreateFileW_t original_CreateFileW = nullptr;
 static constexpr DWORD kRelaxedShareMode =
     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 
+// FM95 (CPW) loads BMP/DIB graphics via the legacy Win16-compat file APIs
+// _lopen (ddraw_load_palette_from_bmp @0x419CD0) and OpenFile
+// (load_dib_file_or_resource @0x40D2E0). Those do NOT route through CreateFileA,
+// so the CreateFileA/W relaxed-share fix missed them: two instances launched
+// from the same folder hit a sharing violation on those opens -> the loader
+// gets a bad HFILE -> reads garbage -> intermittent heap/AV crash during boot
+// (the two-instance-only "player error"). Force OF_SHARE_DENY_NONE on both.
+// The OF_SHARE_* field is bits 4-6 (mask 0x70); OF_SHARE_DENY_NONE = 0x40.
+using lopen_t    = HFILE(WINAPI*)(LPCSTR, int);
+using OpenFile_t = HFILE(WINAPI*)(LPCSTR, LPOFSTRUCT, UINT);
+static lopen_t    original_lopen    = nullptr;
+static OpenFile_t original_OpenFile = nullptr;
+static constexpr int kOfShareMask     = 0x70;
+static constexpr int kOfShareDenyNone = 0x40;  // OF_SHARE_DENY_NONE
+
+static HFILE WINAPI Hook_lopen(LPCSTR path, int readWrite) {
+    return original_lopen(path, (readWrite & ~kOfShareMask) | kOfShareDenyNone);
+}
+static HFILE WINAPI Hook_OpenFile(LPCSTR name, LPOFSTRUCT buf, UINT style) {
+    return original_OpenFile(name, buf, (UINT)((style & ~kOfShareMask) | kOfShareDenyNone));
+}
+
 // FPK VFS redirect (defined after the temp-inflate helpers further down). If the
 // asset has a sibling ".fpk", returns a handle to its inflated temp file; else
 // INVALID_HANDLE_VALUE so the caller falls through to the normal open.
@@ -794,6 +816,33 @@ bool InstallVfsHooks() {
             } else {
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                             "Hooks: CreateFileW hooked (relaxed share mode)");
+            }
+        }
+
+        // FM95-only: the legacy _lopen / OpenFile graphics loaders don't route
+        // through CreateFileA, so force OF_SHARE_DENY_NONE on them too, or two
+        // instances crash on a shared BMP/DIB (see Hook_lopen comment). FM2K
+        // doesn't use these APIs, so leave its hook set untouched.
+        if constexpr (FM2K::kIsFM95) {
+            if (void* real_lopen = (void*)GetProcAddress(kernel32, "_lopen")) {
+                if (MH_CreateHook(real_lopen, (void*)Hook_lopen,
+                                  (void**)&original_lopen) == MH_OK &&
+                    MH_QueueEnableHook(real_lopen) == MH_OK) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                                "Hooks: _lopen hooked (FM95 relaxed share)");
+                } else {
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Hooks: Failed to hook _lopen");
+                }
+            }
+            if (void* real_OpenFile = (void*)GetProcAddress(kernel32, "OpenFile")) {
+                if (MH_CreateHook(real_OpenFile, (void*)Hook_OpenFile,
+                                  (void**)&original_OpenFile) == MH_OK &&
+                    MH_QueueEnableHook(real_OpenFile) == MH_OK) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                                "Hooks: OpenFile hooked (FM95 relaxed share)");
+                } else {
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Hooks: Failed to hook OpenFile");
+                }
             }
         }
 

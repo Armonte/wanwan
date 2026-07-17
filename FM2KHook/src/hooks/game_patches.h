@@ -1,9 +1,6 @@
 #ifndef GAME_PATCHES_H
 #define GAME_PATCHES_H
 
-void BypassMultiInstanceCheck();
-void ApplyBootToCharacterSelectPatches();
-void ApplyCharacterSelectModePatches();
 void PatchVsRoundCase200T4FalsePositive();
 
 // Neuter the FM2K WndProc's F4 / Alt+Enter handlers so they no longer

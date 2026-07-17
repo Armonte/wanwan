@@ -55,6 +55,7 @@
 // We want: round-to-nearest-even, all exceptions masked, no FZ/DAZ, flags clear.
 // Value 0x1F80 is the x86 default but we pin it explicitly to ensure both
 #include "hooks_internal.h"
+#include "../core/fm95_structs.h"   // typed FM95 pool/round-state mirrors
 
 // ============================================================================
 
@@ -74,12 +75,12 @@ namespace {
     enum class FM95Phase { Boot, Title, CSS, PostCSS, Battle, MatchEnd, Other };
 
     inline FM95Phase Fm95ClassifyPhase() {
-        const uint8_t* pool = (const uint8_t*)FM2K::ADDR_OBJECT_POOL;
-        for (size_t i = 0; i < FM2K::OBJECT_POOL_COUNT; ++i) {
-            const uint8_t* slot = pool + i * FM2K::OBJECT_POOL_STRIDE;
-            uint32_t type = *reinterpret_cast<const uint32_t*>(slot);
+        const fm95::Fm95ObjectSlot* pool = fm95::Pool();
+        for (size_t i = 0; i < fm95::kObjectPoolCount; ++i) {
+            const fm95::Fm95ObjectSlot& slot = pool[i];
+            uint32_t type = slot.type;
             if (type < 2) continue;            // 0=empty, 1=disabled
-            uint32_t sub  = *reinterpret_cast<const uint32_t*>(slot + 108);
+            uint32_t sub  = (uint32_t)slot.sub_state;
             if (type == 19) {                  // title_screen_state_machine
                 if (sub >= 0x28 && sub <= 0xC9) return FM95Phase::CSS;
                 return FM95Phase::Title;
@@ -115,6 +116,46 @@ bool IsBattleMode(uint32_t mode) {
     }
 }
 
+// Current FM95 phase as a small ordinal: 2=battle, 1=CSS, 0=other. Classifies
+// the LIVE object pool -- callers that need a DETERMINISTIC (cross-peer-equal)
+// phase must record this per confirmed frame in the gekko advance handler, not
+// read it off the live (post-prediction) pool. On FM2K this maps the game_mode
+// scalar the same way so the ring path compiles for both engines.
+int Fm95CurrentPhaseByte() {
+    return IsBattleMode(0) ? 2 : (IsCSSMode(0) ? 1 : 0);
+}
+
+// Deterministic FM95 match-END classifier (re-verified from disasm 2026-07-11,
+// see docs/dev/fm95_re_findings.md RE-2b). Neither g_game_mode nor the type-16
+// pool sub_state cleanly marks "match in progress": FM95 resets g_game_mode to 0
+// and cycles the round object at the START OF EVERY ROUND (vs_round_function
+// @0x4114A0 cases 0/1/10/11 + obj_post_css_round_intro all write game_mode=0),
+// so both signals FLAP at round boundaries -- which is exactly why the earlier
+// heuristics tore the session down mid-match. The real match decision is a
+// MONOTONIC sim scalar: vs_round_function case 30 ends the match when a win
+// counter reaches the round cap. Those live in the saved+fingerprinted
+// PLAYER_ROUND_STATE block (0x5E98A0..0x5E9A40), so both peers compute the
+// identical decided-frame. Returns: 1 = active round play (game_mode==1, the
+// "we're really in a match" gate), 2 = MATCH DECIDED (a win counter >= cap),
+// 0 = neither. The ring scan fires the battle-end edge on the first 2 seen
+// after any 1 -- exactly once, at the true match end, never at a round break.
+int Fm95MatchPhaseByte() {
+    if constexpr (FM2K::kIsFM2K) {
+        return IsBattleMode(0) ? 1 : 0;
+    } else {
+        const uint32_t game_mode = *(uint32_t*)FM2K::ADDR_GAME_MODE;   // 0x425558
+        const fm95::Fm95RoundStateBlock* round = fm95::Round();
+        const uint32_t round_count_max = round->round_count_max;
+        const uint32_t p1_wins         = round->players[1].win_counter;
+        const uint32_t p2_wins         = round->players[2].win_counter;
+        if (round_count_max != 0 &&
+            (p1_wins >= round_count_max || p2_wins >= round_count_max)) {
+            return 2;   // match decided
+        }
+        return (game_mode == 1) ? 1 : 0;   // 1 = active round play
+    }
+}
+
 // Battle sync state - ensures both clients start GekkoNet together.
 // Exposed non-static so the trampoline (main_loop_trampoline.cpp) can see it;
 // the trampoline replaces main_game_loop wholesale and needs to drive the
@@ -130,6 +171,76 @@ extern "C" void Hook_CheckGameModeTransition_Public() { CheckGameModeTransition(
 
 
 void CheckGameModeTransition() {
+    if constexpr (FM2K::kIsFM95) {
+        // FM95: CSS↔battle transitions do NOT move the game_mode scalar (title,
+        // CSS, and battle all sit near 0) and IsBattleMode/IsCSSMode pool-walk
+        // the CURRENT state (ignoring their mode arg), so the scalar-edge
+        // detector below can NEVER see the transition — its `!was && is` test
+        // compares the current phase to itself. That left g_battle_entry_
+        // signaled false forever → Netplay_StartBattle never fired → the CPW
+        // netplay match hung at the CSS→battle transition (both peers stuck in
+        // battle phase with no session). Drive the entry/exit signals off the
+        // CLASSIFIED phase edge instead. Runs every tick (RunCss/BattleTick
+        // call this). Scalar-based session_kind + screenshots are FM2K-only.
+        static int s_last_phase = -1;   // -1 init, 0 other, 1 css, 2 battle
+        const int phase = IsBattleMode(0) ? 2 : (IsCSSMode(0) ? 1 : 0);
+
+        // DETERMINISTIC battle-END for real netplay. The live pool edge (`phase`)
+        // is read post-prediction and differs per peer by up to the prediction
+        // window, so signaling end off it tore the two peers down frames apart
+        // (drain timeout, mis-aligned rematch). Instead scan the CONFIRMED phase
+        // ring (recorded in the gekko advance handler) for the first
+        // battle->non-battle edge -- identical frame on both peers -- and signal
+        // with a swap_frame derived from it. Fires once per battle session.
+        if (!g_spectator_mode && !g_offline_mode && Netplay_IsActive()) {
+            uint32_t end_frame = 0;
+            if (Netplay_Fm95PollConfirmedBattleEnd(&end_frame)) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    ">>> FM95 LEAVING BATTLE (confirmed edge f=%u) — signaling peer",
+                    end_frame);
+                Netplay_SignalBattleEndAtFrame(end_frame);
+                g_battle_entry_signaled = false;
+            }
+        }
+
+        if (phase != s_last_phase) {
+            const int prev = s_last_phase;
+            s_last_phase = phase;
+            SharedMem_PublishSessionKind((uint8_t)phase);
+            if (g_spectator_mode) return;
+            if (phase == 2 && prev != 2 &&
+                !g_battle_entry_signaled && !Netplay_IsActive()) {
+                // ENTER battle ONCE per match. The pool phase dips to non-battle
+                // at every round boundary (round intro/result cycles the type-16
+                // object) and returns -- re-firing this edge mid-battle re-ran
+                // the CSS->battle swap barrier and DESYNCED (seen f=373 right
+                // after a 2nd ENTERING BATTLE). Gate on !g_battle_entry_signaled
+                // (covers the handshake window) AND !Netplay_IsActive() (covers
+                // the active battle + match-end drain): entry can only fire from
+                // CSS with no live battle session. The deterministic win-counter
+                // END poll above is the ONLY thing that clears the flag, so a
+                // round-boundary dip/return never re-enters.
+                if (!g_offline_mode && Netplay_IsConnected()) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        ">>> FM95 ENTERING BATTLE (phase edge) — signaling peer");
+                    Netplay_SignalBattleEntry();
+                    g_battle_entry_signaled = true;
+                }
+            } else if (prev == 2 && phase != 2) {
+                // LEAVE battle. Netplay teardown + the g_battle_entry_signaled
+                // reset are owned by the deterministic win-counter poll above, so
+                // we must NOT clear it here on a round-boundary dip. Only the
+                // offline / stray-session case (no peer barrier) tears down and
+                // clears on this live edge.
+                if (g_offline_mode && Netplay_IsActive()) {
+                    Netplay_EndBattle();
+                    g_battle_entry_signaled = false;
+                }
+            }
+        }
+        return;
+    }
+
     uint32_t current_mode = *(uint32_t*)FM2K::ADDR_GAME_MODE;
 
     if (current_mode != g_last_game_mode) {

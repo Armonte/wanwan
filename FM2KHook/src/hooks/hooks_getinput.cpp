@@ -96,28 +96,105 @@
 
 constexpr uintptr_t FM95_FACING_SNAP_BASE = 0x5E98A8;  // g_p_facing_snap
 
+// True when the binder has ANY binding (primary or alt) for this player
+// slot. The binder must only override players it has bindings FOR — an
+// all-NONE slot has to fall back to the engine's own input read, or that
+// player is silently fed a permanent 0 ("P2 controls & pause dead in
+// offline" report: a profile with P2 rows cleared).
+static bool BinderSlotHasBindings(int s) {
+    const auto& sb = FM2KInputBinder::Bindings(s);
+    for (size_t i = 0; i < (size_t)FM2KInputBinder::Bit::COUNT; ++i) {
+        if (sb.bits[i].source     != FM2KInputBinder::Binding::Source::NONE ||
+            sb.bits_alt[i].source != FM2KInputBinder::Binding::Source::NONE) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Fold FM95 facing (g_p_facing_snap[25*idx]) into a RAW 11-bit input, then
+// mask START on CSS and apply SOCD. Shared by the binder-sample path and the
+// netplay synced-input path so both produce engine-relative bits the same way
+// the native get_player_input_p1/p2 do. facing_idx = CPW per-player index (1
+// for P1, 2 for P2).
+static uint16_t Fm95FoldFacingSocd(uint16_t input, int facing_idx) {
+    const uint8_t facing = *(const uint8_t*)
+        (FM95_FACING_SNAP_BASE + (uintptr_t)facing_idx * 25u);
+    if (facing) {
+        const uint16_t left_bit  = (input & 0x001);
+        const uint16_t right_bit = (input & 0x002);
+        input = (input & ~0x003) | (left_bit << 1) | (right_bit >> 1);
+    }
+    if (IsCSSMode(*(uint32_t*)FM2K::ADDR_GAME_MODE)) {
+        input &= (uint16_t)~0x400u;
+    }
+    return Hook_ApplySOCD(input);
+}
+
+// Netplay/stress consume path. When a battle session is active, the FM95
+// input hooks must return gekko's SYNCED input (not the live binder), or the
+// rollback re-sim re-polls local input every AdvanceEvent → gekko's stream is
+// ignored and any held key across a rollback boundary re-samples differently
+// = guaranteed desync. gekko carries RAW input (Gap-3 convention); we fold
+// facing HERE at inject time off the savestate-covered facing snap, so a
+// rollback across a turnaround re-maps correctly. slot = 0 (P1) / 1 (P2).
+static bool Fm95TryNetplayInput(int slot, int facing_idx, int* out) {
+    const uint32_t mode = *(uint32_t*)FM2K::ADDR_GAME_MODE;
+    // Battle: gekko-synced RAW input, fold facing at inject (Gap-3).
+    if (Netplay_IsActive() && IsBattleMode(mode)) {
+        *out = (int)Fm95FoldFacingSocd(Netplay_GetInput(slot), facing_idx);
+        return true;
+    }
+    // CSS lockstep: the control-channel-synced input pair. BOTH peers' sims
+    // must consume the SAME Netplay_GetCSSInput or they confirm characters at
+    // different frames and phase-diverge (one reaches battle, the other stalls
+    // in CSS — the 3b symptom). Mirror of FM2K Hook_GetPlayerInput's CSS
+    // branch: SOCD only, NO facing fold (CSS cursor nav is screen-relative).
+    // The LOCAL input (autoplay-nav / binder) is captured separately in
+    // Netplay_ProcessCSS and fed to the gekko CSS session; here we return what
+    // that session DELIVERED, so the sim runs lockstep.
+    if (Netplay_IsConnected() && IsCSSMode(mode)) {
+        *out = (int)Hook_ApplySOCD(Netplay_GetCSSInput(slot));
+        return true;
+    }
+    return false;
+}
+
+// FM95 autoplay title→CSS walk (FM2K_PARITY_AUTOPLAY). RE-9: the whole
+// pre-battle flow is edge-detected from the input ring, so marching to battle
+// = pulse an attack bit into both players' rings. Title needs TWO confirms
+// (wake, then commit) each with a ~10-frame input-RELEASE gap (obj_title_demo_
+// loop result[120]/[30] waits), so this uses a slow 3-on / 21-off pattern
+// rather than FM2K's tight 4-tick edge — reliability over speed. CSS then
+// confirms each player's cursor on char 0. Battle inputs come from
+// Hook_ComputeAutoplayBattleInput via the netplay consume path once the stress
+// session starts. Returns -1 when autoplay-nav is off / already in battle.
+// Non-static: the netplay CSS path (netplay_css.cpp) feeds the same pulse into
+// the CSS gekko lockstep session (FM2K's Hook_ComputeAutoplayCssInput is
+// game_mode==2000-gated and returns 0 on FM95).
+int Fm95ComputeAutoplayNav() {
+    static int s_cache = -1;
+    if (s_cache < 0) {
+        const char* v = std::getenv("FM2K_PARITY_AUTOPLAY");
+        s_cache = (v && std::strcmp(v, "1") == 0) ? 1 : 0;
+    }
+    if (s_cache != 1) return -1;
+    // Once battle is reached the netplay/autoplay-battle path owns input.
+    if (IsBattleMode(*(uint32_t*)FM2K::ADDR_GAME_MODE)) return -1;
+    const uint32_t buf_idx = *(uint32_t*)FM2K::ADDR_INPUT_BUFFER_INDEX;
+    return ((buf_idx % 24u) < 3u) ? 0x010 : 0x000;   // button1 pulse
+}
+
 static uint16_t Fm95SampleBinderForPlayer(int binder_slot, int facing_idx) {
     // binder_slot picks which set of bindings to read (0 = P1 bindings, 1 =
     // P2 bindings). Earlier this was hardcoded to 0 for both players, which
     // meant P2 mirrored P1 and any second controller went unused.
     //
-    // facing_idx is the host's per-player index (1 or 2 on FM95) used as
-    // the multiplier into g_p_facing_snap[25 * idx]. Same fold the native
-    // get_player_input_p1/p2 functions perform.
-    uint16_t bound = FM2KInputBinder::Sample_Win32(binder_slot);
-
-    const uint8_t facing = *(const uint8_t*)
-        (FM95_FACING_SNAP_BASE + (uintptr_t)facing_idx * 25u);
-    if (facing) {
-        const uint16_t left_bit  = (bound & 0x001);
-        const uint16_t right_bit = (bound & 0x002);
-        bound = (bound & ~0x003) | (left_bit << 1) | (right_bit >> 1);
-    }
-
-    if (IsCSSMode(*(uint32_t*)FM2K::ADDR_GAME_MODE)) {
-        bound &= (uint16_t)~0x400u;
-    }
-    return Hook_ApplySOCD(bound);
+    // Focus behavior: Sample_Win32 is focus-correct by construction
+    // (queue-synced keyboard + gated gamepads), so an unfocused FM95
+    // game reads all-zero here — no caller-side gate.
+    return Fm95FoldFacingSocd(FM2KInputBinder::Sample_Win32(binder_slot),
+                              facing_idx);
 }
 
 int __cdecl Hook_GetPlayerInput_FM95_P1(int player_idx) {
@@ -127,6 +204,12 @@ int __cdecl Hook_GetPlayerInput_FM95_P1(int player_idx) {
     // gate at the input-binder Sample call instead so the zero
     // makes it onto the wire (otherwise the peer sees real inputs).
     if (fc_hud::IsChatInputActive() && g_player_index == 0) return 0;
+    // Netplay/stress battle: gekko's synced input wins over the live binder.
+    if (int synced; Fm95TryNetplayInput(/*slot=*/0, player_idx, &synced)) {
+        return synced;
+    }
+    // Autoplay title/CSS walk (unattended stress/parity runs).
+    if (int nav = Fm95ComputeAutoplayNav(); nav >= 0) return nav;
     // First-time binder init mirrors the FM2K path. Done lazily so we don't
     // race with CPW's window/SDL/etc. init. Cheap once warmed up.
     static bool s_warmed = false;
@@ -145,16 +228,33 @@ int __cdecl Hook_GetPlayerInput_FM95_P1(int player_idx) {
         FM2KInputBinder::Load();
         s_warmed = true;
     }
+    // Per-player takeover — mirror of the FM2K binder branch: an all-NONE
+    // binder slot falls back to CPW's native input read instead of a
+    // permanent 0.
+    if (!BinderSlotHasBindings(0)) {
+        return original_get_player_input_p1
+            ? original_get_player_input_p1(player_idx) : 0;
+    }
     return (int)Fm95SampleBinderForPlayer(/*binder_slot=*/0, player_idx);
 }
 
 int __cdecl Hook_GetPlayerInput_FM95_P2(int player_idx) {
     if (fc_hud::IsChatInputActive() && g_player_index == 1) return 0;
+    // Netplay/stress battle: gekko's synced input (slot 1) wins over the
+    // live binder — same consume path as P1.
+    if (int synced; Fm95TryNetplayInput(/*slot=*/1, player_idx, &synced)) {
+        return synced;
+    }
+    // Autoplay title/CSS walk — same pulse both players so title confirms
+    // (OR of both rings) and each CSS cursor locks.
+    if (int nav = Fm95ComputeAutoplayNav(); nav >= 0) return nav;
     // Reads the P2 binder slot (slot 1) so a second device — or fallback
-    // to keyboard P2 bindings — drives the second player. For netplay,
-    // ProcessGameInputs overwrites this post-poll with GekkoNet's synced
-    // remote input, so this only matters on offline / dual-client / stress
-    // tests where both players are local.
+    // to keyboard P2 bindings — drives the second player on offline /
+    // dual-client tests where both players are local.
+    if (!BinderSlotHasBindings(1)) {
+        return original_get_player_input_p2
+            ? original_get_player_input_p2(player_idx) : 0;
+    }
     return (int)Fm95SampleBinderForPlayer(/*binder_slot=*/1, player_idx);
 }
 
@@ -684,12 +784,27 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
                 }
             }
         }
-        if (s_binder_active) {
+        // Per-player takeover: the binder only overrides players it has
+        // bindings FOR (BinderSlotHasBindings). s_binder_active keys on
+        // P1's rows alone, but this branch used to return for BOTH
+        // players — a profile whose P2 rows are all NONE (e.g. a per-game
+        // override saved with P2 cleared) fed that player a permanent 0
+        // and never reached the vanilla fallback below. Vanilla FM2K
+        // would have read the game's own configured P2 keys; now an
+        // unbound slot falls through to original_get_player_input for
+        // exactly that behavior. ("P2 controls & pause dead in offline"
+        // report.)
+        if (s_binder_active && BinderSlotHasBindings(input_type & 1)) {
             // input_type is the character slot (same convention the battle /
             // spectator branches above use to compute slot_base for facing-fix).
             // 0 = P1 character → P1 bindings, 1 = P2 character → P2 bindings.
             // Without this distinction both players get the SAME input from
             // P1's bindings — the bug we just fixed.
+            //
+            // Focus behavior: Sample_Win32 is focus-correct BY CONSTRUCTION
+            // (keyboard via thread-queue-synced GetKeyboardState, gamepads
+            // behind its own foreground gate) — an unfocused game samples
+            // all-zero here, no caller-side gating needed.
             int slot = (input_type & 1);
             uint16_t bound = FM2KInputBinder::Sample_Win32(slot);
             // OPTION title-screen submode cycle — fires on the binder path

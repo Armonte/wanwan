@@ -206,12 +206,25 @@ void SaveState_Init() {
 // at battle init from Netplay_Start*Battle.
 void SaveState_DoInitialSync() {
     if (g_initial_sync_done) return;
-    *(uint32_t*)ADDR_INPUT_BUFFER_INDEX = 0;         // Reset buf_idx
-    *(uint32_t*)ADDR_RENDER_FRAME_COUNTER = 0;       // Reset render frame counter
-    memset((void*)0x447F00, 0, 0x20);   // g_prev_input_state
-    memset((void*)0x447F40, 0, 0x20);   // g_processed_input
-    memset((void*)0x447F60, 0, 0x20);   // g_input_changes
-    memset((void*)ADDR_INPUT_HISTORY, 0, SIZE_INPUT_HISTORY);
+    if constexpr (FM2K::kIsFM2K) {
+        // FM2K edge-detection working set + input history. The bare literals
+        // (0x447F00/40/60) and the savestate_internal.h ADDR_* constants are
+        // ALL FM2K addresses — on FM95 they stomp unrelated memory, which is
+        // why this branch is engine-gated (the FM95 equivalents live in
+        // savestate_fm95.cpp's fm95save:: namespace).
+        *(uint32_t*)ADDR_INPUT_BUFFER_INDEX = 0;         // Reset buf_idx
+        *(uint32_t*)ADDR_RENDER_FRAME_COUNTER = 0;       // Reset render frame counter
+        memset((void*)0x447F00, 0, 0x20);   // g_prev_input_state
+        memset((void*)0x447F40, 0, 0x20);   // g_processed_input
+        memset((void*)0x447F60, 0, 0x20);   // g_input_changes
+        memset((void*)ADDR_INPUT_HISTORY, 0, SIZE_INPUT_HISTORY);
+    } else {
+        // FM95: reset buf_idx 0x437700 + the 3 input rings + edge state +
+        // current inputs (fm95save:: addresses). BLOCKER fix — before this
+        // split, the FM2K body above ran on FM95 and corrupted memory at
+        // every stress/battle start.
+        SaveState_Fm95ResetInputSync();
+    }
     // REVERTED 2026-05-17: shake/palette zero on battle entry was
     // helpful for replay-self-test parity (host vs replay both start
     // at zero), but user reports cross-peer desync in real netplay

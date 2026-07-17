@@ -499,6 +499,16 @@ void Close() {
 }
 
 bool MaybeAutoOpen() {
+    /* FM2K-ONLY. Every snapshot address (FillPlayerSnapshot / Capture) is a
+     * hardcoded FM2K literal (object pool 0x4701E0, char slot 0x4D1D90, input
+     * rings 0x4259C0.., etc.). On FM95 those are wrong memory, so refuse to
+     * open the recorder at all — Capture() then no-ops on the null fp and no
+     * FM2K address is ever read. FM95 parity recording is a separate task with
+     * its own address set (workplan Phase 2c); it will get its own snapshot
+     * path, not this one. */
+    if constexpr (!FM2K::kIsFM2K) {
+        return false;
+    }
     /* Honor FM2K_PARITY_RECORD_PATH env var: if set, open at startup.
      * Relative paths (no drive letter, no leading slash) get routed into
      * `<game_dir>/logs/` via Fm2k_BuildLogPath. Absolute paths pass through

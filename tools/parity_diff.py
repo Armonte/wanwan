@@ -133,6 +133,28 @@ def battle_snaps(snaps):
             if s['match_phase'] == BATTLE_PHASE
             and s['p1']['script_idx'] != -1 and s['p2']['script_idx'] != -1]
 
+def battle_segments(snaps):
+    """Partition capture-ordered snaps into per-MATCH battle segments. A segment
+    is a maximal run of battle_snaps (chars loaded); the CSS/title gap between
+    matches delimits them, so segment i == the (i+1)-th match's battle. Returns a
+    list of snapshot-lists. This is what makes multi-match alignment correct: the
+    engine `frame` counter RESETS to 0 each match, so keying on `frame` alone
+    collapses match-1 f50 and match-2 f50 into one row (the old trim-to-match-1
+    workaround existed only to dodge that collision). Aligning per segment, then
+    by `frame` WITHIN a segment, keys effectively on (segment, frame)."""
+    segs, cur = [], []
+    for s in snaps:
+        is_b = (s['match_phase'] == BATTLE_PHASE
+                and s['p1']['script_idx'] != -1 and s['p2']['script_idx'] != -1)
+        if is_b:
+            cur.append(s)
+        elif cur:
+            segs.append(cur)
+            cur = []
+    if cur:
+        segs.append(cur)
+    return segs
+
 def frame_field_reliable(bsnaps):
     """True if the `frame` field is a usable per-frame key. It is NOT in replay
     catch-up mode, where the engine frame counter sticks low and repeats (e.g.
@@ -156,16 +178,11 @@ def _runs(keys, pos):
             runs.append([k])
     return runs
 
-def main(a_path, b_path, context=None):
-    # context: when set, the caller is using this diff NON-authoritatively
-    # (index-paired streams that mis-align under multi-match / catch-up / loss).
-    # In that mode we do NOT print "REAL divergence" -- crying wolf there trains
-    # readers to ignore divergence, which would mask a genuine regression.
-    A = battle_snaps(load(a_path))
-    B = battle_snaps(load(b_path))
-    print()
+def _diff_segment(A, B, context, tag):
+    """Align + diff ONE battle segment (A, B are battle_snaps of the same match).
+    Returns 0 (clean or transient-only), 1 (persistent divergence), 2 (empty)."""
     if not A or not B:
-        print(f"No battle snapshots: A={len(A)} B={len(B)}")
+        print(f"  [{tag}] no battle snapshots: A={len(A)} B={len(B)}")
         return 2
 
     # Choose alignment. Frame-field alignment (last-write-per-frame) collapses a
@@ -173,7 +190,8 @@ def main(a_path, b_path, context=None):
     # the walk -- but it needs a reliable frame field on BOTH sides. When a side
     # is in replay catch-up (frame field repeats), fall back to positional
     # pairing from battle start (no rollback dups exist in that single stream,
-    # so 1:1 by position is correct -- this is the original method).
+    # so 1:1 by position is correct -- this is the original method). Frame keys
+    # are already unambiguous here: a single segment is one match, no reset.
     if frame_field_reliable(A) and frame_field_reliable(B):
         am = {}                     # last write wins (confirmed value)
         for s in A: am[s['frame']] = s
@@ -192,7 +210,7 @@ def main(a_path, b_path, context=None):
         prev = lambda k: (A[k - 1] if k > 0 else None, B[k - 1] if k > 0 else None)
         label = (f"position-aligned (frame field unreliable -- replay catch-up): "
                  f"A={len(A)} B={len(B)} battle snaps, paired={n}")
-    print(f"{label}; reconverge_window={RECONVERGE_WINDOW}")
+    print(f"  [{tag}] {label}; reconverge_window={RECONVERGE_WINDOW}")
 
     div = {}            # key -> engine diff (inputs excluded)
     rng_only = 0
@@ -207,7 +225,7 @@ def main(a_path, b_path, context=None):
         div[k] = d
 
     if not div:
-        msg = f"\nCLEAN: all {len(keys)} aligned frames show IDENTICAL engine state."
+        msg = f"  [{tag}] CLEAN: all {len(keys)} aligned frames IDENTICAL engine state."
         if rng_only:
             msg += (f" ({rng_only} rng-only frames -- pre-battle game_rand "
                     f"consumption asymmetry; sim is deterministic.)")
@@ -219,44 +237,78 @@ def main(a_path, b_path, context=None):
     persistent = [r for r in runs if len(r) > RECONVERGE_WINDOW]
     transient  = [r for r in runs if len(r) <= RECONVERGE_WINDOW]
 
-    print(f"\n{len(div)} diverging frame(s) in {len(runs)} run(s): "
-          f"{len(transient)} transient (<= {RECONVERGE_WINDOW} frames, reconverges -> "
-          f"rollback speculative-capture residue), "
-          f"{len(persistent)} PERSISTENT.")
+    print(f"  [{tag}] {len(div)} diverging frame(s) in {len(runs)} run(s): "
+          f"{len(transient)} transient (<= {RECONVERGE_WINDOW}f, reconverges -> "
+          f"rollback speculative residue), {len(persistent)} PERSISTENT.")
     if transient:
         lt = max(transient, key=len)
-        print(f"  longest transient run: frames {lt[0]}..{lt[-1]} ({len(lt)} frames), "
-              f"then engine state matches again -- the live .pty captured a "
-              f"mispredicted frame the engine later corrected. NOT a desync.")
+        print(f"    longest transient run: frames {lt[0]}..{lt[-1]} ({len(lt)} frames), "
+              f"then matches again -- mispredicted frame later corrected. NOT a desync.")
 
     if not persistent:
-        print("\nPASS: no persistent divergence. Replay is faithful to the live "
-              "confirmed timeline; all diffs are transient rollback artifacts.")
+        print(f"  [{tag}] PASS: no persistent divergence; all diffs are transient "
+              f"rollback artifacts.")
         return 0
 
     r = persistent[0]
     k0 = r[0]
     if context:
-        print(f"\n[{context}] index-paired divergence: run of {len(r)} frames "
-              f"from frame={k0} (no reconverge within {RECONVERGE_WINDOW}). "
-              f"ADVISORY ONLY -- NOT a desync verdict; index pairing mis-aligns "
-              f"under multi-match / catch-up / loss. The authoritative check is "
-              f"the host-vs-spec trace GATE.")
+        print(f"  [{tag}] [{context}] divergence: run of {len(r)} frames from "
+              f"frame={k0} (no reconverge within {RECONVERGE_WINDOW}). ADVISORY -- "
+              f"the authoritative check is the host-vs-spec trace GATE.")
     else:
-        print(f"\nPERSISTENT ENGINE DIVERGENCE: run of {len(r)} frames from frame={k0} "
-              f"(does NOT reconverge within {RECONVERGE_WINDOW}) -- REAL divergence.")
+        print(f"  [{tag}] PERSISTENT ENGINE DIVERGENCE: run of {len(r)} frames from "
+              f"frame={k0} (no reconverge within {RECONVERGE_WINDOW}) -- REAL divergence.")
     for fld, av, bv in div[k0]:
         if isinstance(av, int):
-            print(f"  {fld:32s} A=0x{av & 0xFFFFFFFF:08X} B=0x{bv & 0xFFFFFFFF:08X} "
+            print(f"    {fld:30s} A=0x{av & 0xFFFFFFFF:08X} B=0x{bv & 0xFFFFFFFF:08X} "
                   f"delta={bv - av}")
         else:
-            print(f"  {fld:32s} A={av} B={bv}")
+            print(f"    {fld:30s} A={av} B={bv}")
     pa, pb = prev(k0)
     if pa and pb:
-        print(f"\n  Last matching frame: rng={pa['rng']:#x} "
+        print(f"    Last matching frame: rng={pa['rng']:#x} "
               f"p1.script={pa['p1']['script_idx']}/{pa['p1']['item_idx']} "
               f"p2.script={pa['p2']['script_idx']}/{pa['p2']['item_idx']}")
     return 1
+
+def main(a_path, b_path, context=None):
+    # context: when set, the caller is using this diff NON-authoritatively (the
+    # authoritative determinism check is the host-vs-spec trace GATE). We segment
+    # BOTH streams into per-match battle runs and align each match independently:
+    # the engine `frame` counter resets per match, so a single frame-keyed pass
+    # across matches collides. This replaces the old trim-to-match-1 workaround --
+    # multi-match streams now compare EVERY match, keyed on (segment, frame).
+    segsA = battle_segments(load(a_path))
+    segsB = battle_segments(load(b_path))
+    print()
+    if not segsA or not segsB:
+        print(f"No battle segments: A={len(segsA)} B={len(segsB)}")
+        return 2
+    n = min(len(segsA), len(segsB))
+    if len(segsA) != len(segsB):
+        print(f"NOTE: segment count differs A={len(segsA)} B={len(segsB)} (one side "
+              f"reached fewer matches) -- comparing the first {n} match(es).")
+    print(f"battle segments: A={len(segsA)} B={len(segsB)} -- diffing {n} match(es)")
+
+    worst, compared = 0, 0
+    for i in range(n):
+        rc = _diff_segment(segsA[i], segsB[i], context, f"match {i + 1}/{n}")
+        if rc == 2:
+            continue                      # empty after filtering -- nothing to compare
+        compared += 1
+        worst = max(worst, rc)
+    if compared == 0:
+        print("\nNo comparable match segments.")
+        return 2
+    if worst == 0:
+        tag = "CLEAN"
+    elif context:
+        tag = "ADVISORY-DIVERGENCE (non-authoritative -- see host-vs-spec trace GATE)"
+    else:
+        tag = "DIVERGENCE"
+    print(f"\n{tag}: {compared} match segment(s) diffed, worst rc={worst}.")
+    return worst
 
 if __name__ == '__main__':
     if len(sys.argv) not in (3, 4):

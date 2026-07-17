@@ -42,7 +42,7 @@ static uint8_t s_render_saved_input_tracking[0xA0];
 // the decrement every render, sim state is permanently pinned at
 // timer == duration, and any character whose script re-SETs the opcode
 // each frame rumbles forever.
-constexpr uintptr_t SHAKE_EFFECTS_ADDR  = 0x447DA9;
+constexpr uintptr_t SHAKE_EFFECTS_ADDR  = 0x447DA9;  // FM2K-only global (FM95 equivalent: RE-4); all consumers gated on kIsFM2K
 constexpr size_t    SHAKE_EFFECTS_SZ    = 40;
 constexpr size_t    SHAKE_OFFSET_IN_AI  = SHAKE_EFFECTS_ADDR - WaveCAddrs::AFTERIMAGE_POOL;  // 0x479
 
@@ -54,7 +54,7 @@ constexpr size_t    SHAKE_OFFSET_IN_AI  = SHAKE_EFFECTS_ADDR - WaveCAddrs::AFTER
 // timer/duration. If the render-side restore stomps these every render, the
 // palette flash either snaps back to its pre-render state (visible flicker)
 // or never reflects the current sim's progress.
-constexpr uintptr_t PFLASH1_ADDR        = 0x447D7D;
+constexpr uintptr_t PFLASH1_ADDR        = 0x447D7D;  // FM2K-only global (FM95 equivalent: RE-4); all consumers gated on kIsFM2K
 constexpr size_t    PFLASH1_SZ          = 42;
 constexpr size_t    PFLASH1_OFFSET_IN_AI = PFLASH1_ADDR - WaveCAddrs::AFTERIMAGE_POOL;
 static_assert(PFLASH1_OFFSET_IN_AI + PFLASH1_SZ <= SHAKE_OFFSET_IN_AI,
@@ -66,6 +66,11 @@ static_assert(PFLASH1_OFFSET_IN_AI + PFLASH1_SZ <= SHAKE_OFFSET_IN_AI,
 // on FM2K_BYPASS_TRAMPOLINE: trampoline mode → RenderFrameWithSnapshot calls
 // us; bypass mode → Hook_RenderGame (the MinHook detour) calls us.
 void EbDiag_Dump(const char* tag) {
+    // [FM2K-DIAG] Every address below (palette-flash structs, SHAKE block,
+    // g_screen_x/y) is an FM2K global; FM95 equivalents are unmapped --
+    // RE-4 (palette flash / shake) + RE-5 (camera/scroll) in
+    // docs/FM95_Support_Status.md. Whole dump is FM2K-only.
+    if constexpr (!FM2K::kIsFM2K) { (void)tag; return; }
     static const bool s_eb_diag = []() {
         const char* v = std::getenv("FM2K_EB_DIAG");
         return v && v[0] == '1';
@@ -87,18 +92,18 @@ void EbDiag_Dump(const char* tag) {
     // p1: g_effect_id_1 @ 0x447D7D; timer (a1[5]) @ +0x14 (g_timer_countdown2 0x447D91)
     // p2: g_effect_id_2 @ 0x4456D0; timer (a1[5]) @ +0x14 (g_timer_countdown1 0x4456E4)
     // dur (a1[10]) @ +0x28
-    const uint32_t p1_mode  = *(uint32_t*)0x447D7D;
-    const uint32_t p1_timer = *(uint32_t*)0x447D91;
+    const uint32_t p1_mode  = *(uint32_t*)0x447D7D;  // g_effect_id_1 (FM2K, RE-4)
+    const uint32_t p1_timer = *(uint32_t*)0x447D91;  // g_timer_countdown2 (FM2K, RE-4)
     const uint32_t p1_dur   = *(uint32_t*)0x447DA5;  // 0x447D7D + 0x28
-    const uint32_t p2_mode  = *(uint32_t*)0x4456D0;
-    const uint32_t p2_timer = *(uint32_t*)0x4456E4;
+    const uint32_t p2_mode  = *(uint32_t*)0x4456D0;  // g_effect_id_2 (FM2K, RE-4)
+    const uint32_t p2_timer = *(uint32_t*)0x4456E4;  // g_timer_countdown1 (FM2K, RE-4)
     const uint32_t p2_dur   = *(uint32_t*)0x4456F8;  // 0x4456D0 + 0x28
     // Global RNG seed — ProcessColorInterpolation mode 3 calls game_rand()
     // each render. Comparing rng across vanilla (FM2K_BYPASS_TRAMPOLINE=1)
     // vs our trampoline path tells us whether render-time RNG matches
     // vanilla. If rng differs, palette colors will visibly differ even
     // when timer/duration are identical.
-    const uint32_t rng_seed = *(uint32_t*)0x41FB1C;
+    const uint32_t rng_seed = *(uint32_t*)FM2K::ADDR_RANDOM_SEED;
     const bool active = (s1_timer != 0 || s2_timer != 0
                          || p1_timer != 0 || p2_timer != 0);
 
@@ -115,8 +120,8 @@ void EbDiag_Dump(const char* tag) {
     // g_screen_x/y at 0x447F2C/30 — sprite_rendering_engine reads these for
     // every sprite (stage AND characters). If they drift after shake ends,
     // that's the stage-offset bug.
-    const int32_t scr_x = *(int32_t*)0x447F2C;
-    const int32_t scr_y = *(int32_t*)0x447F30;
+    const int32_t scr_x = *(int32_t*)0x447F2C;  // g_screen_x (FM2K, RE-5)
+    const int32_t scr_y = *(int32_t*)0x447F30;  // g_screen_y (FM2K, RE-5)
     if (!s_eb_diag_fp) {
         char base[64];
         std::snprintf(base, sizeof(base),
@@ -173,7 +178,13 @@ void RenderFrameWithSnapshot() {
     // (which IS protected). One frame is enough to desync RNG.
     const bool protect = Netplay_IsActive() || SpectatorNode_IsPlayingBack();
     EbDiag_Dump("PRE-SAVE");
-    if (protect) {
+    // Snapshot regions are FM2K carve-outs (afterimage pool / palette flash /
+    // shake / input-tracking block). FM95 has no afterimage subsystem
+    // (WaveCAddrs 0-stubs; palette-flash/shake pending RE-4) and the FM95
+    // input-tracking snapshot is covered by savestate_fm95 regions; port
+    // point: RE input ring layout. Both the save block here and the restore
+    // block below are gated on kIsFM2K so FM95 never touches these addresses.
+    if (protect) { if constexpr (FM2K::kIsFM2K) {
         // RNG is intentionally NOT save+restored across render anymore.
         // Render-side game_rand() calls (ProcessColorInterpolation mode 3,
         // ProcessShakeEffect mode 4, sprite effects) need to propagate to
@@ -214,7 +225,7 @@ void RenderFrameWithSnapshot() {
                (void*)(WaveCAddrs::AFTERIMAGE_POOL + SHAKE_END_IN_AI),
                WaveCAddrs::AFTERIMAGE_POOL_SZ - SHAKE_END_IN_AI);
         memcpy(s_render_saved_input_tracking, (void*)0x447EE0,                     0xA0);
-    }
+    } }
 
     EbDiag_Dump("PRE-RENDER");
     // Render RNG isolation: re-seed the render stream from the gameplay seed,
@@ -271,7 +282,8 @@ void RenderFrameWithSnapshot() {
                 const uint64_t d_area  = g_rp_blit_area - s_last_area;
                 uint64_t d_mode[5];
                 for (int i = 0; i < 5; ++i) d_mode[i] = (uint64_t)g_rp_blit_mode[i] - s_last_mode[i];
-                const uint32_t objs   = *(volatile uint32_t*)0x4246FC;  // g_object_count
+                // g_object_count -- FM2K global; FM95 equivalent unmapped (RE-5), report 0 there.
+                const uint32_t objs   = FM2K::kIsFM2K ? *(volatile uint32_t*)0x4246FC : 0u;
                 const double rg_ms    = ms(s_rg_ns) / s_n;
                 const double blit_ms  = ms(d_ns) / s_n;
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
@@ -296,7 +308,9 @@ void RenderFrameWithSnapshot() {
 
     EbDiag_Dump("POST-RENDER");
 
-    if (protect) {
+    // FM2K-only restore -- mirrors the gated save block above (FM95: RE-4 /
+    // savestate_fm95-covered input tracking).
+    if (protect) { if constexpr (FM2K::kIsFM2K) {
         // (RNG restore removed — see PRE-RENDER comment above.)
         // (Object pool restore removed too — see PRE-RENDER comment.
         // Tyrogue's mode-1 fade-to-black depends on the last per-frame
@@ -322,7 +336,7 @@ void RenderFrameWithSnapshot() {
                s_render_saved_afterimage + SHAKE_END_IN_AI,
                WaveCAddrs::AFTERIMAGE_POOL_SZ - SHAKE_END_IN_AI);
         memcpy((void*)0x447EE0,                    s_render_saved_input_tracking, 0xA0);
-    }
+    } }
     EbDiag_Dump("POST-RESTORE");
 
     // (PostRenderRng back-patch REMOVED.) It existed because render-side

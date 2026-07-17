@@ -27,6 +27,12 @@ inline constexpr int MAX_LOCAL_DELAY = 120;
 inline constexpr int CSS_CONFIRM_LOCKOUT = 150;   // block confirm for first N frames
 inline constexpr uint32_t PENDING_CONFIRM_RING = 128;
 inline constexpr uint32_t SWAP_FRAME_BUFFER = 8;  // barrier swap-frame lead
+// FM95 battle-end swap lead. Must exceed the gekko prediction window (16) so
+// that swap_frame = confirmed_end_frame + this is provably ahead of BOTH peers'
+// live frames (gekko caps live <= confirmed + prediction_window), making the
+// battle->CSS swap land on one deterministic frame on every node regardless of
+// which peer led. 32 = window(16) + 16 margin.
+inline constexpr uint32_t FM95_END_SWAP_BUFFER = 32;
 
 // ---- runtime shared state (were file-static) ----
 extern SimpleState g_simple_state;

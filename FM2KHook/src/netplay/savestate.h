@@ -75,6 +75,16 @@ struct SaveStateData {
     // contiguous range at 0x5E98A0..0x5E9A40 (416 B). Saving as one
     // memcpy is simpler than chasing each 25-stride field individually.
     uint8_t  player_round_state[0x1A0];                    // src: 0x5E98A0
+    // Block G: round/match TRANSITION scalars that vs_round_function mutates
+    // but that live OUTSIDE every block above — added 2026-07-11 after the
+    // stress soak desynced at a round transition (mode 3, ~frame 1297). A
+    // rollback crossing a round boundary must restore these or the re-sim
+    // consumes RNG differently (round-count-driven) and diverges.
+    uint32_t score_round_count;                            // src: 0x4DD268 (current round #)
+    uint8_t  round_index_cluster[0x10];                    // src: 0x426934 (round_starting_player, choices[0/1], round_active_flag)
+    uint32_t practice_mode_flag;                           // src: 0x426704
+    uint32_t active_demo_id;                               // src: 0x471188
+    uint32_t frame_skip_speedup;                           // src: 0x509060
 #else
     uint8_t input_tracking_state[0xA0];                    // 160 bytes
     uint8_t char_dynamic[NUM_CHAR_SLOTS][CHAR_SLOT_DYNAMIC_SIZE]; // ~460 KB (full 57 KB slot × 8)
@@ -114,6 +124,10 @@ struct SaveStateData {
     // don't exist on FM95.
     SoundRollback::DesiredState sound_desired[SoundRollback::MAX_CHANNELS];
 #endif
+    // BGM (MIDI/CD/stop) rollback state — single global stream, both engines.
+    // Deterministic fields only (see sound_rollback.h); the real MCI stream is
+    // reconstructed by SyncAfterAdvance, not saved.
+    SoundRollback::DesiredBgm bgm_desired;
 
     // Per-region CRCs captured AT SAVE TIME (the forward-sim state at this
     // frame). On desync, we dump these alongside the CURRENT (post-replay)
@@ -204,6 +218,13 @@ void SaveState_Init();
 // g_initial_sync_done by SaveState_Init(). Idempotent within a battle.
 // Must be called from Netplay_Start*Battle paths AFTER SaveState_Init().
 void SaveState_DoInitialSync();
+// FM95 half of DoInitialSync: reset the FM95 input rings / buf_idx / edge
+// state to zero. Defined in savestate_fm95.cpp (the TU that owns the FM95
+// addresses). Only ODR-used from DoInitialSync's `else` branch, which is
+// discarded by `if constexpr (kIsFM2K)` in the FM2K build, so it needs no
+// FM2K definition. The FM2K DoInitialSync body zeroes the FM2K-address
+// equivalents (0x447EE0 / 0x447F00.. / 0x4280D8) inline.
+void SaveState_Fm95ResetInputSync();
 bool SaveState_Save(int frame);
 bool SaveState_Load(int frame);
 uint32_t SaveState_GetLastChecksum(int frame);

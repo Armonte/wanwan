@@ -28,6 +28,16 @@ int __cdecl Hook_ProcessGameInputs();
 bool IsCSSMode(uint32_t mode);
 bool IsBattleMode(uint32_t mode);
 
+// Live FM95 phase ordinal (2=battle,1=CSS,0=other). Recorded per confirmed
+// frame in the gekko advance handler for deterministic cross-peer battle-end.
+int Fm95CurrentPhaseByte();
+
+// Match-DECISION ordinal for the battle-END ring: 1=active round play,
+// 2=match decided (win-counter >= cap, a monotonic deterministic sim scalar),
+// 0=neither. The 1->2 edge fires once at the true match end, never at a round
+// boundary. See hooks_game_mode.cpp / docs RE-2b.
+int Fm95MatchPhaseByte();
+
 // SOCD (Simultaneous Opposite Cardinal Direction) cleaner — strips
 // nonsense input combinations like L+R or U+D per the currently-active
 // SOCD mode (env FM2K_SOCD_MODE, runtime override via Hook_SetSOCDMode).
@@ -59,6 +69,12 @@ uint16_t Hook_ComputeAutoplayBattleInput(int player_id);
 // GekkoSession for the LOCAL player so both peers' sims consume the
 // identical lockstep stream (split-brain fix, 2026-06-11).
 uint16_t Hook_ComputeAutoplayCssInput(int player_id);
+
+// FM95 autoplay title/CSS nav pulse (attack-button pulse off the input ring).
+// Returns -1 when off / in battle, else the pulse (0 or 0x010). Used by the
+// FM95 netplay CSS path instead of Hook_ComputeAutoplayCssInput (which is
+// FM2K game_mode==2000-gated and returns 0 on FM95). See hooks_getinput.cpp.
+int Fm95ComputeAutoplayNav();
 
 // Reset the dwell anchor above. Called at CSS SYNCED (each new CSS
 // GekkoSession) so the browse window restarts per CSS phase regardless

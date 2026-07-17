@@ -137,10 +137,17 @@ uint16_t Hook_ComputeAutoplayBattleInput(int player_id) {
         s_cache = (v && v[0] && v[0] != '0') ? 1 : 0;
     }
     if (s_cache != 1) return 0;
+    // Engine-aware battle gate: FM2K battle = game_mode 3000-3999; FM95
+    // battle = game_mode 0 (IsBattleMode walks the object pool). The old
+    // raw `< 3000` check returned 0 for every FM95 frame → autoplay never
+    // fired on CPW.
     const uint32_t game_mode = *(uint32_t*)FM2K::ADDR_GAME_MODE;
-    if (game_mode < 3000u || game_mode >= 4000u) return 0;
+    if (!IsBattleMode(game_mode)) return 0;
 
-    uint32_t seed = *(uint32_t*)0x447EE0;
+    // Deterministic per-frame seed from the engine's input-buffer index
+    // (FM2K 0x447EE0 / FM95 0x437700, part of the saved input-tracking
+    // region so forward sim and rollback replay hash identically).
+    uint32_t seed = *(uint32_t*)FM2K::ADDR_INPUT_BUFFER_INDEX;
     seed ^= (uint32_t)player_id * 0x9E3779B9u;
     seed = (seed ^ (seed >> 16)) * 0x7feb352du;
     seed = (seed ^ (seed >> 15)) * 0x846ca68bu;

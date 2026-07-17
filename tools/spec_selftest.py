@@ -43,6 +43,9 @@ GAMES = {
     "wanwan": Path("/mnt/c/games/2dfm/wanwan/WonderfulWorld_ver_0946.exe"),
     "vanpri": Path("/mnt/c/games/2dfm/vanguard-princess/vanpri.exe"),
     "urorfg": Path("/mnt/c/games/2dfm/URORFG Release 1 0 2/URORFGRelease102.exe"),
+    # FM95 engine (Comic Party Wars) -- the launcher sniffs the engine from
+    # the exe and injects FM95Hook.dll. Full-width filename is the real one.
+    "cpw":    Path("/mnt/c/dev/fm95/CPW/ＣＰＷ.exe"),
 }
 GAME_EXE = GAMES["wanwan"]   # default; overridden by --game in main()
 OUT_DIR  = Path("/mnt/c/dev/wanwan/tools/.spec_selftest")
@@ -181,41 +184,6 @@ def pty_snapshots(path: Path) -> int:
         return 0
 
 
-def trim_first_battle_segment(src: Path, dst: Path) -> int:
-    """Copy src .pty to dst keeping only [first real battle row .. the row
-    before battle phase first ends]. Multi-match spectator streams contain
-    match1 + CSS + match2 rows; the match-1 replay gate needs just the
-    first battle segment. Returns rows kept."""
-    import struct
-    d = src.read_bytes()
-    hdr, body = d[:32], d[32:]
-    n = len(body) // 260
-    rows = []
-    started = False
-    for k in range(n):
-        off = k * 260
-        phase = struct.unpack_from('<i', body, off + 16)[0]
-        p1s   = struct.unpack_from('<i', body, off + 32)[0]
-        p2s   = struct.unpack_from('<i', body, off + 32 + 92)[0]
-        in_battle = (phase == 3000 and p1s != -1 and p2s != -1)
-        if not started:
-            if in_battle:
-                started = True
-                rows.append(body[off:off + 260])
-        else:
-            if phase != 3000:
-                break
-            # Teardown rows: at match end the player objects despawn while
-            # phase is still 3000 for a few capture ticks -- script_idx
-            # reads -1 and every other field zeros. The replay instance
-            # tends to capture one of these as its final row (the A4
-            # k=6534 "divergence" was spec-real-row vs replay-empty-row).
-            # They carry no engine state; end the segment there.
-            if p1s == -1 and p2s == -1:
-                break
-            rows.append(body[off:off + 260])
-    dst.write_bytes(hdr + b"".join(rows))
-    return len(rows)
 
 
 def wait_ports_free(ports, timeout=20.0):
@@ -899,6 +867,27 @@ def main():
                       "without applying the deferred init ops (early local "
                       "battle entry -- match desync)")
                 return 1
+            # B2 coverage: the authoritative rng-trace GATE consumes the
+            # spectator's [SPEC-TRACE]/[SPEC-FP] frames. Assert those frames
+            # actually SPAN >= 2 battle segments (bf resets to 0 each match), so
+            # a multi-match run cannot vacuously PASS on match-1 frames alone --
+            # a match-2 desync that emitted no gated frames would otherwise slip
+            # through the "checked > 0" pass condition.
+            import re as _re_cov
+            bfs = [int(m.group(1)) for m in
+                   _re_cov.finditer(r'SPEC-(?:TRACE|FP)\] bf=(\d+)', txt)]
+            gate_segs, prev = 0, None
+            for bf in bfs:
+                if prev is None or bf + 8 < prev:   # first frame, or bf reset = new match
+                    gate_segs += 1
+                prev = bf
+            print(f"[harness] gate trace coverage: {len(bfs)} SPEC frames span "
+                  f"{gate_segs} battle segment(s) (need >= 2 for multi-match)")
+            if gate_segs < 2:
+                print("[harness] FAIL: authoritative gate saw trace from only "
+                      f"{gate_segs} battle segment(s) -- match 2 was never gated "
+                      "(vacuous multi-match pass)")
+                return 1
     else:
         p0_rep = None
         deadline = time.time() + 10.0
@@ -945,23 +934,20 @@ def main():
               "spec-vs-replay advisory diff; the host-vs-spec GATE is authoritative.")
         diff_rc = 2
     else:
-        # Trim both streams to their FIRST battle segment: the spectator's
-        # stream may continue into CSS/match 2, and the replay's stream has a
-        # title/CSS prefix + post-battle tail -- index pairing past either
-        # boundary compares unlike phases.
-        spec_m1   = OUT_DIR / "spec_m1.pty"
-        replay_m1 = OUT_DIR / "replay_m1.pty"
-        n_spec   = trim_first_battle_segment(spec_pty, spec_m1)
-        n_replay = trim_first_battle_segment(replay_pty, replay_m1)
-        print(f"[harness] (advisory) SPECTATOR vs REPLAY parity, first battle "
-              f"segment (spec={n_spec} rows, replay={n_replay} rows). NOT the gate: "
-              f"this compares against a SEPARATE replay process that mis-pairs the "
-              f"wrong match under multi-match autoplay and position-mis-aligns the "
-              f"spectator's catch-up cadence -- it produced false 'frame 71' alarms "
-              f"while host-vs-spec showed bit-exact sync. See the GATE below.")
+        # SPECTATOR vs REPLAY parity across EVERY match. parity_diff now segments
+        # both streams into per-match battle runs and aligns each on (segment,
+        # frame) -- the full multi-match streams compare correctly, no more
+        # trim-to-match-1 (which silently ignored match 2+). Still ADVISORY: it
+        # compares a SEPARATE replay process (confirmed-input re-sim) whose
+        # catch-up cadence can position-shift a few speculative frames; the
+        # authoritative determinism check is the host-vs-spec trace GATE below.
+        # A persistent divergence here in ANY match is still worth surfacing.
+        print("[harness] (advisory) SPECTATOR vs REPLAY parity, ALL match segments "
+              "(segment-aware). NOT the authoritative gate -- see the host-vs-spec "
+              "trace GATE below.")
         diff_rc = subprocess.call([sys.executable, str(PARITY_DIFF),
-                                   str(spec_m1), str(replay_m1),
-                                   "spec-vs-replay ADVISORY (index-paired)"])
+                                   str(spec_pty), str(replay_pty),
+                                   "spec-vs-replay ADVISORY (segment-aligned)"])
 
     # AUTHORITATIVE GATE: host-vs-spec per-frame trace pairing (SAME run, same
     # match = ground truth). Both the host and spectator here watch the

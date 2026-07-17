@@ -193,6 +193,15 @@ bool FM2KGameInstance::Launch(const std::string& exe_path, FM2K::Engine engine) 
     // object. The hook side populates g_iniFile_nameOverride so the
     // dispatcher's kgt loader has a path.
     //
+    // FM2K-ONLY. FM95/CPW ALSO parses /F (WinMain @0x40AB60 sets
+    // g_cmdline_init_flag=3 for a /F or /f arg), but there the flag
+    // means editor test-play mode: the boot path expects an editor
+    // process to have pre-populated the kgt filename in shared memory,
+    // and the hook has no FM95 boot-to-battle prime (per_game_patches_
+    // fm95's InstallBootToBattleHook is a stub). So /F on CPW derives an
+    // EMPTY kgt name → "ゲーム読み込みエラー[]" (game-load error) on
+    // launch. Never pass /F to an FM95 game — it boots to title normally.
+    //
     // Check the per-instance environment_variables_ map FIRST (where
     // LaunchRemoteSpectator and other per-spawn-config call sites
     // store their FM2K_BOOT_TO_BATTLE=1), then fall back to the
@@ -200,7 +209,7 @@ bool FM2KGameInstance::Launch(const std::string& exe_path, FM2K::Engine engine) 
     // directly via ::SetEnvironmentVariableA). The map gets applied
     // to the process env at line ~235, but that's AFTER we build
     // the cmdline here, so we must read the map for per-spawn vars.
-    {
+    if (engine_ != FM2K::Engine::FM95) {
         bool boot_to_battle = false;
         auto it = environment_variables_.find("FM2K_BOOT_TO_BATTLE");
         if (it != environment_variables_.end()) {

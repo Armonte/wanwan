@@ -49,6 +49,7 @@ CtrlPacket BuildHostConfigPacket() {
     // defaults, but host's authoritative values must override or specs
     // get wrong timer / round count (pkmncc default time=60, host had
     // time=0 / infinite, spec ended up running with 60s rounds).
+    if constexpr (FM2K::kIsFM2K) {
     // FM2K_TEST_ROUNDS=N (test harness): force N-round matches. g_default_round
     // (0x430124) is loaded from game.ini at boot and persists, so writing it
     // here -- before sampling it for the broadcast -- makes the host's own game
@@ -75,6 +76,14 @@ CtrlPacket BuildHostConfigPacket() {
     pkt.data.host_config.round_time_sec  = *(uint32_t*)0x430114; // lParam
     pkt.data.host_config.round_count     = *(uint32_t*)0x430124; // g_default_round
     pkt.data.host_config.game_speed_pct  = *(uint32_t*)0x430104; // uValue
+    } else {
+    // FM95: rounds/time/game-speed globals are unmapped (RE-3 in
+    // docs/FM95_Support_Status.md -- LoadIniSettings@0x402920 not yet RE'd).
+    // Send per-field "unset" sentinels so receivers keep their local defaults.
+    pkt.data.host_config.round_time_sec  = 0xFFFFFFFFu;
+    pkt.data.host_config.round_count     = 0xFFFFFFFFu;
+    pkt.data.host_config.game_speed_pct  = 0xFFFFFFFFu;
+    }
     return pkt;
 }
 
@@ -448,14 +457,26 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
             // match. Sentinel 0xFFFFFFFF means "host left default, don't
             // override". 0 IS a valid value for round_time_sec (= no
             // timer / infinite), which is why we can't use 0 as unset.
-            if (hc.round_time_sec != 0xFFFFFFFFu) {
-                *(uint32_t*)0x430114 = hc.round_time_sec;  // lParam (TIMER_SET)
-            }
-            if (hc.round_count != 0xFFFFFFFFu) {
-                *(uint32_t*)0x430124 = hc.round_count;     // g_default_round (1v1)
-            }
-            if (hc.game_speed_pct != 0xFFFFFFFFu) {
-                *(uint32_t*)0x430104 = hc.game_speed_pct;  // uValue (GameSpeed)
+            if constexpr (FM2K::kIsFM2K) {
+                if (hc.round_time_sec != 0xFFFFFFFFu) {
+                    *(uint32_t*)0x430114 = hc.round_time_sec;  // lParam (TIMER_SET)
+                }
+                if (hc.round_count != 0xFFFFFFFFu) {
+                    *(uint32_t*)0x430124 = hc.round_count;     // g_default_round (1v1)
+                }
+                if (hc.game_speed_pct != 0xFFFFFFFFu) {
+                    *(uint32_t*)0x430104 = hc.game_speed_pct;  // uValue (GameSpeed)
+                }
+            } else {
+                // FM95: rounds/time/game-speed globals unmapped (RE-3) --
+                // the host-config apply is a no-op until LoadIniSettings@
+                // 0x402920's globals are RE'd. Log once, not per-packet.
+                static bool s_re3_logged = false;
+                if (!s_re3_logged) {
+                    s_re3_logged = true;
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "FM95: host-config apply pending RE-3");
+                }
             }
             break;
         }

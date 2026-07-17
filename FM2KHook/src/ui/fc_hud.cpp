@@ -63,7 +63,7 @@ std::deque<ChatLine> g_chat_lines;
 DWORD                g_chat_last_arrived_tick = 0;
 
 // Slice F — chat input mode.
-//   - Tab toggles open/close (edge-detected via GetAsyncKeyState).
+//   - Tab toggles open/close (edge-detected via queue-synced GetKeyState).
 //   - Enter inside InputText submits via Netplay_SendChatMessage.
 //   - Esc cancels.
 // While active, IsChatInputActive() returns true so the input hooks
@@ -159,22 +159,20 @@ void Render(int rect_x, int rect_y, int rect_w, int rect_h) {
     }
 
     // ─── Slice F: Tab edge-detection ──────────────────────────────
-    // Press → toggle chat input. Polled via GetAsyncKeyState so the
-    // toggle works regardless of message-pump details. GetAsyncKeyState
-    // is process-global, though, so we MUST gate on the foreground
-    // window belonging to this process — otherwise pressing Tab while
-    // the launcher (or any other app) has focus would pop the chat
-    // box open in the background. Side effect: ImGui won't see any
-    // typed characters either way unless this process is foreground,
-    // so refusing to open in that state matches the only state where
-    // the user could actually type.
+    // Press → toggle chat input. Polled via GetKeyState — synchronized
+    // to this (window) thread's message queue, so a Tab typed while the
+    // launcher or any other app has focus never registers (its key
+    // messages go to that window's queue, not ours). GetAsyncKeyState
+    // is banned here: it reads the physical keyboard desktop-wide. The
+    // foreground-pid check stays as the belt-and-suspenders layer (it
+    // also matches the only state where ImGui could see typed chars).
     {
         const HWND fg = GetForegroundWindow();
         DWORD fg_pid = 0;
         if (fg) GetWindowThreadProcessId(fg, &fg_pid);
         const bool game_focused = (fg_pid == GetCurrentProcessId());
         const bool tab_now = game_focused &&
-                             (GetAsyncKeyState(VK_TAB) & 0x8000) != 0;
+                             (GetKeyState(VK_TAB) & 0x8000) != 0;
         if (tab_now && !g_chat_tab_was_down) {
             g_chat_input_active = !g_chat_input_active;
             if (g_chat_input_active) {

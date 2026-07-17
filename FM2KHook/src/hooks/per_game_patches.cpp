@@ -550,12 +550,14 @@ void PerGamePatches_OnTitleInputTick(uint16_t raw_input, uint32_t game_mode) {
 void PerGamePatches_OnFrameTick() {
     // ---- F2 hotkey: cycle training-mode P2 behavior ----
     // Only meaningful when training_mode is active. Rising-edge so a
-    // held key doesn't spin through behaviors. GetAsyncKeyState is
-    // safe to call without window focus — the hotkey works even if the
-    // launcher is in the foreground (the user is actively configuring),
-    // which we want.
+    // held key doesn't spin through behaviors. GetKeyState (queue-
+    // synced) instead of GetAsyncKeyState: the async read was desktop-
+    // global, so F2 typed into ANY app cycled the dummy in the
+    // background. Cost of the swap: F2 now only registers while the
+    // game window has focus (the old "works from the launcher too"
+    // nicety rode on the same global read that caused the leak).
     if (g_training_mode.load(std::memory_order_relaxed)) {
-        const bool now = (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
+        const bool now = (GetKeyState(VK_F2) & 0x8000) != 0;
         const bool was = g_f2_was_pressed.load(std::memory_order_relaxed);
         g_f2_was_pressed.store(now, std::memory_order_relaxed);
         if (now && !was) {

@@ -599,6 +599,11 @@ bool SpectatorNode_PopFrameInputs(uint16_t* p1_input, uint16_t* p2_input) {
         const uint32_t mode_align = *(uint32_t*)FM2K::ADDR_GAME_MODE;
         if (mode_align >= 3000u) {
             g_state.pb_battle_align_pending = false;
+            // The seam confirm-mask ends with the pin. The lean-seam flow
+            // arms the pin via THIS branch (boundary already NONE, PINNING
+            // never entered), so the PINNING->NONE SetSeamHold(false) can't
+            // run -- release here as well.
+            CssAutoConfirm_SetSeamHold(false);
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "SpectatorNode: battle-align complete -- engine entered battle; "
                 "resuming battle-input pops (bf=0 == host battle-start)");
@@ -695,16 +700,27 @@ bool SpectatorNode_PopFrameInputs(uint16_t* p1_input, uint16_t* p2_input) {
                 return true;
             } else {
                 // CSS open + marker seen: the mirror starts at the host's
-                // CSS frame 0. Engage the short confirm mask (eats the
-                // edge-detector echo of the last pre-CSS input) and hand
-                // the boundary over to pure replay.
+                // CSS frame 0. Engage the confirm mask for the WHOLE seam
+                // mirror -- no pop countdown. Directions pass through (the
+                // cursor still mirrors) but a replayed confirm edge can
+                // never lock chars early: a lagging/catch-up viewer replays
+                // the seam with edge artifacts (2026-07-17 forensics:
+                // spurious act=1/1 ~60 pops early on pass-through cells
+                // 11/13 while the host picked 2/14 -> the game match-inited
+                // the WRONG chars, the late MATCH_START pin re-locked the
+                // right ones mid-init, and the HP reset never re-ran ->
+                // battle 2 started with match-1's final HP, full-state
+                // desync from bf=2). All locking belongs to the MATCH_START
+                // pin, which bypasses this mask (css_autoconfirm masks only
+                // when !g_active); the PINNING->NONE release drops the hold
+                // at battle entry. The 2026-06-11 "hold never released"
+                // deadlock predates the pin and cannot recur.
                 g_state.pb_boundary = State::PbBoundary::NONE;
-                g_state.pb_post_css_mask_pops = 10;
                 CssAutoConfirm_SetSeamHold(true, 0xFF, 0xFF);  // mask only
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "SpectatorNode: lean seam -> mirror (CSS aligned at "
-                    "host frame 0, confirm mask 10 pops, q=%zu)",
-                    g_state.pb_queue.size());
+                    "host frame 0, confirm mask held until MATCH_START pin, "
+                    "q=%zu)", g_state.pb_queue.size());
                 // fall through to the normal pop
             }
         }
@@ -855,9 +871,18 @@ bool SpectatorNode_PopFrameInputs(uint16_t* p1_input, uint16_t* p2_input) {
             if (mode_now == 2000u) {
                 *(uint32_t*)0x47010Cu = 0;
                 static uint32_t s_natcss_pop = 0;
-                if (s_natcss_pop == 60) {
+                if (s_natcss_pop == 60 && g_state.natural_boot) {
                     // Stray title-edge window over; hand CSS to the
                     // live mirror (real confirms must pass from here).
+                    // natural_boot-gated: only a natboot walk has a title
+                    // edge to eat. A snapshot joiner's first CSS is the
+                    // REMATCH SEAM -- its cumulative pop counter reaches
+                    // 60 mid-seam and this release stripped the
+                    // hold-until-pin mask (2026-07-17: S2 desyncs while
+                    // css-join S1, whose counter burned 60 in CSS-1,
+                    // stayed clean). Residual: a natboot CSS-1 shorter
+                    // than 60 pops would leak the one-shot into its seam;
+                    // real CSS phases run far longer.
                     CssAutoConfirm_SetSeamHold(false);
                 }
                 // [NATCSS] every 10th pop until the mechanism that

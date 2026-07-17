@@ -135,6 +135,136 @@ void RefreshGamepadList() {
             ++it;
         }
     }
+
+    // Device set may have changed — re-resolve each player's identity-
+    // bound pad against the fresh list.
+    ResolvePlayerPads();
+}
+
+// ---------------------------------------------------------------------------
+// Stable per-player device identity
+//
+// Bindings persist a bare SDL list index, but that index is VOLATILE:
+// unplugging pad A shifts pad B from index 1 to 0, so P2's bindings
+// suddenly pointed at nothing (or, before the routing fix, at P1's pad).
+// Identity = "<GUID string>[#<serial>]" pins each player to a physical
+// device; the list index becomes a display detail.
+// ---------------------------------------------------------------------------
+
+SDL_JoystickID g_player_pad_jid[kPlayers] = {0, 0};
+
+std::string DeviceIdentityOfJid(SDL_JoystickID jid) {
+    char guid_s[64] = {};
+    SDL_GUIDToString(SDL_GetJoystickGUIDForID(jid), guid_s, sizeof(guid_s));
+    std::string id = guid_s;
+    // Serial (when the driver exposes one) disambiguates two identical
+    // pads across sessions. Same-model pads without serials share an
+    // identity and fall back to claim order below.
+    auto it = g_gamepad_handles.find(jid);
+    if (it != g_gamepad_handles.end() && it->second) {
+        const char* ser = SDL_GetGamepadSerial(it->second);
+        if (ser && *ser) {
+            id += '#';
+            id += ser;
+        }
+    }
+    return id;
+}
+
+void ResolvePlayerPads() {
+    SDL_JoystickID prev[kPlayers];
+    for (int p = 0; p < kPlayers; ++p) prev[p] = g_player_pad_jid[p];
+
+    std::unordered_set<SDL_JoystickID> claimed;
+
+    // Pass 1 — keep still-valid resolutions. Instance ids are stable
+    // while connected, so a player never hops devices mid-session just
+    // because the list reordered around them.
+    for (int p = 0; p < kPlayers; ++p) {
+        const SDL_JoystickID jid = g_player_pad_jid[p];
+        if (jid != 0 &&
+            g_gamepad_handles.find(jid) != g_gamepad_handles.end() &&
+            !g_players[p].device_id.empty() &&
+            DeviceIdentityOfJid(jid) == g_players[p].device_id) {
+            claimed.insert(jid);
+        } else {
+            g_player_pad_jid[p] = 0;
+        }
+    }
+
+    // Pass 2 — resolve the rest by identity, in player order (P1 gets
+    // first pick when both players are configured for the same model
+    // and only one unit is attached). List order breaks ties between
+    // identical unclaimed units. A configured-but-absent device stays
+    // UNRESOLVED: that player's gamepad bindings go silent instead of
+    // borrowing another player's pad.
+    for (int p = 0; p < kPlayers; ++p) {
+        if (g_player_pad_jid[p] != 0) continue;
+        const std::string& want = g_players[p].device_id;
+        if (want.empty()) continue;  // legacy index routing — no identity
+        for (SDL_JoystickID jid : g_gamepad_ids) {
+            if (claimed.count(jid)) continue;
+            if (DeviceIdentityOfJid(jid) == want) {
+                g_player_pad_jid[p] = jid;
+                claimed.insert(jid);
+                break;
+            }
+        }
+    }
+
+    // Log transitions only (this runs every RefreshGamepads tick).
+    for (int p = 0; p < kPlayers; ++p) {
+        if (prev[p] == g_player_pad_jid[p]) continue;
+        if (g_player_pad_jid[p] != 0) {
+            auto it = g_gamepad_handles.find(g_player_pad_jid[p]);
+            const char* n = (it != g_gamepad_handles.end() && it->second)
+                ? SDL_GetGamepadName(it->second) : nullptr;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "InputBinder: P%d device resolved — jid=%u '%s'",
+                p + 1, (unsigned)g_player_pad_jid[p], n ? n : "?");
+        } else {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "InputBinder: P%d device '%s' disconnected — gamepad "
+                "bindings inactive until it returns",
+                p + 1, g_players[p].device_name.c_str());
+        }
+    }
+}
+
+SDL_Gamepad* ResolvedPadForPlayer(int player_slot) {
+    if (player_slot < 0 || player_slot >= kPlayers) return nullptr;
+    const SDL_JoystickID jid = g_player_pad_jid[player_slot];
+    if (jid == 0) return nullptr;
+    auto it = g_gamepad_handles.find(jid);
+    return it == g_gamepad_handles.end() ? nullptr : it->second;
+}
+
+int ResolvedPadListIndex(int player_slot) {
+    if (player_slot < 0 || player_slot >= kPlayers) return -1;
+    const SDL_JoystickID jid = g_player_pad_jid[player_slot];
+    if (jid == 0) return -1;
+    for (size_t i = 0; i < g_gamepad_ids.size(); ++i) {
+        if (g_gamepad_ids[i] == jid) return (int)i;
+    }
+    return -1;
+}
+
+void SetPlayerDevice(int player_slot, int list_index) {
+    if (player_slot < 0 || player_slot >= kPlayers) return;
+    PlayerBindings& pb = g_players[player_slot];
+    if (list_index < 0 || list_index >= (int)g_gamepad_ids.size()) {
+        pb.device_id.clear();
+        pb.device_name.clear();
+        g_player_pad_jid[player_slot] = 0;
+        return;
+    }
+    const SDL_JoystickID jid = g_gamepad_ids[(size_t)list_index];
+    pb.device_id   = DeviceIdentityOfJid(jid);
+    pb.device_name = GamepadNameAt(list_index);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "InputBinder: P%d device set — '%s' (%s)",
+        player_slot + 1, pb.device_name.c_str(), pb.device_id.c_str());
+    ResolvePlayerPads();
 }
 
 SDL_Gamepad* GamepadAt(int idx) {

@@ -3,6 +3,7 @@
 // is external (core Init calls it); the rest are TU-local.
 #include "input_binder.h"
 #include "input_binder_internal.h"
+#include <SDL3/SDL_log.h>
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -193,6 +194,13 @@ bool Save() {
     std::fprintf(f, "; FM2K input bindings\n");
     for (int p = 0; p < kPlayers; ++p) {
         std::fprintf(f, "[Player%d]\n", p);
+        // Stable device identity ("<GUID>[#serial]") — written before the
+        // bit rows. Omitted entirely for identity-less (legacy) players so
+        // their configs keep index-based routing untouched.
+        if (!g_players[p].device_id.empty()) {
+            std::fprintf(f, "device_id=%s\n",   g_players[p].device_id.c_str());
+            std::fprintf(f, "device_name=%s\n", g_players[p].device_name.c_str());
+        }
         for (size_t i = 0; i < (size_t)Bit::COUNT; ++i) {
             WriteBinding(f, kBitNames[i], g_players[p].bits[i]);
             // Alt slot — emit only when set so legacy single-source
@@ -223,8 +231,14 @@ bool Load() {
     // press a face button. Fresh installs (no config file) skip this branch
     // and keep the Init-time defaults; that's the intended path for new
     // users wanting "pad just works out of the box".
+    //
+    // Device identity is cleared for the same reason: a missing
+    // "device_id" key must mean "legacy index routing", not whatever
+    // identity a previously-loaded profile carried.
     for (int p = 0; p < kPlayers; ++p) {
         for (auto& b : g_players[p].bits_alt) b = Binding{};
+        g_players[p].device_id.clear();
+        g_players[p].device_name.clear();
     }
 
     int section = -1;  // -1 = none, 0/1 = player slot
@@ -249,6 +263,9 @@ bool Load() {
         Trim(key);
         Trim(val);
 
+        if (key == "device_id")   { g_players[section].device_id   = val; continue; }
+        if (key == "device_name") { g_players[section].device_name = val; continue; }
+
         for (size_t i = 0; i < (size_t)Bit::COUNT; ++i) {
             if (key == kBitNames[i]) {
                 ParseBinding(val, g_players[section].bits[i]);
@@ -266,6 +283,44 @@ bool Load() {
         }
     }
     std::fclose(f);
+
+    // Identity may have changed with the file contents — re-resolve each
+    // player's pad against the currently-connected set.
+    ResolvePlayerPads();
+
+    // Breadcrumb — which file actually drives in-game input, and how many
+    // bits each player has bound. Load() runs on a 1 s cadence, so only
+    // log when the resolved path or a player's bound-count changes. This
+    // is the line that turns a "P2 does nothing" report into a diagnosis
+    // (wrong profile resolved / P2 rows empty) from the log alone.
+    {
+        int bound[kPlayers] = {};
+        for (int p = 0; p < kPlayers; ++p) {
+            for (size_t i = 0; i < (size_t)Bit::COUNT; ++i) {
+                if (g_players[p].bits[i].source     != Binding::Source::NONE ||
+                    g_players[p].bits_alt[i].source != Binding::Source::NONE) {
+                    ++bound[p];
+                }
+            }
+        }
+        static std::string s_last_path;
+        static int s_last_bound[kPlayers] = {-1, -1};
+        if (s_last_path != g_config_path ||
+            s_last_bound[0] != bound[0] || s_last_bound[1] != bound[1]) {
+            s_last_path = g_config_path;
+            s_last_bound[0] = bound[0];
+            s_last_bound[1] = bound[1];
+            const bool is_override =
+                !g_active_game.empty() && g_config_path == GameProfilePath();
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "InputBinder: loaded '%s' (%s) — P1 %d/%d bits bound, "
+                "P2 %d/%d bits bound%s",
+                g_config_path.c_str(),
+                is_override ? "per-game override" : "default profile",
+                bound[0], (int)Bit::COUNT, bound[1], (int)Bit::COUNT,
+                bound[1] == 0 ? " (P2 unbound → engine's own keys)" : "");
+        }
+    }
     return true;
 }
 

@@ -63,7 +63,7 @@ void ApplyDefaultsP1(PlayerBindings& pb) {
     kb(Bit::START, SDL_SCANCODE_RETURN);
     // Meta-buttons. Tab = OPTION (title submode cycle, doesn't conflict
     // with START's confirm on title). F1/F2 reserved for hook features
-    // (training-mode behavior cycle migrates here from the GetAsyncKeyState
+    // (training-mode behavior cycle migrates here from the GetKeyState
     // fallback once the binder's Sample feeds FN2 into the cycle handler).
     kb(Bit::OPTION, SDL_SCANCODE_TAB);
     kb(Bit::FN1,    SDL_SCANCODE_F1);

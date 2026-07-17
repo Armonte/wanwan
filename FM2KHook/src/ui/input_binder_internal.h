@@ -51,6 +51,24 @@ const char*  GamepadNameAt(int idx);      // input_binder_gamepads.cpp
 SDL_Gamepad* GamepadAt(int idx);          // input_binder_gamepads.cpp (Sample + ui)
 std::string  DefaultConfigPath();         // input_binder_profiles.cpp
 
+// ---- stable per-player device identity (input_binder_gamepads.cpp) ----
+// Each player's identity-resolved pad, as an SDL joystick instance id
+// (0 = unresolved / no identity). Instance ids are stable for as long as
+// the device stays connected, which is what makes mid-session resolution
+// sticky even between two identical pads.
+extern SDL_JoystickID g_player_pad_jid[kPlayers];
+// "<GUID string>[#<serial>]" for a connected instance id.
+std::string  DeviceIdentityOfJid(SDL_JoystickID jid);
+// Re-resolve g_player_pad_jid from each player's device_id. Keeps a
+// still-connected resolution sticky; claims prevent both players from
+// resolving to the same physical pad. Runs at the end of every
+// RefreshGamepadList() and after Load()/SetPlayerDevice().
+void         ResolvePlayerPads();
+// Handle for the player's resolved pad (nullptr = none). Only meaningful
+// when that player's device_id is set; legacy configs sample through
+// GamepadAt(binding.gamepad_index) instead.
+SDL_Gamepad* ResolvedPadForPlayer(int player_slot);
+
 // Defaults (input_binder.cpp). ApplyDefaults seeds a player's full binding set;
 // the Fill* helpers are called directly by the ui "set this pad as primary /
 // stick-as-dpad" buttons, so they're external too.

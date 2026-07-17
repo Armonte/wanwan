@@ -1,5 +1,5 @@
 // input_binder_sample.cpp -- engine-facing input read (NOT ImGui).
-// Sample() (SDL3, launcher) + Sample_Win32() (GetAsyncKeyState + XInput,
+// Sample() (SDL3, launcher) + Sample_Win32() (GetKeyboardState + XInput,
 // hook DLL). Static helpers keep internal linkage.
 #include "input_binder.h"
 #include "input_binder_internal.h"
@@ -17,18 +17,25 @@ namespace FM2KInputBinder {
 // Single-binding sampler used by Sample() — pulled out of the per-bit
 // switch so the caller can OR primary + alt slots through the same code
 // path. Empty / NONE bindings return false (no contribution to mask).
-static bool SampleOne_SDL(const Binding& b, const bool* ks, int nkeys) {
+// `identity_pad` / `has_identity`: when the player carries a device
+// identity, EVERY gamepad binding reads that resolved pad (nullptr while
+// it's disconnected = silent); legacy identity-less configs keep the
+// per-binding SDL list index via GamepadAt.
+static bool SampleOne_SDL(const Binding& b, const bool* ks, int nkeys,
+                          SDL_Gamepad* identity_pad, bool has_identity) {
     switch (b.source) {
         case Binding::Source::NONE:
             return false;
         case Binding::Source::KEYBOARD:
             return ks && b.code >= 0 && b.code < nkeys && ks[b.code];
         case Binding::Source::GAMEPAD_BUTTON: {
-            SDL_Gamepad* gp = GamepadAt(b.gamepad_index);
+            SDL_Gamepad* gp = has_identity ? identity_pad
+                                           : GamepadAt(b.gamepad_index);
             return gp && SDL_GetGamepadButton(gp, (SDL_GamepadButton)b.code);
         }
         case Binding::Source::GAMEPAD_AXIS: {
-            SDL_Gamepad* gp = GamepadAt(b.gamepad_index);
+            SDL_Gamepad* gp = has_identity ? identity_pad
+                                           : GamepadAt(b.gamepad_index);
             if (!gp) return false;
             Sint16 v = SDL_GetGamepadAxis(gp, (SDL_GamepadAxis)b.code);
             return (b.axis_dir < 0) ? (v < -kAxisSampleThreshold)
@@ -45,10 +52,15 @@ uint16_t Sample(int player_slot) {
     int nkeys = 0;
     const bool* ks = SDL_GetKeyboardState(&nkeys);
 
+    const bool has_identity = !pb.device_id.empty();
+    SDL_Gamepad* const identity_pad =
+        has_identity ? ResolvedPadForPlayer(player_slot) : nullptr;
+
     uint16_t mask = 0;
     for (size_t i = 0; i < (size_t)Bit::COUNT; ++i) {
-        const bool pressed = SampleOne_SDL(pb.bits[i],     ks, nkeys)
-                          || SampleOne_SDL(pb.bits_alt[i], ks, nkeys);
+        const bool pressed =
+            SampleOne_SDL(pb.bits[i],     ks, nkeys, identity_pad, has_identity)
+         || SampleOne_SDL(pb.bits_alt[i], ks, nkeys, identity_pad, has_identity);
         if (pressed) mask |= (uint16_t)(1u << i);
     }
     return mask & kFullInputMask;
@@ -153,50 +165,91 @@ static WORD SdlGamepadButtonToXInputBit(int b) {
 }
 #endif
 
+// True when the foreground window belongs to THIS process. Local (pid-
+// based) so this file has no dependency on the hook's window-finder —
+// it also compiles into the launcher — and so it works for both game
+// window classes (KGT2KGAME / KGT95GAME) without a lookup.
+#ifdef _WIN32
+static bool ProcessIsForeground() {
+    DWORD fg_pid = 0;
+    const HWND fg = GetForegroundWindow();
+    if (fg) GetWindowThreadProcessId(fg, &fg_pid);
+    return fg_pid == GetCurrentProcessId();
+}
+#endif
+
 // Win32-native sampler — for use INSIDE the hook DLL where SDL3 isn't
-// event-pumped. Uses GetAsyncKeyState (keyboard) + XInputGetState
+// event-pumped. Uses GetKeyboardState (keyboard) + XInputGetState
 // (gamepad). Honors the same g_players bindings the launcher's Sample()
 // reads, so launcher-bound keys behave identically in-game.
 //
-// Caller MUST gate on focus (e.g. GetForegroundWindow == game window) —
-// GetAsyncKeyState is global and would read keys pressed in other windows
-// otherwise. Same gating Input_CaptureLocal already has.
+// Focus-correct BY CONSTRUCTION — callers need no gating:
+//   * Whole sample returns 0 unless this process owns the foreground
+//     window. Covers the desktop-global device reads (XInput, SDL
+//     gamepads) and kills the stale-held-key case (a key held across
+//     an alt-tab must stop driving the game).
+//   * Keyboard reads go through GetKeyboardState — synchronized to
+//     THIS thread's message queue, exactly the API the vanilla engine's
+//     input pipeline uses (process_game_inputs @ 0x4146D0 snapshots it
+//     into KeyState[0x424D20]). Keys typed into other windows never
+//     enter our queue. NEVER use GetAsyncKeyState here: it reads the
+//     physical keyboard desktop-wide, which is how the binder used to
+//     keep playing the game while the user typed into Discord.
 uint16_t Sample_Win32(int player_slot) {
 #ifndef _WIN32
     (void)player_slot;
     return 0;
 #else
     if (player_slot < 0 || player_slot >= kPlayers) return 0;
+    if (!ProcessIsForeground()) return 0;
     const PlayerBindings& pb = g_players[player_slot];
 
-    // SDL3 gamepad polling for DInput / HIDAPI sticks (PS3, PS4 in
-    // PS3 mode, Qanba in PS3/PS4 modes, generic HID controllers).
-    // XInput-only sticks fall through to the XInput path below.
-    // Init() opens the devices; we just need to pump events here so
-    // the polled state behind SDL_GetGamepadButton stays fresh inside
-    // the hooked game process (the game's main loop doesn't call
-    // SDL_PollEvent on our behalf).
+    // One queue-synced keyboard snapshot per sample (same shape the
+    // vanilla engine uses). All KEYBOARD bindings read from this; a
+    // failed call leaves it zeroed = no keys down.
+    BYTE ks[256] = {};
+    GetKeyboardState(ks);
+
+    // SDL3 gamepad polling for ALL stick types — Init()'s RAWINPUT +
+    // HIDAPI hints make SDL enumerate XInput pads, DS3/DS4/DS5, Switch
+    // Pro, and generic HID sticks natively. Init() opens the devices;
+    // we just need to pump events here so the polled state behind
+    // SDL_GetGamepadButton stays fresh inside the hooked game process
+    // (the game's main loop doesn't call SDL_PollEvent on our behalf).
     if (g_initialized && !g_gamepad_handles.empty()) {
         SDL_PumpEvents();
     }
-    auto sdl_gp = [&](int idx) -> SDL_Gamepad* {
-        if (idx < 0 || idx >= (int)g_gamepad_ids.size()) {
-            return g_gamepad_ids.empty()
-                ? nullptr
-                : g_gamepad_handles.count(g_gamepad_ids.front())
-                  ? g_gamepad_handles[g_gamepad_ids.front()] : nullptr;
-        }
-        auto it = g_gamepad_handles.find(g_gamepad_ids[idx]);
-        return it == g_gamepad_handles.end() ? nullptr : it->second;
-    };
 
-    // XInput is checked once per call; fetched lazily by gamepad index.
-    // Most players use a single controller so this is one XInputGetState
-    // call per frame in practice.
+    // Device resolution rules (ODK's "buttons go to both players" bug):
+    //   * Identity routing first: a player with a device_id reads its
+    //     identity-resolved pad for EVERY gamepad binding (silent while
+    //     disconnected — never borrows the other player's pad). Legacy
+    //     identity-less configs go through GamepadAt(b.gamepad_index):
+    //     -1 = first connected, out-of-range = nullptr. (The old local
+    //     lambda here aliased ANY bad index to the FIRST pad, so P2's
+    //     configured-but-absent pad silently read P1's controller.)
+    //   * When SDL has a handle for the pad, its read is AUTHORITATIVE —
+    //     no fall-through. The old code fell through from "SDL says not
+    //     pressed" to raw XInputGetState using the SDL LIST INDEX as an
+    //     XInput USER SLOT. Those orderings are unrelated: with P1 on a
+    //     DInput/HID pad (occupies no XInput slot) and P2 on an XInput
+    //     pad (slot 0), P1's bindings read P2's pad through the
+    //     fall-through — both players moved.
+    //   * Raw XInput survives ONLY as a last-resort path for "SDL has
+    //     ZERO pads open" (subsystem dead / no mapping). With no SDL
+    //     list to resolve against, the PLAYER SLOT maps to the XInput
+    //     user slot (P1 -> 0, P2 -> 1) — the sanest approximation, and
+    //     one that can't cross-wire the two players.
+    const bool has_identity = !pb.device_id.empty();
+    SDL_Gamepad* const identity_pad =
+        has_identity ? ResolvedPadForPlayer(player_slot) : nullptr;
+    const bool xinput_fallback = g_gamepad_handles.empty();
+
+    // XInput is checked once per call; fetched lazily by slot.
     XINPUT_STATE xs[4];
     bool         xs_ok[4] = {false, false, false, false};
     auto get_xinput = [&](int idx) -> const XINPUT_STATE* {
-        if (idx < 0 || idx >= 4) idx = 0;  // -1 / OOB → controller 0
+        if (idx < 0 || idx >= 4) return nullptr;
         if (!xs_ok[idx]) {
             ZeroMemory(&xs[idx], sizeof(xs[idx]));
             xs_ok[idx] = (XInputGetState((DWORD)idx, &xs[idx]) == ERROR_SUCCESS);
@@ -204,7 +257,7 @@ uint16_t Sample_Win32(int player_slot) {
         return xs_ok[idx] ? &xs[idx] : nullptr;
     };
 
-    // Per-binding sampler. Defined as a lambda so it captures sdl_gp /
+    // Per-binding sampler. Defined as a lambda so it captures ks /
     // get_xinput without re-threading them through a static helper.
     // Called twice per bit (primary + alt) and OR'd, so a single
     // direction can fire from stick AND dpad simultaneously.
@@ -214,28 +267,31 @@ uint16_t Sample_Win32(int player_slot) {
                 return false;
             case Binding::Source::KEYBOARD: {
                 int vk = Sdl3ScancodeToVk(b.code);
-                return vk != 0 && (GetAsyncKeyState(vk) & 0x8000) != 0;
+                return vk != 0 && (ks[vk] & 0x80) != 0;
             }
             case Binding::Source::GAMEPAD_BUTTON: {
-                if (SDL_Gamepad* gp = sdl_gp(b.gamepad_index)) {
-                    if (SDL_GetGamepadButton(gp, (SDL_GamepadButton)b.code) != 0) {
-                        return true;
-                    }
+                SDL_Gamepad* gp = has_identity ? identity_pad
+                                               : GamepadAt(b.gamepad_index);
+                if (gp) {
+                    return SDL_GetGamepadButton(gp, (SDL_GamepadButton)b.code) != 0;
                 }
-                if (const XINPUT_STATE* st = get_xinput(b.gamepad_index)) {
+                if (!xinput_fallback) return false;  // pad absent — silent
+                if (const XINPUT_STATE* st = get_xinput(player_slot)) {
                     WORD xbit = SdlGamepadButtonToXInputBit(b.code);
                     return xbit != 0 && (st->Gamepad.wButtons & xbit) != 0;
                 }
                 return false;
             }
             case Binding::Source::GAMEPAD_AXIS: {
-                if (SDL_Gamepad* gp = sdl_gp(b.gamepad_index)) {
+                SDL_Gamepad* gp = has_identity ? identity_pad
+                                               : GamepadAt(b.gamepad_index);
+                if (gp) {
                     Sint16 v = SDL_GetGamepadAxis(gp, (SDL_GamepadAxis)b.code);
-                    bool ok = (b.axis_dir < 0) ? (v < -kAxisSampleThreshold)
-                                               : (v >  kAxisSampleThreshold);
-                    if (ok) return true;
+                    return (b.axis_dir < 0) ? (v < -kAxisSampleThreshold)
+                                            : (v >  kAxisSampleThreshold);
                 }
-                if (const XINPUT_STATE* st = get_xinput(b.gamepad_index)) {
+                if (!xinput_fallback) return false;  // pad absent — silent
+                if (const XINPUT_STATE* st = get_xinput(player_slot)) {
                     // Compute in int, not SHORT: negating sThumbL/RY at full
                     // deflection (-32768) overflows a SHORT back to -32768,
                     // which flips full-down into full-up (and vice versa).

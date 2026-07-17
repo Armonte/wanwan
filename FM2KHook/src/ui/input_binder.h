@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 namespace FM2KInputBinder {
 
@@ -69,6 +70,16 @@ struct PlayerBindings {
     // so old configs still load (alt defaults to NONE if missing).
     Binding bits    [static_cast<size_t>(Bit::COUNT)];
     Binding bits_alt[static_cast<size_t>(Bit::COUNT)];
+
+    // Stable device identity for this player's gamepad bindings —
+    // "<SDL GUID string>[#<serial>]". When set, sampling resolves this
+    // player's pad BY IDENTITY (ResolvePlayerPads) instead of through
+    // the per-binding SDL list index: unplugging the OTHER player's pad
+    // reorders the list, which used to shift/steal devices between
+    // players mid-session. Empty = legacy index-based routing (old
+    // configs). Persisted as "device_id" / "device_name" per [PlayerN].
+    std::string device_id;
+    std::string device_name;  // display label when the pad is disconnected
 };
 
 // Initialize: opens any visible gamepads and loads bindings from
@@ -85,7 +96,19 @@ void Shutdown();
 // 1 s cadence from the launcher's tick + the hook's periodic poll so
 // users don't have to restart the session after hot-plugging a pad
 // (Suicidal Muffin's bug report). No effect if nothing changed.
+// Also re-resolves each player's identity-bound pad (ResolvePlayerPads).
 void RefreshGamepads();
+
+// Stamp player_slot's device identity from the pad at SDL-list index
+// `list_index` (the index shown in the device dropdown). Negative or
+// out-of-range clears the identity (keyboard-only / legacy routing).
+// Called by the binder UI's device dropdown and by gamepad bind-capture,
+// then persisted by Save().
+void SetPlayerDevice(int player_slot, int list_index);
+
+// Current SDL-list index of the player's identity-resolved pad, or -1
+// when no identity is set / the device is disconnected. UI preview.
+int ResolvedPadListIndex(int player_slot);
 
 // Render the binder window for one player slot (0 or 1). Returns true if
 // any binding was modified this frame (caller may auto-Save).
@@ -100,9 +123,13 @@ bool RenderBody(int player_slot);
 // 11-bit FM2K input mask. Call once per frame from your input source.
 //
 // Sample()      uses SDL3 — for the LAUNCHER (SDL3 event pump runs).
-// Sample_Win32() uses GetAsyncKeyState + XInput — for the HOOK DLL where
+// Sample_Win32() uses GetKeyboardState + XInput — for the HOOK DLL where
 //                 SDL3 isn't event-pumped. Both honor the same Bindings()
 //                 config so launcher-bound keys work identically in-game.
+//                 Focus-correct by construction: returns 0 unless this
+//                 process owns the foreground window, and keyboard state
+//                 is queue-synced (never GetAsyncKeyState — that reads
+//                 the desktop-global key state).
 uint16_t Sample(int player_slot);
 uint16_t Sample_Win32(int player_slot);
 

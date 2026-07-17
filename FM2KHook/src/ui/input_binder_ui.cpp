@@ -199,41 +199,46 @@ bool RenderBody(int player_slot) {
     // SDL3 multi-keyboard support (per the SDL_KeyboardEvent.which
     // field) will add a "primary keyboard" option to the same dropdown
     // — keyboard bindings on a player become device-scoped instead of
-    // OS-global GetAsyncKeyState polling.
+    // one shared queue-synced GetKeyboardState snapshot.
     // ------------------------------------------------------------------
     {
-        // Discover this player's CURRENT primary gamepad index by looking
-        // at the first gamepad-sourced binding across BOTH primary and
-        // alt slots — alt now defaults to gamepad on a fresh init, so
-        // even a brand-new "keyboard primary" config has the gamepad
-        // index present in the alt array.
+        // Identity-first preview: a player with a stored device identity
+        // shows its resolved pad (or "disconnected: <name>" while the
+        // physical device is away — bindings are intentionally silent in
+        // that state, never borrowed from the other player). Legacy
+        // identity-less configs fall back to discovering the index from
+        // the first gamepad-sourced binding, exactly as before.
         int current_idx = -1;  // -1 = keyboard only
-        for (size_t i = 0; i < (size_t)Bit::COUNT && current_idx < 0; ++i) {
-            for (const Binding* arr : { pb.bits + 0, pb.bits_alt + 0 }) {
-                const Binding& b = arr[i];
-                if (b.source == Binding::Source::GAMEPAD_BUTTON ||
-                    b.source == Binding::Source::GAMEPAD_AXIS) {
-                    current_idx = b.gamepad_index;
-                    break;
+        bool identity_disconnected = false;
+        if (!pb.device_id.empty()) {
+            current_idx = ResolvedPadListIndex(player_slot);
+            identity_disconnected = (current_idx < 0);
+        } else {
+            for (size_t i = 0; i < (size_t)Bit::COUNT && current_idx < 0; ++i) {
+                for (const Binding* arr : { pb.bits + 0, pb.bits_alt + 0 }) {
+                    const Binding& b = arr[i];
+                    if (b.source == Binding::Source::GAMEPAD_BUTTON ||
+                        b.source == Binding::Source::GAMEPAD_AXIS) {
+                        current_idx = b.gamepad_index;
+                        break;
+                    }
                 }
             }
-        }
-        // The dropdown PREVIEW must reflect reality, not a hopeful default.
-        // The previous `if (current_idx < 0) current_idx = default_idx` line
-        // made the dropdown show "[0] Controller" even when bindings were
-        // 100% keyboard — user reads "controller" off the dropdown, hits
-        // Reset Defaults, gets keyboard back, gets confused. current_idx
-        // stays -1 ("Keyboard only") whenever no gamepad-sourced binding
-        // exists, regardless of how many pads are plugged in. The
-        // user's selection from the dropdown is what flips it to a
-        // real gamepad index, not a static slot hint.
-        if (current_idx >= (int)g_gamepad_ids.size()) {
-            current_idx = -1;  // bound device disappeared (unplugged)
+            // The dropdown PREVIEW must reflect reality, not a hopeful
+            // default — current_idx stays -1 ("Keyboard only") whenever no
+            // gamepad-sourced binding exists, regardless of how many pads
+            // are plugged in.
+            if (current_idx >= (int)g_gamepad_ids.size()) {
+                current_idx = -1;  // bound device disappeared (unplugged)
+            }
         }
 
         // Build the combo preview string. -1 = keyboard only.
-        char preview[160];
-        if (current_idx < 0) {
+        char preview[192];
+        if (identity_disconnected) {
+            std::snprintf(preview, sizeof(preview), "(disconnected) %s",
+                          pb.device_name.c_str());
+        } else if (current_idx < 0) {
             std::snprintf(preview, sizeof(preview), "Keyboard only");
         } else {
             std::snprintf(preview, sizeof(preview), "[%d] %s",
@@ -249,7 +254,7 @@ bool RenderBody(int player_slot) {
         const char* combo_id = (player_slot == 0) ? "##p1_dev" : "##p2_dev";
         if (ImGui::BeginCombo(combo_id, preview)) {
             // Keyboard only entry — clears gamepad bindings on this player.
-            bool sel = (current_idx < 0);
+            bool sel = (current_idx < 0 && !identity_disconnected);
             if (ImGui::Selectable("Keyboard only", sel)) {
                 // Switch this player to keyboard-only. Reset to the
                 // keyboard defaults (P1 arrows / P2 numpad) and clear
@@ -257,6 +262,7 @@ bool RenderBody(int player_slot) {
                 // wants a second binding from the SAME keyboard for
                 // a bit (rare), they can manually capture into alt.
                 ApplyDefaults(player_slot);
+                SetPlayerDevice(player_slot, -1);  // drop device identity
                 changed = true;
             }
             // One row per available SDL gamepad.
@@ -277,6 +283,9 @@ bool RenderBody(int player_slot) {
                     for (auto& b : pb.bits_alt) b = Binding{};
                     FillPrimaryAsGamepad(pb, i);
                     FillAltAsStickDirections(pb, i);
+                    // Pin the physical device (GUID identity) so this
+                    // player's pad survives list reordering on hotplug.
+                    SetPlayerDevice(player_slot, i);
                     changed = true;
                 }
                 if (sel_i) ImGui::SetItemDefaultFocus();
@@ -470,6 +479,13 @@ bool RenderBody(int player_slot) {
                 if (!cancel) {
                     if (g_capture.alt) pb.bits_alt[g_capture.bit] = cap;
                     else               pb.bits[g_capture.bit]     = cap;
+                    // Gamepad capture also pins this player's device
+                    // identity to the pad that was pressed — one device
+                    // per player, resolved by GUID from here on.
+                    if (cap.source == Binding::Source::GAMEPAD_BUTTON ||
+                        cap.source == Binding::Source::GAMEPAD_AXIS) {
+                        SetPlayerDevice(player_slot, cap.gamepad_index);
+                    }
                     changed = true;
                 }
                 g_capture.active = false;

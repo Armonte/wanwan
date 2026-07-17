@@ -35,6 +35,8 @@
 #include <windows.h>
 #include <vector>
 #include <string>
+#include <cstring>
+#include <cstdlib>
 
 namespace {
 
@@ -88,6 +90,18 @@ using GetCommandLineA_t      = LPSTR (WINAPI*)(void);
 using CreateFileA_t          = HANDLE (WINAPI*)(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
 using FindFirstFileA_t       = HANDLE (WINAPI*)(LPCSTR, LPWIN32_FIND_DATAA);
 using FindNextFileA_t        = BOOL   (WINAPI*)(HANDLE, LPWIN32_FIND_DATAA);
+// INI/profile READ+WRITE side: FM2K reads GameScreenMode / key configs / net
+// names via GetPrivateProfile*A, building the ini path from the (now CP932)
+// GetCurrentDirectoryA buffer. The kernel's ANSI thunk re-converts that path
+// with the REAL system ACP (1252 on a US box), NOT our hooked GetACP — so the
+// SJIS install DIRECTORY mangles, the ini isn't found, and GameScreenMode
+// falls back to its default 0 (GDI mode). The game then never calls
+// DirectDrawCreate, so cnc-ddraw can't engage and F4 fullscreen is dead.
+// Convert the path (and section/key/value tokens) via CP932 and call the W
+// variant, exactly as on a JP-locale system.
+using GetPrivateProfileIntA_t      = UINT  (WINAPI*)(LPCSTR, LPCSTR, INT, LPCSTR);
+using GetPrivateProfileStringA_t   = DWORD (WINAPI*)(LPCSTR, LPCSTR, LPCSTR, LPSTR, DWORD, LPCSTR);
+using WritePrivateProfileStringA_t = BOOL  (WINAPI*)(LPCSTR, LPCSTR, LPCSTR, LPCSTR);
 
 // Trampolines
 GetACP_t                     p_GetACP                    = nullptr;
@@ -117,6 +131,9 @@ GetCommandLineA_t            p_GetCommandLineA           = nullptr;
 CreateFileA_t                p_CreateFileA               = nullptr;
 FindFirstFileA_t             p_FindFirstFileA            = nullptr;
 FindNextFileA_t              p_FindNextFileA             = nullptr;
+GetPrivateProfileIntA_t      p_GetPrivateProfileIntA     = nullptr;
+GetPrivateProfileStringA_t   p_GetPrivateProfileStringA  = nullptr;
+WritePrivateProfileStringA_t p_WritePrivateProfileStringA= nullptr;
 
 bool g_installed = false;
 
@@ -246,6 +263,72 @@ DWORD WINAPI Hook_GetFullPathNameA(LPCSTR name, DWORD size, LPSTR buffer, LPSTR*
         *file_part = (sep > buffer && *sep) ? sep : nullptr;
     }
     return (DWORD)(alen - 1);
+}
+
+// --- INI / profile APIs (CP932 path + token conversion) ---
+// SJIS(CP932) narrow -> wide. Returns false on any conversion failure.
+static bool SjisToWideVec(LPCSTR s, std::vector<wchar_t>& out) {
+    int n = MultiByteToWideChar(kSpoofedCodePage, 0, s, -1, nullptr, 0);
+    if (n <= 0) return false;
+    out.resize(n);
+    return MultiByteToWideChar(kSpoofedCodePage, 0, s, -1, out.data(), n) > 0;
+}
+
+UINT WINAPI Hook_GetPrivateProfileIntA(LPCSTR app, LPCSTR key, INT def, LPCSTR file) {
+    UINT result;
+    std::vector<wchar_t> wapp, wkey, wfile;
+    if (file && SjisToWideVec(file, wfile)) {
+        const wchar_t* pApp = (app && SjisToWideVec(app, wapp)) ? wapp.data() : nullptr;
+        const wchar_t* pKey = (key && SjisToWideVec(key, wkey)) ? wkey.data() : nullptr;
+        result = GetPrivateProfileIntW(pApp, pKey, def, wfile.data());
+    } else {
+        result = p_GetPrivateProfileIntA(app, key, def, file);
+    }
+    // cnc-ddraw can only wrap the game when the game is in DirectDraw mode
+    // (GameScreenMode != 0). Now that the read is CP932-correct we honor the
+    // real ini, but ALSO pin DirectDraw when cnc-ddraw (2DFMD.dll) is present
+    // — matching the launcher's "pin GameScreenMode=1" intent and making the
+    // wrap engage regardless of what actually landed on disk for kanji-path
+    // games (their launcher ini-write may have mangled). Without this the game
+    // runs GDI-only: no ddraw, no overlay, no F4 fullscreen.
+    if (key && result == 0 && lstrcmpiA(key, "GameScreenMode") == 0 &&
+        GetModuleHandleA("2DFMD.dll") != nullptr) {
+        result = 1;
+    }
+    return result;
+}
+
+DWORD WINAPI Hook_GetPrivateProfileStringA(LPCSTR app, LPCSTR key, LPCSTR def,
+                                           LPSTR ret, DWORD size, LPCSTR file) {
+    if (!file || !ret || size == 0)
+        return p_GetPrivateProfileStringA(app, key, def, ret, size, file);
+    std::vector<wchar_t> wapp, wkey, wdef, wfile;
+    if (!SjisToWideVec(file, wfile))
+        return p_GetPrivateProfileStringA(app, key, def, ret, size, file);
+    const wchar_t* pApp = (app && SjisToWideVec(app, wapp)) ? wapp.data() : nullptr;
+    const wchar_t* pKey = (key && SjisToWideVec(key, wkey)) ? wkey.data() : nullptr;
+    const wchar_t* pDef = (def && SjisToWideVec(def, wdef)) ? wdef.data() : L"";
+    std::vector<wchar_t> wout(size);
+    DWORD wn = GetPrivateProfileStringW(pApp, pKey, pDef, wout.data(), size, wfile.data());
+    // Encode the wide result back to CP932. wn excludes the final terminator;
+    // when app or key is NULL the buffer is a double-NUL list — converting wn
+    // chars carries the embedded NULs through faithfully.
+    int alen = WideCharToMultiByte(kSpoofedCodePage, 0, wout.data(), (int)wn,
+                                   ret, (int)size, nullptr, nullptr);
+    if (alen < 0) alen = 0;
+    if ((DWORD)alen < size) ret[alen] = '\0';
+    return (DWORD)alen;
+}
+
+BOOL WINAPI Hook_WritePrivateProfileStringA(LPCSTR app, LPCSTR key, LPCSTR val, LPCSTR file) {
+    if (!file) return p_WritePrivateProfileStringA(app, key, val, file);
+    std::vector<wchar_t> wapp, wkey, wval, wfile;
+    if (!SjisToWideVec(file, wfile))
+        return p_WritePrivateProfileStringA(app, key, val, file);
+    const wchar_t* pApp = (app && SjisToWideVec(app, wapp)) ? wapp.data() : nullptr;
+    const wchar_t* pKey = (key && SjisToWideVec(key, wkey)) ? wkey.data() : nullptr;
+    const wchar_t* pVal = (val && SjisToWideVec(val, wval)) ? wval.data() : nullptr;
+    return WritePrivateProfileStringW(pApp, pKey, pVal, wfile.data());
 }
 
 // CPW's load_kgt_from_cmdline (0x406750) calls GetCommandLineA, walks the
@@ -584,6 +667,33 @@ BOOL WINAPI Hook_FindNextFileA(HANDLE h, LPWIN32_FIND_DATAA fd) {
 void InstallLocaleProcOnWindow(HWND hwnd) noexcept {
     if (!hwnd) return;
     if (GetPropW(hwnd, kOrigWndProcProp)) return;  // already installed
+    // Do NOT promote the MAIN game window (KGT2KGAME/KGT95GAME) to Unicode.
+    // Promoting it before cnc-ddraw's ddraw-init races cnc-ddraw's own
+    // SetWindowLongA subclass and, on JP-title games, leaves cnc-ddraw unable
+    // to bind its ddraw state to the window (observed: hWndTo=0, SrcWidth=0),
+    // which kills its fullscreen path entirely (F4/Alt+Enter). Skipping the
+    // promotion lets cnc-ddraw attach normally. The JP titlebar is unaffected:
+    // Hook_SetWindowTextA sets the wide title via DefWindowProcW(WM_SETTEXT),
+    // which stores it correctly on an ANSI window too. Dialogs/config windows
+    // are still promoted. Escape hatch: FM2K_FORCE_MAIN_WINDOW_PROMOTE=1.
+    {
+        static const int s_force_promote = []{
+            const char* e = std::getenv("FM2K_FORCE_MAIN_WINDOW_PROMOTE");
+            return (e && e[0] == '1') ? 1 : 0;
+        }();
+        if (!s_force_promote) {
+            char cls[32] = {0};
+            GetClassNameA(hwnd, cls, sizeof(cls));
+            if (std::strcmp(cls, "KGT2KGAME") == 0 ||
+                std::strcmp(cls, "KGT95GAME") == 0) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "LocaleSpoof: main game window hwnd=%p left ANSI so cnc-ddraw "
+                    "binds its ddraw state (F4 fullscreen); JP title via "
+                    "SetWindowTextA hook", (void*)hwnd);
+                return;
+            }
+        }
+    }
     // Capture the original WNDPROC as ANSI — that's how the game
     // registered it via RegisterClassA.
     WNDPROC orig = (WNDPROC)GetWindowLongPtrA(hwnd, GWLP_WNDPROC);
@@ -892,6 +1002,14 @@ bool InstallLocaleSpoof() {
     try_hook("kernel32.dll", "GetCurrentDirectoryA", (void*)&Hook_GetCurrentDirectoryA, p_GetCurrentDirectoryA);
     try_hook("kernel32.dll", "GetFullPathNameA",     (void*)&Hook_GetFullPathNameA,     p_GetFullPathNameA);
     try_hook("kernel32.dll", "GetCommandLineA",      (void*)&Hook_GetCommandLineA,      p_GetCommandLineA);
+
+    // INI/profile APIs — the SJIS-folder GameScreenMode fix. Without these the
+    // game reads GameScreenMode=default(0) on kanji paths → GDI mode → no
+    // DirectDraw → cnc-ddraw never engages → F4 fullscreen dead. ASCII paths
+    // round-trip through CP932 identically, so English games are unaffected.
+    try_hook("kernel32.dll", "GetPrivateProfileIntA",      (void*)&Hook_GetPrivateProfileIntA,      p_GetPrivateProfileIntA);
+    try_hook("kernel32.dll", "GetPrivateProfileStringA",   (void*)&Hook_GetPrivateProfileStringA,   p_GetPrivateProfileStringA);
+    try_hook("kernel32.dll", "WritePrivateProfileStringA", (void*)&Hook_WritePrivateProfileStringA, p_WritePrivateProfileStringA);
 
     // File-OPEN hooks (CreateFileA / FindFirstFileA / FindNextFileA) for kanji
     // install-path traversal are DISABLED: routing every file open through

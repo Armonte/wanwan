@@ -640,10 +640,10 @@ LRESULT WINAPI Hook_WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     //     it. Eating Tab before ImGui's input layer keeps the
     //     InputText's focus stable.
     //
-    // fc_hud's GetAsyncKeyState polling handles the open/close toggle
-    // independently of the message pump, so we don't need ImGui or
-    // the game to see Tab at all. Covers WM_KEYDOWN, WM_KEYUP, and
-    // WM_CHAR (Tab generates 0x09 as a typed character too).
+    // fc_hud's GetKeyState polling handles the open/close toggle on
+    // its own render-tick cadence, so we don't need ImGui or the game
+    // to see Tab at all. Covers WM_KEYDOWN, WM_KEYUP, and WM_CHAR
+    // (Tab generates 0x09 as a typed character too).
     if ((msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_CHAR) &&
         wParam == VK_TAB) {
         return 0;
@@ -721,6 +721,13 @@ DWORD WINAPI DirectXInit(LPVOID lpParameter) {
 }
 
 bool InitializeImGuiOverlay() {
+    // FM2K_NO_OVERLAY=1 skips our D3D9 EndScene/Reset vtable hook entirely
+    // (diagnostic / opt-out). Overlay was ruled out as the SJIS F4 cause.
+    if (const char* off = std::getenv("FM2K_NO_OVERLAY"); off && off[0] == '1') {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "imgui_overlay: DISABLED via FM2K_NO_OVERLAY=1 (D3D9 hook not installed)");
+        return true;
+    }
     HANDLE thread = CreateThread(nullptr, 0, DirectXInit, nullptr, 0, nullptr);
     if (thread) {
         CloseHandle(thread);
@@ -769,16 +776,22 @@ void CheckOverlayHotkey() {
         }
     }
 
+    // Hotkeys read via GetKeyState — synchronized to this (window)
+    // thread's message queue, so an F9/F10 typed into ANY other window
+    // never registers here. GetAsyncKeyState is banned: it reads the
+    // physical keyboard desktop-wide, and used to toggle the overlay /
+    // fire a savestate roundtrip in the background game.
+
     // F9 - Toggle the developer debug overlay window. The HUD
     // itself stays always-on regardless of this toggle.
-    bool f9_current = (GetAsyncKeyState(VK_F9) & 0x8000) != 0;
+    bool f9_current = (GetKeyState(VK_F9) & 0x8000) != 0;
     if (f9_current && !g_f9_key_pressed) {
         ToggleOverlay();
     }
     g_f9_key_pressed = f9_current;
 
     // F10 - Run savestate roundtrip test
-    bool f10_current = (GetAsyncKeyState(VK_F10) & 0x8000) != 0;
+    bool f10_current = (GetKeyState(VK_F10) & 0x8000) != 0;
     if (f10_current && !g_f10_key_pressed) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "F10 pressed - running roundtrip test");
         g_last_snapshot_before = SaveState_CaptureSnapshot();

@@ -179,6 +179,7 @@ void HubClient::OnMessage(const std::string& msg) {
         ev.kind = HubEvent::Kind::MatchStart;
         ev.match.token = GetStr(msg, "token");
         ev.match.role  = GetStr(msg, "role");
+        ev.match.game_id = GetStr(msg, "game_id");  // empty on old hubs
         std::string peer_obj = GetSub(msg, "peer");
         ev.match.peer = ParseUser(peer_obj);
         std::string udp = GetSub(peer_obj, "udp_addr");

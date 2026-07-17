@@ -146,6 +146,11 @@ struct HubEvent {
     struct {
         std::string token;
         std::string role;      // "host" | "guest"
+        // Actual launchable game id (exe stem) from the hub. Prefer this
+        // over the room id when spawning: the room can be a canonical
+        // family alias ("URORFG") that matches no local install
+        // (URORFGRelease103). Empty on old hubs -> fall back to room id.
+        std::string game_id;
         HubUser peer;
         std::string peer_udp_ip;
         int peer_udp_port = 0;

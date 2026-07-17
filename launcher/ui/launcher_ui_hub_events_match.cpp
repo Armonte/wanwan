@@ -93,7 +93,13 @@ void LauncherUI::HandleMatchStartEvent(const fm2k::HubEvent& ev) {
                 hs.current_match_role     = ev.match.role;
                 hs.current_match_peer_id  = ev.match.peer.id;
                 hs.current_match_peer_nick= ev.match.peer.nick;
-                hs.current_match_game_id  = hs.current_room_id;
+                // Prefer the hub's actual launchable game id (exe stem)
+                // over the room id: a canonical family room ("URORFG")
+                // matches no locally-discovered game and the spawn fails
+                // (live 2026-07-17). Old hubs send no game_id -> room id.
+                hs.current_match_game_id  = ev.match.game_id.empty()
+                                              ? hs.current_room_id
+                                              : ev.match.game_id;
                 hs.current_match_settings = ev.match.settings;
                 hs.match_result_sent      = false;
                 hs.disconnect_toast_fired = false;

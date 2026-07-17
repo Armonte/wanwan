@@ -136,6 +136,7 @@ size_t PayloadLenForType(const SpecDataHeader& hdr) {
         case SpecDataType::MATCH_END:     return 0;
         case SpecDataType::INPUT_REQUEST: return 0; // shouldn't appear upstream
         case SpecDataType::EVENT_BATCH:
+        case SpecDataType::EVENT_BATCH2:  // identical framing; flags = bytes
             // C2+ wire: payload is a packed SessionEvent[] stream of
             // variable length. The byte count lives in hdr.flags (was a
             // reserved field; capped at 65535 B which is well above the

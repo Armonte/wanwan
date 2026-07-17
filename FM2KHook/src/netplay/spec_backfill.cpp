@@ -92,6 +92,14 @@ void SendSessionEventsTo(const sockaddr_in& to,
     // ops at session tail), use the running input cursor.
     size_t   ev_idx          = first_event_idx;
     uint32_t cursor_inputs   = start_input_frame;
+    // EVENT_BATCH2 absolute op identity: running index over ALL non-INPUT
+    // session events (append order), advanced for every op walked --
+    // including the never-happens unencodable skip -- so backfill numbering
+    // matches FlushBatch's total_op_count-derived numbering exactly.
+    uint32_t op_cursor = 0;
+    for (size_t i = 0; i < first_event_idx; ++i) {
+        if (g_state.session_events[i].type != SessionEventType::INPUT) ++op_cursor;
+    }
 
     while (ev_idx < total_events) {
         std::vector<uint8_t> payload;
@@ -99,6 +107,7 @@ void SendSessionEventsTo(const sockaddr_in& to,
 
         const size_t chunk_first_idx   = ev_idx;
         uint32_t     chunk_first_input = cursor_inputs;
+        const uint32_t chunk_op_base   = op_cursor;
         bool         saw_input         = false;
         uint32_t     chunk_input_count = 0;
 
@@ -154,7 +163,13 @@ void SendSessionEventsTo(const sockaddr_in& to,
                     one_w = SessionEvent_EncodeCssEntered(one, sizeof(one), ev);
                     break;
             }
-            if (one_w == 0) { ++ev_idx; continue; }   // unknown / unencodable
+            if (one_w == 0) {
+                // Unknown / unencodable. Still occupies an op index (the
+                // numbering spans ALL non-INPUT session events).
+                if (ev.type != SessionEventType::INPUT) ++op_cursor;
+                ++ev_idx;
+                continue;
+            }
 
             if (!payload.empty() && payload.size() + one_w > BACKFILL_CHUNK_BYTES) {
                 break;  // emit current chunk; this event goes in the next
@@ -168,6 +183,8 @@ void SendSessionEventsTo(const sockaddr_in& to,
                 }
                 ++chunk_input_count;
                 ++cursor_inputs;
+            } else {
+                ++op_cursor;
             }
             ++ev_idx;
         }
@@ -177,10 +194,12 @@ void SendSessionEventsTo(const sockaddr_in& to,
         std::vector<uint8_t> buf(sizeof(SpecDataHeader) + payload.size());
         SpecDataHeader hdr = {};
         hdr.magic       = SPEC_DATA_MAGIC;
-        hdr.type        = SpecDataType::EVENT_BATCH;
+        hdr.type        = SpecDataType::EVENT_BATCH2;
         hdr.start_frame = saw_input ? chunk_first_input
                                     : cursor_inputs;     // tail-only chunk
-        hdr.frame_count = static_cast<uint16_t>(std::min<uint32_t>(chunk_input_count, 0xFFFFu));
+        // EVENT_BATCH2: frame_count = chunk's absolute op base (input count
+        // was informational-only under EVENT_BATCH).
+        hdr.frame_count = static_cast<uint16_t>(std::min<uint32_t>(chunk_op_base, 0xFFFFu));
         // EVENT_BATCH: flags carries payload byte count for the receiver's
         // TCP framer (see PayloadLenForType in spectator_tcp.cpp). The
         // BACKFILL_CHUNK_BYTES=1024 cap keeps this well under the 16-bit

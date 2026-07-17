@@ -120,6 +120,16 @@ enum class SpecDataType : uint8_t {
     //                   drop the connection on an unknown type).
     UDP_INPUT_BATCH = 9,
     OP_BASELINE     = 10,
+    EVENT_BATCH2    = 11, // EVENT_BATCH + absolute op identity: identical
+                          // payload/flags framing, but frame_count (which
+                          // EVENT_BATCH used only informationally) carries
+                          // the session-global op index of the batch's FIRST
+                          // non-INPUT event (append order, ~10 ops/match so
+                          // u16 is ample). Receiver dedups ops on
+                          // op_base + in-batch position — idempotent under
+                          // any re-delivery (health-watchdog re-backfill,
+                          // RC retransmit, overlapping chunks), unlike the
+                          // EVENT_BATCH positional connection counter.
 };
 
 // UDP accelerator tuning. Window 64 + send-every-2-confirmed-frames means
@@ -141,6 +151,12 @@ constexpr uint8_t SPEC_JOIN_UDP_OK = 0x01;
 // ships NO snapshot -- the light re-join that makes TCP death healing
 // one round trip instead of a 1MB snapshot ceremony.
 constexpr uint8_t SPEC_JOIN_RESUME = 0x02;  // viewer accepts UDP_INPUT_BATCH + OP_BASELINE
+// reserved[0] bit 2: reserved[5]=version minor, reserved[6]=version patch
+// (kAppVersion "0.M.P"). Savestate blobs + the sim itself are
+// version-specific -- a cross-version spectator black-screens instead of
+// failing loudly (live report 2026-07-17). The host rejects a JOIN whose
+// version bytes are absent or differ from its own.
+constexpr uint8_t SPEC_JOIN_VERSIONED = 0x04;
 
 // Spectator's preferred backfill mode, declared in SPEC_JOIN_REQ payload.
 // Default at the wire level (zero-init) is FULL_SESSION so an older host
@@ -634,7 +650,9 @@ void SpectatorNode_ClearGekkoSpectatorTracking();
 void SpectatorNode_HandleJoinReq(const sockaddr_in& from,
                                  SpecJoinMode mode = SpecJoinMode::FULL_SESSION,
                                  uint8_t caps = 0,
-                                 uint32_t resume_frame = 0);
+                                 uint32_t resume_frame = 0,
+                                 uint8_t ver_minor = 0,
+                                 uint8_t ver_patch = 0);
 
 // Handle SPEC_LEAVE — remove subscriber from list.
 void SpectatorNode_HandleLeave(const sockaddr_in& from);

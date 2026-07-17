@@ -508,7 +508,9 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
                 std::memcpy(&resume,
                             &packet->data.spec_join_req.reserved[1], 4);
                 SpectatorNode_HandleJoinReq(from, mode,
-                    packet->data.spec_join_req.reserved[0], resume);
+                    packet->data.spec_join_req.reserved[0], resume,
+                    packet->data.spec_join_req.reserved[5],
+                    packet->data.spec_join_req.reserved[6]);
             }
             break;
 

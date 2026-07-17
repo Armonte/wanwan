@@ -287,7 +287,11 @@ struct State {
     // out-of-order EVENT_BATCH payloads keyed by start_frame and drain them in
     // frame order — restoring host-append order for both inputs AND ops. Empty
     // (no cost) on a single ordered stream (TCP). Bounded to avoid unbounded hold.
-    std::map<uint32_t, std::vector<uint8_t>> pb_reorder;
+    struct ReorderBatch {
+        int32_t op_base = -1;   // EVENT_BATCH2 absolute op base; -1 = legacy
+        std::vector<uint8_t> bytes;
+    };
+    std::map<uint32_t, ReorderBatch> pb_reorder;
     // Pull-based gap recovery: periodic + on-demand INPUT_REQUEST
     // (spectator → upstream) for the missing frame range. Closes any
     // gap that the push-based redundancy window can't recover from.

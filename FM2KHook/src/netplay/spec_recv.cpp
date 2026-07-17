@@ -294,7 +294,13 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
             }
             break;
         }
-        case SpecDataType::EVENT_BATCH: {
+        case SpecDataType::EVENT_BATCH:
+        case SpecDataType::EVENT_BATCH2: {
+            // EVENT_BATCH2 = EVENT_BATCH + absolute op identity in
+            // hdr.frame_count (see spectator_node.h). -1 = legacy batch.
+            const int32_t batch_op_base =
+                (hdr.type == SpecDataType::EVENT_BATCH2)
+                    ? (int32_t)hdr.frame_count : -1;
             // Primary C2+ ingest. Payload is a packed SessionEvent[] stream
             // (1-byte tag + variant payload per event). Walk the stream
             // sequentially; for INPUT events apply the contiguous-frame
@@ -316,10 +322,10 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
             // Process one batch's events in host-append order. Runs for the
             // current batch and for reorder-buffered batches (drained in frame
             // order), so cross-channel arrival order is normalized to append order.
-            auto process_events = [](uint32_t start_frame, uint16_t frame_count,
+            auto process_events = [](uint32_t start_frame, int32_t op_base,
                                      const uint8_t* payload, size_t payload_len) {
                 const uint32_t expected_at_entry = g_state.next_expected_frame;
-                (void)frame_count;
+                uint32_t batch_ops_decoded = 0;
 
             // NOTE: there is deliberately NO "fully-consumed batch" early
             // skip here. AppendOpAndFlush emits op-only batches with
@@ -365,17 +371,29 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
                     }
                     ++cursor_input;
                 } else {
-                    // Phase F: op identity = global index. The connection
-                    // delivers ops in order from its baseline; ops the UDP
-                    // tail already accepted are duplicates -- skip their
-                    // push/relay entirely (a second MATCH_START apply
-                    // would corrupt the boundary).
-                    const uint32_t conn_op_idx =
-                        g_state.conn_ops_baseline + g_state.conn_ops_decoded;
+                    // Op identity. EVENT_BATCH2 carries the batch's absolute
+                    // op base (index over ALL non-INPUT session events in
+                    // append order) -- idempotent under any re-delivery:
+                    // the health watchdog's mid-session re-backfill re-ships
+                    // boundary ops, and the legacy positional counter
+                    // (baseline + count-of-decoded) re-NUMBERED those
+                    // duplicates as fresh ops, letting MATCH_START +
+                    // RESET_INPUT_STATE apply twice at the rematch seam
+                    // (2026-07-17: +103-frame unreset input-buffer index ->
+                    // alternating-parity full-state CRC churn from bf=28).
+                    // Legacy EVENT_BATCH keeps the positional counter.
+                    uint32_t conn_op_idx;
+                    if (op_base >= 0) {
+                        conn_op_idx = (uint32_t)op_base + batch_ops_decoded;
+                    } else {
+                        conn_op_idx = g_state.conn_ops_baseline
+                                      + g_state.conn_ops_decoded;
+                    }
+                    ++batch_ops_decoded;
                     ++g_state.conn_ops_decoded;
                     if (conn_op_idx < g_state.ops_seen) {
                         off += consumed;
-                        continue;  // duplicate of a UDP-accepted op
+                        continue;  // duplicate (re-delivered / UDP-accepted)
                     }
                     g_state.ops_seen = conn_op_idx + 1;
 
@@ -455,9 +473,9 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
             if (gap_first != 0xFFFFFFFFu) {
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     "SpectatorNode: EVENT_BATCH out-of-order INPUT %u (expected=%u, "
-                    "batch start=%u count=%u, pushed=%u skipped=%u)",
+                    "batch start=%u op_base=%d, pushed=%u skipped=%u)",
                     gap_first, expected_at_entry,
-                    start_frame, frame_count, pushed_inputs, skipped_inputs);
+                    start_frame, op_base, pushed_inputs, skipped_inputs);
             }
             // pb_queue / batch / subs status — diagnostic (~1 line/sec).
             // Routed via SDL_LOG_CATEGORY_CUSTOM into quill's backtrace
@@ -468,8 +486,8 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
                 uint32_t now = (uint32_t)GetTickCount64();
                 if (now - last_log_tick > 1000) {
                     SDL_LogInfo(SDL_LOG_CATEGORY_CUSTOM,
-                        "SpectatorNode: pb_queue=%zu (batch inputs=%u, start=%u, subs=%zu)",
-                        g_state.pb_queue.size(), frame_count, start_frame,
+                        "SpectatorNode: pb_queue=%zu (batch op_base=%d, start=%u, subs=%zu)",
+                        g_state.pb_queue.size(), op_base, start_frame,
                         g_state.subscribers.size());
                     last_log_tick = now;
                 }
@@ -484,8 +502,11 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
             // drained in frame order — so ops+inputs resume host-append order.
             const bool can_base = (rc_channel == 0 || rc_channel == RC_CHAN_SPEC_SNAPSHOT);
             auto buffer_batch = [&]() {
-                if (g_state.pb_reorder.size() < 1024)
-                    g_state.pb_reorder[hdr.start_frame].assign(payload, payload + payload_len);
+                if (g_state.pb_reorder.size() < 1024) {
+                    auto& rb = g_state.pb_reorder[hdr.start_frame];
+                    rb.op_base = batch_op_base;
+                    rb.bytes.assign(payload, payload + payload_len);
+                }
             };
             if (!g_state.have_frame_baseline) {
                 if (!can_base) { buffer_batch(); break; }   // hold live until bulk anchors
@@ -494,15 +515,15 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
             } else if (hdr.start_frame > g_state.next_expected_frame) {
                 buffer_batch(); break;                       // future -> reorder
             }
-            process_events(hdr.start_frame, hdr.frame_count, payload, payload_len);
+            process_events(hdr.start_frame, batch_op_base, payload, payload_len);
             // Drain buffered batches now consumable, strictly in frame order.
             while (!g_state.pb_reorder.empty()) {
                 auto it = g_state.pb_reorder.begin();
                 if (it->first > g_state.next_expected_frame) break;
                 uint32_t bf = it->first;
-                std::vector<uint8_t> b = std::move(it->second);
+                State::ReorderBatch b = std::move(it->second);
                 g_state.pb_reorder.erase(it);
-                process_events(bf, 0, b.data(), b.size());
+                process_events(bf, b.op_base, b.bytes.data(), b.bytes.size());
             }
             break;
         }

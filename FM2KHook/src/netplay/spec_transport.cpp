@@ -331,12 +331,28 @@ void FlushBatch() {
     }
     if (payload.empty()) return;
 
+    // EVENT_BATCH2: frame_count carries the absolute op base = index of
+    // this batch's first non-INPUT event over ALL non-INPUT session events.
+    // Every op append goes through AppendOpAndFlush (bumps total_op_count)
+    // AND lands in session_events, so the ops in [first,last) are exactly
+    // the most recent op_count appends.
+    uint32_t op_count = 0;
+    for (size_t i = first; i < last; i++) {
+        if (g_state.session_events[i].type != SessionEventType::INPUT) ++op_count;
+    }
+    const uint32_t op_base = g_state.total_op_count - op_count;
+    if (op_base > 0xFFFFu) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "SpectatorNode: op_base %u exceeds u16 -- EVENT_BATCH2 identity "
+            "saturated (session with >65535 boundary ops?)", op_base);
+    }
+
     std::vector<uint8_t> buf(sizeof(SpecDataHeader) + payload.size());
     SpecDataHeader hdr = {};
     hdr.magic       = SPEC_DATA_MAGIC;
-    hdr.type        = SpecDataType::EVENT_BATCH;
+    hdr.type        = SpecDataType::EVENT_BATCH2;
     hdr.start_frame = start_frame;
-    hdr.frame_count = static_cast<uint16_t>(std::min<uint32_t>(input_count, 0xFFFFu));
+    hdr.frame_count = static_cast<uint16_t>(std::min<uint32_t>(op_base, 0xFFFFu));
     // For EVENT_BATCH, flags carries the payload byte count so the TCP
     // framer can size the receive without re-decoding events. 16-bit cap
     // (65535) is well above any reasonable live FlushBatch — backfill

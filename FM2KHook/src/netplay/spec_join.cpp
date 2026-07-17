@@ -16,7 +16,27 @@
 #include "../hooks/css_autoconfirm.h" // Replay-mode CSS lock-and-confirm
 #include "../hooks/per_game_patches.h" // PerGamePatches_SetRuntimeBtbOverrides
 #include "../ui/shared_mem.h"         // C10: SharedMem_PublishMatchSession / RoundResult
+#include "version_local.h"            // fm2k::kAppVersion -- spectate version gate
 #include "gekkonet.h"
+
+// kAppVersion "0.M.P" -> (M, P) for the SPEC_JOIN_VERSIONED gate. Parsed
+// once; a malformed string (never happens -- make_version.sh stamps it)
+// degrades to 0.0, which simply fails the gate closed.
+static void AppVersionBytes(uint8_t* out_minor, uint8_t* out_patch) {
+    static uint8_t s_minor = 0xFF, s_patch = 0xFF;
+    if (s_minor == 0xFF) {
+        unsigned mj = 0, mn = 0, pa = 0;
+        if (std::sscanf(fm2k::kAppVersion, "%u.%u.%u", &mj, &mn, &pa) == 3) {
+            s_minor = (uint8_t)mn;
+            s_patch = (uint8_t)pa;
+        } else {
+            s_minor = 0;
+            s_patch = 0;
+        }
+    }
+    *out_minor = s_minor;
+    *out_patch = s_patch;
+}
 
 #include <SDL3/SDL_log.h>
 #include <winsock2.h>
@@ -111,7 +131,34 @@ CtrlPacket BuildJoinAckPacket() {
 }
 
 void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
-                                 uint8_t caps, uint32_t resume_frame) {
+                                 uint8_t caps, uint32_t resume_frame,
+                                 uint8_t ver_minor, uint8_t ver_patch) {
+    // Version gate. Savestate blobs and the sim are version-specific; a
+    // cross-version spectator silently black-screens (live report
+    // 2026-07-17), and pre-gate viewers can't parse EVENT_BATCH2 anyway.
+    // Reject unversioned (old build) and mismatched joiners with the
+    // null-redirect the capacity path uses -- the viewer gives up cleanly.
+    {
+        uint8_t my_minor = 0, my_patch = 0;
+        AppVersionBytes(&my_minor, &my_patch);
+        const bool versioned = (caps & SPEC_JOIN_VERSIONED) != 0;
+        if (!versioned || ver_minor != my_minor || ver_patch != my_patch) {
+            char addr_buf[48] = {};
+            FormatAddr(from, addr_buf, sizeof(addr_buf));
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "SpectatorNode: version gate REJECTED JOIN_REQ from %s -- "
+                "viewer %s0.%u.%u vs host 0.%u.%u (spectate needs the same "
+                "build; viewer should update)",
+                addr_buf, versioned ? "" : "unversioned/",
+                ver_minor, ver_patch, my_minor, my_patch);
+            CtrlPacket redir = {};
+            redir.header.type = CtrlMsg::SPEC_JOIN_REDIRECT;
+            redir.data.spec_redirect.redirect_ip   = 0;
+            redir.data.spec_redirect.redirect_port = 0;
+            ControlChannel_SendTo(redir, from);
+            return;
+        }
+    }
     const bool udp_ok = SpecUdpEnabled() && (caps & SPEC_JOIN_UDP_OK) != 0;
     if ((caps & SPEC_JOIN_RESUME) == 0) resume_frame = 0;
     // Pin the mode NOW, from the host's state at this instant -- the
@@ -523,6 +570,10 @@ bool SpectatorNode_RequestJoin(const sockaddr_in& upstream, SpecJoinMode mode) {
         const uint32_t resume = g_state.next_expected_frame;
         std::memcpy(&req.data.spec_join_req.reserved[1], &resume, 4);
     }
+    // Version gate advertisement (reserved[5]=minor, reserved[6]=patch).
+    req.data.spec_join_req.reserved[0] |= SPEC_JOIN_VERSIONED;
+    AppVersionBytes(&req.data.spec_join_req.reserved[5],
+                    &req.data.spec_join_req.reserved[6]);
     ControlChannel_SendTo(req, upstream);
     return true;
 }
@@ -546,6 +597,11 @@ void SpectatorNode_RequestGapFill() {
     req.data.spec_join_req.reserved[0] |= SPEC_JOIN_RESUME;
     const uint32_t resume = g_state.next_expected_frame;
     std::memcpy(&req.data.spec_join_req.reserved[1], &resume, 4);
+    // Version gate: every JOIN_REQ (incl. gap-fill re-joins) must carry
+    // the version bytes or the host's gate rejects it.
+    req.data.spec_join_req.reserved[0] |= SPEC_JOIN_VERSIONED;
+    AppVersionBytes(&req.data.spec_join_req.reserved[5],
+                    &req.data.spec_join_req.reserved[6]);
     ControlChannel_SendTo(req, g_state.upstream_addr);
 }
 

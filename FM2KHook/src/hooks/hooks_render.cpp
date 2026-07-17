@@ -359,6 +359,17 @@ typedef int(__cdecl* DispatchScriptSoundFunc)(int);
 static DispatchScriptSoundFunc original_dispatch_script_sound = nullptr;
 
 int __cdecl Hook_DispatchScriptSoundCommand(int script_item) {
+    // FM95 (Gap 4a, audio-under-rollback unported): everything below is
+    // FM2K-tuned -- the script-item field offsets, the channel table, and
+    // the SyncAfterAdvance reconcile that re-fires a recorded script_item
+    // pointer into sim memory a rollback may have rewound. Under stress
+    // rollback that re-fire AV'd inside CPW's own
+    // StopAllSoundsInBufferArray@0x4016A0 (NULL buffer array read).
+    // Full passthrough until the FM95 audio port lands: cost is possible
+    // music cut-in/out across FM95 rollbacks, never a crash.
+    if constexpr (FM2K::kIsFM95) {
+        return original_dispatch_script_sound(script_item);
+    }
     // Spectator catch-up mute (C5.5). While the spectator is burning
     // through queued events to reach live edge, we run sim only — no
     // render, no audio. Without this, joining 30k events late would

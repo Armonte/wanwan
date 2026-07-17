@@ -91,7 +91,7 @@ for lg in dbg[-2:]:
     reached = ("GekkoNet battle session created" in text) or bool(frm)
     ran = bool(frm) and max(frm) >= 500   # advanced past the heartbeat threshold
     desync = len(re.findall(r"desync=[1-9]|DESYNC", text))
-    crash = "[CRASH]" in text or "[TERMINATE]" in text
+    crash = ("[CRASH]" in text or "[TERMINATE]" in text or "=== CRASH" in text)
     ok = reached and ran and desync == 0 and not crash
     overall_ok &= ok
     print(f"[fm95-netplay] {tag}: reached_battle={reached} ran={ran} "

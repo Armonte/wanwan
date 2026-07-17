@@ -49,6 +49,11 @@ harness_env = {
     "FM2K_AUTO_TITLE_SKIP":         "1",
     "FM2K_AUTO_TERMINATE_AT_FRAME": str(frames),
     "FM2K_PRODUCTION_MODE":         "0",
+    # Boot straight to title (skip the 3-logo ~700-frame walk). Without it
+    # the autoplay title walk is timing-flaky and the smoke sometimes idles
+    # at CSS (#46). Safe since the _lopen/OpenFile share fix; harness-scope
+    # only -- the DLL default stays opt-in.
+    "FM95_SKIP_LOGOS":              "1",
 }
 env = dict(os.environ)
 env.update(harness_env)
@@ -79,19 +84,28 @@ if not dbg:
     print("[fm95-stress] FAIL — no game debug log produced"); sys.exit(1)
 text = open(dbg[-1], encoding="utf-8", errors="replace").read()
 
-reached_battle = "trampoline tick phase = BATTLE" in text
+# Owned-loop stress logs "ROLLBACK stats: total=N ... current=F" once per
+# 100 rollbacks; the legacy "trampoline tick phase = BATTLE" heartbeat only
+# existed on the host-driven path (grepping it false-negatived every run).
+rb_stats    = re.findall(r"ROLLBACK stats: total=(\d+).*?current=(\d+)", text)
+stats_rb    = max((int(t) for t, _ in rb_stats), default=0)
+stats_frame = max((int(f) for _, f in rb_stats), default=0)
+reached_battle = ("trampoline tick phase = BATTLE" in text) or bool(rb_stats)
 # check_distance actually applied (env crossed WSLENV) — otherwise no rollbacks.
 cd_override = re.search(r"FM2K_CHECK_DISTANCE override -> (\d+)", text)
 cd_applied  = int(cd_override.group(1)) if cd_override else 0
-# Peak rollback count from the BATTLE STATUS lines (rb=N) — proves save/load/
-# resim actually ran, not just a clean forward sim.
+# Peak rollback count: BATTLE STATUS rb=N (netplay-style) or ROLLBACK stats
+# totals (owned-loop stress) — either proves save/load/resim actually ran.
 rb_counts   = [int(m) for m in re.findall(r"BATTLE STATUS:.*? rb=(\d+)", text)]
-max_rb      = max(rb_counts) if rb_counts else 0
-max_frame   = max([int(m) for m in re.findall(r"BATTLE STATUS: frame=(\d+)", text)] or [0])
+max_rb      = max(rb_counts) if rb_counts else stats_rb
+max_frame   = max([int(m) for m in re.findall(r"BATTLE STATUS: frame=(\d+)", text)]
+                  or [stats_frame])
 desync_log  = glob.glob(str(cpw.parent / "FM95_P*_desync_f*.log")) + \
               glob.glob(str(log_dir / "FM95_P*_desync_f*.log"))
 desync_msgs = len(re.findall(r"desync=[1-9]|DESYNC|[Dd]esync detected", text))
-crash       = ("[CRASH]" in text or "[TERMINATE]" in text)
+# "=== CRASH at" is the SEH handler's actual banner — "[CRASH]" alone missed
+# a real 0xC0000005 (run reported crash=False while the log held a backtrace).
+crash       = ("[CRASH]" in text or "[TERMINATE]" in text or "=== CRASH" in text)
 
 print(f"[fm95-stress] reached_battle={reached_battle} check_distance={cd_applied} "
       f"max_rb={max_rb} max_frame={max_frame} "
@@ -109,5 +123,9 @@ if desync_log or desync_msgs:
     print(f"[fm95-stress] DESYNC — {len(desync_log)} dump(s), {desync_msgs} msg(s); "
           "the FM95 sim is not yet rollback-deterministic.", desync_log)
     sys.exit(4)
+if max_frame < int(frames) * 3 // 5:
+    print(f"[fm95-stress] INCOMPLETE — sim stalled at frame {max_frame} of "
+          f"{frames} (crashless stall; see log).")
+    sys.exit(3)
 print(f"[fm95-stress] PASS — battle reached, {max_rb} rollbacks over {max_frame} "
       "frames, zero desyncs. FM95 SIM IS ROLLBACK-DETERMINISTIC.")

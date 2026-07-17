@@ -335,39 +335,52 @@ WavValidity ProbeWav(const uint8_t* data, size_t len) {
         v.fatal.push_back("no data chunk found within the RIFF bound "
                           "(engine treats the WAV as unplayable)");
     if (v.have_fmt) {
-        // WARN wording is engine-proven (see audio_convert.h): the editor
-        // imports these unvalidated, modern Windows plays them, legacy
-        // DirectSound stacks reject the buffer and the game crashes on
-        // first play.
-        if (v.format_tag != 1) {
-            std::snprintf(buf, sizeof buf,
-                          "format tag %u is not PCM (1): the engine hands "
-                          "fmt raw to DirectSound -- plays on modern "
-                          "Windows, but crashes the game on audio stacks "
-                          "that reject it; convert to 16-bit PCM",
-                          v.format_tag);
-            v.warnings.push_back(buf);
-        }
-        if (v.bits != 8 && v.bits != 16) {
-            if (v.bits < 0) {
-                v.warnings.push_back(
-                    "fmt chunk carries no bits-per-sample field; "
-                    "DirectSound wants 8 or 16-bit -- convert to 16-bit PCM");
-            } else {
-                std::snprintf(buf, sizeof buf,
-                              "%d-bit samples (engine envelope is 8/16-bit): "
-                              "plays on modern Windows, crashes the game on "
-                              "audio stacks that reject it, and wastes file "
-                              "size -- convert to 16-bit PCM",
+        // ONE merged WARN per file: tag/bits/channels outside the classic
+        // envelope are the same root cause (a perfectly valid WAV in a
+        // format the 2DFM editor never writes), not separate defects.
+        // Wording is engine-proven but honest about scope (see
+        // audio_convert.h): modern Windows plays these fine; the crash is
+        // confined to DirectSound stacks that reject the raw fmt.
+        std::string dev;
+        if (v.format_tag == 3) {
+            if (v.bits > 0)
+                std::snprintf(buf, sizeof buf, "%d-bit float (fmt tag 3)",
                               v.bits);
-                v.warnings.push_back(buf);
+            else
+                std::snprintf(buf, sizeof buf, "float (fmt tag 3)");
+            dev = buf;
+        } else if (v.format_tag != 1) {
+            std::snprintf(buf, sizeof buf, "non-PCM codec (fmt tag %u)",
+                          v.format_tag);
+            dev = buf;
+        } else if (v.bits != 8 && v.bits != 16) {
+            if (v.bits < 0) {
+                dev = "fmt chunk carries no bits-per-sample field";
+            } else {
+                std::snprintf(buf, sizeof buf, "%d-bit integer PCM", v.bits);
+                dev = buf;
             }
         }
         if (v.channels != 1 && v.channels != 2) {
-            std::snprintf(buf, sizeof buf,
-                          "%u channels; engine envelope is mono or stereo",
-                          v.channels);
-            v.warnings.push_back(buf);
+            std::snprintf(buf, sizeof buf, "%u channels", v.channels);
+            if (!dev.empty()) dev += " + ";
+            dev += buf;
+        }
+        if (!dev.empty()) {
+            std::string msg =
+                dev +
+                ": a valid WAV, outside the classic 8/16-bit integer PCM "
+                "envelope. The engine never checks the format itself -- "
+                "fmt goes raw to DirectSound, and modern Windows accepts "
+                "this, so it plays fine. But on a DirectSound stack that "
+                "rejects the format the loader stores a NULL buffer "
+                "unchecked and the game crashes the first time a script "
+                "plays this slot. Converting to 16-bit PCM is OPTIONAL -- "
+                "compatibility hardening";
+            if (v.bits > 16)
+                msg += ", and it would roughly halve this slot's size";
+            msg += ".";
+            v.warnings.push_back(msg);
         }
     }
     return v;

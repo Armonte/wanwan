@@ -1,8 +1,9 @@
 // sound_table.cpp -- left panel: the sound table.
 // Columns per the MVP list: index, name, type, format, size, used-by
-// count, modified marker, validity flag ('!' yellow = WARN, red = FATAL,
-// tooltip carries the probe messages). Row click selects for the
-// detail/usage panels.
+// count, modified marker, validity flag (red '!' = FATAL, the walk breaks
+// in-game; dim yellow 'i' = informational format note -- plays on modern
+// Windows, see ProbeWav; tooltip carries the probe messages). Row click
+// selects for the detail/usage panels.
 //
 // Sorting is a VIEW permutation only: rows render through `order`, but
 // st.selected / replace_slot always hold the real sound-table index, so
@@ -110,7 +111,7 @@ void DrawSoundTable(AppState& st) {
         return;
     }
     const auto& sounds = st.model->Sounds();
-    ImGui::TextDisabled("%d sounds  (* = modified, ! = validity)",
+    ImGui::TextDisabled("%d sounds  (* = modified, ! = breaks in-game, i = format note)",
                         int(sounds.size()));
     ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
                             ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable |
@@ -176,10 +177,11 @@ void DrawSoundTable(AppState& st) {
             }
             ImGui::TableNextColumn();
             if (s.validity != Validity::Ok) {
-                const ImVec4 col = s.validity == Validity::Fatal
-                                       ? ImVec4(1.f, .35f, .3f, 1.f)    // red
-                                       : ImVec4(1.f, .85f, .35f, 1.f);  // yellow
-                ImGui::TextColored(col, "!");
+                const bool fatal = s.validity == Validity::Fatal;
+                const ImVec4 col = fatal
+                                       ? ImVec4(1.f, .35f, .3f, 1.f)     // red
+                                       : ImVec4(.85f, .75f, .4f, .9f);   // dim yellow
+                ImGui::TextColored(col, fatal ? "!" : "i");
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip) &&
                     !s.validity_msg.empty()) {
                     ImGui::SetNextWindowSize(ImVec2(420.f, 0.f), ImGuiCond_Always);

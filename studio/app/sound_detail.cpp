@@ -160,13 +160,13 @@ void DrawSoundDetail(AppState& st) {
         ImGui::PopTextWrapPos();
     } else if (s.validity == Validity::Warn) {
         ImGui::TextColored(ImVec4(1.f, .85f, .35f, 1.f),
-                           "nonstandard format (WARN)");
+                           "format note -- plays fine on modern Windows");
         ImGui::PushTextWrapPos(0.f);
         ImGui::TextColored(ImVec4(1.f, .9f, .6f, 1.f), "%s",
                            s.validity_msg.c_str());
         ImGui::PopTextWrapPos();
         if (editable && nib == 1) {
-            if (ImGui::Button("Convert to 16-bit PCM")) {
+            if (ImGui::Button("Convert to 16-bit PCM (optional)")) {
                 // Same pipeline, source = the slot's own bytes; the
                 // confirm modal shows the conversion before it applies.
                 const kgt::Sound& sd =

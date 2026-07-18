@@ -85,7 +85,16 @@ void Netplay_HandleSaveEvent(GekkoGameEvent* update) {
     // frame, fingerprints match and GekkoNet stays happy even when
     // per-process memory residue differs. Full combined hash is
     // still computed and available for the diagnostic dump.
-    uint32_t checksum = SaveState_GetRegionChecksums().gameplay_fingerprint;
+    // Frame 0 is the battle-entry PRE-INIT frame: HP/pos/timer are init-race
+    // garbage there (wild false desync-kill 2026-07-18: the "local" and
+    // "remote" f=0 CRCs both existed on ONE machine as its own forward-vs-
+    // replay captures; pkmncc HP read 39/44 at "f=0"). The harness gates
+    // already skip bf==0 for exactly this reason -- mirror it for gekko's
+    // live compare with a shared constant so capture-point timing can never
+    // fire DESYNC at f=0. Real checking starts at f=1.
+    uint32_t checksum = (frame < 1)
+        ? 0x464D3230u
+        : SaveState_GetRegionChecksums().gameplay_fingerprint;
     *update->data.save.state_len = sizeof(uint32_t);
     *update->data.save.checksum = checksum;
     memcpy(update->data.save.state, &frame, sizeof(uint32_t));

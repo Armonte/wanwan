@@ -425,7 +425,12 @@ bool Netplay_ProcessSpectatorPhase() {
                 int frame = update->data.save.frame;
                 SaveState_Save(frame);
                 (void)SaveState_GetLastChecksum(frame);
-                uint32_t checksum = SaveState_GetRegionChecksums().gameplay_fingerprint;
+                // f=0 pre-init constant -- same rationale as the
+                // netplay_battle_events.cpp save site (false desync-kill
+                // from the frame-0 capture race, 2026-07-18).
+                uint32_t checksum = (frame < 1)
+                    ? 0x464D3230u
+                    : SaveState_GetRegionChecksums().gameplay_fingerprint;
                 *update->data.save.state_len = sizeof(uint32_t);
                 *update->data.save.checksum  = checksum;
                 memcpy(update->data.save.state, &frame, sizeof(uint32_t));

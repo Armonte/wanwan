@@ -7,6 +7,7 @@
 #include "spectator_tcp.h"
 #include "nat_traversal.h"
 #include "addr6_util.h"        // Sendto4or6 (dual-stack v4-mapped send)
+#include "netplay.h"           // Netplay_IsActive -- keepalive during live gekko session
 #include "../ui/shared_mem.h"  // SharedMem_PublishMatchOutcome on ControlChannel timeout
 #include <SDL3/SDL_log.h>
 #include <vector>
@@ -143,8 +144,14 @@ static void CALLBACK KeepaliveTimerProc(UINT, UINT, DWORD_PTR, DWORD_PTR, DWORD_
     // independent of send activity -- so an RTT-induced CSS/battle-entry stall
     // can't deadlock waiting on a queued-but-never-sent packet. No-op in prod.
     fm2k::NetImpair_Pump();
-    // Outbound ping (post-handshake only).
-    if (g_connected) {
+    // Outbound ping (post-handshake only). ALSO ping while a gekko session
+    // is still alive even if the control layer timed itself out: after a
+    // carrier-NAT rebind, the peer's adoption of our new mapping is driven
+    // by OUR control packets -- if a timed-out side stops pinging, the
+    // other side never sees a peer-type packet from the new port and both
+    // stay frozen at the prediction wall forever (task #52/#53 soak,
+    // ~2-in-8 rebind runs lost the 1.5s adoption race).
+    if (g_connected || Netplay_IsActive()) {
         const uint32_t now_send = (uint32_t)timeGetTime();
         if (now_send - g_last_ping_time >= PING_INTERVAL_MS / 2) {
             ControlChannel_SendPing();

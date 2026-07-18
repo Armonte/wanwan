@@ -3,6 +3,7 @@
 #include "savestate.h"
 #include "savestate_internal.h"
 #include "globals.h"
+#include "../hooks/hooks.h"   // RoundEvents_LiveSubstate / Fm2k_ClearAfterimageIndices (task #53)
 #include <SDL3/SDL_log.h>
 #include <cstring>
 #include <cstdio>
@@ -11,6 +12,17 @@
 
 
 bool SaveState_Load(int frame) {
+    // task #53: capture the LIVE round substate BEFORE the restore
+    // overwrites it. If the live sim already entered the end/transition
+    // sequence (>= 900 -- the engine frees .player heap and starts CSS
+    // loads there), a restore of a pre-end state resurrects afterimage
+    // pool indices whose backing heap is GONE; the next
+    // sprite_rendering_engine pass AVs at 0x40cd47 (deterministic under
+    // the CGNAT-rebind rig: the barrier lags, the game transitions while
+    // the gekko session still rolls back). Cleared post-restore below;
+    // trails are invisible during results/fade so there is no visual cost.
+    const int live_substate_pre = RoundEvents_LiveSubstate();
+
     // Handle frame -1 as frame 0 (initial state before first frame)
     if (frame < 0) {
         frame = 0;
@@ -491,6 +503,11 @@ bool SaveState_Load(int frame) {
         // zero it on a spectator apply so the sync step doesn't deref host mem.
         static const SoundRollback::DesiredBgm s_zero_bgm = {};
         SoundRollback::RestoreBgm(&s_zero_bgm);
+    }
+
+    // task #53 afterimage guard -- see the live_substate_pre capture at entry.
+    if (live_substate_pre >= 900) {
+        Fm2k_ClearAfterimageIndices();
     }
 
     return true;

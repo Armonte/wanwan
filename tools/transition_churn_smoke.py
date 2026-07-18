@@ -232,5 +232,14 @@ if min(r1[0], r2[0]) < max(4, int(expected * 0.7)):
 if ok:
     print(f"[churn] PASS -- no freeze across {min(r1[0], r2[0])} battle cycles")
 else:
-    print("[churn] FAIL -- see above")
+    # Self-snapshot on ANY failure -- wrapper scripts kept copying the wrong
+    # file after later runs clobbered the live logs.
+    import shutil
+    stamp = time.strftime("%H%M%S")
+    keep = s.OUT_DIR / f"churn_fail_{stamp}"
+    keep.mkdir(parents=True, exist_ok=True)
+    for f in dbg[-2:] + glob.glob(str(log_dir / "FM2K_P*_Crash.log")):
+        try: shutil.copy(f, keep)
+        except OSError: pass
+    print(f"[churn] FAIL -- see above (logs kept in {keep})")
 sys.exit(0 if ok else 4)

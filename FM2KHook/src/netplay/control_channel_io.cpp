@@ -175,7 +175,25 @@ void RawReceive() {
             // cause RawSend (in non-relay mode) to send to the relay
             // instead of the peer. In relay mode we don't need a
             // peer addr at all (RawSend's relay branch ignores it).
-            if (!from_relay && !g_connected &&
+            // Type gate shared by learn + adoption below: only message types
+            // that ONLY the session peer sends may change the peer address.
+            // A spectator's SPEC_* control traffic (same public IP behind a
+            // shared NAT; always same-IP on loopback) must never be latched
+            // as the peer -- neither pre-connect (learn) nor mid-session
+            // (adoption); the pre-connect hole let a spectator that joined
+            // before the peer's HELLO become the "peer".
+            const CtrlMsg ctrl_type =
+                (eff_len >= sizeof(CtrlPacketHeader))
+                    ? reinterpret_cast<const CtrlPacket*>(eff_data)->header.type
+                    : CtrlMsg::DISCONNECT;
+            const bool peer_only_type =
+                ctrl_type == CtrlMsg::PING || ctrl_type == CtrlMsg::PONG ||
+                ctrl_type == CtrlMsg::HELLO || ctrl_type == CtrlMsg::HELLO_ACK ||
+                ctrl_type == CtrlMsg::CSS_INPUT || ctrl_type == CtrlMsg::CSS_START ||
+                ctrl_type == CtrlMsg::BATTLE_READY || ctrl_type == CtrlMsg::BATTLE_ACK ||
+                ctrl_type == CtrlMsg::BATTLE_ENTERING || ctrl_type == CtrlMsg::BATTLE_START ||
+                ctrl_type == CtrlMsg::BATTLE_END;
+            if (!from_relay && !g_connected && peer_only_type &&
                 !fm2k::Addr_Equal(g_remote_sockaddr, from_addr)) {
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                             "NetSocket: Learned peer address %s (was %s)",
@@ -194,23 +212,10 @@ void RawReceive() {
             // an old/new source interleave can't flap the addr every packet.
             else if (!from_relay && g_connected &&
                      !fm2k::Addr_Equal(g_remote_sockaddr, from_addr)) {
-                // Identity gate: only message types that ONLY the session
-                // peer sends may drive adoption. Spectators share our public
-                // IP behind the same NAT (and ALWAYS on loopback harness
-                // runs) -- their SPEC_* control traffic from another port
-                // must never steal the peer address (observed: host
-                // flip-flopped 7001<->7002 every 2s, gate RED).
-                const CtrlMsg t =
-                    (eff_len >= sizeof(CtrlPacketHeader))
-                        ? reinterpret_cast<const CtrlPacket*>(eff_data)->header.type
-                        : CtrlMsg::DISCONNECT;
-                const bool peer_only_type =
-                    t == CtrlMsg::PING || t == CtrlMsg::PONG ||
-                    t == CtrlMsg::HELLO || t == CtrlMsg::HELLO_ACK ||
-                    t == CtrlMsg::CSS_INPUT || t == CtrlMsg::CSS_START ||
-                    t == CtrlMsg::BATTLE_READY || t == CtrlMsg::BATTLE_ACK ||
-                    t == CtrlMsg::BATTLE_ENTERING || t == CtrlMsg::BATTLE_START ||
-                    t == CtrlMsg::BATTLE_END;
+                // Identity gate: peer_only_type (hoisted above, shared with
+                // the pre-connect learn). Observed without it: host
+                // flip-flopped 7001<->7002 every 2s from spectator SPEC_*
+                // traffic, gate RED.
                 static uint32_t s_last_adopt_ms = 0;
                 const uint32_t now_ms = GetTickCount();
                 if (peer_only_type &&

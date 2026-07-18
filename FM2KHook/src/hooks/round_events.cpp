@@ -128,12 +128,41 @@ static int ReadSubstate() {
     return *(int*)((char*)slot + OFF_ROUND_SUBSTATE);
 }
 
+// task #53 exports (decls in hooks.h). LiveSubstate: the round object's
+// CURRENT substate (900+ = end/transition sequence, the window where the
+// engine frees battle heap and loads CSS assets). ClearAfterimageIndices:
+// zero every object's afterimage pool index (BYTE +0x151, read by
+// sprite_rendering_engine at 0x40cd15) so no render can chain into heap
+// the transition freed.
+int RoundEvents_LiveSubstate() { return ReadSubstate(); }
+
+void Fm2k_ClearAfterimageIndices() {
+    uint8_t* pool = (uint8_t*)0x4701E0;
+    for (int i = 0; i < 1024; ++i) pool[i * 382 + 0x151] = 0;
+}
+
 static char __cdecl Hook_vs_round_function() {
     const int pre = ReadSubstate();
 
     char ret = orig_vs_round_function ? orig_vs_round_function() : 0;
 
     const int post = ReadSubstate();
+
+    // task #53 SIM-SIDE afterimage kill during the end sequence. Once the
+    // round object enters 900+ (results -> match teardown; the 902 step
+    // frees .player heap and loads CSS assets), afterimage pool indices
+    // must never survive to a render: a rollback batch that restores to a
+    // pre-end frame RE-WRITES them during its resim (trail spawns re-run)
+    // while the live pass already freed the heap they point at ->
+    // sprite_rendering_engine AVs at 0x40cd47. Clearing here runs in the
+    // SIM tick -- identical on both peers, in forward passes AND resims --
+    // so the poisoned state is structurally unreachable, unlike the
+    // teardown/restore-time clears (which a mid-batch resim outruns).
+    // Visual cost: afterimage trails vanish on the results screen, on both
+    // peers identically.
+    if (post >= 900) {
+        Fm2k_ClearAfterimageIndices();
+    }
 
     // AI field writes per frame: drive ai_input_processor's switch via
     // [slot+0xDF65] so the engine runs CPU AI (case 1), Imitate (case 2),

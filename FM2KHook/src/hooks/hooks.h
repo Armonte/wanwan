@@ -87,4 +87,10 @@ void Hook_AutoplayCssResetDwell();
 // when the trace isn't enabled.
 void Hook_FlushRngTrace();
 
+// task #53 (round_events.cpp): live round-object substate (900+ = the
+// end/transition sequence that frees battle heap) + pool-wide clear of the
+// per-object afterimage index so render can't chain into freed heap.
+int  RoundEvents_LiveSubstate();
+void Fm2k_ClearAfterimageIndices();
+
 #endif // HOOKS_H

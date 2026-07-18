@@ -31,6 +31,19 @@
 #include <atomic>
 
 void Netplay_EndBattle() {
+    // FM2K: neutralize afterimage references before the engine tears the
+    // battle down (task #53). Each object's afterimage pool index (BYTE at
+    // +0x151; sprite_rendering_engine reads it at 0x40cd15) chains render
+    // into heap script pointers that the battle->CSS transition frees. A
+    // rollback restore near the boundary (the catch-up burst after a
+    // network stall) can resurrect the index after the free -- the next
+    // render then walks a freed pointer (deterministic AV at 0x40cd47
+    // under the CGNAT-rebind rig). The CSS init rebuilds the object pool
+    // anyway; clearing the index here only closes the stale-render window.
+    // Symmetric: both peers run EndBattle at the agreed swap frame.
+    if constexpr (FM2K::kIsFM2K) {
+        Fm2k_ClearAfterimageIndices();
+    }
     // Capture match outcome BEFORE we destroy the session — reading HP
     // at this point reflects the final state of the just-ended battle.
     // Outcome is from the local player's perspective; the launcher

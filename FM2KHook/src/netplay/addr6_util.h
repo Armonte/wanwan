@@ -44,6 +44,11 @@ std::string Addr_ActorString(const sockaddr_storage& sa);
 // Family-aware equality (family + address bytes + port). Used by peer-learning.
 bool Addr_Equal(const sockaddr_storage& a, const sockaddr_storage& b);
 
+// Family + address bytes only (IGNORES port). Used by the carrier-NAT
+// mid-session port-rebind adoption: same IP + new port = the peer's NAT
+// remapped the flow, not a different host.
+bool Addr_SameIp(const sockaddr_storage& a, const sockaddr_storage& b);
+
 // True if sa is a usable (non-empty) peer address (port != 0).
 bool Addr_HasPort(const sockaddr_storage& sa);
 

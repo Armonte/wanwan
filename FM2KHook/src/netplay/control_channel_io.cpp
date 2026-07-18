@@ -183,6 +183,63 @@ void RawReceive() {
                             fm2k::Addr_ActorString(g_remote_sockaddr).c_str());
                 g_remote_sockaddr = from_addr;
             }
+            // Mid-session PORT-REBIND adoption (task #52): a carrier NAT can
+            // remap the peer's flow mid-session -- same public IP, new source
+            // port, old mapping dead. Without adopting NOW, our sends keep
+            // dying into the dead mapping until the 1.5-10s connection
+            // timeout tears everything down (in-flight battle freezes at the
+            // prediction wall; a CSS straddling it force-completes into a
+            // desync). Same-IP-only: a different IP is not adoptable on
+            // faith (spoof risk) -- log it for visibility. Rate-limited so
+            // an old/new source interleave can't flap the addr every packet.
+            else if (!from_relay && g_connected &&
+                     !fm2k::Addr_Equal(g_remote_sockaddr, from_addr)) {
+                // Identity gate: only message types that ONLY the session
+                // peer sends may drive adoption. Spectators share our public
+                // IP behind the same NAT (and ALWAYS on loopback harness
+                // runs) -- their SPEC_* control traffic from another port
+                // must never steal the peer address (observed: host
+                // flip-flopped 7001<->7002 every 2s, gate RED).
+                const CtrlMsg t =
+                    (eff_len >= sizeof(CtrlPacketHeader))
+                        ? reinterpret_cast<const CtrlPacket*>(eff_data)->header.type
+                        : CtrlMsg::DISCONNECT;
+                const bool peer_only_type =
+                    t == CtrlMsg::PING || t == CtrlMsg::PONG ||
+                    t == CtrlMsg::HELLO || t == CtrlMsg::HELLO_ACK ||
+                    t == CtrlMsg::CSS_INPUT || t == CtrlMsg::CSS_START ||
+                    t == CtrlMsg::BATTLE_READY || t == CtrlMsg::BATTLE_ACK ||
+                    t == CtrlMsg::BATTLE_ENTERING || t == CtrlMsg::BATTLE_START ||
+                    t == CtrlMsg::BATTLE_END;
+                static uint32_t s_last_adopt_ms = 0;
+                const uint32_t now_ms = GetTickCount();
+                if (peer_only_type &&
+                    fm2k::Addr_SameIp(g_remote_sockaddr, from_addr)) {
+                    if (now_ms - s_last_adopt_ms >= 2000) {
+                        s_last_adopt_ms = now_ms;
+                        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                            "NetSocket: peer PORT REBIND -- adopted %s (was %s), "
+                            "carrier-NAT mid-session remap",
+                            fm2k::Addr_ActorString(from_addr).c_str(),
+                            fm2k::Addr_ActorString(g_remote_sockaddr).c_str());
+                        g_remote_sockaddr = from_addr;
+                    }
+                } else if (peer_only_type) {
+                    // A peer-only message type from a DIFFERENT IP: either a
+                    // spoofer or an IP-changing CGNAT remap (not adoptable on
+                    // faith). Spectator SPEC_* traffic never reaches here.
+                    static uint32_t s_last_foreign_ms = 0;
+                    if (now_ms - s_last_foreign_ms >= 5000) {
+                        s_last_foreign_ms = now_ms;
+                        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                            "NetSocket: peer-type CTRL from foreign source %s while "
+                            "connected to %s -- ignored (different IP, not "
+                            "adoptable)",
+                            fm2k::Addr_ActorString(from_addr).c_str(),
+                            fm2k::Addr_ActorString(g_remote_sockaddr).c_str());
+                    }
+                }
+            }
 
             // Control packet - process immediately
             if (eff_len >= sizeof(CtrlPacketHeader)) {
@@ -293,7 +350,21 @@ void RawReceive() {
             // inet_ntoa) are derived from this same g_remote_sockaddr, and
             // it was set via inet_pton (dotted-decimal only, no hostnames),
             // so the two formattings produce identical "ip:port" text.
-            const sockaddr_storage& stamp = from_relay ? g_remote_sockaddr : from_addr;
+            // Rebind survival (task #52): gekko's actor match is EXACT --
+            // after a carrier-NAT port remap, direct packets arrive from a
+            // NEW port and would all be silently dropped (and NetworkHealth's
+            // RTT match breaks -> ping pins 0 -> one-sided rollback). Stamp
+            // any same-IP direct packet with the PINNED actor addr so the
+            // in-flight session keeps accepting; a genuinely foreign IP still
+            // gets its raw source (gekko drops it, as before).
+            const sockaddr_storage& stamp =
+                from_relay
+                    ? (g_gekko_actor_pinned ? g_gekko_actor_addr
+                                            : g_remote_sockaddr)
+                    : (g_gekko_actor_pinned &&
+                       fm2k::Addr_SameIp(g_gekko_actor_addr, from_addr))
+                        ? g_gekko_actor_addr
+                        : from_addr;
             g_gekko_packet_queue.push_back({std::move(pkt_data), stamp});
         }
     }

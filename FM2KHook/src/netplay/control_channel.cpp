@@ -25,6 +25,8 @@
 SOCKET g_socket = INVALID_SOCKET;
 sockaddr_in6 g_local_sockaddr = {};  // AF_INET6 dual-stack bind (or v4-fallback port)
 sockaddr_storage g_remote_sockaddr = {};  // peer: v4 (un-mapped) OR native v6
+sockaddr_storage g_gekko_actor_addr = {}; // addr registered with gekko_add_actor
+bool             g_gekko_actor_pinned = false;
 bool g_socket_initialized = false;
 
 // Sequence numbers for reliable messaging
@@ -420,6 +422,16 @@ const sockaddr_in* NetSocket_GetRemoteAddr() {
 // recv stamp exactly -- the load-bearing actor-string invariant.
 std::string NetSocket_GetRemoteActorString() {
     return fm2k::Addr_ActorString(g_remote_sockaddr);
+}
+
+void NetSocket_PinGekkoActorAddr() {
+    g_gekko_actor_addr   = g_remote_sockaddr;
+    g_gekko_actor_pinned = true;
+}
+
+void NetSocket_ClearGekkoActorPin() {
+    g_gekko_actor_addr   = {};
+    g_gekko_actor_pinned = false;
 }
 
 // =============================================================================

@@ -426,6 +426,7 @@ bool Netplay_StartBattle() {
             snprintf(g_remote_addr, sizeof(g_remote_addr), "%s", actor.c_str());
         }
     }
+    NetSocket_PinGekkoActorAddr();  // rebind survival: pin this session's actor
 
     for (int i = 0; i < 2; i++) {
         if (i == g_player_index) {

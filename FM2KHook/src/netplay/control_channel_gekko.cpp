@@ -79,6 +79,31 @@ static void MultiplexAdapter_Send(GekkoNetAddress* addr, const char* data, int l
         return;
     }
 
+    // Rebind survival (task #52): gekko addresses its sends to the actor it
+    // registered at session create. After a carrier-NAT port remap that
+    // mapping is DEAD -- redirect sends aimed at the pinned actor onto the
+    // CURRENT learned peer mapping so the in-flight session's outbound
+    // follows the rebind (inbound is handled by the recv stamp).
+    if (g_gekko_actor_pinned &&
+        g_remote_sockaddr.ss_family == AF_INET &&
+        !fm2k::Addr_Equal(g_gekko_actor_addr, g_remote_sockaddr)) {
+        const sockaddr_in* pin =
+            reinterpret_cast<const sockaddr_in*>(&g_gekko_actor_addr);
+        if (g_gekko_actor_addr.ss_family == AF_INET &&
+            pin->sin_addr.s_addr == dst.sin_addr.s_addr &&
+            pin->sin_port == dst.sin_port) {
+            const sockaddr_in* live =
+                reinterpret_cast<const sockaddr_in*>(&g_remote_sockaddr);
+            int r2 = fm2k::Sendto4or6(g_socket, data, length, *live);
+            if (r2 == SOCKET_ERROR && WSAGetLastError() != WSAEWOULDBLOCK) {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                    "MultiplexAdapter: redirected sendto failed: %d",
+                    WSAGetLastError());
+            }
+            return;
+        }
+    }
+
     int result = fm2k::Sendto4or6(g_socket, data, length, dst);
     if (result == SOCKET_ERROR) {
         int err = WSAGetLastError();

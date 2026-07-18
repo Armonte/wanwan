@@ -376,6 +376,7 @@ bool Netplay_Init(int player_index, uint16_t local_port, const char* remote_addr
     g_end_done_epoch   = 0;
     g_entry_done_ms    = 0;
     g_end_done_ms      = 0;
+    NetSocket_ClearGekkoActorPin();  // fresh connection = fresh actor identity
 
     // Reset handshake
     g_received_hello = false;

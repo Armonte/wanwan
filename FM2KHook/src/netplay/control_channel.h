@@ -38,6 +38,15 @@ const sockaddr_in* NetSocket_GetRemoteAddr();
 // to the legacy form, v6 "[..]:port"). Use this for gekko_add_actor.
 std::string NetSocket_GetRemoteActorString();
 
+// Pin the CURRENT learned peer address as the gekko actor identity (call
+// right after handing its string to gekko_add_actor). Keeps the in-flight
+// gekko session alive across a carrier-NAT mid-session port remap: inbound
+// same-IP packets are stamped with the pinned addr (gekko accepts +
+// RTT-matches), outbound sends addressed to it follow the live learned
+// mapping (task #52).
+void NetSocket_PinGekkoActorAddr();
+void NetSocket_ClearGekkoActorPin();
+
 // =============================================================================
 // CONTROL CHANNEL (0xCC-prefixed packets)
 // =============================================================================

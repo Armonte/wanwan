@@ -25,6 +25,14 @@ extern sockaddr_in6 g_local_sockaddr;
 // old sockaddr_in path (addr6_util's Addr_ActorString preserves the GekkoNet
 // actor-string match); v6 only ever appears when a v6 candidate latches.
 extern sockaddr_storage g_remote_sockaddr;
+// Gekko actor pin (carrier-NAT rebind survival, task #52). Set at every
+// gekko session create to the EXACT address whose string was handed to
+// gekko_add_actor. Inbound gekko packets from the same peer IP are stamped
+// with THIS address (so gekko keeps accepting + RTT-matching after the
+// peer's NAT remaps its port), and MultiplexAdapter_Send redirects sends
+// addressed to it onto the CURRENT learned g_remote_sockaddr.
+extern sockaddr_storage g_gekko_actor_addr;
+extern bool             g_gekko_actor_pinned;
 extern bool g_socket_initialized;
 
 extern uint16_t g_send_seq;

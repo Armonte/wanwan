@@ -86,6 +86,18 @@ bool Addr_Equal(const sockaddr_storage& a, const sockaddr_storage& b) {
            x->sin_addr.s_addr == y->sin_addr.s_addr;
 }
 
+bool Addr_SameIp(const sockaddr_storage& a, const sockaddr_storage& b) {
+    if (a.ss_family != b.ss_family) return false;
+    if (a.ss_family == AF_INET6) {
+        const sockaddr_in6* x = reinterpret_cast<const sockaddr_in6*>(&a);
+        const sockaddr_in6* y = reinterpret_cast<const sockaddr_in6*>(&b);
+        return std::memcmp(&x->sin6_addr, &y->sin6_addr, sizeof(in6_addr)) == 0;
+    }
+    const sockaddr_in* x = reinterpret_cast<const sockaddr_in*>(&a);
+    const sockaddr_in* y = reinterpret_cast<const sockaddr_in*>(&b);
+    return x->sin_addr.s_addr == y->sin_addr.s_addr;
+}
+
 bool Addr_HasPort(const sockaddr_storage& sa) {
     if (sa.ss_family == AF_INET6)
         return reinterpret_cast<const sockaddr_in6*>(&sa)->sin6_port != 0;
@@ -137,6 +149,15 @@ double   g_ni_loss    = 0.0;
 double   g_ni_reorder = 0.0;    // clumsy ood: chance a packet's release time is shuffled
 double   g_ni_dup     = 0.0;    // clumsy duplicate: chance a packet is sent twice
 uint64_t g_ni_rng     = 0;
+// FM2K_NET_REBIND_S: simulate a carrier-NAT mid-session PORT REBIND. After N
+// seconds every impaired outbound leaves from a FRESH socket (new ephemeral
+// source port) -- the peer sees the source change exactly like a CGNAT remap.
+// One-shot; receives stay on the original socket (the sub-case where the old
+// inbound path survives but the peer's gekko actor-string check silently
+// drops the re-sourced packets -- task #52 Patrick/Melancholy freeze).
+int      g_ni_rebind_s    = 0;
+uint64_t g_ni_start_ms    = 0;
+SOCKET   g_ni_rebind_sock = INVALID_SOCKET;
 void NetImpairInit() {
     if (g_ni_delay >= 0) return;
     const char* j  = std::getenv("FM2K_NET_JITTER_MS");
@@ -144,21 +165,51 @@ void NetImpairInit() {
     const char* ro = std::getenv("FM2K_NET_REORDER");
     const char* du = std::getenv("FM2K_NET_DUP");
     const char* sd = std::getenv("FM2K_NET_SEED");
+    const char* rb = std::getenv("FM2K_NET_REBIND_S");
     const char* d  = std::getenv("FM2K_NET_DELAY_MS");
     g_ni_jitter  = j ? std::atoi(j) : 0;
     g_ni_loss    = l ? std::atof(l) : 0.0;
     g_ni_reorder = ro ? std::atof(ro) : 0.0;
     g_ni_dup     = du ? std::atof(du) : 0.0;
     g_ni_rng     = sd ? std::strtoull(sd, nullptr, 10) : 0x9E3779B97F4A7C15ULL;
+    g_ni_rebind_s = rb ? std::atoi(rb) : 0;
+    g_ni_start_ms = GetTickCount64();
     g_ni_delay   = d ? std::atoi(d) : 0;          // set LAST: arms the fast-path gate
-    if (g_ni_delay > 0 || g_ni_loss > 0.0 || g_ni_reorder > 0.0 || g_ni_dup > 0.0)
+    if (g_ni_delay > 0 || g_ni_loss > 0.0 || g_ni_reorder > 0.0 || g_ni_dup > 0.0 ||
+        g_ni_rebind_s > 0)
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
             "[NET-IMPAIR] one-way delay=%dms jitter=%dms loss=%.3f reorder=%.3f dup=%.3f "
-            "(RTT~%dms) -- TEST ONLY",
-            g_ni_delay, g_ni_jitter, g_ni_loss, g_ni_reorder, g_ni_dup, g_ni_delay * 2);
+            "rebind_s=%d (RTT~%dms) -- TEST ONLY",
+            g_ni_delay, g_ni_jitter, g_ni_loss, g_ni_reorder, g_ni_dup,
+            g_ni_rebind_s, g_ni_delay * 2);
 }
 bool NiImpaired() {
-    return g_ni_delay > 0 || g_ni_loss > 0.0 || g_ni_reorder > 0.0 || g_ni_dup > 0.0;
+    return g_ni_delay > 0 || g_ni_loss > 0.0 || g_ni_reorder > 0.0 || g_ni_dup > 0.0 ||
+           g_ni_rebind_s > 0;
+}
+// Socket to actually emit from: the original, or (after the configured
+// rebind moment) a fresh ephemeral-port socket of the same family.
+SOCKET NiRebindSocket(SOCKET orig) {
+    if (g_ni_rebind_s <= 0) return orig;
+    if (GetTickCount64() - g_ni_start_ms < (uint64_t)g_ni_rebind_s * 1000ull)
+        return orig;
+    if (g_ni_rebind_sock == INVALID_SOCKET) {
+        sockaddr_storage sa{}; int sl = sizeof(sa);
+        getsockname(orig, reinterpret_cast<sockaddr*>(&sa), &sl);
+        g_ni_rebind_sock = socket(sa.ss_family, SOCK_DGRAM, IPPROTO_UDP);
+        if (g_ni_rebind_sock != INVALID_SOCKET) {
+            u_long nb = 1; ioctlsocket(g_ni_rebind_sock, FIONBIO, &nb);
+            if (sa.ss_family == AF_INET6) {
+                DWORD off = 0;
+                setsockopt(g_ni_rebind_sock, IPPROTO_IPV6, IPV6_V6ONLY,
+                           reinterpret_cast<char*>(&off), sizeof(off));
+            }
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "[NET-IMPAIR] REBIND fired -- outbound now leaves from a fresh "
+                "socket (simulated CGNAT port remap)");
+        }
+    }
+    return (g_ni_rebind_sock != INVALID_SOCKET) ? g_ni_rebind_sock : orig;
 }
 uint64_t NiRng() {
     uint64_t x = g_ni_rng; x ^= x >> 12; x ^= x << 25; x ^= x >> 27;
@@ -176,7 +227,8 @@ static void NetImpair_PumpLocked(uint64_t now) {
     for (auto& p : g_ni_queue) if (p.due_ms <= now) due.push_back(&p);
     std::sort(due.begin(), due.end(),
               [](const DelayedSend* a, const DelayedSend* b) { return a->due_ms < b->due_ms; });
-    for (auto* p : due) Sendto4or6_Raw(p->s, p->buf.data(), (int)p->buf.size(), p->dst);
+    for (auto* p : due)
+        Sendto4or6_Raw(NiRebindSocket(p->s), p->buf.data(), (int)p->buf.size(), p->dst);
     for (auto it = g_ni_queue.begin(); it != g_ni_queue.end(); )
         it = (it->due_ms <= now) ? g_ni_queue.erase(it) : std::next(it);
 }
@@ -219,7 +271,8 @@ int Sendto4or6(SOCKET s, const char* buf, int len, const sockaddr_in& dst4) {
     // Duplicate = clumsy duplicate: emit the packet twice.
     int copies = (g_ni_dup > 0.0 && NiRoll() < g_ni_dup) ? 2 : 1;
     if (d == 0 && copies == 1) {
-        return Sendto4or6_Raw(s, buf, len, dst4);   // nothing to hold/dup -> send now
+        // nothing to hold/dup -> send now (through the rebind sim if armed)
+        return Sendto4or6_Raw(NiRebindSocket(s), buf, len, dst4);
     }
     for (int i = 0; i < copies; ++i) {
         g_ni_queue.push_back(DelayedSend{

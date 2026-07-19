@@ -7,6 +7,7 @@
 #include "../hooks/hooks.h"   // Hook_ApplySOCD_Public for SOCD-pre-apply on spec capture
 #include "../hooks/css_autoconfirm.h"  // CssAutoConfirm_OnReplayMatchStart (TEST_CSS_CHAR pin)
 #include "control_channel.h"
+#include "control_channel_internal.h"  // g_gekko_rx_* stamps for [BEAT]/[WEDGE] (#56)
 #include "host_clock.h"
 #include "game_hash.h"
 #include "input.h"
@@ -880,6 +881,44 @@ void Netplay_TickHeartbeat() {
         g_beat_last_emit_ms = now_ms;
         return;
     }
+
+    // task #56 [WEDGE] watch: the known-bad state is "battle frame frozen,
+    // prediction window exhausted, control channel still alive" -- which in
+    // wild logs looks like nothing at all (BEAT keeps printing frozen bf).
+    // Warn explicitly, with the two counters that split the failure in half:
+    // gekko_rx_age growing = peer datagrams stopped REACHING us (socket /
+    // addr-pin / path problem); gekko_rx_age small while conf is frozen =
+    // packets arrive but gekko refuses to admit them (actor-string mismatch,
+    // internal stall). 5s threshold: normal seams either change session kind
+    // or keep bf ticking; a 5s freeze mid-battle is unambiguous.
+    {
+        static uint32_t s_wedge_last_bf      = 0;
+        static uint64_t s_wedge_bf_stamp_ms  = 0;
+        static uint64_t s_wedge_last_warn_ms = 0;
+        if (g_netplay_frame != s_wedge_last_bf) {
+            s_wedge_last_bf     = g_netplay_frame;
+            s_wedge_bf_stamp_ms = now_ms;
+        } else if (s_wedge_bf_stamp_ms != 0 &&
+                   now_ms - s_wedge_bf_stamp_ms >= 5000 &&
+                   now_ms - s_wedge_last_warn_ms >= 10000) {
+            s_wedge_last_warn_ms = now_ms;
+            GekkoNetworkStats ws = {};
+            gekko_network_stats(g_session,
+                                (g_player_index == 0) ? 1 : 0, &ws);
+            const uint64_t rx_ms  = g_gekko_rx_last_ms.load(std::memory_order_relaxed);
+            const uint64_t rx_age = rx_ms ? (now_ms - rx_ms) : 0;
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "[WEDGE] battle frame FROZEN for %llus at bf=%u conf=%d "
+                "gekko_rx_age=%llums gekko_rx_total=%llu ping=%ums FA=%+.1f "
+                "-- input exchange dead while session alive (task #56)",
+                (unsigned long long)((now_ms - s_wedge_bf_stamp_ms) / 1000ULL),
+                g_netplay_frame, gekko_confirmed_frame(g_session),
+                (unsigned long long)rx_age,
+                (unsigned long long)g_gekko_rx_total.load(std::memory_order_relaxed),
+                ws.last_ping, gekko_frames_ahead(g_session));
+        }
+    }
+
     if (now_ms - g_beat_last_emit_ms < 10000ULL) return;
     g_beat_last_emit_ms = now_ms;
 
@@ -900,15 +939,23 @@ void Netplay_TickHeartbeat() {
     const double   rb_avg   = rb_count ? (double)g_beat_window_rb_sum / rb_count : 0.0;
     const uint32_t rb_max   = g_beat_window_rb_max;
 
+    // conf/gko_rx appended for #56 forensics: conf = gekko input-exchange
+    // frontier (frozen conf with climbing gko_rx = admit-side stall);
+    // gko_rx_age = ms since a gekko-classified datagram last reached us.
+    const uint64_t beat_rx_ms = g_gekko_rx_last_ms.load(std::memory_order_relaxed);
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
         "[BEAT] bf=%u role=%s ping=%ums jit=%.1fms FA=%+.1f "
-        "delay=%d ra=%d pred=%d rb_total=%u rb_win=%u rb_avg=%.1f rb_max=%u",
+        "delay=%d ra=%d pred=%d rb_total=%u rb_win=%u rb_avg=%.1f rb_max=%u "
+        "conf=%d gko_rx=%llu gko_rx_age=%llums",
         g_netplay_frame, SessionRoleStr(),
         stats.last_ping, stats.jitter, fa,
         g_local_delay,
         g_runahead_active.load(std::memory_order_acquire),
         g_pred_window,
-        g_rollback_count, rb_count, rb_avg, rb_max);
+        g_rollback_count, rb_count, rb_avg, rb_max,
+        gekko_confirmed_frame(g_session),
+        (unsigned long long)g_gekko_rx_total.load(std::memory_order_relaxed),
+        (unsigned long long)(beat_rx_ms ? (now_ms - beat_rx_ms) : 0));
 
     // [RELAY-RTT-DIAG] Under relay, surface whether gekko's RTT-match address
     // (the live g_remote_sockaddr stamp) still equals the string we registered

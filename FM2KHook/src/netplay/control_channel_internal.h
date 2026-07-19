@@ -70,6 +70,12 @@ extern char g_recv_buffer[RECV_BUFFER_SIZE];
 extern std::vector<std::pair<std::vector<char>, sockaddr_storage>> g_gekko_packet_queue;
 extern std::vector<GekkoNetResult*> g_gekko_result_ptrs;
 
+// task #56 forensics: stamped by MultiplexAdapter_Receive whenever gekko-
+// classified datagrams are handed to the session. Read by the [BEAT]/[WEDGE]
+// heartbeat to tell a receive-starved wedge from an admit-starved one.
+extern std::atomic<uint64_t> g_gekko_rx_last_ms;
+extern std::atomic<uint64_t> g_gekko_rx_total;
+
 // ---- current time in milliseconds (steady clock) ----
 inline uint32_t GetTimeMs() {
     auto now = std::chrono::steady_clock::now();

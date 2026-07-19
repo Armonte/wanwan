@@ -114,6 +114,10 @@ static void MultiplexAdapter_Send(GekkoNetAddress* addr, const char* data, int l
     }
 }
 
+// task #56 forensics (decls in control_channel_internal.h).
+std::atomic<uint64_t> g_gekko_rx_last_ms{0};
+std::atomic<uint64_t> g_gekko_rx_total{0};
+
 // Adapter receive function - returns queued GekkoNet packets
 static GekkoNetResult** MultiplexAdapter_Receive(int* length) {
     // CRITICAL: hold g_poll_mutex for the whole body. This runs on the
@@ -145,6 +149,16 @@ static GekkoNetResult** MultiplexAdapter_Receive(int* length) {
     RawReceive();
 
     // Debug logging removed - too verbose for production
+
+    // task #56 forensics: stamp gekko-classified receives so the [WEDGE]
+    // watchdog can tell "we stopped RECEIVING peer packets" apart from
+    // "packets arrive but gekko won't admit them" (actor-string mismatch,
+    // internal stall). Relaxed atomics -- read from the heartbeat only.
+    if (!g_gekko_packet_queue.empty()) {
+        g_gekko_rx_last_ms.store(GetTickCount64(), std::memory_order_relaxed);
+        g_gekko_rx_total.fetch_add(g_gekko_packet_queue.size(),
+                                   std::memory_order_relaxed);
+    }
 
     // Convert queued packets to GekkoNet format
     // IMPORTANT: Each result must be heap-allocated because GekkoNet will free them!

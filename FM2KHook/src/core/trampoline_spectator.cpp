@@ -83,6 +83,19 @@ inline size_t SpectatorTargetDelayFrames() {
 // caller's responsibility.
 uint32_t g_spec_pop_total = 0;
 
+// task #60: symmetric steady-state pacing accumulator (negative = we ran
+// ahead of the wall clock; skip-gate consumes it as render-only ticks).
+static double g_spec_steady_accum = 0.0;
+
+// task #60: one-shot handoff from ApplyPendingSnapshot. When a battle
+// snapshot applies, it runs initial-sync + PIN_RNG itself (init must
+// precede the overlay) and sets this so the NEXT first-3000-iteration
+// skips its own init instead of clobbering the applied state (para's
+// wild 2.82 session: apply at :08.617, init at :08.666 -> viewer
+// replayed real tail inputs over a fresh-boot battle). Consumed once;
+// later battles' entries init normally.
+bool g_spec_skip_next_battle_init = false;
+
 static bool SpectatorSimOneFrame() {
     uint16_t p1 = 0, p2 = 0;
     if (!SpectatorNode_PopFrameInputs(&p1, &p2)) {
@@ -103,16 +116,26 @@ static bool SpectatorSimOneFrame() {
         if (!s_spec_trace_in_battle) {
             s_spec_trace_in_battle = true;
             s_spec_trace_bf = 0;
-            // First iteration where mode_pre==3000 = first FULL battle
-            // frame on the spec side (mode_pre==3000 at iteration start,
-            // mode_pre==3000 still at end; PGI/UG ran entirely in battle
-            // context). Apply PIN_RNG + initial-sync BEFORE PGI here so
-            // host's first battle frame post-PGI rng matches replay's.
-            SaveState_DoInitialSync();
-            SpectatorNode_ApplyPendingPinRng();
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "SpecSim: first mode_pre==3000 iteration — applied "
-                "initial-sync + PIN_RNG pre-PGI");
+            if (g_spec_skip_next_battle_init) {
+                // #60: this battle's entry state came from an applied
+                // snapshot whose apply already sequenced initial-sync +
+                // PIN -- rerunning them here would clobber the overlay.
+                g_spec_skip_next_battle_init = false;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "SpecSim: first mode_pre==3000 iteration — entry init "
+                    "already sequenced at snapshot apply, skipping");
+            } else {
+                // First iteration where mode_pre==3000 = first FULL battle
+                // frame on the spec side (mode_pre==3000 at iteration start,
+                // mode_pre==3000 still at end; PGI/UG ran entirely in battle
+                // context). Apply PIN_RNG + initial-sync BEFORE PGI here so
+                // host's first battle frame post-PGI rng matches replay's.
+                SaveState_DoInitialSync();
+                SpectatorNode_ApplyPendingPinRng();
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "SpecSim: first mode_pre==3000 iteration — applied "
+                    "initial-sync + PIN_RNG pre-PGI");
+            }
         }
     } else {
         s_spec_trace_in_battle = false;
@@ -634,9 +657,40 @@ void RunSpectatorTick() {
     }
     g_spectator_catchup = false;  // safety: clear before render path
 
-    // Steady-state path: one popped frame, one render. Reached when catchup
-    // never engaged (queue was already in the live band). Skip render when no
-    // INPUT was available (drained head non-INPUTs only).
+    // UNIFIED wall-clock pacing (task #60, para 2026-07-19; supersedes the
+    // 2026-07-06 slow-tick-only fix). The old steady state popped ONE frame
+    // per outer tick unconditionally, plus extras when ticks ran slow. On
+    // machines where the tick runs FAST -- 120Hz-monitor vsync pacing the
+    // loop at ~8.3ms instead of the 10ms SleepToTarget -- that played out at
+    // 105-120fps: the viewer outran the host, drained its jitter buffer,
+    // starved, gap-filled, and sawtoothed (para's wild 2.82 log: pops/s
+    // 109-132 sustained, q 300->0 cycles, catchup latched). Fixed timestep
+    // on the wall clock in BOTH directions: accumulate elapsed/10ms and pop
+    // exactly that many frames -- 0 on fast ticks, 2+ on slow ones. Offline
+    // replay stays strict 1:1 per tick (whole file queued at boot; wall
+    // clock is meaningless there).
+    if (!s_offline_replay_env_active) {
+        static uint64_t s_last_step_ms = 0;
+        const uint64_t now_ms = GetTickCount64();
+        if (s_last_step_ms != 0) {
+            double due = (double)(now_ms - s_last_step_ms) / 10.0;
+            if (due > 4.0) due = 4.0;   // hard cap: never a jarring turbo
+            g_spec_steady_accum += due;
+            if (g_spec_steady_accum > 4.0) g_spec_steady_accum = 4.0;
+        } else {
+            g_spec_steady_accum = 1.0;  // first tick: exactly one frame
+        }
+        s_last_step_ms = now_ms;
+        int todo = (int)g_spec_steady_accum;
+        g_spec_steady_accum -= (double)todo;
+        for (int k = 0; k < todo; ++k) {
+            if (!SpectatorSimOneFrame()) break;   // underrun: stop, keep remainder at 0
+        }
+        RenderFrameWithSnapshot();
+        return;
+    }
+
+    // Offline replay steady state: one popped frame, one render, 1:1.
     if (!SpectatorSimOneFrame()) {
         RenderFrameWithSnapshot();
         return;
@@ -653,25 +707,6 @@ void RunSpectatorTick() {
     // (qd==0) so it can't over-drain. Offline replay stays 1:1 (whole file
     // queued at boot). This is the missing symmetric speed-up — steady, invisible,
     // and keyed on the RIGHT signal (wall-clock deficit), not queue depth.
-    if (!s_offline_replay_env_active) {
-        static uint64_t s_last_step_ms = 0;
-        static double   s_step_accum   = 0.0;
-        const uint64_t now_ms = GetTickCount64();
-        if (s_last_step_ms != 0) {
-            // frames this tick SHOULD have advanced, minus the 1 already done.
-            double owed = (double)(now_ms - s_last_step_ms) / 10.0 - 1.0;
-            if (owed > 3.0) owed = 3.0;      // hard cap: never a jarring turbo
-            if (owed > 0.0)  s_step_accum += owed;
-        }
-        s_last_step_ms = now_ms;
-        int extra = (int)s_step_accum;
-        s_step_accum -= extra;
-        for (int k = 0; k < extra; ++k) {
-            if (SpectatorNode_PendingFrameCount() == 0) { s_step_accum = 0.0; break; }
-            if (!SpectatorSimOneFrame())                { s_step_accum = 0.0; break; }
-        }
-    }
-
     RenderFrameWithSnapshot();
 }
 

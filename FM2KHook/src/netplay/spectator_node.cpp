@@ -457,6 +457,25 @@ void SpectatorNode_ApplyPendingSnapshot() {
     const uint32_t captured  = inbox.meta.captured_game_mode;
     const uint32_t apply_gate = (captured == 0u) ? 3000u : captured;
     if (game_mode < apply_gate) return;
+    // task #60 ordering fix: the sim's first-3000-iteration init
+    // (initial-sync + PIN_RNG) must run BEFORE the snapshot overlays --
+    // in para's wild 2.82 session the apply landed first and the init
+    // then CLOBBERED it (viewer replayed real tail inputs over a
+    // fresh-boot battle = replay-style desync). Gating the apply on the
+    // popped-frame init deadlocks instead (snapshot joins hold pops until
+    // the apply -- the 2026-06-11 circle). So sequence it HERE at apply
+    // time: init -> pin -> overlay, then mark THIS battle's entry init
+    // consumed so the popped-frame path doesn't rerun it over the applied
+    // state. One-shot: later battles' entries init normally.
+    if (apply_gate >= 3000u) {
+        extern bool g_spec_skip_next_battle_init;
+        SaveState_DoInitialSync();
+        SpectatorNode_ApplyPendingPinRng();
+        g_spec_skip_next_battle_init = true;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "SpectatorNode: pre-apply init (initial-sync + PIN) sequenced "
+            "at snapshot apply -- popped-frame entry init suppressed once");
+    }
 
     if (!SaveState_LoadFromBytes(inbox.blob.data(), inbox.blob.size())) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,

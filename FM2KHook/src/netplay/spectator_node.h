@@ -563,7 +563,12 @@ bool SpectatorNode_WriteCurrentBattleFile(const char* path);
 enum class SeekEventKind : uint8_t {
     NONE        = 0,
     ROUND_START = 1,
-    // MATCH_START reserved for .fm2kset multi-match seek (future).
+    // .fm2kset multi-match seek: anchor INCLUSIVELY at the idx-th (1-based)
+    // MATCH_START in the body. No header table needed -- the loader
+    // pre-scans the body (SessionEvent_Decode walk) to find it. Pass 1
+    // keeps only SESSION_ID: the target MATCH_START carries the full
+    // battle init in-band (same seam machinery as live multi-match).
+    MATCH_START = 2,
 };
 
 struct SeekTarget {

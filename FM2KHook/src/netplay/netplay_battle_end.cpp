@@ -238,6 +238,33 @@ void Netplay_EndBattle() {
         std::strftime(ts, sizeof(ts), pattern, &tm_buf);
         CreateDirectoryA("replays", nullptr);
         SpectatorNode_WriteCurrentBattleFile(ts);
+
+        // Set-file refresh (replay architecture finish, 2026-07-19): the
+        // .fm2kset used to be written ONLY at process shutdown -- a crash,
+        // a task-manager kill, or the harness's TerminateProcess meant the
+        // session bundle never existed, which is why users only ever saw
+        // per-game .fm2krep files. Rewrite the full session file after
+        // EVERY match under a STABLE per-session name (first write picks
+        // it; later matches overwrite the same file), so the set on disk
+        // is always complete up to the last finished match. Shutdown's
+        // write remains as the final tail flush. Cost: a full serialize of
+        // session_events per match end -- a long session is a few MB, once
+        // per multi-minute match, during the between-match seam.
+        {
+            static char s_set_path[128] = {};
+            static uint64_t s_set_path_session = 0;
+            const uint64_t sid = SpectatorNode_GetSessionId();
+            if (s_set_path[0] == '\0' || s_set_path_session != sid) {
+                char set_pattern[96];
+                std::snprintf(set_pattern, sizeof(set_pattern),
+                    "sessions/%%Y-%%m-%%d_%%H%%M%%S_%08x_p%d.fm2kset",
+                    (uint32_t)(sid & 0xFFFFFFFFu), g_player_index);
+                std::strftime(s_set_path, sizeof(s_set_path), set_pattern, &tm_buf);
+                s_set_path_session = sid;
+            }
+            CreateDirectoryA("sessions", nullptr);
+            SpectatorNode_WriteSessionFile(s_set_path);
+        }
     }
 
     // Stop any pending SFX "desired" entries and clear the channel map so

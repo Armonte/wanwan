@@ -546,7 +546,25 @@ bool Netplay_InitAsSpectator(uint16_t local_port, const char* host_addr) {
         SpectatorNode_Init();
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
             "Replay: loading %s", replay_path);
-        if (!SpectatorNode_LoadSessionFile(replay_path, {})) {
+        // .fm2kset default: seek to MATCH_START #1. A set body opens with
+        // the session's pre-battle CSS inputs, and offline playback has no
+        // JOIN_ACK to start a CSS spectate session -- the queue head could
+        // never drain (observed: q frozen at 2991 while the CSS walk spun
+        // forever). Anchoring at the first MATCH_START turns the stream
+        // into the proven battle-slice shape; the between-match seams then
+        // traverse via the same boundary machinery live multi-match uses.
+        // FM2K_REPLAY_SEEK_MATCH=N picks a later match (C11 click-to-seek).
+        SeekTarget seek{};
+        {
+            const char* ext = std::strrchr(replay_path, '.');
+            const char* sm  = std::getenv("FM2K_REPLAY_SEEK_MATCH");
+            if (ext && _stricmp(ext, ".fm2kset") == 0) {
+                seek.kind = SeekEventKind::MATCH_START;
+                seek.idx  = (sm && sm[0]) ? (uint16_t)std::atoi(sm) : 1;
+                if (seek.idx == 0) seek.idx = 1;
+            }
+        }
+        if (!SpectatorNode_LoadSessionFile(replay_path, seek)) {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                 "Replay: file load failed: %s", replay_path);
             return false;

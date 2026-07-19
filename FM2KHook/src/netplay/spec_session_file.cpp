@@ -373,6 +373,12 @@ bool SpectatorNode_LoadSessionFile(const char* path, const SeekTarget& seek) {
     // range, header missing round table, etc.) bail without disturbing
     // playback state — caller can retry without seek.
     size_t anchor_offset = 0;  // 0 = no seek, walk from body start
+    if (seek.kind == SeekEventKind::MATCH_START && seek.idx == 0) {
+        std::fclose(fp);
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+            "SpectatorNode: %s seek match=0 invalid (1-based)", path);
+        return false;
+    }
     if (seek.kind == SeekEventKind::ROUND_START) {
         if (hdr.round_count == 0 ||
             (hdr.flags & (1u << 1)) == 0) {
@@ -421,6 +427,33 @@ bool SpectatorNode_LoadSessionFile(const char* path, const SeekTarget& seek) {
             "SpectatorNode: %s anchor offset %zu past body end %zu",
             path, anchor_offset, body_len);
         return false;
+    }
+
+    // MATCH_START seek: no header table exists for match offsets (256B v2
+    // header predates set-seek), so resolve by pre-scanning the body for
+    // the idx-th MATCH_START. Single decode walk over an in-memory buffer
+    // -- microseconds even for a long set.
+    if (seek.kind == SeekEventKind::MATCH_START) {
+        size_t scan = 0; uint16_t seen = 0; bool found = false;
+        while (scan < body_len) {
+            SessionEvent ev{};
+            uint8_t hb[SESSION_EVENT_MATCH_HDR_SIZE] = {};
+            size_t r = SessionEvent_Decode(body.data() + scan,
+                                           body_len - scan, &ev, hb);
+            if (r == 0) break;
+            if (ev.type == SessionEventType::MATCH_START && ++seen == seek.idx) {
+                anchor_offset = scan;
+                found = true;
+                break;
+            }
+            scan += r;
+        }
+        if (!found) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                "SpectatorNode: %s seek match=%u not found (%u MATCH_START "
+                "event(s) in body)", path, seek.idx, seen);
+            return false;
+        }
     }
 
     // Fresh playback: clear receiver state, then walk events.
@@ -472,7 +505,15 @@ bool SpectatorNode_LoadSessionFile(const char* path, const SeekTarget& seek) {
                 path, anchor_offset, off + r);
             return false;
         }
-        if (IsStateInitForSeek(ev.type)) {
+        // Match-seek keeps ONLY session context from the pre-anchor body:
+        // earlier matches' MATCH_START/PIN/SOUND_INIT would make the drain
+        // boot every prior match's characters before reaching the target.
+        // The anchor MATCH_START (pass 2, inclusive) carries the target
+        // match's full init in-band.
+        const bool keep = (seek.kind == SeekEventKind::MATCH_START)
+            ? (ev.type == SessionEventType::SESSION_ID)
+            : IsStateInitForSeek(ev.type);
+        if (keep) {
             push_event(ev, hdr_buf);
         } else {
             ++pre_anchor_skipped;
@@ -497,12 +538,16 @@ bool SpectatorNode_LoadSessionFile(const char* path, const SeekTarget& seek) {
         off += r;
     }
 
-    if (seek.kind == SeekEventKind::ROUND_START) {
+    if (seek.kind == SeekEventKind::ROUND_START ||
+        seek.kind == SeekEventKind::MATCH_START) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "SpectatorNode: loaded %s — seek=ROUND_START %u, "
+            "SpectatorNode: loaded %s — seek=%s %u, "
             "%u state-init kept + %u skipped pre-anchor, "
             "%u INPUTs queued post-anchor (%u total events)",
-            path, seek.idx,
+            path,
+            seek.kind == SeekEventKind::MATCH_START ? "MATCH_START"
+                                                    : "ROUND_START",
+            seek.idx,
             (uint32_t)(g_state.pb_queue.size() - pushed_inputs),
             pre_anchor_skipped, pushed_inputs, reported_event_count);
     } else {

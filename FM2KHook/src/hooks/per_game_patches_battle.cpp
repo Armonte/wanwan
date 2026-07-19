@@ -544,6 +544,18 @@ int __cdecl Hook_InitializeGameFromCommandLine() {
                     break;
                 }
                 const uint64_t now = GetTickCount64();
+                if (now - start >= 4000) {
+                    // task #58: no JOIN_ACK on the direct path in 4s -- if
+                    // the launcher armed a relay fallback, engage it HERE,
+                    // inside the hold (the trampoline's own 4s trigger
+                    // can't run yet -- it only ticks after this hold
+                    // releases; observed live: fallback fired at +12s,
+                    // AFTER the 8s natural-boot default had already
+                    // committed char 0/0). One-shot, no-op without the
+                    // relay env, so direct joins are unaffected.
+                    extern bool SpectatorNode_EngageRelayFallback();
+                    SpectatorNode_EngageRelayFallback();
+                }
                 if (now - start >= 8000) {
                     // Natural boot is the DEFAULT; /F is the exception
                     // that only the host's explicit "battle in progress"

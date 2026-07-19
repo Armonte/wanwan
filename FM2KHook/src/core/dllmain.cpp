@@ -5,6 +5,7 @@
 #include "netplay.h"
 #include "netplay_state.h"
 #include "control_channel.h"
+#include "../netplay/nat_traversal.h"  // ConfigureRelay for spectator relay fallback (#58)
 #include "shared_mem.h"
 #include "../ui/screenshot.h"
 #include "../locale/locale_spoof.h"
@@ -688,6 +689,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             }
 
             if (g_spectator_mode) {
+                // task #58: read the spec-relay creds (FM2K_HUB_RELAY_ADDR/
+                // SESSION, set by the launcher from the grant's spec_relay
+                // block). ConfigureRelay historically only ran in the
+                // NETPLAY init path, so a viewer never armed its relay and
+                // the 4s auto-fallback silently had nothing to engage.
+                if (!is_offline_replay) {
+                    ::fm2k::nat::ConfigureRelay();
+                }
                 // Spectator path: socket + control callback + SpectatorNode.
                 // Replay mode short-circuits inside Netplay_InitAsSpectator
                 // (no network setup), so the port/host config is unused but

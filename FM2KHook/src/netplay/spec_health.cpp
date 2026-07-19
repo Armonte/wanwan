@@ -480,6 +480,15 @@ void SpectatorNode_TickHostMaintenance() {
                 sub.tcp_bound = true;
                 just_bound = true;
             }
+        } else if (SpecRcSnapshotEnabled()) {
+            // RC full transport (task #55): snapshot+backfill AND live all
+            // ride RC to the sub's UDP addr, known since JOIN_REQ. Same
+            // shape as the relay short-circuit above -- there is no TCP
+            // accept to wait for (the viewer doesn't even dial in this
+            // mode). Without this the sub stayed unbound forever and the
+            // viewer's 30s connect watchdog killed the process.
+            sub.tcp_bound = true;
+            just_bound = true;
         } else if (SpectatorTCP::RegisterAcceptedClient(sub.addr)) {
             sub.tcp_bound = true;
             just_bound = true;

@@ -22,6 +22,7 @@ extern "C" {
 #include <SDL3/SDL_log.h>   // ooo-buffer-full diagnostic (bounded, ~1/64)
 #include <cstring>
 #include <cstdint>
+#include <cstdlib>   // std::getenv -- FM2K_RC_STATS gate
 #include <deque>
 #include <map>
 #include <set>
@@ -159,6 +160,8 @@ struct Endpoint {
     reliable_endpoint_t* rel = nullptr;
     RawSendFn raw_send = nullptr;  void* raw_send_ctx = nullptr;
     DeliverFn deliver  = nullptr;  void* deliver_ctx  = nullptr;
+    uint64_t id = 0;               // endpoint id (peer key) -- [RC-STATS] tag
+    double   last_stats_log = 0.0; // FM2K_RC_STATS 1Hz throttle
     std::unordered_map<uint8_t, TxChannel> tx;
     std::unordered_map<uint8_t, RxChannel> rx;
     std::vector<uint8_t> scratch;  // reused wire buffer (0xCB + reliable packet)
@@ -536,9 +539,25 @@ Endpoint* Create(uint64_t id, RawSendFn raw_send, void* raw_send_ctx,
     Endpoint* ep = new Endpoint();
     ep->raw_send = raw_send; ep->raw_send_ctx = raw_send_ctx;
     ep->deliver = deliver;   ep->deliver_ctx = deliver_ctx;
+    ep->id = id;
     reliable_config_t cfg;
     reliable_default_config(&cfg);
     reliable_copy_string(cfg.name, "rc", sizeof(cfg.name));
+    // task #55 root cause: the DEFAULT envelope (max_packet_size 16KB,
+    // max_fragments 16 x 1024B = 16KB) is SMALLER than a lone spectator
+    // snapshot chunk (16384B payload + SpecDataHeader + RC framing).
+    // reliable_endpoint_send_packet rejects oversize with a void return --
+    // the chunk failed on the initial send AND on every retransmit, then
+    // the 7s retirement silently erased it: the snapshot never completed
+    // and the viewer simmed placeholder chars (RC-STATS TOO_LARGE=15 on
+    // the failing run; intermittent because zero-RLE chunk sizes depend on
+    // the captured battle state). 64KB headroom fits any framed message
+    // this codebase produces with 4x margin.
+    cfg.max_packet_size = 64 * 1024;
+    cfg.fragment_above  = 1024;
+    cfg.max_fragments   = 64;
+    cfg.fragment_size   = 1024;
+    cfg.fragment_reassembly_buffer_size = 256;
     cfg.context = ep;
     cfg.id = id;
     cfg.transmit_packet_function = &TransmitCb;
@@ -562,6 +581,18 @@ void Send(Endpoint* ep, uint8_t chan, Class cls, const uint8_t* data, int len) {
     ps.cls = static_cast<uint8_t>(cls);
     ps.msg_seq = tc.next_msg_seq++;
     BuildFramed(chan, cls, ps.msg_seq, data, len, ps.framed);
+    // Envelope guard: reliable.io rejects oversize with a VOID return and
+    // our retransmit would spin on it until the 7s retire -- a silent
+    // permanent stream gap (the task-#55 snapshot bug). Never let an
+    // oversize message enter the pipeline quietly.
+    if (ps.framed.size() > 64u * 1024u) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+            "[RC] framed msg %zu B exceeds the 64KB envelope (chan=%u cls=%u) "
+            "-- reliable.io would drop it silently; REJECTING at Send. "
+            "Fragment the payload at the app layer.",
+            ps.framed.size(), (unsigned)chan, (unsigned)cls);
+        return;
+    }
     ep->send_queue.push_back(std::move(ps));  // paced out in Update()
 }
 
@@ -614,6 +645,39 @@ void OnDatagram(Endpoint* ep, const uint8_t* data, int len) {
 void Update(Endpoint* ep, double now) {
     if (!ep || !ep->rel) return;
     reliable_endpoint_update(ep->rel, now);
+
+    // FM2K_RC_STATS=1: 1Hz per-endpoint stats dump (task #55 snapshot-over-RC
+    // diagnosis). Shows whether a stalled bulk transfer is a SEND-side drop
+    // (too_large counter), a fragment casualty (frags_invalid), or a
+    // retransmit livelock (unacked count pinned + oldest age growing).
+    {
+        static const bool s_rc_stats = []{
+            const char* v = std::getenv("FM2K_RC_STATS");
+            return v && v[0] == '1';
+        }();
+        if (s_rc_stats && now - ep->last_stats_log >= 1.0) {
+            ep->last_stats_log = now;
+            size_t unacked_total = 0, queue = ep->send_queue.size();
+            double oldest = 0.0;
+            for (auto& [chan, tc] : ep->tx) {
+                unacked_total += tc.unacked.size();
+                for (auto& [seq, u] : tc.unacked) {
+                    if (now - u.first_time > oldest) oldest = now - u.first_time;
+                }
+            }
+            const uint64_t* c = reliable_endpoint_counters(ep->rel);
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "[RC-STATS] ep=%llu q=%zu unacked=%zu oldest=%.1fs | "
+                "sent=%llu recv=%llu acked=%llu stale=%llu invalid=%llu "
+                "TOO_LARGE=%llu frag_sent=%llu frag_recv=%llu FRAG_INVALID=%llu",
+                (unsigned long long)ep->id, queue, unacked_total, oldest,
+                (unsigned long long)c[0], (unsigned long long)c[1],
+                (unsigned long long)c[2], (unsigned long long)c[3],
+                (unsigned long long)c[4], (unsigned long long)c[5],
+                (unsigned long long)c[7], (unsigned long long)c[8],
+                (unsigned long long)c[9]);
+        }
+    }
 
     // 0) ack-carrier: periodically send our RC-level cumulative ack table so the
     // peer can clear/retransmit precisely on what we've DELIVERED. Sent DIRECTLY
@@ -693,7 +757,24 @@ void Update(Endpoint* ep, double now) {
         for (auto it = un.begin(); it != un.end();) {
             Unacked& u = it->second;
             if (u.first_time < 0.0) u.first_time = now;
-            if (now - u.first_time >= 7.0) { it = un.erase(it); continue; }  // stuck -> retire
+            if (now - u.first_time >= 7.0) {
+                // Retiring a RELIABLE message is a delivery-contract break --
+                // legitimate only because the consumer's stall watchdog
+                // re-JOINs. It must never be silent again (the silent retire
+                // hid the oversize-chunk drop for weeks).
+                static double s_last_retire_log = 0.0;
+                if (now - s_last_retire_log >= 1.0) {
+                    s_last_retire_log = now;
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "[RC] RETIRED reliable msg seq=%llu chan=%u after 7s "
+                        "undelivered (%zu bytes) -- stream has a permanent gap "
+                        "until re-JOIN",
+                        (unsigned long long)it->first, (unsigned)tkv.first,
+                        u.framed.size());
+                }
+                it = un.erase(it);
+                continue;
+            }
             if (u.sent_time == 0.0) { u.sent_time = now; ++it; continue; }
             if (now - u.sent_time >= resend) {
                 u.pkt_seq = reliable_endpoint_next_packet_sequence(ep->rel);

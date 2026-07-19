@@ -455,7 +455,11 @@ def main():
               "FM2K_HOST_CLOCK",
               # ReliableChannel spectator A/B transport (reliable-ordered+FEC over UDP)
               "FM2K_SPEC_RC", "FM2K_SPEC_RC_SNAPSHOT", "FM2K_RC_FEC", "FM2K_RC_FEC_K",
+              # task #55: dead-TCP simulation (spectator dials a dead port);
+              # with RC default-on the spectate must fully work regardless.
+              "FM2K_TEST_SPEC_TCP_BLACKHOLE",
               "FM2K_RC_RESEND_MS", "FM2K_RC_RATE_PPS", "FM2K_RC_CWND",
+              "FM2K_RC_STATS",
               # in-process link impairment (players' gekko+control path)
               "FM2K_NET_DELAY_MS", "FM2K_NET_JITTER_MS", "FM2K_NET_LOSS", "FM2K_NET_SEED",
               "FM2K_NET_REORDER", "FM2K_NET_DUP"):
@@ -518,7 +522,15 @@ def main():
         for kk in ("FM2K_SPEC_DROP", "FM2K_SPEC_DROP_SEED", "FM2K_CSS_TRACE",
                    "FM2K_SPECTATOR_DEBUG", "FM2K_SPEC_CONNECT_TIMEOUT_MS",
                    "FM2K_NET_DELAY_MS", "FM2K_NET_JITTER_MS", "FM2K_NET_LOSS", "FM2K_NET_SEED",
-                   "FM2K_NET_REORDER", "FM2K_NET_DUP"):
+                   "FM2K_NET_REORDER", "FM2K_NET_DUP",
+                   # task #55: the RC transport family MUST match the host's
+                   # or the pair runs a split-brain transport config (host
+                   # streaming RC while the viewer runs TCP-primary logic
+                   # incl. the TCP-fail give-up) -- this exact gap
+                   # invalidated a night of A/B runs.
+                   "FM2K_SPEC_RC", "FM2K_SPEC_RC_SNAPSHOT", "FM2K_RC_STATS",
+                   "FM2K_RC_FEC", "FM2K_RC_FEC_K",
+                   "FM2K_TEST_SPEC_TCP_BLACKHOLE"):
             if os.environ.get(kk):
                 env[kk] = os.environ[kk]
         # The spectator MUST run the same round count as the host, else a 1-round

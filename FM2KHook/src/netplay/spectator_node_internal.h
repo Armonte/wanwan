@@ -63,6 +63,13 @@ struct Subscriber {
     // from its JOIN_REQ. Non-zero = the viewer is mid-stream; the bind
     // path skips the snapshot and backfills exactly the gap from here.
     uint32_t     resume_frame = 0;
+    // Destructive-reset rate limit (task #55): a starved viewer retries
+    // JOIN_REQ every 500ms; in RC mode each retry used to reset bind
+    // state and re-blast the FULL backfill (observed: 3974 events every
+    // 500ms while the host was wedged). Full resets are floored to one
+    // per 3s -- a genuinely restarted viewer still recovers within 3s,
+    // a retry storm degrades to background noise.
+    uint64_t     last_reset_ms = 0;
 };
 
 // Cached initial-match metadata so new joiners get a consistent handoff.
@@ -236,10 +243,26 @@ struct State {
         uint32_t             end_checksum    = 0;
         std::vector<std::pair<uint32_t, std::vector<uint8_t>>> pending_chunks;  // (offset, data)
         size_t               pending_bytes   = 0;   // sum of held pre-BEGIN chunk sizes (memory bound)
+        // Pre-BEGIN END stash (task #55 root #3): on the unordered blob
+        // channel END can beat BEGIN, and BEGIN's init used to WIPE
+        // end_seen -- stranding the snapshot silently (no finalize, no gap
+        // warn). BEGIN replays this like the chunk stash.
+        bool                 pending_end_valid    = false;
+        uint32_t             pending_end_checksum = 0;
     } pb_snapshot_inbox;
 
     // Viewer-side state (this node subscribed upstream).
     bool                      subscribed_upstream = false;
+    // Pre-subscribe RC stash (task #55): the host binds + streams the
+    // backfill the instant it accepts a JOIN_REQ, so RC-delivered spec
+    // data can beat our own JOIN_ACK processing by up to ~1s. The
+    // EVENT_BATCH/OP_BASELINE handlers drop data while
+    // !subscribed_upstream -- and RC has already acked it as delivered,
+    // so a one-shot backfill was lost forever (viewer never admitted a
+    // frame; 30s connect watchdog killed the process). Raw deliveries
+    // land here instead and replay the moment the JOIN_ACK is processed.
+    std::vector<std::pair<uint8_t, std::vector<uint8_t>>> pre_sub_stash;  // (chan, spec msg)
+    size_t                    pre_sub_stash_bytes = 0;
     // Set when the upstream sends SPEC_SESSION_END (host exited cleanly). Stops
     // the reconnect machinery so we don't storm a dead host. Cleared on a fresh
     // manual RequestJoin / Netplay_InitAsSpectator.
@@ -506,6 +529,15 @@ void     AppendEventToWire(std::vector<uint8_t>& out, const SessionEvent& ev,
 uint32_t CountInputs(const std::vector<SessionEvent>& events, size_t first, size_t last);
 void     FlushBatch();
 bool     SpecUdpEnabled();
+// Pure-UDP spectator stream gates (task #55). RC (reliable-ordered + FEC
+// over UDP) is DEFAULT ON -- the TCP data plane's hole-punch dependence
+// black-screened wild spectators whose UDP was fine. FM2K_SPEC_RC=0
+// restores the TCP-primary baseline; FM2K_SPEC_RC_SNAPSHOT=0 keeps the
+// snapshot leg on TCP while events ride RC.
+bool     SpecRcEnabled();
+bool     SpecRcSnapshotEnabled();
+void     SpecStashPreSubscribe(uint8_t chan, const uint8_t* data, int len);
+void     SpecReplayPreSubStash();
 void     SendUdpInputBatches();
 void     SendOpBaselineTo(const sockaddr_in& to, uint32_t baseline);
 

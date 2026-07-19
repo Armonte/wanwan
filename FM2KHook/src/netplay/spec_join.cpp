@@ -269,9 +269,18 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
             // with the RC stream, so the gap heals in one round trip. The
             // old recovery (SPEC_LEAVE + full re-JOIN + re-snapshot) looped
             // forever under sustained loss.
+            // "Live conn" for the surgical/dup branches: a healthy TCP
+            // conn, OR RC full-transport mode where the RC endpoint to
+            // sub.addr IS the reliable conn (task #55: HasLiveConnFor is
+            // always false with no TCP dial, which made every gap-fill
+            // pull fall through to the destructive full-reset path --
+            // 500ms full-re-backfill storm whenever a viewer starved).
+            const bool reliable_path_up =
+                SpectatorTCP::HasLiveConnFor(sub.addr) ||
+                (SpecRcSnapshotEnabled() && sub.tcp_bound);
             if (resume_frame > 0 && sub.tcp_bound &&
                 !g_state.spec_transport_relay &&
-                SpectatorTCP::HasLiveConnFor(sub.addr)) {
+                reliable_path_up) {
                 sub.last_seen_ms = GetTickCount64();
                 sub.udp_ok       = udp_ok;
                 CtrlPacket ack = BuildJoinAckPacket();
@@ -282,6 +291,27 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
                     addr_buf, resume_frame);
                 SendSessionBackfillFromFrame(sub.addr, resume_frame);
                 return;
+            }
+            // Destructive-reset rate limit (task #55): floor full
+            // bind-reset + re-backfill to one per 3s per sub. A JOIN
+            // retry storm (starved viewer, 500ms period) burns at most
+            // one full backfill per window; a genuinely restarted viewer
+            // still gets its fresh backfill within 3s. NOTE: this is the
+            // ONLY reset suppression in RC mode -- an unconditional
+            // dup-suppress (like the TCP branch below) was tried and
+            // broke self-heal: with no TCP conn there is no liveness
+            // signal to know the sub actually got its one-shot backfill,
+            // so a viewer that lost it must be able to force a re-ship.
+            {
+                const uint64_t now_ms = GetTickCount64();
+                if (sub.last_reset_ms != 0 &&
+                    now_ms - sub.last_reset_ms < 3000) {
+                    sub.last_seen_ms = now_ms;
+                    sub.udp_ok       = udp_ok;
+                    CtrlPacket ack = BuildJoinAckPacket();
+                    ControlChannel_SendTo(ack, sub.addr);
+                    return;
+                }
             }
             if (sub.tcp_bound && !g_state.spec_transport_relay &&
                 SpectatorTCP::HasLiveConnFor(sub.addr)) {
@@ -310,6 +340,7 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
             sub.udp_ok       = udp_ok;
             sub.resume_frame = resume_frame;
             sub.last_seen_ms = GetTickCount64();
+            sub.last_reset_ms = sub.last_seen_ms;
             // Drop the old TCP conn + any stale pending clients from this
             // IP so the bind path pairs the spectator's FRESH dial instead
             // of an abandoned one (deep-join reconnect-loop fix).
@@ -542,6 +573,8 @@ std::vector<sockaddr_in> SpectatorNode_GetSubscriberAddrs() {
 bool SpectatorNode_RequestJoin(const sockaddr_in& upstream, SpecJoinMode mode) {
     g_state.upstream_addr       = upstream;
     g_state.subscribed_upstream = false;
+    g_state.pre_sub_stash.clear();        // fresh join -- drop any stale stash
+    g_state.pre_sub_stash_bytes = 0;
     g_state.session_ended       = false;  // fresh join clears any prior SESSION_END
     g_state.last_requested_mode = mode;  // sticky — see comment in State decl
     // Bump reconnect timestamp so TickHealth's failover backoff covers the
@@ -714,6 +747,21 @@ void SpectatorNode_HandleJoinAck(const sockaddr_in& from, uint8_t host_session_k
             "SpectatorNode: JOIN_ACK accepted in relay mode -- skipping "
             "ConnectUpstream (spec data arrives via hub via launcher via "
             "inbound shared-mem ring)");
+    } else if (SpecRcSnapshotEnabled()) {
+        // RC full-transport mode: live events AND snapshot+backfill all
+        // ride RC over UDP -- TCP is not load-bearing, so don't dial it.
+        // Dialing anyway was actively harmful (task #55): when the dial
+        // failed (Nathan's NAT), each failure escalated through
+        // OnUpstreamTcpDead -> background re-JOIN -> host "resetting bind
+        // state for fresh backfill" -- a 2s churn loop that reset the RC
+        // stream forever and the viewer never admitted a frame.
+        static bool s_logged = false;
+        if (!s_logged) {
+            s_logged = true;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "SpectatorNode: JOIN_ACK accepted in RC full-transport mode "
+                "-- skipping ConnectUpstream (all spec data rides RC/UDP)");
+        }
     } else {
         if (host_tcp_port == 0) {
             // Mixed-mode failure: we're a TCP-mode spec but the host
@@ -767,6 +815,7 @@ void SpectatorNode_HandleJoinAck(const sockaddr_in& from, uint8_t host_session_k
         char buf2[48] = {}; FormatAddr(from, buf2, sizeof(buf2));
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "SpectatorNode: host has no session yet — waiting (from=%s)", buf2);
+        SpecReplayPreSubStash();  // task #55: anything that beat this ACK
         return;
     }
 
@@ -794,10 +843,12 @@ void SpectatorNode_HandleJoinAck(const sockaddr_in& from, uint8_t host_session_k
         } else {
             Netplay_OnHostBattleEnd(0);
         }
+        SpecReplayPreSubStash();  // task #55: anything that beat this ACK
         return;
     }
 
     Netplay_StartSpectateSession(kind, host_addr_str);
+    SpecReplayPreSubStash();  // task #55: backfill that beat the first ACK
 }
 
 void SpectatorNode_HandleJoinRedirect(const sockaddr_in& from,

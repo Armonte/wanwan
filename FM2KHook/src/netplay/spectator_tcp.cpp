@@ -26,6 +26,7 @@
 // unused for TCP-sourced frames (dispatch logic doesn't depend on it for
 // upstream-INPUT_BATCH/INITIAL_MATCH/MATCH_END), so we pass a zeroed sockaddr.
 extern void SpectatorNode_OnUpstreamTcpDead();
+namespace specnode { bool SpecRcEnabled(); }  // task #55: TCP load-bearing only when RC off
 extern void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
                                          const sockaddr_in& from, uint8_t rc_channel);
 
@@ -64,6 +65,10 @@ std::vector<NET_StreamSocket*>    g_pending_clients;
 std::vector<SubConn>              g_subs;
 
 NET_StreamSocket*                 g_upstream_sock     = nullptr;
+// task #55 connect-failure escalation state (see UpstreamConnectFailed).
+static uint64_t g_upstream_dial_ms        = 0;
+static bool     g_upstream_ever_connected = false;
+static uint32_t g_upstream_connect_fails  = 0;
 std::vector<uint8_t>              g_upstream_read_buf;
 uint64_t                          g_last_upstream_recv_ms = 0;
 
@@ -568,6 +573,15 @@ bool ConnectUpstream(const char* host_ip, uint16_t host_tcp_port) {
     // mapping, and symmetric-NAT retries need the relay transport anyway.
     static uint32_t s_dial_attempts = 0;
     const Uint16 local_bind = (s_dial_attempts++ == 0) ? g_listen_port : 0;
+    // Test-only: FM2K_TEST_SPEC_TCP_BLACKHOLE=1 dials a dead port so the
+    // connect-failure escalation (timeout -> re-JOIN -> loud give-up) can
+    // be exercised in the local harness (task #55 -- the wild symptom is a
+    // host NAT that silently eats the SYNs).
+    static const bool s_blackhole = []{
+        const char* v = std::getenv("FM2K_TEST_SPEC_TCP_BLACKHOLE");
+        return v && v[0] == '1';
+    }();
+    if (s_blackhole) host_tcp_port = (uint16_t)(host_tcp_port + 1000);
     g_upstream_sock = NET_CreateClientBound(addr, host_tcp_port, local_bind);
     NET_UnrefAddress(addr);
     if (!g_upstream_sock) {
@@ -580,23 +594,72 @@ bool ConnectUpstream(const char* host_ip, uint16_t host_tcp_port) {
     }
     g_upstream_read_buf.clear();
     g_last_upstream_recv_ms = GetTickCount64();
+    g_upstream_dial_ms = GetTickCount64();
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "SpectatorTCP: dialing %s:%u from local port %u (async)",
                 host_ip, host_tcp_port, (unsigned)local_bind);
     return true;
 }
 
+// task #55: connect-failure escalation. The wild black-screen: a host NAT
+// eats the SYNs, NET_GetConnectionStatus stays 0 for the OS's ~21s, the
+// old conn<0 branch destroyed the socket WITHOUT telling the node, and the
+// viewer idled at q=0 forever with no error. Now every connect failure
+// (explicit or 5s deadline) escalates through OnUpstreamTcpDead -- whose
+// background re-JOIN produces a fresh JOIN_ACK and a fresh dial -- and a
+// viewer that NEVER managed a single connect gives up loudly after 3
+// attempts instead of showing an eternal black screen. (State lives at the
+// top of the TU next to g_upstream_sock.)
+constexpr uint64_t kUpstreamConnectTimeoutMs = 5000;
+constexpr uint32_t kUpstreamConnectMaxFails  = 3;
+
+static void UpstreamConnectFailed(const char* why) {
+    NET_DestroyStreamSocket(g_upstream_sock);
+    g_upstream_sock = nullptr;
+    g_upstream_read_buf.clear();
+    ++g_upstream_connect_fails;
+    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "SpectatorTCP: upstream connect FAILED (%s) -- attempt %u/%u",
+                why, g_upstream_connect_fails,
+                g_upstream_ever_connected ? 0 : kUpstreamConnectMaxFails);
+    // Only give up the whole viewer when TCP is the LOAD-BEARING transport.
+    // With the RC (reliable-UDP) spectator stream active, events + snapshot
+    // ride UDP and a blocked TCP is a non-event -- keep running.
+    const bool tcp_load_bearing = !specnode::SpecRcEnabled();
+    if (tcp_load_bearing && !g_upstream_ever_connected &&
+        g_upstream_connect_fails >= kUpstreamConnectMaxFails) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+            "SPECTATE FAILED: could not reach the host's TCP stream after %u "
+            "attempts -- the host's NAT/firewall blocks the spectator data "
+            "plane. The host can enable the hub relay transport "
+            "(FM2K_SPEC_TRANSPORT=relay) once it ships validated; until then "
+            "this host is not spectatable from this network. Exiting viewer.",
+            kUpstreamConnectMaxFails);
+        SDL_Delay(150);  // let the async log sink flush the verdict line
+        TerminateProcess(GetCurrentProcess(), 0);
+    }
+    // Escalate so the node's background re-JOIN retries (fresh JOIN_ACK ->
+    // fresh dial). The old code silently dropped the socket here.
+    SpectatorNode_OnUpstreamTcpDead();
+}
+
 void PollUpstream() {
     if (!g_upstream_sock) return;
     const int conn = NET_GetConnectionStatus(g_upstream_sock);
-    if (conn == 0) return; // still pending
+    if (conn == 0) {
+        if (g_upstream_dial_ms != 0 &&
+            GetTickCount64() - g_upstream_dial_ms > kUpstreamConnectTimeoutMs) {
+            UpstreamConnectFailed("5s deadline, SYNs unanswered");
+        }
+        return; // still pending
+    }
     if (conn < 0) {
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorTCP: upstream connect failed: %s", SDL_GetError());
-        NET_DestroyStreamSocket(g_upstream_sock);
-        g_upstream_sock = nullptr;
-        g_upstream_read_buf.clear();
+        UpstreamConnectFailed(SDL_GetError());
         return;
+    }
+    if (!g_upstream_ever_connected) {
+        g_upstream_ever_connected = true;
+        g_upstream_connect_fails  = 0;
     }
 
     // Connected. Drain whatever's available.

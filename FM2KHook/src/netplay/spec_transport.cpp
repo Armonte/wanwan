@@ -83,17 +83,45 @@ void FormatAddr(const sockaddr_in& a, char* out, size_t out_sz);
 //     drop with warn log. Means hub didn't forward user_id (older
 //     hub) or this sub came in via a pre-Phase-2c spec_incoming.
 //   - ring full: counted in Ring.total_dropped, no inline log.
-// A/B: route the ordered spectator bulk stream (EVENT_BATCH / SNAPSHOT / OP_BASELINE)
+// Route the spectator streams (EVENT_BATCH / SNAPSHOT / OP_BASELINE / live)
 // through the ReliableChannel layer (reliable-ordered + FEC over UDP) instead of
-// TCP, to avoid TCP head-of-line blocking under loss. Gated by FM2K_SPEC_RC=1 so
-// we can A/B against the TCP baseline. Returns true if it handled the send.
-static bool RcSpectatorBroadcast(const void* buf, size_t len) {
-    static int s_rc_enabled = -1;
-    if (s_rc_enabled < 0) {
+// TCP, avoiding both TCP head-of-line blocking under loss AND the silent
+// black-screen when a NAT black-holes the inbound TCP dial entirely.
+// task #55: DEFAULT ON since 0.2.82 (FM2K_SPEC_RC=0 restores TCP-primary for
+// A/B). Both former gaps closed 2026-07-18, each with green loss soaks:
+//   (1) TCP-free join -- host binds RC subs at JOIN_REQ (spec_health bind
+//       short-circuit) and the viewer skips the TCP dial entirely, so a dead
+//       TCP path costs nothing (blackhole soak 3/3, was 3/3 FAIL).
+//   (2) snapshot completion under loss -- reliable.io 64KB envelope + the
+//       SNAPSHOT_END pre-BEGIN stash (spec_recv) fixed the stranded-inbox
+//       silent kill (6% loss soak 6/6, was 4/4 FAIL).
+// Relay-mode sessions (hub WS) keep RC OFF: relay exists because direct UDP
+// does not reach that peer, so RC must defer or it hijacks the send path.
+bool SpecRcEnabled() {
+    static int s = -1;
+    if (s < 0) {
         const char* v = std::getenv("FM2K_SPEC_RC");
-        s_rc_enabled = (v && v[0] == '1' && v[1] == '\0') ? 1 : 0;
+        s = (v && v[0] == '0' && v[1] == '\0') ? 0 : 1;
     }
-    if (!s_rc_enabled) return false;
+    return s != 0;
+}
+
+bool SpecRcSnapshotEnabled() {
+    static int s = -1;
+    if (s < 0) {
+        if (!SpecRcEnabled()) {
+            s = 0;
+        } else {
+            const char* v = std::getenv("FM2K_SPEC_RC_SNAPSHOT");
+            s = (v && v[0] == '0' && v[1] == '\0') ? 0 : 1;
+        }
+    }
+    return s != 0;
+}
+
+static bool RcSpectatorBroadcast(const void* buf, size_t len) {
+    if (g_state.spec_transport_relay) return false;  // relay = no direct UDP path
+    if (!SpecRcEnabled()) return false;
     // Same backfill fence as the TCP/relay paths: only bound subs get live events.
     int sent = 0;
     for (const auto& sub : g_state.subscribers) {
@@ -159,13 +187,7 @@ void OutboundSendTo(const sockaddr_in& to, const void* buf, size_t len) {
     // transport goal): RC's send pacing (token bucket + cwnd) now bounds the burst
     // so it can't self-flood, and CRC + RC-level acks keep it correct under loss.
     {
-        static int s_rc_snap = -1;
-        if (s_rc_snap < 0) {
-            const char* r = std::getenv("FM2K_SPEC_RC");
-            const char* s = std::getenv("FM2K_SPEC_RC_SNAPSHOT");
-            s_rc_snap = (r && r[0] == '1' && r[1] == '\0' && s && s[0] == '1' && s[1] == '\0') ? 1 : 0;
-        }
-        if (s_rc_snap) {
+        if (!g_state.spec_transport_relay && SpecRcSnapshotEnabled()) {
             sockaddr_storage ss{};
             std::memcpy(&ss, &to, sizeof(to));
             // SNAPSHOT_BEGIN/CHUNK/END are content-addressed (reassembled by byte
@@ -480,6 +502,42 @@ void SendOpBaselineTo(const sockaddr_in& to, uint32_t baseline) {
     OutboundSendTo(to, buf, sizeof(buf));
 }
 
+// task #55: pre-subscribe stash -- see State::pre_sub_stash. Bounded so a
+// stale host blasting at a non-subscribing node can't grow memory: 2MB
+// covers a full snapshot + backfill burst with margin.
+void SpecStashPreSubscribe(uint8_t chan, const uint8_t* data, int len) {
+    constexpr size_t kMaxMsgs  = 1024;
+    constexpr size_t kMaxBytes = 2u * 1024u * 1024u;
+    if (len <= 0) return;
+    if (g_state.pre_sub_stash.size() >= kMaxMsgs ||
+        g_state.pre_sub_stash_bytes + static_cast<size_t>(len) > kMaxBytes) {
+        static uint64_t s_dropped = 0;
+        if ((s_dropped++ % 64) == 0) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "SpectatorNode: pre-subscribe stash full -- dropping spec msg "
+                "(%d B, drops=%llu)", len, (unsigned long long)s_dropped);
+        }
+        return;
+    }
+    g_state.pre_sub_stash.emplace_back(
+        chan, std::vector<uint8_t>(data, data + len));
+    g_state.pre_sub_stash_bytes += static_cast<size_t>(len);
+}
+
+void SpecReplayPreSubStash() {
+    if (g_state.pre_sub_stash.empty()) return;
+    auto stash = std::move(g_state.pre_sub_stash);
+    g_state.pre_sub_stash.clear();
+    g_state.pre_sub_stash_bytes = 0;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "SpectatorNode: replaying %zu pre-subscribe spec msg(s) that beat "
+        "the JOIN_ACK", stash.size());
+    for (auto& m : stash) {
+        SpectatorNode_HandleSpecData(m.second.data(), m.second.size(),
+                                     g_state.upstream_addr, m.first);
+    }
+}
+
 }  // namespace specnode
 
 // --- Global-scope (not specnode): ReliableChannel consumer glue -------------
@@ -493,6 +551,16 @@ static void RcSpectatorDeliver(void* /*ctx*/, const sockaddr_storage& from,
     // demuxes by SpecDataType and reorders EVENT_BATCH by frame across channels.
     if ((channel != RC_CHAN_SPEC && channel != RC_CHAN_SPEC_SNAPSHOT &&
          channel != RC_CHAN_SPEC_BLOB) || len <= 0) return;
+    // task #55 race: the host streams the backfill the instant it accepts
+    // our JOIN_REQ, so these deliveries can arrive BEFORE our JOIN_ACK
+    // processing flips subscribed_upstream. The handlers would silently
+    // drop them -- and RC has already acked them as delivered, so the
+    // one-shot backfill would be gone forever (viewer never admits a
+    // frame). Stash and replay on subscribe instead.
+    if (!g_state.subscribed_upstream) {
+        specnode::SpecStashPreSubscribe(channel, data, len);
+        return;
+    }
     sockaddr_in from4{};
     std::memcpy(&from4, &from, sizeof(from4));
     SpectatorNode_HandleSpecData(data, static_cast<size_t>(len), from4, channel);

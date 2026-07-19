@@ -49,7 +49,22 @@ static void TryFinalizeSnapshot(State::SnapshotInbox& inbox) {
     const uint32_t expected_wire =
         (inbox.meta.flags & SNAPSHOT_FLAG_ZERO_RLE)
             ? inbox.meta.compressed_bytes : inbox.meta.total_bytes;
-    if (inbox.bytes_received != expected_wire) return;  // not all chunks yet
+    if (inbox.bytes_received != expected_wire) {
+        // Not all chunks yet (unordered channel: END may precede stragglers)
+        // -- OR the transfer is permanently stuck. Log the gap at 1Hz so a
+        // never-finalizing snapshot is visible instead of silent (task #55:
+        // the viewer previously idled on placeholder chars with no clue).
+        static uint32_t s_last_gap_ms = 0;
+        const uint32_t now_ms = GetTickCount();
+        if (now_ms - s_last_gap_ms >= 1000) {
+            s_last_gap_ms = now_ms;
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "SpectatorNode: snapshot END seen but inbox incomplete -- "
+                "%u/%u wire bytes received (waiting on stragglers)",
+                inbox.bytes_received, expected_wire);
+        }
+        return;
+    }
     if (inbox.meta.flags & SNAPSHOT_FLAG_ZERO_RLE) {
         std::vector<uint8_t> raw(inbox.meta.total_bytes);
         if (!ZeroRleDecompress(inbox.blob.data(), inbox.blob.size(),
@@ -182,6 +197,13 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
                 for (auto& pc : pend)
                     ApplySnapshotChunk(inbox, pc.first, pc.second.data(), pc.second.size());
             }
+            // Replay a stashed pre-BEGIN END the same way (task #55 root #3).
+            if (inbox.pending_end_valid) {
+                inbox.end_checksum      = inbox.pending_end_checksum;
+                inbox.end_seen          = true;
+                inbox.pending_end_valid = false;
+                TryFinalizeSnapshot(inbox);
+            }
 
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "SpectatorNode: SNAPSHOT_BEGIN match=%u, %u bytes, "
@@ -260,6 +282,19 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
             if (payload_len < sizeof(uint32_t)) {
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     "SpectatorNode: SNAPSHOT_END truncated (payload=%zu)", payload_len);
+                break;
+            }
+            if (!inbox.active) {
+                // Unordered blob channel: END can beat BEGIN. Stash it --
+                // BEGIN's init used to reset end_seen=false, permanently
+                // stranding the snapshot with zero log output (task #55
+                // root #3; observed as frag_recv frozen + viewer on
+                // placeholder chars).
+                std::memcpy(&inbox.pending_end_checksum, payload, sizeof(uint32_t));
+                inbox.pending_end_valid = true;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "SpectatorNode: SNAPSHOT_END arrived before BEGIN -- stashed "
+                    "(checksum=0x%08X)", inbox.pending_end_checksum);
                 break;
             }
             std::memcpy(&inbox.end_checksum, payload, sizeof(uint32_t));

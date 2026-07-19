@@ -391,6 +391,16 @@ void SpectatorNode_AppendMatchStart(const uint8_t header[96]) {
     AppendOpAndFlush(ev);
 }
 
+void SpectatorNode_GetCachedRoundsWon(uint8_t* p1, uint8_t* p2) {
+    // Canonical per-match round tally, cached at each ROUND_END emit.
+    // round_events attributes timeout rounds correctly (HP compare at the
+    // round-over edge), and the cache survives the match-over object's
+    // reset of the live engine counters -- which is why Netplay_EndBattle
+    // must NOT trust the raw counter read for the deciding round.
+    if (p1) *p1 = s_last_seen_rounds_won_p1;
+    if (p2) *p2 = s_last_seen_rounds_won_p2;
+}
+
 void SpectatorNode_AppendMatchEnd(const MatchEndPayload& p) {
     SessionEvent ev{};
     ev.type        = SessionEventType::MATCH_END;
@@ -407,6 +417,15 @@ void SpectatorNode_AppendMatchEnd(const MatchEndPayload& p) {
     }
     if (s_last_seen_rounds_won_p2 > p.rounds_won_p2) {
         ev.u.match_end.rounds_won_p2 = s_last_seen_rounds_won_p2;
+    }
+    // Winner backstop (task #63 lineage): the rounds override above fixed
+    // the TALLY but historically left winner_idx as the caller's guess --
+    // a timeout-decided match shipped "winner=DRAW rounds=1-0" into every
+    // replay header and spectator stream. If the corrected rounds are
+    // decisive, they name the winner.
+    if (ev.u.match_end.rounds_won_p1 != ev.u.match_end.rounds_won_p2) {
+        ev.u.match_end.winner_idx =
+            (ev.u.match_end.rounds_won_p1 > ev.u.match_end.rounds_won_p2) ? 0 : 1;
     }
     // Caller passes frames_total=0; we compute the actual value here so
     // hook code (Netplay_EndBattle) doesn't need access to the private

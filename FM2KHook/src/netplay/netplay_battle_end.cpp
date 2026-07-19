@@ -6,6 +6,7 @@
 #include "../hooks/css_autoconfirm.h"  // CssAutoConfirm_OnReplayMatchStart (TEST_CSS_CHAR pin)
 #include "control_channel.h"
 #include "game_hash.h"
+#include <algorithm>   // std::max for the rounds-cache merge (#63 lineage)
 #include "input.h"
 #include "savestate.h"
 #include "spectator_node.h"
@@ -60,39 +61,50 @@ void Netplay_EndBattle() {
     if (g_session && g_session_kind == SessionKind::BATTLE) {
         FM2KMatchOutcome outcome = FM2K_MATCH_OUTCOME_NONE;
         if constexpr (FM2K::kIsFM2K) {
-            // FM2K: HP-based outcome — direct read at the moment the
-            // session ends. KO state has the loser's HP at 0; both at
-            // 0 = double-KO (draw); both >0 = timeout/non-KO end (we
-            // can't decide and log as draw).
-            const uint32_t p1_hp = *(uint32_t*)0x4DFC85;
-            const uint32_t p2_hp = *(uint32_t*)0x4EDCC4;
-            if (p1_hp == 0 && p2_hp == 0) {
-                outcome = FM2K_MATCH_OUTCOME_DRAW;
-                match_winner_idx = 2;
-            } else if (p1_hp > 0 && p2_hp == 0) {
-                outcome = (g_player_index == 0)
-                            ? FM2K_MATCH_OUTCOME_SELF_WON
-                            : FM2K_MATCH_OUTCOME_PEER_WON;
-                match_winner_idx = 0;
-            } else if (p2_hp > 0 && p1_hp == 0) {
-                outcome = (g_player_index == 1)
-                            ? FM2K_MATCH_OUTCOME_SELF_WON
-                            : FM2K_MATCH_OUTCOME_PEER_WON;
-                match_winner_idx = 1;
-            } else {
-                outcome = FM2K_MATCH_OUTCOME_DRAW;
-                match_winner_idx = 2;
-            }
-            // FM2K round-win counters (v0.2.21 probe-verified). Per-char-slot
-            // field at offset -0x18 from HP. 0 at match start, increments
-            // each round the player wins. Hooks.cpp's `g_match_phase` /
+            // FM2K: decide by the engine's OWN round-win counters, like the
+            // FM95 branch always has. The old HP-only read mislabeled every
+            // timeout-won match as a DRAW ("both HP >0 = can't decide") --
+            // the engine credits timeout rounds itself (higher HP wins the
+            // round), so the counters are authoritative for the MATCH even
+            // when the final round ends non-KO. Symptom in the wild AND in
+            // harness logs: MATCH_END winner=DRAW rounds=2-0, hub records
+            // scoring timeout wins as non-wins. HP stays as the tiebreak
+            // for a genuinely level counter state (double-KO final round).
+            //
+            // Round counters (v0.2.21 probe-verified): per-char-slot field
+            // at offset -0x18 from HP. 0 at match start, increments each
+            // round the player wins. Hooks.cpp's `g_match_phase` /
             // `g_round_sub_state` labels at the same addresses are
             // misleading — those are per-slot rounds-won, not phase fields.
-            match_rounds_p1 = (uint8_t)*(uint32_t*)FM2K::ADDR_P1_ROUNDS_WON;
-            match_rounds_p2 = (uint8_t)*(uint32_t*)FM2K::ADDR_P2_ROUNDS_WON;
+            const uint32_t p1_hp   = *(uint32_t*)0x4DFC85;
+            const uint32_t p2_hp   = *(uint32_t*)0x4EDCC4;
+            // Live counters get RESET by the match-over object's update
+            // before we run (validated 2026-07-19: raw read 0-0 while the
+            // ROUND_END cache correctly held 1-0 on a timeout-decided
+            // match). Merge with the cached tally -- max per side, since
+            // whichever source saw the deciding round holds the bigger
+            // number and neither can overcount.
+            uint8_t cr1 = 0, cr2 = 0;
+            SpectatorNode_GetCachedRoundsWon(&cr1, &cr2);
+            const uint32_t p1_wins = std::max<uint32_t>(
+                *(uint32_t*)FM2K::ADDR_P1_ROUNDS_WON, cr1);
+            const uint32_t p2_wins = std::max<uint32_t>(
+                *(uint32_t*)FM2K::ADDR_P2_ROUNDS_WON, cr2);
+            uint8_t widx = 2;
+            if      (p1_wins > p2_wins)             widx = 0;
+            else if (p2_wins > p1_wins)             widx = 1;
+            else if (p1_hp > 0 && p2_hp == 0)       widx = 0;  // level counters: HP tiebreak
+            else if (p2_hp > 0 && p1_hp == 0)       widx = 1;
+            match_winner_idx = widx;
+            outcome = (widx == 2) ? FM2K_MATCH_OUTCOME_DRAW
+                    : ((int)widx == g_player_index) ? FM2K_MATCH_OUTCOME_SELF_WON
+                                                    : FM2K_MATCH_OUTCOME_PEER_WON;
+            match_rounds_p1 = (uint8_t)p1_wins;
+            match_rounds_p2 = (uint8_t)p2_wins;
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "Netplay: match outcome p1_hp=%u p2_hp=%u outcome=%d",
-                p1_hp, p2_hp, (int)outcome);
+                "Netplay: match outcome p1_hp=%u p2_hp=%u wins=%u-%u "
+                "outcome=%d winner_idx=%u",
+                p1_hp, p2_hp, p1_wins, p2_wins, (int)outcome, (unsigned)widx);
         } else {
             // FM95: round-win-counter-based outcome — mirrors the
             // game's own decision in obj_match_result_state @ 0x410db0

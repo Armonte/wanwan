@@ -442,6 +442,10 @@ void SpectatorNode_AppendMatchStart(const uint8_t header[96]);
 // playing_back=false (queue keeps draining naturally so the final frames
 // render). Payload values are captured at Netplay_EndBattle.
 void SpectatorNode_AppendMatchEnd(const MatchEndPayload& p);
+// Canonical per-match round tally cached at ROUND_END emit time (timeout
+// rounds attributed correctly; survives the engine's counter reset at
+// match-over). Netplay_EndBattle merges this into its outcome decision.
+void SpectatorNode_GetCachedRoundsWon(uint8_t* p1, uint8_t* p2);
 
 // C7 — emit the host's session_id as a SESSION_ID op. Called once per
 // game-vs-game session (typically at the first Netplay_StartBattle on a

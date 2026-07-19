@@ -15,6 +15,13 @@ namespace
     > _;
 }
 
+// task #56 forensics: wire-stage counters (see GekkoWireStat in gekkonet.h
+// for index meaning). Reset per session Init; read via gekko_wire_stats().
+// Raw indices used across TUs to avoid include churn: 0=magic_drop
+// 1=input_pkts 2=addr_miss 3=admit 4=contig_rej 5=acks_sent 6=acks_recv
+// 7=sync_drained.
+unsigned long long g_gekko_wire_stats[8] = {};
+
 Gekko::MessageSystem::MessageSystem()
 {
     _num_players = 0;
@@ -32,6 +39,8 @@ void Gekko::MessageSystem::Init(u8 num_players, u32 input_size, u32 history_size
 {
     _num_players = num_players;
 	_input_size = input_size;
+
+    for (int i = 0; i < 8; i++) g_gekko_wire_stats[i] = 0;  // #56 counters
 
     // history_size > 0 enables late-joiner backfill: per-spectator input
     // queue grows up to that many unacked frames so a fresh subscriber
@@ -81,7 +90,11 @@ void Gekko::MessageSystem::AddInput(Frame input_frame, Handle player, u8 input[]
         input_q.last_added_input++;
         input_q.inputs.push_back(std::make_unique<u8[]>(_input_size));
         std::memcpy(input_q.inputs.back().get(), input, _input_size);
+        if (remote) g_gekko_wire_stats[3]++;  // #56: remote input admitted
 	}
+    else if (remote && input_frame > input_q.last_added_input + 1) {
+        g_gekko_wire_stats[4]++;  // #56: non-contiguous remote input ignored
+    }
 
     // discard acked inputs (local) or just cap the queue (remote)
     Frame min_ack = remote ? (Frame)INT_MAX : GetMinLastAckedFrame(false);
@@ -211,6 +224,7 @@ void Gekko::MessageSystem::SendSyncResponse(NetAddress* addr, u16 magic)
 
 void Gekko::MessageSystem::SendInputAck(Handle player, Frame frame, i8 local_advantage)
 {
+    g_gekko_wire_stats[5]++;  // #56: ack sent (drain reached sync)
 	auto plyr = GetPlayerByHandle(player);
 
     if (!plyr) {
@@ -521,6 +535,7 @@ void Gekko::MessageSystem::ParsePacket(NetAddress& addr, NetPacket& pkt, u32 pac
         if (pkt.header.type == SyncRequest) {
             OnSyncRequest(addr, pkt);
         }
+        else { g_gekko_wire_stats[0]++; }  // #56: magic-gate drop
         // else: silently drop. The mismatch is expected during the sync
         // handshake (each peer has its own random _session_magic until
         // SyncRequest/Response reconcile them). Original upstream printed
@@ -637,6 +652,7 @@ void Gekko::MessageSystem::OnSyncResponse(NetAddress& addr, NetPacket& pkt)
 
 void Gekko::MessageSystem::OnInputs(NetAddress& addr, NetPacket& pkt)
 {
+    g_gekko_wire_stats[1]++;  // #56: input pkt past the magic gate
     auto body = (InputMsg*)pkt.body.get();
 
     // RLE decompress if the sender compressed this packet
@@ -663,6 +679,7 @@ void Gekko::MessageSystem::OnInputs(NetAddress& addr, NetPacket& pkt)
     } else {
         auto handles = GetRemoteHandlesForAddress(&addr);
         const u32 player_count = (u32)handles.size();
+        if (player_count == 0) g_gekko_wire_stats[2]++;  // #56: addr matched no remote
 
         for (u32 i = 0; i < player_count; i++) {
             const u32 player_offset = i * input_count * _input_size;
@@ -691,6 +708,7 @@ void Gekko::MessageSystem::OnInputAck(NetAddress& addr, NetPacket& pkt)
         if (player->address.Equals(addr) && player->stats.last_acked_frame < ack_frame) {
             player->stats.last_acked_frame = ack_frame;
             player->adv_history.SetRemoteAdvantage(remote_advantage);
+            g_gekko_wire_stats[6]++;  // #56: ack received + matched
         }
     }
 

@@ -94,6 +94,12 @@ void gekko_network_stats(GekkoSession* session, int player, GekkoNetworkStats* s
     session->NetworkStats(player, stats);
 }
 
+void gekko_wire_stats(unsigned long long out[])
+{
+    extern unsigned long long g_gekko_wire_stats[8];
+    for (int i = 0; i < 8; i++) out[i] = g_gekko_wire_stats[i];
+}
+
 void gekko_network_poll(GekkoSession* session)
 {
     session->NetworkPoll();

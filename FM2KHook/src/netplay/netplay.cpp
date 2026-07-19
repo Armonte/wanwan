@@ -907,15 +907,26 @@ void Netplay_TickHeartbeat() {
                                 (g_player_index == 0) ? 1 : 0, &ws);
             const uint64_t rx_ms  = g_gekko_rx_last_ms.load(std::memory_order_relaxed);
             const uint64_t rx_age = rx_ms ? (now_ms - rx_ms) : 0;
+            // Wire-stage counters (task #56): the stage whose tally is
+            // frozen/zero names the drop point -- magic gate, addr match,
+            // contiguity reject, or the msg->sync drain.
+            unsigned long long wire[GEKKO_WS_COUNT] = {};
+            gekko_wire_stats(wire);
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                 "[WEDGE] battle frame FROZEN for %llus at bf=%u conf=%d "
                 "gekko_rx_age=%llums gekko_rx_total=%llu ping=%ums FA=%+.1f "
+                "wire[magic_drop=%llu in_pkts=%llu addr_miss=%llu admit=%llu "
+                "contig_rej=%llu acks_out=%llu acks_in=%llu drained=%llu] "
                 "-- input exchange dead while session alive (task #56)",
                 (unsigned long long)((now_ms - s_wedge_bf_stamp_ms) / 1000ULL),
                 g_netplay_frame, gekko_confirmed_frame(g_session),
                 (unsigned long long)rx_age,
                 (unsigned long long)g_gekko_rx_total.load(std::memory_order_relaxed),
-                ws.last_ping, gekko_frames_ahead(g_session));
+                ws.last_ping, gekko_frames_ahead(g_session),
+                wire[GEKKO_WS_MAGIC_DROPS], wire[GEKKO_WS_INPUT_PKTS],
+                wire[GEKKO_WS_INPUT_ADDR_MISS], wire[GEKKO_WS_INPUT_ADMIT],
+                wire[GEKKO_WS_INPUT_CONTIG_REJECT], wire[GEKKO_WS_ACKS_SENT],
+                wire[GEKKO_WS_ACKS_RECV], wire[GEKKO_WS_SYNC_DRAINED]);
         }
     }
 

@@ -215,6 +215,23 @@ GEKKONET_API int gekko_confirmed_frame(GekkoSession* session);
 
 GEKKONET_API void gekko_network_stats(GekkoSession* session, int player, GekkoNetworkStats* stats);
 
+// Local FM2K patch (task #56 forensics): per-process wire-stage counters,
+// reset at every MessageSystem::Init (session create). Each stage of the
+// input pipeline gets a tally so a silent one-directional input-admit
+// wedge names the stage that dropped the flow. Indexes into a u64 array:
+typedef enum GekkoWireStat {
+    GEKKO_WS_MAGIC_DROPS = 0,     // packets dropped at the session-magic gate
+    GEKKO_WS_INPUT_PKTS,          // Inputs/SpectatorInputs packets accepted
+    GEKKO_WS_INPUT_ADDR_MISS,     // Inputs pkt matched NO remote handle (addr)
+    GEKKO_WS_INPUT_ADMIT,         // remote inputs admitted into the msg queue
+    GEKKO_WS_INPUT_CONTIG_REJECT, // remote inputs ignored (non-contiguous)
+    GEKKO_WS_ACKS_SENT,           // InputAcks sent (drain reached sync)
+    GEKKO_WS_ACKS_RECV,           // InputAcks received + addr-matched
+    GEKKO_WS_SYNC_DRAINED,        // inputs drained msg->sync (AddRemoteInput)
+    GEKKO_WS_COUNT
+} GekkoWireStat;
+GEKKONET_API void gekko_wire_stats(unsigned long long out[/*GEKKO_WS_COUNT*/]);
+
 GEKKONET_API void gekko_network_poll(GekkoSession* session);
 
 #ifndef GEKKONET_NO_ASIO

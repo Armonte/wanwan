@@ -2,6 +2,8 @@
 
 #include <cassert>
 
+extern unsigned long long g_gekko_wire_stats[8];  // #56 counters (backend.cpp)
+
 Gekko::GameSession::GameSession()
 {
 	_host = nullptr;
@@ -467,6 +469,7 @@ void Gekko::GameSession::HandleReceivedInputs()
                 if (i >= min_frame) {
                     int current_idx = i - min_frame;
                     u8* input = input_q[current_idx].get();
+                    ::g_gekko_wire_stats[7]++;  // #56: msg->sync drained
                     _sync.AddRemoteInput(handle, input, i);
                     const i8 local_adv = (i8)(current_frame - i - local_delay);
                     _msg.SendInputAck(handle, i, local_adv);

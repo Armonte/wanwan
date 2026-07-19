@@ -14,7 +14,7 @@
 // What gets redacted:
 //   - The OS USERNAME everywhere it appears (caught once at Init())
 //     -> "<USER>"
-//   - Public IPv4 addresses                       -> "108.197.*.*"
+//   - Public IPv4 addresses                       -> "<pub-ip>" (fully masked)
 //     Loopback, RFC1918, link-local kept intact (useful for diagnostics)
 //   - Email addresses                             -> "<email>"
 //   - Discord snowflake IDs (17-19 digit runs in user_id=/id="" contexts)

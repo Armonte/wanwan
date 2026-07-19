@@ -175,9 +175,12 @@ std::string Scrub(std::string_view in) {
         s = std::move(out);
     }
 
-    // 5) Public IPv4 addresses — keep first two octets, mask last two.
+    // 5) Public IPv4 addresses — FULLY masked. The original rule kept the
+    // first two octets ("108.197.*.*") for coarse correlation, but that's
+    // still identifying (ISP + city) and users reading shared logs
+    // shouldn't see ANY of a peer's address (FlippySpatula, 2026-07-19).
     // We KEEP private/RFC1918/loopback intact so LAN testing diagnostics
-    // ("punch -> 192.168.1.42") still read sensibly.
+    // ("punch -> 192.168.1.42") still read sensibly — those aren't PII.
     {
         std::string out;
         out.reserve(s.size());
@@ -194,9 +197,7 @@ std::string Scrub(std::string_view in) {
             if (a >= 0 && a <= 255 && b >= 0 && b <= 255 &&
                 c >= 0 && c <= 255 && d >= 0 && d <= 255 &&
                 !IsPrivateIPv4(a, b, c, d)) {
-                char buf[24];
-                std::snprintf(buf, sizeof(buf), "%d.%d.*.*", a, b);
-                out += buf;
+                out += "<pub-ip>";
             } else {
                 out += m[0].str();  // private/loopback/unspecified — keep raw
             }

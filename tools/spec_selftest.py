@@ -41,6 +41,10 @@ LAUNCHER = Path("/mnt/c/games/FM2K_RollbackLauncher.exe")
 # multi-game sweep validates the spectator across them.
 GAMES = {
     "wanwan": Path("/mnt/c/games/2dfm/wanwan/WonderfulWorld_ver_0946.exe"),
+    # Parallel-run clone (robocopy of wanwan; per-dir logs let a second run
+    # coexist -- pair with FM2K_TEST_PORT_BASE + FM2K_TEST_NO_KILL=1 +
+    # FM2K_TEST_OUT_DIR).
+    "wanwanb": Path("/mnt/c/games/2dfm/wanwan_b/WonderfulWorld_ver_0946.exe"),
     "vanpri": Path("/mnt/c/games/2dfm/vanguard-princess/vanpri.exe"),
     "urorfg": Path("/mnt/c/games/2dfm/URORFG Release 1 0 2/URORFGRelease102.exe"),
     # FM95 engine (Comic Party Wars) -- the launcher sniffs the engine from
@@ -48,9 +52,16 @@ GAMES = {
     "cpw":    Path("/mnt/c/dev/fm95/CPW/ＣＰＷ.exe"),
 }
 GAME_EXE = GAMES["wanwan"]   # default; overridden by --game in main()
-OUT_DIR  = Path("/mnt/c/dev/wanwan/tools/.spec_selftest")
+OUT_DIR  = Path(os.environ.get("FM2K_TEST_OUT_DIR",
+                               "/mnt/c/dev/wanwan/tools/.spec_selftest"))
 PARITY_DIFF = Path(__file__).parent / "parity_diff.py"
-P1_PORT, P2_PORT, SPEC_PORT = 7000, 7001, 7002
+# Parallel-run support: FM2K_TEST_PORT_BASE relocates every port this run
+# uses (spectator TCP listeners derive from FM2K_LOCAL_PORT hook-side, so
+# they follow automatically). Two concurrent runs need distinct bases AND
+# distinct --game dirs (per-dir logs) AND FM2K_TEST_NO_KILL=1 on both
+# (kill_strays kills by IMAGE NAME and would murder the sibling run).
+_PORT_BASE = int(os.environ.get("FM2K_TEST_PORT_BASE", "7000"))
+P1_PORT, P2_PORT, SPEC_PORT = _PORT_BASE, _PORT_BASE + 1, _PORT_BASE + 2
 # Fake-spectator UDP ports start at 7200 -- clear of the real spec range (7002+)
 # AND the host's TCP listener (tries udp+100 = 7100 first). Fakes dial whatever
 # TCP port the JOIN_ACK reports, so no fake TCP bind collision.
@@ -69,6 +80,9 @@ def to_win(p: Path) -> str:
 
 
 def kill_strays():
+    # Parallel runs: image-name taskkill cannot distinguish sibling runs.
+    if os.environ.get("FM2K_TEST_NO_KILL") == "1":
+        return
     for image in ("FM2K_RollbackLauncher.exe", "WonderfulWorld_ver_0946.exe"):
         subprocess.run(["taskkill.exe", "/F", "/T", "/IM", image],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -895,6 +909,17 @@ def main():
             txt = spec_log.read_text(errors="replace")
             pins = txt.count("applied deferred PIN_RNG")
             needed = segs - 1  # first battle is snapshot-anchored
+            # Terminal-seam exemption: the harness TerminateProcess at
+            # --total-frames can land moments after the host ENTERS its
+            # final battle -- the pty registers that segment, but the feed
+            # dies before the viewer can cross the boundary (observed
+            # 2026-07-19: two 30-min runs, viewer applied PIN at all 24/25
+            # crossings it was FED, outlived the host by the full
+            # host-gone window, then failed this count on the host's
+            # 1-sliver final segment). A crossing the host died inside is
+            # not the viewer's miss.
+            if h_segs and h_segs[-1] < 600:
+                needed = max(0, needed - 1)
             print(f"[harness] deferred PIN_RNG applies: {pins} "
                   f"(boundary crossings: {needed})")
             if pins < needed:

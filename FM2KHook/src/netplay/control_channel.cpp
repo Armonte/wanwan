@@ -598,6 +598,9 @@ void ControlChannel_SendTo(const CtrlPacket& packet, const sockaddr_in& dest) {
     pkt.header.ack       = g_recv_seq;
     pkt.header.player_id = g_local_player_id;
 
+    // task #58: dest == spec relay -> 0xCF-wrapped (viewer fallback path).
+    if (::fm2k::nat::SendToMaybeRelayWrapped((uintptr_t)g_socket, &pkt,
+                                             (int)sizeof(pkt), dest)) return;
     fm2k::Sendto4or6(g_socket, reinterpret_cast<const char*>(&pkt),
                      sizeof(pkt), dest);
 }
@@ -606,6 +609,8 @@ void ControlChannel_SendRawTo(const void* buf, size_t len, const sockaddr_in& de
     if (!g_socket_initialized) return;
     if (g_socket == INVALID_SOCKET) return;
     if (dest.sin_port == 0) return;
+    if (::fm2k::nat::SendToMaybeRelayWrapped((uintptr_t)g_socket, buf,
+                                             (int)len, dest)) return;
     fm2k::Sendto4or6(g_socket, reinterpret_cast<const char*>(buf),
                      (int)len, dest);
 }

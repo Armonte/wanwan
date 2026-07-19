@@ -345,6 +345,14 @@ void RunSpectatorTick() {
         }();
         static uint64_t s_spectate_start_ms = 0;
         if (s_spectate_start_ms == 0) s_spectate_start_ms = GetTickCount64();
+        // task #58: at 4s with ZERO admits, engage the hub spec-relay
+        // fallback (one-shot, no-op when the launcher supplied no relay
+        // block) -- covers viewers whose direct UDP path is dead (hard
+        // NAT) well before the 30s give-up below.
+        if (!SpectatorNode_HasEverAdmitted() &&
+            GetTickCount64() - s_spectate_start_ms > 4000) {
+            SpectatorNode_EngageRelayFallback();
+        }
         if (!SpectatorNode_HasEverAdmitted() &&
             GetTickCount64() - s_spectate_start_ms > s_connect_ms) {
             static std::atomic<bool> s_connect_armed{false};

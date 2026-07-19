@@ -613,6 +613,21 @@ const uint8_t* GetRelaySessionId() {
     return g_relay_configured ? g_relay_session : nullptr;
 }
 
+bool SendToMaybeRelayWrapped(uintptr_t s, const void* buf, int len,
+                             const sockaddr_in& dest) {
+    if (!g_relay_configured || len < 0) return false;
+    if (dest.sin_addr.s_addr != g_relay_addr.sin_addr.s_addr ||
+        dest.sin_port != g_relay_addr.sin_port) return false;
+    uint8_t wrapped[2048];
+    size_t wl = WrapForRelay(reinterpret_cast<const uint8_t*>(buf),
+                             static_cast<size_t>(len), wrapped, sizeof(wrapped));
+    if (wl == 0) return true;  // oversize: dropped, mirroring RawSend's relay branch
+    fm2k::Sendto4or6(static_cast<SOCKET>(s),
+                     reinterpret_cast<const char*>(wrapped),
+                     static_cast<int>(wl), dest);
+    return true;
+}
+
 size_t WrapForRelay(const uint8_t* in, size_t len, uint8_t* out, size_t out_cap) {
     constexpr size_t HDR = 2 + 16;
     if (out_cap < HDR + len) return 0;

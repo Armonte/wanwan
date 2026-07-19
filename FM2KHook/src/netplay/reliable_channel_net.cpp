@@ -10,6 +10,8 @@
 #include "reliable_channel_net.h"
 #include "control_channel_internal.h"
 #include "addr6_util.h"
+#include "nat_traversal.h"   // SendToMaybeRelayWrapped (#58 spec-relay fallback)
+#include <cstring>
 
 #include <chrono>
 #include <cstdint>
@@ -61,6 +63,15 @@ double NowSeconds() {
 void RcRawSend(void* ctx, const uint8_t* data, int len) {
     RcPeer* peer = static_cast<RcPeer*>(ctx);
     if (g_socket == INVALID_SOCKET) return;
+    // task #58: a viewer riding the spec-relay fallback has its RC peer
+    // keyed to the relay endpoint -- those sends must wrap like every
+    // other relay-bound datagram (acks included) or the relay drops them.
+    if (peer->addr.ss_family == AF_INET) {
+        sockaddr_in dest4{};
+        std::memcpy(&dest4, &peer->addr, sizeof(dest4));
+        if (::fm2k::nat::SendToMaybeRelayWrapped((uintptr_t)g_socket,
+                                                 data, len, dest4)) return;
+    }
     fm2k::SendtoStorage(g_socket, reinterpret_cast<const char*>(data), len, peer->addr);
 }
 

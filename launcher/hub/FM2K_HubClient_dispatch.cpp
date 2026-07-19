@@ -313,6 +313,30 @@ void HubClient::OnMessage(const std::string& msg) {
                 ev.spectate.spec_transport = std::move(st);
             }
         }
+        {
+            // Optional spec relay fallback (task #58): same block shape as
+            // match_start's "relay" -- {"addr": [host, port], "session_id"}.
+            std::string sr = GetSub(msg, "spec_relay");
+            if (!sr.empty()) {
+                std::string addr_arr = GetSub(sr, "addr");
+                std::string ip; int port = 0;
+                if (!addr_arr.empty()) {
+                    size_t a = addr_arr.find('"');
+                    size_t b = (a == std::string::npos) ? a : addr_arr.find('"', a + 1);
+                    if (a != std::string::npos && b != std::string::npos) {
+                        ip = addr_arr.substr(a + 1, b - a - 1);
+                    }
+                    size_t c = addr_arr.find(',');
+                    if (c != std::string::npos) {
+                        port = std::atoi(addr_arr.c_str() + c + 1);
+                    }
+                }
+                if (!ip.empty() && port > 0) {
+                    ev.spectate.spec_relay_addr = ip + ":" + std::to_string(port);
+                    ev.spectate.spec_relay_session = GetStr(sr, "session_id");
+                }
+            }
+        }
         EmitEvent(std::move(ev));
         return;
     }

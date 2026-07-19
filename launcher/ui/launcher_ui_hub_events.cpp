@@ -464,6 +464,26 @@ void LauncherUI::HandleHubEvent(const fm2k::HubEvent& ev) {
                                  " @ " + ev.spectate.host_ip + ":" +
                                  std::to_string(ev.spectate.host_port);
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Hub: %s", hs.status_line.c_str());
+                // Spec relay fallback creds (task #58): same env names the
+                // match path uses (ConfigureRelay reads them unchanged),
+                // same set-OR-CLEAR discipline so a spectate after a
+                // relayed match (or vice versa) can't inherit the other
+                // session's relay. Hub advertises an IP in prod; if it
+                // ever sends a hostname the hook's own resolve is the
+                // fallback (same caveat as the match path's pre-resolve).
+                if (!ev.spectate.spec_relay_addr.empty() &&
+                    !ev.spectate.spec_relay_session.empty()) {
+                    ::SetEnvironmentVariableA("FM2K_HUB_RELAY_ADDR",
+                                              ev.spectate.spec_relay_addr.c_str());
+                    ::SetEnvironmentVariableA("FM2K_HUB_RELAY_SESSION",
+                                              ev.spectate.spec_relay_session.c_str());
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Hub: spec relay fallback available at %s",
+                        ev.spectate.spec_relay_addr.c_str());
+                } else {
+                    ::SetEnvironmentVariableA("FM2K_HUB_RELAY_ADDR",    nullptr);
+                    ::SetEnvironmentVariableA("FM2K_HUB_RELAY_SESSION", nullptr);
+                }
                 if (on_spectate_match) {
                     on_spectate_match(ev.spectate.host_ip, ev.spectate.host_port,
                                       ev.spectate.session_kind,

@@ -212,6 +212,15 @@ struct HubEvent {
         // host's mode. Default "tcp" matches legacy behavior for hosts
         // (and hubs) that don't advertise the field.
         std::string spec_transport = "tcp";
+        // spec_relay -- task #58 RC-over-relay fallback. Hub mints a
+        // host-transparent relay session with every grant (0.2.83+ hubs)
+        // and sends {"addr": [host, port], "session_id": 32-hex}. The
+        // spec launcher exports these as FM2K_HUB_RELAY_ADDR/SESSION on
+        // the spectator spawn; the viewer hook auto-falls-back onto the
+        // relay when its direct RC join produces no admits. Empty =
+        // hub didn't offer one (old hub / same-NAT grant) = no fallback.
+        std::string spec_relay_addr;     // "host:port", already joined
+        std::string spec_relay_session;  // 32-hex session id
     } spectate;
 
     // SpecRelayBinary payload (Phase 3). Hub forwarded a SpecDataHeader-

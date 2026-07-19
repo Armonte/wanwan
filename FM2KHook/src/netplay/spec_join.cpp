@@ -8,6 +8,7 @@
 #include "spec_relay_queue.h"     // hub-relay outbound queue (Phase 2c)
 #include "spectator_tcp.h"        // TCP transport for INPUT_BATCH stream
 #include "control_channel.h"
+#include "nat_traversal.h"        // GetRelayAddr for the spec-relay fallback (#58)
 #include "netplay.h"
 #include "replay.h"
 #include "savestate.h"            // SaveState_Save / Peek for snapshot capture
@@ -849,6 +850,28 @@ void SpectatorNode_HandleJoinAck(const sockaddr_in& from, uint8_t host_session_k
 
     Netplay_StartSpectateSession(kind, host_addr_str);
     SpecReplayPreSubStash();  // task #55: backfill that beat the first ACK
+}
+
+// task #58: viewer auto-fallback onto the hub spec relay. Called by the
+// connect watchdog when the direct join produced no admitted frames after
+// its grace window. Swaps the upstream to the relay endpoint and re-JOINs
+// with the sticky mode; every send to the new upstream wraps into the
+// 0xCF envelope by destination match (SendToMaybeRelayWrapped) and the
+// host sees a normal direct-looking spectator at the relay's per-session
+// socket -- no host-side involvement at all. One-shot: if the relay leg
+// ALSO produces nothing, the 30s connect deadline still closes cleanly.
+bool SpectatorNode_EngageRelayFallback() {
+    static bool s_engaged = false;
+    if (s_engaged) return false;
+    const sockaddr_in* relay = ::fm2k::nat::GetRelayAddr();
+    if (!relay) return false;   // launcher provided no spec_relay block
+    s_engaged = true;
+    char buf[48] = {}; FormatAddr(*relay, buf, sizeof(buf));
+    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+        "SpectatorNode: direct join produced no frames -- engaging hub "
+        "spec-relay fallback via %s", buf);
+    SpectatorNode_RequestJoin(*relay, g_state.last_requested_mode);
+    return true;
 }
 
 void SpectatorNode_HandleJoinRedirect(const sockaddr_in& from,

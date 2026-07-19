@@ -117,6 +117,16 @@ const uint8_t*     GetRelaySessionId();   // 16 bytes
 // have room for `len + 18` bytes. Returns the total wrapped length.
 size_t WrapForRelay(const uint8_t* in, size_t len, uint8_t* out, size_t out_cap);
 
+// task #58: destination-based relay wrap for the SPECTATE fallback. When
+// `dest` equals the configured relay endpoint, wrap `buf` in the 0xCF
+// envelope and send it on `s`; returns true (handled). Returns false when
+// dest is not the relay (caller sends normally). Unlike IsRelayMode()
+// (the netplay-peer redirect), this fires purely on destination match, so
+// a viewer whose upstream_addr was swapped to the relay wraps every send
+// -- control, RC acks, everything -- with zero per-callsite state.
+bool SendToMaybeRelayWrapped(uintptr_t s, const void* buf, int len,
+                             const sockaddr_in& dest);
+
 // Strip the 0xCF envelope from an inbound packet. Returns true if the
 // packet was a valid relay envelope for our session and writes the
 // inner payload pointer/length via `out_inner`/`out_inner_len`. The

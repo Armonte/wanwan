@@ -253,6 +253,26 @@ void OutboundSendTo(const sockaddr_in& to, const void* buf, size_t len) {
 void FormatAddr(const sockaddr_in& a, char* out, size_t out_sz) {
     char ip[INET_ADDRSTRLEN] = {};
     inet_ntop(AF_INET, &a.sin_addr, ip, sizeof(ip));
+    // PII (FlippySpatula 2026-07-19): the sink-level scrub keeps the first
+    // two octets of public IPs ("108.197.*.*") -- still identifying, and
+    // spectator lines don't need ANY of it. Fully mask public peers at
+    // the source in production; loopback/RFC1918/link-local stay intact
+    // (the harness + same-LAN diagnostics depend on them). Port is kept:
+    // it's the correlation key for subs and carries no identity.
+    static const bool s_prod = []{
+        const char* v = std::getenv("FM2K_PRODUCTION_MODE");
+        return !(v && v[0] == '0' && v[1] == '\0');
+    }();
+    const uint32_t be = a.sin_addr.s_addr;          // network order
+    const uint8_t o1 = (uint8_t)(be), o2 = (uint8_t)(be >> 8);
+    const bool priv = o1 == 127 || o1 == 10 ||
+                      (o1 == 192 && o2 == 168) ||
+                      (o1 == 172 && o2 >= 16 && o2 <= 31) ||
+                      (o1 == 169 && o2 == 254);
+    if (s_prod && !priv) {
+        std::snprintf(out, out_sz, "<pub>:%u", ntohs(a.sin_port));
+        return;
+    }
     std::snprintf(out, out_sz, "%s:%u", ip, ntohs(a.sin_port));
 }
 

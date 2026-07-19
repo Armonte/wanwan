@@ -704,6 +704,18 @@ void Gekko::MessageSystem::OnInputAck(NetAddress& addr, NetPacket& pkt)
     const Frame ack_frame = body->ack_frame;
     const i8 remote_advantage = (i8)body->frame_advantage;
 
+    // task #56 ROOT FIX: an ack can only cover frames we actually SENT.
+    // A stale ack straggling across a session transition (prev session's
+    // frame counts are far ahead of a fresh session's) used to poison
+    // last_acked_frame with a huge value -> SendInputsToPeer's "peer is
+    // caught up" gate went permanently true -> this side silently STOPPED
+    // SENDING INPUTS forever while ping/health kept flowing (the
+    // wedge: peer conf=-1, in_pkts=0, our acks_in=1). Wire evidence
+    // 2026-07-19 01:54 -- see project_battle_entry_wedge memory.
+    const Frame last_sent = GetLastAddedInput(false);
+    if (ack_frame > last_sent) {
+        return;  // acking frames we never sent = stale/foreign packet
+    }
     for (auto& player : remotes) {
         if (player->address.Equals(addr) && player->stats.last_acked_frame < ack_frame) {
             player->stats.last_acked_frame = ack_frame;
@@ -713,6 +725,8 @@ void Gekko::MessageSystem::OnInputAck(NetAddress& addr, NetPacket& pkt)
     }
 
     for (auto& player : spectators) {
+        // Same stale-ack guard against the spectator input queue (#56).
+        if (ack_frame > _net_spectator_queue.last_added_input) continue;
         if (player->address.Equals(addr) && player->stats.last_acked_frame < ack_frame) {
             player->stats.last_acked_frame = ack_frame;
         }

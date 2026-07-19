@@ -765,6 +765,11 @@ void SpectatorNode_HandleUdpInputDatagram(const uint8_t* buf, size_t len,
 // datagrams flow, but ops are TCP-only -- the q:7 boundary zombie).
 void SpectatorNode_OnUpstreamTcpDead();
 
+// task #58: one-shot swap to the hub spec-relay upstream when the direct
+// join starves. Returns true the one time it engages (relay configured +
+// not yet engaged); safe to call every frame.
+bool SpectatorNode_EngageRelayFallback();
+
 // Playback-pacing queries for the trampoline's jitter floor (Phase F):
 // the q<floor freeze must not strand a queued boundary op (MATCH_END
 // behind tail inputs) or an active SEAM/PINNING walk.

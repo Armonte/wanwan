@@ -1,5 +1,6 @@
 #include "session.h"
 
+#include <cstring>
 
 Gekko::SpectatorSession::SpectatorSession()
 {
@@ -73,6 +74,27 @@ i32 Gekko::SpectatorSession::AddActor(GekkoPlayerType type, GekkoNetAddress* add
     _msg.remotes.push_back(std::make_unique<Player>(new_handle, type, address.get()));
 
     return new_handle;
+}
+
+bool Gekko::SpectatorSession::DisconnectActor(i32 actor)
+{
+    // disconnecting the host stops the spectating session.
+    if (!_msg.DisconnectActor(actor)) {
+        return false;
+    }
+
+    // flush right away so the disconnect gets sent even
+    // when the session isnt updated after this call.
+    if (_host) {
+        _msg.SendPendingOutput(_host);
+    }
+
+    return true;
+}
+
+void Gekko::SpectatorSession::SetDisconnectTimeout(u32 timeout)
+{
+    _msg.SetDisconnectTimeout(timeout);
 }
 
 void Gekko::SpectatorSession::AddLocalInput(i32 player, void* input)

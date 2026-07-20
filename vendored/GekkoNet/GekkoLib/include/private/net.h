@@ -5,9 +5,8 @@
 
 #include <memory>
 #include <vector>
+#include <variant>
 #include <chrono>
-
-#include "zpp/serializer.h"
 
 namespace Gekko {
     struct NetAddress {
@@ -32,88 +31,70 @@ namespace Gekko {
         SyncRequest,
         SyncResponse,
         SessionHealth,
-        NetworkHealth
+        NetworkHealth,
+        Disconnect,
+        DisconnectClaim
     };
 
     struct MsgHeader {
         PacketType type;
         u16 magic;
-
-        template <typename Archive, typename Self>
-        static void serialize(Archive& a, Self& s) {
-            a(s.type, s.magic);
-        }
     };
 
-    struct MsgBody : public zpp::serializer::polymorphic {
-    };
-
-    struct InputMsg : MsgBody {
+    struct InputMsg {
         Frame start_frame;
         u16 input_count;
         u16 total_size;
         bool compressed;
 
         std::vector<u8> inputs;
-
-        void Copy(const InputMsg* other) {
-            start_frame = other->start_frame;
-            input_count = other->input_count;
-            total_size = other->total_size;
-            compressed = other->compressed;
-
-            inputs.clear();
-            inputs.insert(inputs.begin(), other->inputs.begin(), other->inputs.end());
-        }
-
-        template <typename Archive, typename Self>
-        static void serialize(Archive& a, Self& s) {
-            a(s.start_frame, s.input_count, s.total_size, s.compressed, s.inputs);
-        }
     };
 
-    struct InputAckMsg : MsgBody {
+    struct InputAckMsg {
         Frame ack_frame;
         i8 frame_advantage;
-
-        template <typename Archive, typename Self>
-        static void serialize(Archive& a, Self& s) {
-            a(s.ack_frame, s.frame_advantage);
-        }
     };
 
-    struct SyncMsg : MsgBody {
+    struct SyncMsg {
         u16 rng_data;
-
-        template <typename Archive, typename Self>
-        static void serialize(Archive& a, Self& s) {
-            a(s.rng_data);
-        }
     };
 
-    struct SessionHealthMsg : MsgBody {
+    struct SessionHealthMsg {
         Frame frame;
         u32 checksum;
-
-        template <typename Archive, typename Self>
-        static void serialize(Archive& a, Self& s) {
-            a(s.frame, s.checksum);
-        }
     };
 
-    struct NetworkHealthMsg : MsgBody {
+    struct NetworkHealthMsg {
         u64 send_time;
         bool received;
-
-        template <typename Archive, typename Self>
-        static void serialize(Archive& a, Self& s) {
-            a(s.send_time, s.received);
-        }
     };
+
+    struct DisconnectMsg {
+    };
+
+    // claims which inputs the sender holds for a disconnected player and carries
+    // them along, so every peer can end that player on the same newest known frame.
+    struct DisconnectClaimMsg {
+        Handle player;
+        Frame start_frame;
+        Frame last_frame;
+
+        std::vector<u8> inputs;
+    };
+
+    using MsgBody = std::variant<
+        InputMsg,
+        InputAckMsg,
+        SyncMsg,
+        SessionHealthMsg,
+        NetworkHealthMsg,
+        DisconnectMsg,
+        DisconnectClaimMsg
+    >;
 
     struct NetPacket {
         MsgHeader header;
-        std::unique_ptr<MsgBody> body;
+        MsgBody body;
     };
 
     struct NetData {
@@ -123,6 +104,8 @@ namespace Gekko {
 
     struct NetStats {
         static const u64 DISCONNECT_TIMEOUT = 5000;
+        static const u64 DISCONNECT_MSG_DELAY = 200;
+        static const u64 DISCONNECT_CLAIM_HOLD = 2000;
         static const u64 SYNC_MSG_DELAY = 200;
         static const u64 NET_CHECK_DELAY = 500;
         static const u64 INPUT_RETRY_INTERVAL = 200;

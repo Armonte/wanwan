@@ -205,6 +205,7 @@ add_library(GekkoNet STATIC
 
 target_include_directories(GekkoNet PUBLIC
     vendored/GekkoNet/GekkoLib/include
+    vendored/GekkoNet/GekkoLib/include/private  # b5c6528: internal headers moved here; src does #include "backend.h"
     vendored/GekkoNet/GekkoLib/thirdparty
     vendored/GekkoNet/GekkoLib/thirdparty/zpp
     vendored/GekkoNet/GekkoLib/thirdparty/asio

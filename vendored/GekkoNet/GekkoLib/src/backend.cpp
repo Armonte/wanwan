@@ -2,18 +2,9 @@
 
 #include <cassert>
 #include <climits>
+#include <cstring>
 
-// register poly types.
-namespace
-{
-    zpp::serializer::register_types<
-        zpp::serializer::make_type<Gekko::SyncMsg, zpp::serializer::make_id("Gekko::SyncMsg")>,
-        zpp::serializer::make_type<Gekko::InputMsg, zpp::serializer::make_id("Gekko::InputMsg")>,
-        zpp::serializer::make_type<Gekko::InputAckMsg, zpp::serializer::make_id("Gekko::InputAckMsg")>,
-        zpp::serializer::make_type<Gekko::SessionHealthMsg, zpp::serializer::make_id("Gekko::SessionHealthMsg")>,
-        zpp::serializer::make_type<Gekko::NetworkHealthMsg, zpp::serializer::make_id("Gekko::NetworkHealthMsg")>
-    > _;
-}
+#include "zpp/zpp_bits.h"
 
 // task #56 forensics: wire-stage counters (see GekkoWireStat in gekkonet.h
 // for index meaning). Reset per session Init; read via gekko_wire_stats().
@@ -27,6 +18,7 @@ Gekko::MessageSystem::MessageSystem()
     _num_players = 0;
 	_input_size = 0;
     _last_sent_network_check = 0;
+    _disconnect_timeout = NetStats::DISCONNECT_TIMEOUT;
 
 	// gen magic for session
 	std::srand((unsigned int)std::time(nullptr));
@@ -94,7 +86,7 @@ void Gekko::MessageSystem::AddInput(Frame input_frame, Handle player, u8 input[]
 	}
     else if (remote && input_frame > input_q.last_added_input + 1) {
         g_gekko_wire_stats[4]++;  // #56: non-contiguous remote input ignored
-    }
+	}
 
     // discard acked inputs (local) or just cap the queue (remote)
     Frame min_ack = remote ? (Frame)INT_MAX : GetMinLastAckedFrame(false);
@@ -139,6 +131,12 @@ void Gekko::MessageSystem::SendPendingOutput(GekkoNetAdapter* host)
 		HandleTooFarBehindActors(true);
 	}
 
+	// notify peers about fresh disconnects
+	SendPendingDisconnects();
+
+	// exchange input claims for disconnected players
+	SendPendingClaims();
+
 	// drain remaining messages (acks, sync, health, etc.)
 	while (!_pending_output.empty()) {
 		auto& pkt = _pending_output.front();
@@ -162,18 +160,16 @@ void Gekko::MessageSystem::HandleData(GekkoNetAdapter* host, GekkoNetResult** da
         auto addr = NetAddress(res->addr.data, res->addr.size);
 
         _bin_buffer.clear();
+        _bin_buffer.insert(_bin_buffer.begin(), (u8*)res->data, (u8*)res->data + res->data_len);
 
-        try {
-            _bin_buffer.insert(_bin_buffer.begin(), (u8*)res->data, (u8*)res->data + res->data_len);
+        NetPacket pkt;
+        zpp::bits::in in(_bin_buffer);
 
-            NetPacket pkt;
-            zpp::serializer::memory_input_archive in(_bin_buffer);
-            in(pkt.header, pkt.body);
-
-            ParsePacket(addr, pkt, res->data_len);
-        }
-        catch (const std::exception&) {
+        if (failure(in(pkt.header, pkt.body))) {
             printf("failed to deserialize packet\n");
+        }
+        else {
+            ParsePacket(addr, pkt, res->data_len);
         }
 
         // cleanup :)
@@ -197,10 +193,10 @@ void Gekko::MessageSystem::SendSyncRequest(NetAddress* addr)
 	message->pkt.header.type = SyncRequest;
 	message->pkt.header.magic = 0;
 
-    auto body = std::make_unique<SyncMsg>();
-    body->rng_data = _session_magic;
+    SyncMsg body = {};
+    body.rng_data = _session_magic;
 
-    message->pkt.body = std::move(body);
+    message->pkt.body = body;
 }
 
 void Gekko::MessageSystem::SendSyncResponse(NetAddress* addr, u16 magic)
@@ -216,10 +212,60 @@ void Gekko::MessageSystem::SendSyncResponse(NetAddress* addr, u16 magic)
 	message->pkt.header.type = SyncResponse;
 	message->pkt.header.magic = magic;
 
-    auto body = std::make_unique<SyncMsg>();
-    body->rng_data = _session_magic;
+    SyncMsg body = {};
+    body.rng_data = _session_magic;
 
-    message->pkt.body = std::move(body);
+    message->pkt.body = body;
+}
+
+void Gekko::MessageSystem::SendDisconnect(NetAddress* addr, u16 magic)
+{
+    if (!addr || magic == 0) {
+        return;
+    }
+
+    _pending_output.push(std::make_unique<NetData>());
+    auto& message = _pending_output.back();
+
+    message->addr.Copy(addr);
+    message->pkt.header.type = Disconnect;
+    message->pkt.header.magic = magic;
+
+    message->pkt.body = DisconnectMsg();
+}
+
+void Gekko::MessageSystem::SendPendingDisconnects()
+{
+    const u64 now = TimeSinceEpoch();
+
+    std::vector<std::unique_ptr<Player>>* current = &remotes;
+    for (u32 i = 0; i < 2; i++)
+    {
+        if (i == 1) {
+            current = &spectators;
+        }
+
+        for (auto& actor : *current) {
+            if (actor->disconnect_msgs_left == 0 || actor->GetStatus() != Disconnected) {
+                continue;
+            }
+
+            // without an address or a finished handshake the message cant be delivered.
+            if (actor->address.GetSize() == 0 || actor->session_magic == 0) {
+                actor->disconnect_msgs_left = 0;
+                continue;
+            }
+
+            // dont want to spam the network with disconnect packets
+            if (actor->last_disconnect_msg_time + NetStats::DISCONNECT_MSG_DELAY > now) {
+                continue;
+            }
+
+            SendDisconnect(&actor->address, actor->session_magic);
+            actor->last_disconnect_msg_time = now;
+            actor->disconnect_msgs_left--;
+        }
+    }
 }
 
 void Gekko::MessageSystem::SendInputAck(Handle player, Frame frame, i8 local_advantage)
@@ -238,11 +284,11 @@ void Gekko::MessageSystem::SendInputAck(Handle player, Frame frame, i8 local_adv
 	message->pkt.header.magic = plyr->session_magic;
 	message->pkt.header.type = InputAck;
 
-    auto body = std::make_unique<InputAckMsg>();
-	body->ack_frame = frame;
-	body->frame_advantage = local_advantage;
+    InputAckMsg body = {};
+	body.ack_frame = frame;
+	body.frame_advantage = local_advantage;
 
-    message->pkt.body = std::move(body);
+    message->pkt.body = body;
 }
 
 std::vector<Handle> Gekko::MessageSystem::GetRemoteHandlesForAddress(NetAddress* addr)
@@ -330,9 +376,9 @@ bool Gekko::MessageSystem::CheckStatusActors()
                         // we want SessionStartedEvent to fire when only
                         // the players have completed their handshake.
                         if (!is_spectator_pass) {
-                            result++;
-                        }
+                        result++;
                     }
+                }
                 }
                 // Spectator-init status MUST NOT gate the gameplay session.
                 // The host still drives sync packets to them above so they
@@ -340,13 +386,90 @@ bool Gekko::MessageSystem::CheckStatusActors()
                 // spectator won't deadlock player frame advance.
                 // See README.md:36 (Work in progress: late spectator join).
                 if (!is_spectator_pass) {
-                    result--;
+                result--;
+            }
+        }
+    }
+    }
+
+	return result == 0;
+}
+
+bool Gekko::MessageSystem::DisconnectActor(Handle handle)
+{
+    // disconnecting a local actor means leaving the session, so drop every peer.
+    for (auto& local : locals) {
+        if (local->handle == handle) {
+            if (local->GetStatus() == Disconnected) {
+                return false;
+            }
+
+            local->SetStatus(Disconnected);
+
+            std::vector<std::unique_ptr<Player>>* current = &remotes;
+            for (u32 i = 0; i < 2; i++)
+            {
+                if (i == 1) {
+                    current = &spectators;
                 }
+
+                for (auto& actor : *current) {
+                    if (actor->GetStatus() != Disconnected) {
+                        MarkActorDisconnected(actor.get());
+                    }
+                    actor->disconnect_msgs_left = NUM_DISCONNECT_MSGS;
+                }
+            }
+            return true;
+        }
+    }
+
+    // find the requested remote actor or spectator.
+    Player* target = nullptr;
+
+    std::vector<std::unique_ptr<Player>>* current = &remotes;
+    for (u32 i = 0; i < 2; i++)
+    {
+        if (i == 1) {
+            current = &spectators;
+        }
+
+        for (auto& actor : *current) {
+            if (actor->handle == handle) {
+                target = actor.get();
+                break;
             }
         }
     }
 
-	return result == 0;
+    if (!target || target->GetStatus() == Disconnected) {
+        return false;
+    }
+
+    // an address is a single connection, so drop every actor that shares it.
+    current = &remotes;
+    for (u32 i = 0; i < 2; i++)
+    {
+        if (i == 1) {
+            current = &spectators;
+        }
+
+        for (auto& actor : *current) {
+            const bool same_peer = actor.get() == target ||
+                (target->address.GetSize() != 0 && actor->address.Equals(target->address));
+
+            if (!same_peer) {
+                continue;
+            }
+
+            if (actor->GetStatus() != Disconnected) {
+                MarkActorDisconnected(actor.get());
+            }
+            actor->disconnect_msgs_left = NUM_DISCONNECT_MSGS;
+        }
+    }
+
+    return true;
 }
 
 void Gekko::MessageSystem::SendSessionHealth(Frame frame, u32 checksum)
@@ -357,11 +480,11 @@ void Gekko::MessageSystem::SendSessionHealth(Frame frame, u32 checksum)
     // the address and magic is set later so dont worry about it now
     message->pkt.header.type = SessionHealth;
 
-    auto body = std::make_unique<SessionHealthMsg>();
-    body->frame = frame;
-    body->checksum = checksum;
+    SessionHealthMsg body = {};
+    body.frame = frame;
+    body.checksum = checksum;
 
-    message->pkt.body = std::move(body);
+    message->pkt.body = body;
 }
 
 void Gekko::MessageSystem::SendNetworkHealth()
@@ -379,11 +502,11 @@ void Gekko::MessageSystem::SendNetworkHealth()
     // the address and magic is set later so dont worry about it now
     message->pkt.header.type = NetworkHealth;
 
-    auto body = std::make_unique<NetworkHealthMsg>();
-    body->send_time = now;
-    body->received = false;
+    NetworkHealthMsg body = {};
+    body.send_time = now;
+    body.received = false;
 
-    message->pkt.body = std::move(body);
+    message->pkt.body = body;
 
     _last_sent_network_check = now;
 }
@@ -398,8 +521,151 @@ std::deque<std::unique_ptr<u8[]>>& Gekko::MessageSystem::GetNetPlayerQueue(Handl
     return _net_player_queue[player].inputs;
 }
 
+void Gekko::MessageSystem::SetDisconnectTimeout(u32 timeout)
+{
+    _disconnect_timeout = timeout;
+}
+
+Frame Gekko::MessageSystem::GetDisconnectHoldFrame()
+{
+    // dont treat the frames just past a disconnect as confirmed right away,
+    // a peer may still claim to hold more inputs for the disconnected player.
+    Frame frame = INT32_MAX;
+    const u64 now = TimeSinceEpoch();
+
+    for (auto& actor : remotes) {
+        if (actor->GetStatus() != Disconnected || actor->handle >= _num_players) {
+            continue;
+        }
+
+        // the hold ends once every peer agreed to our claim or had enough time to.
+        if (now - actor->last_claim_raise_time >= NetStats::DISCONNECT_CLAIM_HOLD) {
+            continue;
+        }
+
+        bool settled = true;
+        for (auto& peer : remotes) {
+            if (peer->GetStatus() != Connected) {
+                continue;
+            }
+            auto iter = peer->peer_claims.find(actor->handle);
+            if (iter == peer->peer_claims.end() || iter->second != actor->disconnect_frame) {
+                settled = false;
+                break;
+            }
+        }
+
+        if (!settled) {
+            frame = std::min(actor->disconnect_frame, frame);
+        }
+    }
+
+    return frame;
+}
+
+void Gekko::MessageSystem::MarkActorDisconnected(Player* actor)
+{
+    session_events.AddPlayerDisconnectedEvent(actor->handle);
+    actor->SetStatus(Disconnected);
+    actor->sync_num = 0;
+
+    // spectators dont own an input queue so theres no frame to agree on.
+    if (actor->handle < _num_players) {
+        actor->disconnect_frame = _net_player_queue[actor->handle].last_added_input;
+        actor->last_claim_raise_time = TimeSinceEpoch();
+    }
+}
+
+void Gekko::MessageSystem::SendPendingClaims()
+{
+    const u64 now = TimeSinceEpoch();
+
+    for (auto& actor : remotes) {
+        if (actor->GetStatus() != Disconnected || actor->handle >= _num_players) {
+            continue;
+        }
+
+        // stop claiming once the exchange had plenty of time to settle.
+        if (now - actor->last_claim_raise_time > NetStats::DISCONNECT_TIMEOUT) {
+            continue;
+        }
+
+        // dont want to spam the network with claim packets
+        if (actor->last_claim_sent_time + NetStats::DISCONNECT_MSG_DELAY > now) {
+            continue;
+        }
+
+        // find the peers which have not heard or agreed to our current claim yet.
+        std::vector<Player*> pending;
+        for (auto& peer : remotes) {
+            if (peer->GetStatus() != Connected ||
+                peer->address.GetSize() == 0 || peer->session_magic == 0) {
+                continue;
+            }
+
+            auto claimed = peer->peer_claims.find(actor->handle);
+            auto sent = peer->peer_claims_sent.find(actor->handle);
+
+            const bool agreed = claimed != peer->peer_claims.end() &&
+                claimed->second == actor->disconnect_frame;
+            const bool told = sent != peer->peer_claims_sent.end() &&
+                sent->second == actor->disconnect_frame;
+
+            if (!agreed || !told) {
+                pending.push_back(peer.get());
+            }
+        }
+
+        if (pending.empty()) {
+            continue;
+        }
+
+        // build the claim carrying the inputs we hold so any peer can catch up.
+        auto& input_q = _net_player_queue[actor->handle];
+
+        DisconnectClaimMsg body = {};
+        body.player = actor->handle;
+        body.last_frame = input_q.last_added_input;
+        body.start_frame = body.last_frame - (Frame)input_q.inputs.size() + 1;
+
+        for (auto& input : input_q.inputs) {
+            body.inputs.insert(body.inputs.end(), input.get(), input.get() + _input_size);
+        }
+
+        for (auto peer : pending) {
+            _pending_output.push(std::make_unique<NetData>());
+            auto& message = _pending_output.back();
+
+            message->addr.Copy(&peer->address);
+            message->pkt.header.type = DisconnectClaim;
+            message->pkt.header.magic = peer->session_magic;
+            message->pkt.body = body;
+
+            peer->peer_claims_sent[actor->handle] = body.last_frame;
+        }
+
+        actor->last_claim_sent_time = now;
+    }
+}
+
+void Gekko::MessageSystem::HandleUnrecoverableGap()
+{
+    // we lack inputs the session agreed on and cant obtain them anymore,
+    // drop every peer since we cant simulate in agreement any longer.
+    for (auto& peer : remotes) {
+        if (peer->GetStatus() != Disconnected) {
+            MarkActorDisconnected(peer.get());
+        }
+    }
+}
+
 void Gekko::MessageSystem::HandleTooFarBehindActors(bool spectator)
 {
+    // a timeout of 0 means the user handles disconnecting themselves.
+    if (_disconnect_timeout == 0) {
+        return;
+    }
+
     const u64 now = TimeSinceEpoch();
 	for (auto& actor : spectator ? spectators : remotes) {
 		if (actor->GetStatus() == Connected) {
@@ -410,10 +676,10 @@ void Gekko::MessageSystem::HandleTooFarBehindActors(bool spectator)
             }
             // check whether messages are being sent if not disconnect.
             const u64 msg_diff = now - actor->stats.last_received_message;
-			if (msg_diff > NetStats::DISCONNECT_TIMEOUT) {
-                session_events.AddPlayerDisconnectedEvent(actor->handle);
-                actor->SetStatus(Disconnected);
-                actor->sync_num = 0;
+			if (msg_diff > _disconnect_timeout) {
+                MarkActorDisconnected(actor.get());
+                // let the actor know it has been dropped in case its still able to receive.
+                actor->disconnect_msgs_left = NUM_DISCONNECT_MSGS;
 			}
 		}
 	}
@@ -430,17 +696,12 @@ void Gekko::MessageSystem::SendDataToAll(NetData* pkt, GekkoNetAdapter* host, bo
     auto& actors = spectators_only ? spectators : remotes;
 
     std::vector<u8> body_buffer;
+    zpp::bits::out body_out(body_buffer);
 
-    try {
-        zpp::serializer::memory_output_archive out(body_buffer);
-        out(pkt->pkt.body);
-    }
-    catch (const std::exception&)
-    {
+    if (failure(body_out(pkt->pkt.body))) {
         printf("failed to serialize packet body\n");
         return;
     }
-
 
     for (auto& actor : actors) {
         _bin_buffer.clear();
@@ -449,12 +710,8 @@ void Gekko::MessageSystem::SendDataToAll(NetData* pkt, GekkoNetAdapter* host, bo
             pkt->addr.Copy(&actor->address);
             pkt->pkt.header.magic = actor->session_magic;
 
-            try {
-                zpp::serializer::memory_output_archive out(_bin_buffer);
-                out(pkt->pkt.header);
-            }
-            catch (const std::exception&)
-            {
+            zpp::bits::out out(_bin_buffer);
+            if (failure(out(pkt->pkt.header))) {
                 printf("failed to serialize packet header\n");
                 continue;
             }
@@ -479,12 +736,8 @@ void Gekko::MessageSystem::SendDataTo(NetData* pkt, GekkoNetAdapter* host)
 {
     _bin_buffer.clear();
 
-    try {
-        zpp::serializer::memory_output_archive out(_bin_buffer);
-        out(pkt->pkt.header, pkt->pkt.body);
-    }
-    catch (const std::exception&)
-    {
+    zpp::bits::out out(_bin_buffer);
+    if (failure(out(pkt->pkt.header, pkt->pkt.body))) {
         printf("failed to serialize packet\n");
         return;
     }
@@ -562,6 +815,12 @@ void Gekko::MessageSystem::ParsePacket(NetAddress& addr, NetPacket& pkt, u32 pac
         case NetworkHealth:
             OnNetworkHealth(addr, pkt);
             return;
+        case Disconnect:
+            OnDisconnect(addr, pkt);
+            return;
+        case DisconnectClaim:
+            OnDisconnectClaim(addr, pkt);
+            return;
         default:
             assert(false && "cannot process an unknown event!");
             return;
@@ -573,7 +832,11 @@ void Gekko::MessageSystem::OnSyncRequest(NetAddress& addr, NetPacket& pkt)
 {
     i32 should_send = 0;
     u64 now = TimeSinceEpoch();
-    auto body = (SyncMsg*)pkt.body.get();
+    auto body = std::get_if<SyncMsg>(&pkt.body);
+
+    if (!body) {
+        return;
+    }
 
     // handle requests and set the peer its session magic for both remotes and spectators
     std::vector<std::unique_ptr<Player>>* current = &remotes;
@@ -604,7 +867,11 @@ void Gekko::MessageSystem::OnSyncResponse(NetAddress& addr, NetPacket& pkt)
 {
     i32 should_send = 0;
     u64 now = TimeSinceEpoch();
-    auto body = (SyncMsg*)pkt.body.get();
+    auto body = std::get_if<SyncMsg>(&pkt.body);
+
+    if (!body) {
+        return;
+    }
 
     // handle sync responses for both remotes and spectators
     std::vector<std::unique_ptr<Player>>* current = &remotes;
@@ -652,8 +919,13 @@ void Gekko::MessageSystem::OnSyncResponse(NetAddress& addr, NetPacket& pkt)
 
 void Gekko::MessageSystem::OnInputs(NetAddress& addr, NetPacket& pkt)
 {
-    g_gekko_wire_stats[1]++;  // #56: input pkt past the magic gate
-    auto body = (InputMsg*)pkt.body.get();
+    auto body = std::get_if<InputMsg>(&pkt.body);
+
+    if (!body) {
+        return;
+    }
+
+    g_gekko_wire_stats[1]++;  // #56: input pkt past the magic gate (valid InputMsg)
 
     // RLE decompress if the sender compressed this packet
     if (body->compressed) {
@@ -700,7 +972,12 @@ void Gekko::MessageSystem::OnInputs(NetAddress& addr, NetPacket& pkt)
 
 void Gekko::MessageSystem::OnInputAck(NetAddress& addr, NetPacket& pkt)
 {
-    auto body = (InputAckMsg*)pkt.body.get();
+    auto body = std::get_if<InputAckMsg>(&pkt.body);
+
+    if (!body) {
+        return;
+    }
+
     const Frame ack_frame = body->ack_frame;
     const i8 remote_advantage = (i8)body->frame_advantage;
 
@@ -735,7 +1012,11 @@ void Gekko::MessageSystem::OnInputAck(NetAddress& addr, NetPacket& pkt)
 
 void Gekko::MessageSystem::OnSessionHealth(NetAddress& addr, NetPacket& pkt)
 {
-    auto body = (SessionHealthMsg*)pkt.body.get();
+    auto body = std::get_if<SessionHealthMsg>(&pkt.body);
+
+    if (!body) {
+        return;
+    }
 
     const Frame frame = body->frame;
     const u32 checksum = body->checksum;
@@ -759,7 +1040,11 @@ void Gekko::MessageSystem::OnSessionHealth(NetAddress& addr, NetPacket& pkt)
 
 void Gekko::MessageSystem::OnNetworkHealth(NetAddress& addr, NetPacket& pkt)
 {
-    auto body = (NetworkHealthMsg*)pkt.body.get();
+    auto body = std::get_if<NetworkHealthMsg>(&pkt.body);
+
+    if (!body) {
+        return;
+    }
 
     // ok if its not a returned packet then update it and send it back to its specifc peer.
     if (!body->received) {
@@ -790,11 +1075,11 @@ void Gekko::MessageSystem::OnNetworkHealth(NetAddress& addr, NetPacket& pkt)
         message->pkt.header.magic = player->session_magic;
         message->pkt.header.type = NetworkHealth;
 
-        auto new_body = std::make_unique<NetworkHealthMsg>();
-        new_body->send_time = body->send_time;
-        new_body->received = true;
+        NetworkHealthMsg new_body = {};
+        new_body.send_time = body->send_time;
+        new_body.received = true;
 
-        message->pkt.body = std::move(new_body);
+        message->pkt.body = new_body;
         message->addr.Copy(&addr);
         return;
     }
@@ -815,6 +1100,93 @@ void Gekko::MessageSystem::OnNetworkHealth(NetAddress& addr, NetPacket& pkt)
             }
         }
     }
+}
+
+void Gekko::MessageSystem::OnDisconnect(NetAddress& addr, NetPacket& pkt)
+{
+    auto body = std::get_if<DisconnectMsg>(&pkt.body);
+
+    if (!body) {
+        return;
+    }
+
+    // the peer at this address left the session, so every actor it hosts is gone.
+    std::vector<std::unique_ptr<Player>>* current = &remotes;
+    for (u32 i = 0; i < 2; i++)
+    {
+        if (i == 1) {
+            current = &spectators;
+        }
+
+        for (auto& player : *current) {
+            if (player->address.Equals(addr) && player->GetStatus() != Disconnected) {
+                MarkActorDisconnected(player.get());
+            }
+        }
+    }
+}
+
+void Gekko::MessageSystem::OnDisconnectClaim(NetAddress& addr, NetPacket& pkt)
+{
+    auto body = std::get_if<DisconnectClaimMsg>(&pkt.body);
+
+    if (!body || body->player < 0 || body->player >= _num_players) {
+        return;
+    }
+
+    // the carried inputs must cover the claimed frame range.
+    const u64 expected = (u64)(body->last_frame - body->start_frame + 1) * _input_size;
+    if (body->last_frame < body->start_frame || body->inputs.size() < expected) {
+        return;
+    }
+
+    auto plyr = GetPlayerByHandle(body->player);
+
+    // claims about our own actors are handled by the disconnect message instead.
+    if (!plyr || plyr->GetType() != GekkoRemotePlayer) {
+        return;
+    }
+
+    if (plyr->GetStatus() != Disconnected) {
+        MarkActorDisconnected(plyr);
+    }
+
+    // remember what the peer claimed so the exchange can settle.
+    for (auto& peer : remotes) {
+        if (peer->address.Equals(addr)) {
+            peer->peer_claims[body->player] = body->last_frame;
+        }
+    }
+
+    if (body->last_frame <= plyr->disconnect_frame) {
+        return;
+    }
+
+    // a raise this late may touch frames the session already confirmed,
+    // failing the session beats silently drifting apart from the other peers.
+    if (TimeSinceEpoch() - plyr->last_claim_raise_time >= NetStats::DISCONNECT_CLAIM_HOLD) {
+        HandleUnrecoverableGap();
+        return;
+    }
+
+    // the peer holds more inputs than we do, catch up using the carried inputs.
+    const Frame next = _net_player_queue[body->player].last_added_input + 1;
+
+    if (next < body->start_frame) {
+        // the gap cant be bridged, the local session cant stay in agreement.
+        HandleUnrecoverableGap();
+        return;
+    }
+
+    for (Frame frame = std::max(next, body->start_frame); frame <= body->last_frame; frame++) {
+        u8* input = &body->inputs[(frame - body->start_frame) * _input_size];
+        AddInput(frame, body->player, input, true);
+    }
+
+    plyr->disconnect_frame = _net_player_queue[body->player].last_added_input;
+    plyr->last_claim_raise_time = TimeSinceEpoch();
+    // announce the raised claim right away so the exchange settles quickly.
+    plyr->last_claim_sent_time = 0;
 }
 
 void Gekko::MessageSystem::SendInputsToPeer(Player* peer, GekkoNetAdapter* host, bool spectator)
@@ -850,10 +1222,7 @@ void Gekko::MessageSystem::SendInputsToPeer(Player* peer, GekkoNetAdapter* host,
             data.addr.Copy(&peer->address);
             data.pkt.header.type = packet_type;
             data.pkt.header.magic = peer->session_magic;
-
-            auto message = std::make_unique<InputMsg>();
-            message->Copy(&cached_msg);
-            data.pkt.body = std::move(message);
+            data.pkt.body = cached_msg;
 
             SendDataTo(&data, host);
         }
@@ -912,15 +1281,13 @@ void Gekko::MessageSystem::SendInputsToPeer(Player* peer, GekkoNetAdapter* host,
         msg.input_count = input_count;
 
         // cache and send
-        InputMsg cached_msg;
-        cached_msg.Copy(&msg);
-        peer->input_cache.packets.push_back(std::move(cached_msg));
+        peer->input_cache.packets.push_back(msg);
 
         NetData data;
         data.addr.Copy(&peer->address);
         data.pkt.header.type = packet_type;
         data.pkt.header.magic = peer->session_magic;
-        data.pkt.body = std::make_unique<InputMsg>(std::move(msg));
+        data.pkt.body = std::move(msg);
 
         SendDataTo(&data, host);
     }

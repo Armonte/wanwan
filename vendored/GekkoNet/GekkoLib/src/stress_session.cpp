@@ -1,5 +1,6 @@
 #include "session.h"
 #include <cassert>
+#include <cstring>
 
 
 Gekko::StressSession::StressSession()
@@ -57,6 +58,12 @@ i32 Gekko::StressSession::AddActor(GekkoPlayerType type, GekkoNetAddress* addr)
     _locals.push_back(Player(new_handle, type, address.get()));
 
     return new_handle;
+}
+
+bool Gekko::StressSession::DisconnectActor(i32 actor)
+{
+    // no-op: stress sessions have no connections
+    return false;
 }
 
 void Gekko::StressSession::AddLocalInput(i32 player, void* input)

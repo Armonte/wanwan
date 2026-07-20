@@ -26,6 +26,17 @@ bool     g_in_render_rng   = false;
 // Robot Heroes heavy-stage render cost is our Hook_GameRand overhead scaling
 // with per-frame rng draws. Reset per offline frame by the trampoline.
 uint32_t g_render_rand_calls = 0;
+// Mid-join spectate desync hunt: count GAMEPLAY-seed game_rand draws (calls
+// with g_in_render_rng == false). If the spectator's per-frame gameplay-rand
+// count diverges from the host's, that frame has an extra/missing gameplay
+// draw = the leak. Logged + reset per parity Capture() via [FULLFP].
+uint32_t g_gameplay_rand_calls = 0;
+// Per-caller gameplay-rand tally (spectate desync hunt). Index: 0=camera_manager
+// 1=ProcessShakeEffect 2=ProcessColorInterpolation 3=sprite_rendering_engine
+// 4=hit_detection_system 5=ai_input_processor 6=character_state_machine 7=other.
+// Reset + logged per parity Capture() via [FULLFP] fn=. Whichever caller's
+// per-frame count first diverges host-vs-spectator names the leaking function.
+uint32_t g_gp_rand_by_fn[8] = {0};
 volatile uint32_t g_sim_step_count = 0;
 
 // Minimal global state

@@ -138,6 +138,22 @@ uint32_t __cdecl Hook_GameRand() {
         *(uint32_t*)FM2K::ADDR_RANDOM_SEED = gameplay;  // gameplay seed untouched
         return r;
     }
+    // Gameplay-seed draw (render isolation NOT active). Count for the
+    // per-frame [FULLFP] gp= tally used by the mid-join spectate desync hunt.
+    ++g_gameplay_rand_calls;
+    // Classify the caller (return addr) into the 7 known game_rand callers so
+    // [FULLFP] fn= shows which function's per-frame draw count diverges.
+    {
+        const uint32_t ra = (uint32_t)(uintptr_t)__builtin_return_address(0);
+        if      (ra >= 0x40af30 && ra < 0x40b467) ++g_gp_rand_by_fn[0]; // camera_manager
+        else if (ra >= 0x40c9e0 && ra < 0x40ca7c) ++g_gp_rand_by_fn[1]; // ProcessShakeEffect
+        else if (ra >= 0x40ca90 && ra < 0x40cc30) ++g_gp_rand_by_fn[2]; // ProcessColorInterpolation
+        else if (ra >= 0x40cc30 && ra < 0x40e3e8) ++g_gp_rand_by_fn[3]; // sprite_rendering_engine
+        else if (ra >= 0x40f010 && ra < 0x40f90d) ++g_gp_rand_by_fn[4]; // hit_detection_system
+        else if (ra >= 0x411270 && ra < 0x4117f0) ++g_gp_rand_by_fn[5]; // ai_input_processor
+        else if (ra >= 0x411bf0 && ra < 0x413bd6) ++g_gp_rand_by_fn[6]; // character_state_machine
+        else                                      ++g_gp_rand_by_fn[7]; // other
+    }
     RngTrace_ResolveOnce();
     if (!g_rng_trace_enabled) {
         return original_game_rand ? original_game_rand() : 0;

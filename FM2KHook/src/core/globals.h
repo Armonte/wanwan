@@ -46,6 +46,8 @@ extern SpriteRenderEngineFunc original_sprite_render_engine;  // set only under 
 extern uint32_t g_render_rng_seed;
 extern bool     g_in_render_rng;
 extern uint32_t g_render_rand_calls;  // #63 diag: render-side game_rand calls/frame
+extern uint32_t g_gameplay_rand_calls;  // spectate-desync hunt: gameplay-seed game_rand calls/frame
+extern uint32_t g_gp_rand_by_fn[8];     // spectate-desync hunt: gameplay-rand by caller fn
 
 // Render sub-profiler accumulators (FM2K_RENDER_PROFILE=1). Cumulative census
 // of the per-sprite blit, filled by Hook_BlitSpriteWithBlendMode during

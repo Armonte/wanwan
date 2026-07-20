@@ -603,7 +603,9 @@ def main():
               # CSS lockstep input-delay override (#65)
               "FM2K_CSS_DELAY",
               # #66 CSS rollback opt-in + prediction window
-              "FM2K_CSS_ROLLBACK", "FM2K_CSS_PREDICTION"):
+              "FM2K_CSS_ROLLBACK", "FM2K_CSS_PREDICTION",
+              # mid-join spectate desync hunt: per-region full-state fingerprint
+              "FM2K_FULLFP", "FM2K_POOLSET"):
         if os.environ.get(k):
             common_env[k] = os.environ[k]
 
@@ -671,7 +673,9 @@ def main():
                    # invalidated a night of A/B runs.
                    "FM2K_SPEC_RC", "FM2K_SPEC_RC_SNAPSHOT", "FM2K_RC_STATS",
                    "FM2K_RC_FEC", "FM2K_RC_FEC_K",
-                   "FM2K_TEST_SPEC_TCP_BLACKHOLE"):
+                   "FM2K_TEST_SPEC_TCP_BLACKHOLE",
+                   # mid-join spectate desync hunt: per-region full-state fingerprint
+                   "FM2K_FULLFP", "FM2K_POOLSET"):
             if os.environ.get(kk):
                 env[kk] = os.environ[kk]
         # The spectator MUST run the same round count as the host, else a 1-round

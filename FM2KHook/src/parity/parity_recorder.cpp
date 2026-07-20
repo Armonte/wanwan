@@ -47,6 +47,7 @@
 
 #include "parity_recorder.h"
 #include "../core/globals.h"  // Fm2k_BuildLogPath
+#include "../netplay/savestate.h"  // SaveState_CalculateFullChecksum / RegionChecksums ([FULLFP] tracer)
 
 #include <kgt/kgt_parity_snapshot.h>
 #include <SDL3/SDL_log.h>
@@ -327,6 +328,84 @@ void Capture() {
         }
     }
 
+
+    // [FULLFP] Per-region full-state fingerprint tracer (mid-join spectate
+    // desync hunt). FM2K_FULLFP=1 logs one line per captured battle frame
+    // with a Fletcher32 per savestate region so host-vs-spectator diffing
+    // (aligned by rng) names the FIRST region that diverges -- object_pool /
+    // char_dynamic / effects are exactly the state the .pty parity does NOT
+    // capture. Same capture point as the parity snapshot, so timing matches.
+    {
+        static int s_fullfp = -1;
+        if (s_fullfp < 0) {
+            const char* v = std::getenv("FM2K_FULLFP");
+            s_fullfp = (v && v[0] && v[0] != '0') ? 1 : 0;
+        }
+        if (s_fullfp == 1) {
+            SaveState_CalculateFullChecksum();  // populates g_region_checksums
+            const RegionChecksums& rc = SaveState_GetRegionChecksums();
+            // gp = gameplay-seed game_rand draws since the last capture (~1 frame).
+            // If host vs spectator gp diverges at some frame, that frame has the
+            // extra/missing gameplay draw = the rng leak.
+            const uint32_t gp = g_gameplay_rand_calls;
+            g_gameplay_rand_calls = 0;
+            // fn = per-caller gameplay-rand counts: cam/shake/color/sprite/hit/ai/csm/other
+            uint32_t fn[8];
+            for (int i = 0; i < 8; i++) { fn[i] = g_gp_rand_by_fn[i]; g_gp_rand_by_fn[i] = 0; }
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "[FULLFP] seq=%u gp=%u fn=%u,%u,%u,%u,%u,%u,%u,%u rng=0x%08X gs=0x%08X "
+                "pool=0x%08X char=0x%08X inp=0x%08X fx1=0x%08X fx2=0x%08X shake=0x%08X",
+                g_active_recorder->frames_written, gp,
+                fn[0], fn[1], fn[2], fn[3], fn[4], fn[5], fn[6], fn[7],
+                rc.rng, rc.game_state, rc.object_pool, rc.char_dynamic,
+                rc.input_tracking, rc.effect_sys1, rc.effect_sys2, rc.shake_effects);
+        }
+    }
+
+    // [POOLSET] Process-INDEPENDENT active-object-set fingerprint (mid-join
+    // spectate desync hunt). The raw object bytes carry per-process pointers
+    // (sprite/loaded-data addrs) so [FULLFP] pool= always differs -- useless.
+    // Here we hash ONLY gameplay fields (slot index, type@0x0, owner@0x4,
+    // posX@0x8, posY@0xC) of each active slot, so host-vs-spectator diffing
+    // (aligned by rng) names the FIRST frame the object SET diverges and
+    // which slot/type -- the item_idx -96 says the spectator ends up with
+    // fewer objects, this finds the first one. FM2K_POOLSET=1.
+    {
+        static int s_poolset = -1;
+        if (s_poolset < 0) {
+            const char* v = std::getenv("FM2K_POOLSET");
+            s_poolset = (v && v[0] && v[0] != '0') ? 1 : 0;
+        }
+        if (s_poolset == 1) {
+            constexpr uintptr_t POOL_BASE = 0x4701E0;
+            constexpr size_t POOL_STRIDE  = 382;
+            constexpr size_t POOL_COUNT   = 1024;
+            uint32_t s1 = 0xFFFF, s2 = 0xFFFF;
+            auto mix = [&](uint32_t v) {
+                s1 = (s1 + (v & 0xFFFF)) % 65535; s2 = (s2 + s1) % 65535;
+                s1 = (s1 + (v >> 16))    % 65535; s2 = (s2 + s1) % 65535;
+            };
+            unsigned cnt = 0;
+            char list[512]; size_t lp = 0; list[0] = 0;
+            for (size_t i = 0; i < POOL_COUNT; i++) {
+                const uint8_t* obj = (const uint8_t*)(POOL_BASE + i * POOL_STRIDE);
+                const uint32_t type = *(const uint32_t*)(obj + 0x0);
+                if (type == 0) continue;
+                cnt++;
+                mix((uint32_t)i); mix(type);
+                mix(*(const uint32_t*)(obj + 0x4));   // owner
+                mix(*(const uint32_t*)(obj + 0x8));   // posX
+                mix(*(const uint32_t*)(obj + 0xC));   // posY
+                if (lp < sizeof(list) - 20)
+                    lp += (size_t)std::snprintf(list + lp, sizeof(list) - lp,
+                                                "%u:%u ", (unsigned)i, type);
+            }
+            const uint32_t fp = (s2 << 16) | s1;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "[POOLSET] seq=%u cnt=%u fp=0x%08X active=%s",
+                g_active_recorder->frames_written, cnt, fp, list);
+        }
+    }
 
     // [CAMTRACE] Frame-windowed object-pool divergence tracer for the
     // forced-rollback drift (task #34). FM2K_CAMTRACE=lo-hi (capture-seq

@@ -149,6 +149,21 @@ void ApplySessionEvent(const SessionEvent& ev) {
                 g_state.pb_p2_char       = h[30];
                 g_state.pb_p2_color      = h[31];
                 g_state.pb_stage_id      = h[80];
+                // #66/replay: restore the match's round-timer gameconfig BEFORE
+                // CSS init runs (playback re-runs CSS via CssAutoConfirm), so
+                // g_round_timer_cfg1 @0x470060 is set from the MATCH's round time,
+                // not the replayer's game.ini -> playback timer == match timer.
+                // Legacy files carry 0 here -> skip (keep current config).
+                if constexpr (!FM2K::kIsFM95) {
+                    uint32_t rts = 0, rc = 0;
+                    std::memcpy(&rts, h + 81, 4);
+                    std::memcpy(&rc,  h + 85, 4);
+                    // 0 = legacy (field absent); 0xFFFFFFFF = "no override".
+                    if (rts && rts != 0xFFFFFFFFu) *(uint32_t*)0x430114 = rts;  // g_round_time
+                    if (rc  && rc  != 0xFFFFFFFFu) *(uint32_t*)0x430124 = rc;   // g_default_round
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "SpectatorNode: restored round cfg -- time=%u count=%u", rts, rc);
+                }
                 // Mirror the legacy INITIAL_MATCH packet path so the
                 // initial-match cache stays valid for relay-to-sub-spectator.
                 std::memcpy(g_state.initial_match.header_bytes, h, 96);

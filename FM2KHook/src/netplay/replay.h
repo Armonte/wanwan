@@ -41,7 +41,16 @@ struct ReplayHeader {
     uint8_t  p1_name[24];        // Display names (null-padded)
     uint8_t  p2_name[24];
     uint8_t  stage_id;           // Reserved
-    uint8_t  reserved[11];       // Pad to 96 bytes
+    // #66/replay: the match's round gameconfig, so playback runs the SAME round
+    // length as the match. round_time_sec = g_round_time @0x430114 -- the game's
+    // round timer setting, the SAME field netplay syncs host->guest in
+    // host_config (netplay_control.cpp); playback re-runs CSS init from the
+    // REPLAYER's game.ini otherwise and the round timer differs (user report).
+    // round_count = g_default_round @0x430124. Both zero on legacy files ->
+    // restore is skipped (0xFFFFFFFF also skipped = "no override" sentinel).
+    uint32_t round_time_sec;     // g_round_time    @0x430114 (0 = legacy/unknown)
+    uint32_t round_count;        // g_default_round @0x430124 (0 = legacy/unknown)
+    uint8_t  reserved[3];        // Pad to 96 bytes
     uint32_t frame_count;        // Reserved (was finalized by legacy writer; v2 .fm2krep
                                  //   writer doesn't populate — use FM2KSessionFileHeader's
                                  //   event_count / input_count instead).

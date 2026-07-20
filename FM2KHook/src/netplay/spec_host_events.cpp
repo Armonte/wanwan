@@ -71,6 +71,15 @@ void SpectatorNode_OnMatchStart(
     h[31] = p2_color;
     // p1_name / p2_name at h+32 / h+56 left zeroed; filled once UI plumbs them.
     h[80] = stage_id;
+    // #66/replay: carry the match's round-timer gameconfig so playback runs the
+    // SAME round length (see Replay::ReplayHeader). h+81 round_time_cfg, h+85
+    // round_count. FM2K globals; skipped on FM95 (different config layout).
+    if constexpr (!FM2K::kIsFM95) {
+        uint32_t round_time_sec = *(uint32_t*)0x430114;  // g_round_time (netplay-synced)
+        uint32_t round_count    = *(uint32_t*)0x430124;  // g_default_round
+        std::memcpy(h + 81, &round_time_sec, 4);
+        std::memcpy(h + 85, &round_count,    4);
+    }
     // frame_count at h+92 stays 0 — subscribers get INPUT_BATCH frames live.
     g_state.initial_match.valid = true;
 

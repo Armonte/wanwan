@@ -87,7 +87,7 @@ namespace {
     // so they'd otherwise be unsaved -- CSS re-sim mutates them and the cursor
     // latches g_selected_char_grid a frame off between peers without them.
     constexpr size_t CSS_STATE_TOTAL =
-        0x4 + 0x2008 + 0xA0 + 0x220 + 0xD8 + 0x20 + 0x20;
+        0x4 + 0x2008 + 0xA0 + 0x220 + 0xD8 + 0x20 + 0x20 + 8 /*ctrl portrait ptrs*/;
     struct CssSnapshot { uint32_t frame; uint8_t bytes[CSS_STATE_TOTAL]; };
     CssSnapshot g_css_state_ring[CSS_STATE_RING];
 
@@ -105,11 +105,15 @@ namespace {
         return h;
     }
 
-    // NOTE: we deliberately do NOT roll back the controller object. It holds
-    // DISPLAY state (portrait pointers +350/+354 into per-peer pool slots) that
-    // legitimately differs between peers; rolling it back forces a divergence
-    // (measured: transition 262->163, 1-cell->12-cell skew). Portraits stay
-    // forward-state and reconcile on confirmed frames.
+    // We do NOT roll back the whole controller object (its confirm/cursor
+    // fields regress determinism), BUT we DO roll back its 8-byte portrait-
+    // pointer pair (+350 p1 / +354 p2). These are display pointers not in
+    // [CSS-FP], so rolling them back is CSS-DET-safe by construction (per-peer,
+    // never compared). Restoring them fixes the "portrait missing at battle
+    // entry" orphan: a re-sim's inert-dummy spawn overwrites +350/+354, leaving
+    // the real forward-advance portrait unreferenced -> not rendered. Rolling
+    // the pointer back to the real portrait keeps it shown.
+    constexpr uintptr_t CSS_CTRL_PORTRAIT_OFF = 350;   // +350 p1, +354 p2 (8 B)
     void CssState_Save(int frame) {
         if (frame < 0) frame = 0;
         CssSnapshot& slot = g_css_state_ring[frame % CSS_STATE_RING];
@@ -119,6 +123,8 @@ namespace {
             std::memcpy(slot.bytes + off, (const void*)r.addr, r.size);
             off += r.size;
         }
+        if (uint8_t* ctrl = *(uint8_t**)0x4CFA00)
+            std::memcpy(slot.bytes + off, ctrl + CSS_CTRL_PORTRAIT_OFF, 8);
     }
 
     void CssState_Load(int frame) {
@@ -130,6 +136,8 @@ namespace {
             std::memcpy((void*)r.addr, slot.bytes + off, r.size);
             off += r.size;
         }
+        if (uint8_t* ctrl = *(uint8_t**)0x4CFA00)
+            std::memcpy(ctrl + CSS_CTRL_PORTRAIT_OFF, slot.bytes + off, 8);
     }
 
     // [CSS-FP] confirmed-emit ring. The parity trace must log each frame's

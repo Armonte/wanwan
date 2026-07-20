@@ -100,6 +100,15 @@ void ApplySessionEvent(const SessionEvent& ev) {
                 *(int32_t*)0x424E5C = ev.u.css_entered.p2_cur_y;
                 *(int32_t*)0x470020 = ev.u.css_entered.p1_sel;
                 *(int32_t*)0x470024 = ev.u.css_entered.p2_sel;
+                // #66: reset the auto-repeat input state so the spectator's CSS
+                // navigation TIMING starts from the same point as the host
+                // (mirror the player reset in the CSS reseed block). Without it
+                // the spectator's REMATCH cursor path skews vs the host (the
+                // 5-cell CSS-SPEC sess1 residual) even though the final char and
+                // battle stay bit-exact -- g_input_repeat_state/timer carry over
+                // from the prior match and are menu-only (never battle-saved).
+                std::memset((void*)0x541F80, 0, 0x20);  // g_input_repeat_state[8]
+                std::memset((void*)0x4D1C40, 0, 0x20);  // g_input_repeat_timer[8]
             }
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "SpectatorNode: applied CSS_ENTERED (seam split) -- synced host CSS "

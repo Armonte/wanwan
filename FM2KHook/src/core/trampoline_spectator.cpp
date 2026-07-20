@@ -116,14 +116,23 @@ static bool SpectatorSimOneFrame() {
         if (!s_spec_trace_in_battle) {
             s_spec_trace_in_battle = true;
             s_spec_trace_bf = 0;
-            if (g_spec_skip_next_battle_init) {
-                // #60: this battle's entry state came from an applied
-                // snapshot whose apply already sequenced initial-sync +
-                // PIN -- rerunning them here would clobber the overlay.
+            if (g_spec_skip_next_battle_init ||
+                SpectatorNode_SnapshotAppliedOnce()) {
+                // #60 + spectate rng-desync fix: this battle's entry state came
+                // from an applied snapshot. The savestate RESTORED the
+                // authoritative gameplay seed (0x41FB1C) + object pool for the
+                // snapshot's frame -- rerunning DoInitialSync/PIN_RNG here
+                // would CLOBBER that seed with the stale 0x12345678 frame-0
+                // seed, offsetting the spectator's entire battle rng (root of
+                // the intermittent spectate desync). Skip. The durable
+                // pb_snapshot_applied_once check is robust to the CSS-drive vs
+                // ApplyPendingSnapshot ordering that made the one-shot
+                // g_spec_skip flag miss under loss.
                 g_spec_skip_next_battle_init = false;
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "SpecSim: first mode_pre==3000 iteration — entry init "
-                    "already sequenced at snapshot apply, skipping");
+                    "already sequenced at snapshot apply, skipping (snap=%d)",
+                    (int)SpectatorNode_SnapshotAppliedOnce());
             } else {
                 // First iteration where mode_pre==3000 = first FULL battle
                 // frame on the spec side (mode_pre==3000 at iteration start,
@@ -138,6 +147,15 @@ static bool SpectatorSimOneFrame() {
             }
         }
     } else {
+        if (s_spec_trace_in_battle) {
+            // Battle -> non-battle edge (match end -> results/CSS). Clear the
+            // snapshot-applied suppression so the NEXT battle entry (a rematch,
+            // match 2+, which a continuing spectator always enters from-scratch)
+            // runs its own DoInitialSync+PIN_RNG. Without this the durable flag
+            // set by match 1's applied snapshot wrongly skips match 2's init ->
+            // match-2 rng desync (run_all_tests multi-match-e2e S2 seg1).
+            SpectatorNode_ClearSnapshotAppliedForNextBattle();
+        }
         s_spec_trace_in_battle = false;
     }
 

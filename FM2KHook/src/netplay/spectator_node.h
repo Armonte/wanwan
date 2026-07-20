@@ -857,6 +857,8 @@ void SpectatorNode_LeaveUpstream();
 // Are we actively playing back a host's match (inside SPECTATOR_PLAYBACK phase)?
 // True from INITIAL_MATCH receipt until MATCH_END.
 bool SpectatorNode_IsPlayingBack();
+bool SpectatorNode_SnapshotAppliedOnce();  // spectate rng-sync: snapshot restored the authoritative seed
+void SpectatorNode_ClearSnapshotAppliedForNextBattle();  // reset the flag on battle exit (rematch runs its own init)
 
 // Pull the next confirmed frame's (p1, p2) inputs from the local queue.
 // Returns false if the queue is empty (we're paused, waiting for the next

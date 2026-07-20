@@ -569,6 +569,29 @@ bool SpectatorNode_InNaturalBootWalk() {
 // PLAYBACK DRIVER API (called from main_loop_trampoline + Hook_GetPlayerInput)
 // -----------------------------------------------------------------------------
 
+// Spectate rng-desync fix: a snapshot-join restored the authoritative gameplay
+// seed (0x41FB1C is in the savestate) + full object state for the snapshot's
+// battle frame. The SpecSim battle-entry init must then NOT re-apply PIN_RNG
+// (the stale 0x12345678 frame-0 seed) -- that clobber is the desync root. Only
+// a from-scratch replay (no snapshot) needs the pin. Durable flag (not the
+// timing-fragile g_spec_skip_next_battle_init).
+bool SpectatorNode_SnapshotAppliedOnce() {
+    return g_state.pb_snapshot_applied_once;
+}
+
+// Clear the snapshot-applied suppression when the spectator LEAVES a battle
+// (match end -> results/CSS). The flag exists to suppress the battle-entry
+// DoInitialSync+PIN_RNG for the ONE battle a snapshot restored -- but it is
+// otherwise durable for the whole session (only reset at teardown). Left set,
+// a REMATCH (match 2+) -- which a continuing spectator always enters
+// from-scratch (no new snapshot: the rewind guard discards re-join snapshots
+// once pb_started) -- would wrongly skip its battle-entry init and desync on
+// its pinned seed. Clearing it at battle exit makes the gate per-battle-entry:
+// only the battle the snapshot actually landed in skips the init.
+void SpectatorNode_ClearSnapshotAppliedForNextBattle() {
+    g_state.pb_snapshot_applied_once = false;
+}
+
 bool SpectatorNode_IsPlayingBack() {
     // Sticky once subscribed: stays true from JOIN_ACK through everything
     // (active matches, MATCH_END drains, post-match idle, between-match
@@ -591,6 +614,52 @@ bool SpectatorNode_PopFrameInputs(uint16_t* p1_input, uint16_t* p2_input) {
     // FIRST snapshot (join-during-CSS run, 2026-06-11: spec played the
     // live stream on a fresh BTB battle, P2 never initialized).
     if (g_state.pb_snapshot_inbox.pending_apply) return false;
+
+    // ...and hold the SAME way while the snapshot is still DOWNLOADING (active,
+    // pre-finalize) once we've reached the captured battle phase. A mid-battle
+    // join CANNOT reconstruct RNG from scratch: the host's shared LCG seed at
+    // the anchor is N frames of draws past the battle-entry pin, so a
+    // from-scratch battle entry over-draws gameplay-rand (character_state_machine
+    // draws 18 on its first battle frame vs the host's incremental 6) and offsets
+    // the seed -> every later draw diverges. If we consume even ONE real battle
+    // input here it sets pb_started, and the arriving snapshot is then discarded
+    // by the rewind guard (ApplyPendingSnapshot) -> we fall to that broken
+    // from-scratch path. Under packet loss the ~1MB snapshot can finalize AFTER
+    // the CSS-drive reaches mode 3000, opening exactly this window. Hold (feed
+    // neutral, don't pop, don't set pb_started) at battle entry until the
+    // snapshot finalizes+applies. Deadlock-free: for a battle snapshot the
+    // pb_queue holds no CSS inputs (CssAutoConfirm drives CSS->3000 with no
+    // pops), so reaching mode 3000 -- the apply gate -- never needs this pop.
+    // BOUNDED so a snapshot that never finalizes (heavy loss, ~1MB blob can't
+    // complete in the session window) does NOT permafreeze the viewer at battle
+    // frame 0. Hold at most kMaxHoldTicks sim-ticks; past that, release and take
+    // the from-scratch path (a desync risk, but a live viewer beats a frozen
+    // one). The counter resets whenever we are not in the hold window.
+    {
+        static uint32_t s_snap_hold_ticks = 0;
+        auto& inbox = g_state.pb_snapshot_inbox;
+        constexpr uint32_t kMaxHoldTicks = 240;   // ~2.4s at 100fps
+        if (inbox.active && !g_state.pb_snapshot_applied_once &&
+            !g_state.pb_started &&
+            (inbox.meta.captured_game_mode == 3000u ||
+             inbox.meta.captured_game_mode == 0u) &&
+            *(uint32_t*)FM2K::ADDR_GAME_MODE >= 3000u) {
+            if (s_snap_hold_ticks < kMaxHoldTicks) {
+                if (++s_snap_hold_ticks == kMaxHoldTicks) {
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "SpectatorNode: snapshot hold cap reached (%u ticks, "
+                        "%zu/%u bytes) -- releasing to from-scratch to avoid "
+                        "a frozen viewer", kMaxHoldTicks,
+                        inbox.bytes_received, inbox.meta.total_bytes);
+                } else {
+                    return false;   // still within budget: hold for the snapshot
+                }
+            }
+            // cap hit -> fall through and consume (from-scratch)
+        } else {
+            s_snap_hold_ticks = 0;
+        }
+    }
 
     // Drain non-INPUT events from the head before popping the next INPUT.
     // Each non-INPUT event dispatches to ApplySessionEvent — RNG pin,

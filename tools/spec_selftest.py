@@ -476,7 +476,9 @@ def main():
               "FM2K_RC_STATS",
               # in-process link impairment (players' gekko+control path)
               "FM2K_NET_DELAY_MS", "FM2K_NET_JITTER_MS", "FM2K_NET_LOSS", "FM2K_NET_SEED",
-              "FM2K_NET_REORDER", "FM2K_NET_DUP"):
+              "FM2K_NET_REORDER", "FM2K_NET_DUP",
+              # CSS lockstep input-delay override (#65)
+              "FM2K_CSS_DELAY"):
         if os.environ.get(k):
             common_env[k] = os.environ[k]
 

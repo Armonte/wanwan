@@ -380,20 +380,40 @@ bool Netplay_StartCSSSession() {
     }
 
     // Compute CSS delay dynamically from current RTT instead of pinning
-    // at the conservative CSS_LOCAL_DELAY=6. With prediction=0 lockstep,
-    // delay too low for the actual link makes CSS visibly choppy: every
-    // frame stalls waiting for peer input. Same formula the battle path
-    // uses: ceil(mean_one_way_ms / 10ms), floored at 2, capped at 15.
-    // RTT samples come from the existing PING / HELLO ack cycle so this
-    // is meaningful by the time we create the CSS session (post-HELLO_ACK).
+    // at the conservative CSS_LOCAL_DELAY=6.
+    //
+    // CSS is PURE LOCKSTEP (prediction=0) -- and it stays that way on
+    // purpose: rollback is unsafe here because cursor hover triggers
+    // synchronous .player file loads, so a re-sim would re-fire that disk
+    // I/O and stall harder. The catch is that lockstep STALLS unless the
+    // input-delay buffer covers the full one-way latency INCLUDING jitter:
+    // when delay*10ms < one-way latency, every frame waits for the peer and
+    // CSS crawls (measured collapse: 140ms->69fps, 220ms->54fps, 300ms->
+    // 45fps on loopback; worse with real jitter). para<->Ricky (2026-07-20)
+    // negotiated delay=11-12 on a link whose real latency+jitter exceeded
+    // it -> CSS ran ~30fps and the match timed out before either could pick.
+    //
+    // The old formula used MEAN RTT with a cap of 15 (150ms) and NO jitter
+    // margin -- para/Ricky negotiated delay=11-12 and stalled because their
+    // real latency+jitter exceeded that. The fix keeps MEAN RTT (NOT worst:
+    // the worst-RTT sample at CSS-creation is polluted by boot/handshake
+    // latency and grossly over-delays -- measured a "LAN" at delay=16), adds
+    // a fixed jitter margin, and raises the cap to 25 (250ms). The asymmetry
+    // is deliberate: too-LOW CSS delay is CATASTROPHIC (30fps freeze -> the
+    // match times out before you can pick), too-HIGH is only a slightly laggy
+    // cursor -- a menu tolerates it. So bias up. FM2K_CSS_DELAY overrides for
+    // extreme links / diagnostics.
     int css_delay = CSS_LOCAL_DELAY;  // fallback
-    {
-        const uint32_t rtt_mean_ms  = ControlChannel_GetRttMs();
+    if (const char* e = std::getenv("FM2K_CSS_DELAY"); e && e[0]) {
+        int d = std::atoi(e);
+        if (d >= 2 && d <= 60) css_delay = d;
+    } else {
+        const uint32_t rtt_mean_ms = ControlChannel_GetRttMs();
         if (rtt_mean_ms > 0) {
             const uint32_t mean_one_way = rtt_mean_ms / 2;
-            int d = (int)((mean_one_way + 9) / 10);
-            if (d < 2)  d = 2;
-            if (d > 15) d = 15;
+            int d = (int)((mean_one_way + 9) / 10) + 4;   // ceil + 4-frame jitter margin
+            if (d < CSS_LOCAL_DELAY) d = CSS_LOCAL_DELAY;
+            if (d > 25) d = 25;                           // 250ms cap
             css_delay = d;
         }
     }

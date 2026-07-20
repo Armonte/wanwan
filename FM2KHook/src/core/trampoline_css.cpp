@@ -52,26 +52,34 @@ void RunCssTick() {
     }
 
     // CSS lockstep + stall: Netplay_ProcessCSS returns false while we're
-    // waiting on a remote input for the current CSS frame.
+    // waiting on a remote input for the current CSS frame. Under #66 CSS
+    // rollback it instead runs the sim PER AdvanceEvent (re-sim) internally
+    // and returns true once at least one confirmed advance landed this tick.
     if (!skip_netplay) {
         if (!Netplay_ProcessCSS()) {
             return;
         }
     }
 
-    // Run the native CSS tick.
-    if (original_process_game_inputs) original_process_game_inputs();
-    if (original_update_game)         original_update_game();
-    ++g_sim_step_count;   // sim-fps: one logic tick
-    ParityRecorder::Capture();  // post-update snapshot for parity .pty
+    // When CSS rollback is active the sim/parity/[CSS-FP] already ran inside
+    // Netplay_ProcessCSS (per AdvanceEvent). Only the lockstep + offline/stress
+    // paths run the single native tick here.
+    const bool css_rb_active = (!skip_netplay && g_css_rollback);
+    if (!css_rb_active) {
+        // Run the native CSS tick.
+        if (original_process_game_inputs) original_process_game_inputs();
+        if (original_update_game)         original_update_game();
+        ++g_sim_step_count;   // sim-fps: one logic tick
+        ParityRecorder::Capture();  // post-update snapshot for parity .pty
 
-    // [CSS-FP] parity emit (#66 Phase 1): dense per-CSS-frame state so the
-    // harness can align host/guest/spectator CSS streams by confirmed input
-    // and assert bit-exact cursors/selection. Only in real netplay CSS
-    // (offline/stress have no peer to diverge from). Pairs with the
-    // spectator's emit in SpectatorSimOneFrame.
-    if (!skip_netplay) {
-        Netplay_EmitCssFpHost();
+        // [CSS-FP] parity emit (#66 Phase 1): dense per-CSS-frame state so the
+        // harness can align host/guest/spectator CSS streams by confirmed input
+        // and assert bit-exact cursors/selection. Only in real netplay CSS
+        // (offline/stress have no peer to diverge from). Pairs with the
+        // spectator's emit in SpectatorSimOneFrame.
+        if (!skip_netplay) {
+            Netplay_EmitCssFpHost();
+        }
     }
 
     // Advance virtual_time to match the spectator's per-pop bump cadence.

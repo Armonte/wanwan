@@ -48,6 +48,7 @@
 
 #include "MinHook.h"
 #include <SDL3/SDL.h>
+#include "../core/globals.h"  // #66: g_css_rollback / g_is_rolling_back (re-sim loader suppress)
 
 namespace {
 
@@ -70,10 +71,12 @@ using DupFn       = long      (__stdcall*)(void* self, uint32_t src, uint32_t* d
 constexpr uintptr_t kAddr_ResourceCleanupManager = 0x403520;
 constexpr uintptr_t kAddr_CharacterDataLoader    = 0x403600;
 constexpr uintptr_t kAddr_PlayerDataFileLoader   = 0x4039F0;
+constexpr uintptr_t kAddr_CreateGameObject       = 0x406570;  // #66 re-sim spawn suppress
 using CleanupFn    = HGLOBAL (__cdecl*)(int a1);
 using GlobalFreeFn = HGLOBAL (__stdcall*)(HGLOBAL);
 using CharLoadFn   = int     (__cdecl*)(void* buf, int hFile);
 using PlayerLoadFn = int     (__cdecl*)(int slot, int charId);
+using CreateObjFn  = void*   (__cdecl*)(int type, int subtype, int x, int y);
 
 AllocFn      g_orig_Alloc       = nullptr;
 PlayFn       g_orig_Play        = nullptr;
@@ -82,7 +85,15 @@ CleanupFn    g_orig_Cleanup     = nullptr;
 GlobalFreeFn g_orig_GlobalFree  = nullptr;
 CharLoadFn   g_orig_CharLoad    = nullptr;
 PlayerLoadFn g_orig_PlayerLoad  = nullptr;
+CreateObjFn  g_orig_CreateObj   = nullptr;
 bool         g_in_cleanup       = false;
+
+// #66 CSS rollback: inert 382-byte object handed to the game's CSS handler in
+// place of a real spawn during a re-sim. It lives OUTSIDE the game object pool
+// (0x4701E0), so character_state_machine -- which iterates the pool -- never
+// walks it. The handler writes its fields (script_id/entity_kind/...) here
+// harmlessly; on the next confirmed frame the real spawn replaces the pointer.
+alignas(16) uint8_t g_css_resim_dummy[382];
 
 // ── CSS load profiler (FM2K_FPK_CSS_PROFILE=1) ──────────────────────────
 // Times the per-cursor-move character reload to find the 40fps dip's real
@@ -428,7 +439,33 @@ int __cdecl Hook_CharLoad(void* buf, int hFile) {
 // Times the whole per-cursor-move reload (ClearCharacterSlot + open +
 // character_data_loader + trailing region reads). Returns 0 immediately
 // when the target char is already in the slot, so only real reloads log.
+// #66 CSS rollback: suppress ALL object spawns during a re-sim. game_state_
+// manager (0x406FC0) builds portrait objects from the rolled-back selection but
+// against the FORWARD char slots; a real such portrait in the pool then makes
+// character_state_machine walk mismatched char data and crash (0xC0000005).
+// Returning an off-pool inert buffer keeps the cursor/selection sim intact
+// while no bad object ever enters the pool. CreateProjectileObject (cursor/
+// confirm sprites) routes through create_game_object too, so this covers it.
+void* __cdecl Hook_CreateGameObject(int type, int subtype, int x, int y) {
+    if (g_css_rollback && g_is_rolling_back && GameMode() == 2000u) {
+        std::memset(g_css_resim_dummy, 0, sizeof(g_css_resim_dummy));
+        return g_css_resim_dummy;
+    }
+    return g_orig_CreateObj(type, subtype, x, y);
+}
+
 int __cdecl Hook_PlayerLoad(int slot, int charId) {
+    // ── #66 CSS rollback: suppress .player load during re-sim ────────────
+    // During a rollback re-sim the CSS selection sim never reads the loaded
+    // blob (g_character_data_base) -- only static roster tables -- so skipping
+    // the disk load is BIT-EXACT for the sim, and it's the whole point: it
+    // stops re-firing synchronous disk I/O for every cursor-hover the re-sim
+    // walks through (the para/Ricky "intensive file loading" hazard). The real
+    // load runs on the CONFIRMED advance (g_is_rolling_back == false). We do NOT
+    // touch g_player_loaded_char_slot here, so it stays == the last confirmed
+    // load and the confirmed-frame loader still does the right thing.
+    if (g_css_rollback && g_is_rolling_back) return 0;
+
     // ── async CSS load: never block the frame ───────────────────────────
     // CRITICAL: the engine dereferences the slot's char data SYNCHRONOUSLY
     // right after this call (portrait/action-table reads). So we can only
@@ -609,14 +646,19 @@ void CssFastSound_Install() {
     const char* eh = std::getenv("FM2K_FPK_CSS_FASTSOUND_HEAPCHK");
     const char* ec = std::getenv("FM2K_CSS_CACHE");
     const char* ea = std::getenv("FM2K_CSS_ASYNC");
+    const char* er = std::getenv("FM2K_CSS_ROLLBACK");
     bool want_fastsound = (ef && ef[0] == '1');
     g_profile = (ep && ep[0] == '1');
     g_heapchk = (eh && eh[0] == '1');
     g_cache   = (ec && ec[0] == '1');
     g_async   = (ea && ea[0] == '1');
+    // #66: CSS rollback needs the .player-loader detour so the re-sim guard in
+    // Hook_PlayerLoad can suppress disk I/O during rollback re-sims. (On a
+    // confirmed frame it falls through to the normal synchronous load.)
+    bool want_css_rb = (er && er[0] && er[0] != '0');
     // async needs the CSS-sound-skip too (worker must not touch DirectSound).
     if (g_async) g_cache = true;
-    if (!want_fastsound && !g_profile && !g_heapchk && !g_cache && !g_async) return;
+    if (!want_fastsound && !g_profile && !g_heapchk && !g_cache && !g_async && !want_css_rb) return;
     if (g_profile || g_heapchk) QueryPerformanceFrequency(&g_qpf);
 
     auto hook = [](uintptr_t addr, void* detour, void** orig, const char* name) -> bool {
@@ -649,9 +691,14 @@ void CssFastSound_Install() {
         hook(kAddr_CharacterDataLoader, reinterpret_cast<void*>(Hook_CharLoad),
              reinterpret_cast<void**>(&g_orig_CharLoad), "character_data_loader");
     }
-    if (g_profile || g_cache) {
+    if (g_profile || g_cache || want_css_rb) {
         hook(kAddr_PlayerDataFileLoader, reinterpret_cast<void*>(Hook_PlayerLoad),
              reinterpret_cast<void**>(&g_orig_PlayerLoad), "player_data_file_loader");
+    }
+    if (want_css_rb) {
+        // #66: suppress real object spawns during CSS rollback re-sims.
+        hook(kAddr_CreateGameObject, reinterpret_cast<void*>(Hook_CreateGameObject),
+             reinterpret_cast<void**>(&g_orig_CreateObj), "create_game_object");
     }
     if (g_async) {
         hook(kAddr_ProcessCharSelectHandler, reinterpret_cast<void*>(Hook_CssHandler),

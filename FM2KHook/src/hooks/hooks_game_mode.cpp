@@ -347,8 +347,15 @@ void CheckGameModeTransition() {
             // is the LAST CSS frame — the one whose confirm flipped game_mode.
             // Without this flush, spectator never sees that frame, never
             // flips its own game_mode, and desyncs at battle entry.
-            extern void Hook_FlushPendingCapture();
-            Hook_FlushPendingCapture();
+            // #66: under CSS rollback capture_and_return was gated out (CSS
+            // recorded via the pending-confirm ring), so g_capture_p is stale;
+            // drain the ring's remaining confirmed CSS frames instead.
+            if (g_css_rollback) {
+                Netplay_CssFlushRemaining();
+            } else {
+                extern void Hook_FlushPendingCapture();
+                Hook_FlushPendingCapture();
+            }
 
             if (!g_offline_mode && Netplay_IsConnected()) {
                 // Boot-to-battle (test/dev) skips the CSS rendezvous that

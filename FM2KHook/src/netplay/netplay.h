@@ -73,6 +73,18 @@ void Netplay_PollCSS();
 void Netplay_EmitCssFp(uint32_t frame, uint16_t p1, uint16_t p2);
 void Netplay_EmitCssFpHost();
 
+// #66: true when the CSS gekko session is up + synced under rollback -- i.e.
+// the get-input hook now fires speculatively during re-sim, so it must stop
+// recording (Netplay_CssFlushConfirmed records confirmed-only instead).
+bool Netplay_IsCssRollbackRecording();
+
+// #66: at the CSS->battle boundary, drain any confirmed-but-unflushed CSS
+// frames from the pending-confirm ring so the spectator sees the full CSS
+// stream (incl. the confirm frame). Replaces the stale Hook_FlushPendingCapture
+// under rollback (capture_and_return was gated out, its buffer is stale). No-op
+// when not rolling back.
+void Netplay_CssFlushRemaining();
+
 // Process battle input phase - called from Hook_ProcessGameInputs
 // Polls GekkoNet, handles Save/Load events, sets synced inputs
 // For rollback with multiple AdvanceEvents, runs complete frames for all but the last

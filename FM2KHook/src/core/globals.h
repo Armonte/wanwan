@@ -435,6 +435,14 @@ extern uint32_t g_frame_counter;
 // Used by input hooks to avoid corrupting edge detection state during replay
 extern bool g_is_rolling_back;
 
+// #66: enable ROLLBACK for the character-select (CSS) gekko session (default
+// OFF = lockstep, the shipping behavior). Set once at CSS session start from
+// FM2K_CSS_ROLLBACK=1. When true, CSS runs a prediction window + save/load
+// re-sim (sim-per-AdvanceEvent), suppresses .player loads on re-sim, and
+// records replay/spectator inputs confirmed-only. Read cross-module by the
+// CSS trampoline, the get-input hook, and the .player loader detour.
+extern bool g_css_rollback;
+
 // Network config (parsed at startup, used when entering battle)
 extern bool g_offline_mode;
 extern uint16_t g_local_port;

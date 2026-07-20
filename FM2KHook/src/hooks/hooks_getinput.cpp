@@ -315,6 +315,13 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
     auto capture_and_return = [player_id](int result) -> int {
         if (g_spectator_mode) return result;
         if (Netplay_IsActive()) return result;
+        // #66 CSS rollback: once the CSS gekko session is driving advances,
+        // this hook fires speculatively during re-sim (like battle). Skip it
+        // and let Netplay_CssFlushConfirmed record confirmed-only inputs
+        // through the pending-confirm ring -- otherwise speculative CSS inputs
+        // leak into .fm2krep + the live spectator stream (the e5fe11f class).
+        // Pre-session / title CSS frames (no synced session) still record here.
+        if (Netplay_IsCssRollbackRecording()) return result;
         const uint32_t cur_idx = *(uint32_t*)0x447EE0;
         if (cur_idx != g_capture_recorded_idx) {
             if (g_capture_recorded_idx != UINT32_MAX) {

@@ -147,6 +147,19 @@ static bool SpectatorSimOneFrame() {
 
     ParityRecorder::Capture();
 
+    // [CSS-FP] parity emit during CSS (#66 Phase 1) -- the spectator's applied
+    // CSS frame. Pairs with the host/guest RunCssTick emit so the harness can
+    // align the three streams by confirmed input and prove the spectator's
+    // replayed CSS matches the players' bit-for-bit. Frame counter is local
+    // ordering only; the harness aligns by the (p1,p2) input sequence.
+    {
+        const uint32_t mode_css = *(uint32_t*)FM2K::ADDR_GAME_MODE;
+        if (mode_css >= 2000 && mode_css < 3000) {
+            static uint32_t s_spec_css_frame = 0;
+            Netplay_EmitCssFp(s_spec_css_frame++, p1, p2);
+        }
+    }
+
     // [SPEC-TRACE] per-frame for first 100 battle frames. Routed through
     // SDL_LOG_CATEGORY_CUSTOM so LogOutputFunction sends it to quill's
     // backtrace ring instead of disk — captured forever-cheap, only

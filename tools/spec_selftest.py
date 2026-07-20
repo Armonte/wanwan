@@ -335,6 +335,129 @@ def spectator_liveness(host_log, spec_log, tolerance=LIVE_EDGE_TOLERANCE):
                 tolerance=tolerance)
 
 
+def _css_parity_gate(out_dir, specs):
+    """CSS-phase parity safety net (#66). Returns (fail: bool, lines: list[str]).
+
+    CSS determinism was previously unverified -- every other gate is battle-bf-
+    keyed. Each role emits `[CSS-FP] fr= in= cur= sel= act=` per CSS frame;
+    act=p1/p2 is each player's confirm-latch. Two invariants:
+
+      CSS-DET  host == guest, FULL payload (in/cur/sel/act), transition-exact.
+               Both players run the same CSS sim on the same confirmed inputs,
+               so their per-frame state must be bit-identical. THIS is the
+               load-bearing check: a CSS-rollback nondeterminism shows here
+               first (players diverge before any spectator can).
+
+      CSS-SPEC per spectator, per CSS session (segment): the LOGICAL selection
+               path (sel = grid cell) must agree with the host, and the locked
+               char (sel at the both-confirmed act=1/1 latch) must be identical.
+               The spectator applies inputs through the seam/snapshot path, so
+               its raw cursor PIXELS legitimately differ (and a late snapshot-
+               joiner sees only a suffix of a session) -- we compare on the sel
+               cell and accept the shorter nav embedding in the longer (LCS),
+               with a small seam tolerance. A real stream corruption changes the
+               locked char (hard-fail) or diverges the nav path (LCS drop).
+    """
+    import re
+    fail, lines = False, []
+    _full = re.compile(r'\[CSS-FP\] fr=\d+ (in=\S+ cur=\S+ sel=\S+ act=\d+/\d+)')
+    _sel  = re.compile(r'\[CSS-FP\] fr=\d+ in=\S+ cur=\S+ sel=(\S+) act=(\d+)/(\d+)')
+
+    def full_transitions(path):
+        out, prev = [], None
+        try: fh = open(path, errors="ignore")
+        except OSError: return out
+        for ln in fh:
+            m = _full.search(ln)
+            if m and m.group(1) != prev:
+                out.append(m.group(1)); prev = m.group(1)
+        return out
+
+    def sessions(path):
+        # per CSS session: (sel-cell nav before both-confirm, locked sel). A
+        # session ends at the first act==(1,1) latch; the frozen post-confirm
+        # tail is dropped; a reset to (0,0) after a latch opens the next session.
+        segs, cur, locked, in_tail, prev = [], [], None, False, None
+        try: fh = open(path, errors="ignore")
+        except OSError: return segs
+        for ln in fh:
+            m = _sel.search(ln)
+            if not m: continue
+            sel, act = m.group(1), (int(m.group(2)), int(m.group(3)))
+            key = (sel, act)
+            if key == prev: continue
+            prev = key
+            if act == (1, 1):
+                if not in_tail:
+                    locked = sel; in_tail = True
+            elif act == (0, 0) and in_tail:
+                segs.append((cur, locked)); cur, locked, in_tail = [], None, False
+                cur.append(sel)
+            elif not in_tail:
+                cur.append(sel)
+        segs.append((cur, locked))
+        return [s for s in segs if s[0]]
+
+    def lcs_len(a, b):
+        if not a or not b: return 0
+        prev = [0] * (len(b) + 1)
+        for x in a:
+            row = [0]
+            for j, y in enumerate(b):
+                row.append(prev[j] + 1 if x == y else max(prev[j + 1], row[j]))
+            prev = row
+        return prev[-1]
+
+    H = full_transitions(out_dir / "live_FM2K_P1_Debug.log")
+    if not H:
+        return fail, lines   # no CSS netplay observed -- nothing to gate
+
+    # CSS-DET: host vs guest, full-payload bit-exact.
+    G = full_transitions(out_dir / "live_FM2K_P2_Debug.log")
+    if G:
+        if G == H:
+            lines.append(f"[harness] CSS-DET host==guest bit-exact ({len(H)} transitions)")
+        else:
+            j = next((i for i in range(min(len(H), len(G))) if H[i] != G[i]),
+                     min(len(H), len(G)))
+            fail = True
+            hv = H[j] if j < len(H) else "<end>"
+            gv = G[j] if j < len(G) else "<end>"
+            lines.append(f"[harness] CSS-DET host vs guest DIVERGED at transition {j} "
+                         f"-> CSS NONDETERMINISM\n    host={hv}\n    guest={gv}")
+
+    # CSS-SPEC: each spectator's sel-path + locked char vs the host's.
+    Hs = sessions(out_dir / "live_FM2K_P1_Debug.log")
+    for s in specs:
+        Ss = sessions(s["live"])
+        if not Ss:
+            lines.append(f"[harness] CSS-SPEC {s['tag']}: no CSS sessions observed -- skipped")
+            continue
+        for si, (snav, slk) in enumerate(Ss):
+            best = None   # (non_embed, hi, L, hnav_len, hlk)
+            for hi, (hnav, hlk) in enumerate(Hs):
+                L = lcs_len(hnav, snav)
+                non_embed = min(len(hnav), len(snav)) - L
+                if best is None or non_embed < best[0]:
+                    best = (non_embed, hi, L, len(hnav), hlk)
+            non_embed, hi, L, hlen, hlk = best
+            shorter = min(hlen, len(snav))
+            tol = max(2, (shorter + 49) // 50)   # ~2% seam slack (snapshot join)
+            lock_ok, nav_ok = (slk == hlk), (non_embed <= tol)
+            if lock_ok and nav_ok:
+                lines.append(f"[harness] CSS-SPEC {s['tag']} sess{si}: sel-path matches "
+                             f"host-sess{hi} (LCS {L}/{shorter}, lock {slk}) OK")
+            else:
+                fail = True
+                why = []
+                if not lock_ok: why.append(f"LOCKED CHAR host={hlk} spec={slk}")
+                if not nav_ok:  why.append(f"sel-path diverged ({non_embed} cells off, "
+                                           f"LCS {L}/{shorter})")
+                lines.append(f"[harness] CSS-SPEC {s['tag']} sess{si}: vs host-sess{hi} "
+                             f"-> CSS DESYNC ({'; '.join(why)})")
+    return fail, lines
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--frames", type=int, default=1500,
@@ -754,6 +877,15 @@ def main():
               f"stall_frame={lv['stall_frame']}")
         if not lv["reached"]:
             live_edge_fail = True
+
+    # CSS-phase parity (#66 Phase 1) -- computed HERE, before the liveness early-
+    # return, so host==guest CSS determinism (the load-bearing rollback check,
+    # spectator-independent) is always reported even when a spectator fails to
+    # hold the live edge. Invariants live in the module-level _css_parity_gate.
+    css_fail, _css_lines = _css_parity_gate(OUT_DIR, specs)
+    for _l in _css_lines:
+        print(_l)
+
     if args.assert_spectator_live and live_edge_fail:
         print("[harness] OVERALL FAIL: --assert-spectator-live: a spectator did NOT "
               "reach/hold the host's live edge (fell behind / stalled -- see "
@@ -1363,11 +1495,14 @@ def main():
         if r["mf"]:
             print(f"    FP hp/scripts PERSISTENT divergence (tail={r['trailing']}): {r['first_f']}")
 
+    # (CSS-phase parity gate [CSS-FP] ran earlier -- see _css_parity_gate call
+    #  before the liveness early-return; css_fail feeds the verdict below.)
+
     # Phase 3: host-no-hiccup report (host ran with FM2K_PERF_PROFILE on).
     if measure_host:
         report_host_pacing(OUT_DIR / "live_FM2K_P1_Debug.log", args.fake_spectators)
 
-    real_fail   = cin_fail or ck_fail or any(s["gate"]["checked"] > 0 and not s["ok"] for s in specs)
+    real_fail   = cin_fail or ck_fail or css_fail or any(s["gate"]["checked"] > 0 and not s["ok"] for s in specs)
     checked_any = any(s["gate"]["checked"] > 0 for s in specs)
 
     if not args.keep and not real_fail and checked_any:
@@ -1380,7 +1515,8 @@ def main():
 
     if real_fail:
         why = ("CHECKSUM full-state desync (see above)" if ck_fail else
-               "CINPUT input-frame desync (see above)" if cin_fail else "rng/hp gate")
+               "CINPUT input-frame desync (see above)" if cin_fail else
+               "CSS-FP cursor/selection desync (see above)" if css_fail else "rng/hp gate")
         print(f"[harness] OVERALL FAIL: a spectator desynced from host -- {why}.")
         return 1
     if not checked_any:

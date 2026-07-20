@@ -120,6 +120,15 @@ done
 [ "$s2b_ok" = 1 ] && { echo "[run_all] multi-match E2E (rematch+midjoin): PASS"; pass+=("multi-match-e2e"); } \
                   || { echo "[run_all] multi-match E2E (rematch+midjoin): FAIL"; fail+=("multi-match-e2e"); }
 
+# Stage 2c — CSS-phase parity gate self-test (#66 Phase 1). The [CSS-FP] gate
+# already runs INSIDE stages 2/2b (part of spec_selftest OVERALL PASS/FAIL);
+# this proves the gate can still FAIL -- it re-runs the REAL gate against the
+# fresh CSS logs stage 2b just left (--keep) plus three injected desyncs (wrong
+# locked char / diverged sel-path / host!=guest). A gate that can't catch a
+# break is worthless, and CSS is about to gain rollback. Offline, no launch.
+CMD="python3 '$ROOT/tools/test_css_gate.py'"
+stage "css-gate-selftest" "$OUT/2c_css_gate.log"
+
 # Stage 3 — cnc-ddraw redirect (the "SJIS folder -> fullscreen" class). Drives
 # real library games offline and requires the hook to confirm cnc-ddraw loaded
 # (not stock DirectDraw). Self-skips (exit 0) if the launcher/library is absent.

@@ -65,6 +65,15 @@ void RunCssTick() {
     ++g_sim_step_count;   // sim-fps: one logic tick
     ParityRecorder::Capture();  // post-update snapshot for parity .pty
 
+    // [CSS-FP] parity emit (#66 Phase 1): dense per-CSS-frame state so the
+    // harness can align host/guest/spectator CSS streams by confirmed input
+    // and assert bit-exact cursors/selection. Only in real netplay CSS
+    // (offline/stress have no peer to diverge from). Pairs with the
+    // spectator's emit in SpectatorSimOneFrame.
+    if (!skip_netplay) {
+        Netplay_EmitCssFpHost();
+    }
+
     // Advance virtual_time to match the spectator's per-pop bump cadence.
     // Hook_timeGetTime returns g_virtual_time_ms whenever a session is
     // active OR a spectator is subscribed; if host doesn't bump per CSS

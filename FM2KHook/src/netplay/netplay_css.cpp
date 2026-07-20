@@ -349,6 +349,37 @@ uint16_t Netplay_GetCSSInput(int player_id) {
     return input;
 }
 
+// [CSS-FP] parity fingerprint (#66 Phase 1). CSS-phase determinism was
+// previously unverified across peers -- every harness gate (CINPUT/CHECKSUM/
+// rng-hp) is battle-frame-keyed. This dense per-CSS-frame log is emitted by
+// host, guest, AND spectator so the harness can align the three streams by
+// the confirmed (p1,p2) input sequence (like the battle CINPUT gate) and
+// assert bit-exact CSS cursors / selected chars / action states. It's the
+// safety net that must catch any CSS determinism or spectate/replay break --
+// especially once CSS gains a rollback prediction window (#66 Phase 2).
+// Always-on during CSS netplay: CSS is short (a few hundred frames) and quill
+// is async, so it also makes wild CSS desyncs (para/Ricky class) visible.
+void Netplay_EmitCssFp(uint32_t frame, uint16_t p1, uint16_t p2) {
+    const int32_t* p1cur = (const int32_t*)0x424E50;  // g_p1_cursor_pos {x,y}
+    const int32_t* p2cur = (const int32_t*)0x424E58;  // g_p2_cursor_pos {x,y}
+    const int32_t  p1sel = *(const int32_t*)0x470020; // g_selected_char_grid[0]
+    const int32_t  p2sel = *(const int32_t*)0x470024; // g_selected_char_grid[1]
+    const int32_t  p1act = *(const int32_t*)0x47019C; // g_action_state[0]
+    const int32_t  p2act = *(const int32_t*)0x4701A0; // g_action_state[1]
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "[CSS-FP] fr=%u in=0x%03X/0x%03X cur=(%d,%d)/(%d,%d) sel=%d/%d act=%d/%d",
+        frame, p1, p2, p1cur[0], p1cur[1], p2cur[0], p2cur[1],
+        p1sel, p2sel, p1act, p2act);
+}
+
+// Host/guest emit -- reads the confirmed CSS frame + inputs from the gekko
+// advance state (file-scope). Called from RunCssTick after the native sim
+// tick, so the cursor/selection state is post-update for `g_css_frame - 1`.
+void Netplay_EmitCssFpHost() {
+    const uint32_t fr = (g_css_frame > 0) ? g_css_frame - 1 : 0;
+    Netplay_EmitCssFp(fr, g_css_advance_p1, g_css_advance_p2);
+}
+
 
 void AddSubscribedSpectatorsToSession() {
     // Spectators are NOT GekkoSpectator actors. Input distribution to

@@ -65,6 +65,14 @@ bool Netplay_CanAdvanceCSS();
 // Poll CSS network (call during stalls to receive pending data)
 void Netplay_PollCSS();
 
+// [CSS-FP] parity fingerprint (#66). Dense per-CSS-frame state log for the
+// cross-peer CSS determinism gate. Host/guest call Netplay_EmitCssFpHost()
+// from RunCssTick (reads the confirmed gekko frame + inputs); the spectator
+// calls Netplay_EmitCssFp(frame, p1, p2) from its own CSS sim with the
+// applied inputs. Both read cursors/selection/action from live memory.
+void Netplay_EmitCssFp(uint32_t frame, uint16_t p1, uint16_t p2);
+void Netplay_EmitCssFpHost();
+
 // Process battle input phase - called from Hook_ProcessGameInputs
 // Polls GekkoNet, handles Save/Load events, sets synced inputs
 // For rollback with multiple AdvanceEvents, runs complete frames for all but the last

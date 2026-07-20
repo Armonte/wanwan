@@ -210,7 +210,11 @@ void LauncherUI::RenderReplayBrowser() {
         replays_cache_dirty_ = true;
     }
     ImGui::SameLine();
-    ImGui::TextDisabled("%zu file(s) — newest first",
+    // #61 (FlippySpatula): the old "newest first" claim read as a promise
+    // about EVERY row, but matches inside a set list in play order (match
+    // 1 -> N) by design -- Melan's study flow depends on it. Say what the
+    // ordering actually is instead of half of it.
+    ImGui::TextDisabled("%zu file(s) — sets newest first, matches in play order",
                         replays_cache_.size());
 
     // Show the configured games-root paths so the user can verify what's
@@ -320,6 +324,16 @@ void LauncherUI::RenderReplayBrowser() {
         }
         if (ImGui::TreeNodeEx(hdr,
                               ImGuiTreeNodeFlags_DefaultOpen)) {
+            // Set-playback support (#63): does this session group carry a
+            // whole-set file? Per-match rows then offer "watch from here"
+            // (seek into the set at that match) alongside their own slice.
+            const ReplayMeta* set_file = nullptr;
+            for (size_t idx : g.indices) {
+                if (!replays_cache_[idx].is_battle_slice) {
+                    set_file = &replays_cache_[idx];
+                    break;
+                }
+            }
             for (size_t idx : g.indices) {
                 const auto& r = replays_cache_[idx];
                 char row[512];
@@ -333,7 +347,7 @@ void LauncherUI::RenderReplayBrowser() {
                         fmt_unix(r.finished_at_unix).c_str());
                 } else {
                     std::snprintf(row, sizeof(row),
-                        "Session — %u match%s — %u INPUTs — %s",
+                        "Whole set — %u match%s — %u INPUTs — %s",
                         (unsigned)r.match_count,
                         r.match_count == 1 ? "" : "es",
                         (unsigned)r.input_count,
@@ -344,7 +358,22 @@ void LauncherUI::RenderReplayBrowser() {
                 ImGui::TextUnformatted(row);
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Watch")) {
+                    // Set-or-clear: a prior "From here" click must not leak
+                    // its seek into an unrelated watch (same discipline as
+                    // the relay-cred envs).
+                    ::SetEnvironmentVariableA("FM2K_REPLAY_SEEK_MATCH", nullptr);
                     if (on_replay_play) on_replay_play(r.path);
+                }
+                if (r.is_battle_slice && set_file &&
+                    r.match_index > 0) {
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Watch set from here")) {
+                        char n[8];
+                        std::snprintf(n, sizeof(n), "%u",
+                                      (unsigned)r.match_index);
+                        ::SetEnvironmentVariableA("FM2K_REPLAY_SEEK_MATCH", n);
+                        if (on_replay_play) on_replay_play(set_file->path);
+                    }
                 }
                 ImGui::PopID();
             }

@@ -320,6 +320,31 @@ bool RenderBody(int player_slot) {
         ImGui::TextDisabled("Editing default profile (no game selected)");
     }
 
+    // A playable config needs every ENGINE bit mapped: 4 directions + 6
+    // buttons + PAUSE. Validate at SAVE -- the moment the user is standing
+    // right here and can fix it -- instead of letting them discover it
+    // mid-match. PAUSE is called out separately because it is the only one
+    // that fails SILENTLY: an unmapped direction or button is obvious the
+    // first time you press it, an unmapped PAUSE just does nothing forever.
+    // Saving is still allowed (someone may be part-way through a remap); this
+    // informs, it does not block.
+    // Computed EVERY frame, not on the Save click. The launcher auto-saves on
+    // any edit (launcher_ui_input.cpp: `if (RenderBody(slot)) Save();`), so a
+    // click-gated warning would never appear in the UI where people actually
+    // bind -- this body is shared by the launcher tab and the in-game overlay.
+    char missing[160] = {};
+    bool start_missing = false;
+    for (size_t i = 0; i < (size_t)Bit::COUNT; ++i) {
+        if (((1u << i) & (unsigned)kEngineInputMask) == 0) continue;  // meta bits optional
+        if (pb.bits[i].source     != Binding::Source::NONE ||
+            pb.bits_alt[i].source != Binding::Source::NONE) continue;
+        if (missing[0]) {
+            std::strncat(missing, ", ", sizeof(missing) - std::strlen(missing) - 1);
+        }
+        std::strncat(missing, kBitNames[i], sizeof(missing) - std::strlen(missing) - 1);
+        if ((Bit)i == Bit::START) start_missing = true;
+    }
+
     if (ImGui::Button("Save")) {
         if (Save()) changed = true;
     }
@@ -356,6 +381,16 @@ bool RenderBody(int player_slot) {
             ApplyDefaults(player_slot);
         }
         changed = true;
+    }
+
+    if (missing[0]) {
+        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.15f, 1.0f),
+                           "UNMAPPED: %s", missing);
+        if (start_missing) {
+            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.15f, 1.0f),
+                               "PAUSE is unmapped -- the pause button will do "
+                               "nothing for this player.");
+        }
     }
 
     // Live gamepad-state debug panel. Shows per-frame what SDL is

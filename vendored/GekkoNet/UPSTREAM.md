@@ -72,9 +72,23 @@ It is one squashed commit over our base: 22 files, +1133/-327.
     local patch #1 (gekko_confirmed_frame) exists for, so IF we ever adopt it,
     patch #1 can retire.
 
-Take it only for the delta compression (spectator bandwidth) or the 1024 input
-cap (backfill), and only as a versioned hard break. Do the fork-and-submodule
-step below FIRST -- this update is exactly the kind that makes hand-replay hurt.
+GOOD NEWS -- THE WIRE BREAK IS ISOLATED AND SKIPPABLE. On main we are exactly
+ONE squashed merge behind (b5c6528..675b31d = 675b31d alone), but the PR's
+constituent commits are still reachable, and the wire change is its own commit:
+
+    00ba527  Compress network inputs with delta+RLE and raise cap to 1024
+
+Everything else in the merge is replay machinery (882e179 replay session +
+public API, 1c616f2 recording, 71232c0 record in game/spectator/stress,
+9ccf0b6 uncompressed option, 97a5f76 example, cd84338 README), the session
+header split (8a44363), API doc comments (1063c28), and interface defaults
+(a79c436). Audited 2026-07-27: there is NO other netcode fix or perf work
+hiding in there -- the only non-replay change IS the wire break.
+
+So a future update can take the merge and REVERT/skip 00ba527 to stay
+wire-compatible with shipped clients, or take it deliberately as a versioned
+hard break. Do the fork-and-submodule step below FIRST -- this update is
+exactly the kind that makes hand-replay hurt.
 
 How the 2026-07-20 update (8ca4058 -> b5c6528) was done -- reuse this recipe
 ----------------------------------------------------------------------------

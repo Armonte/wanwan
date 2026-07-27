@@ -332,16 +332,23 @@ bool Load() {
         // "P2 controls & pause dead in offline" report — the P2 half was a
         // per-player takeover bug, this half is just an unbound row.)
         //
-        // Only warn when the binder actually OWNS the slot: a slot with zero
-        // bound bits falls through to the engine's own input read, where the
-        // game's native pause key still works, so warning there would be wrong.
+        // Warn whenever PAUSE is unbound, regardless of how many other bits
+        // the slot binds. There is NO "native pause" to fall back on: the
+        // engine's own pipeline (process_game_inputs @0x4146D0 snapshots the
+        // keyboard into KeyState[0x424D20], then calls get_player_input
+        // @0x414340) runs THROUGH the function we detour, so every bit the
+        // engine sees is whatever our hook returns. An all-unbound slot only
+        // "works" because the hook hands back the vanilla read, which sources
+        // the GAME's own key config -- inputs with no row in our binder at
+        // all. That is the same phantom-input behavior we rejected for the
+        // per-bit case, so it must not be treated here as a working fallback.
         static int s_last_pause_state[kPlayers] = {-1, -1};
         for (int p = 0; p < kPlayers; ++p) {
             const size_t si = (size_t)Bit::START;
             const bool has_start =
                 g_players[p].bits[si].source     != Binding::Source::NONE ||
                 g_players[p].bits_alt[si].source != Binding::Source::NONE;
-            const int cur = (bound[p] > 0 && !has_start) ? 0 : 1;
+            const int cur = has_start ? 1 : 0;
             if (s_last_pause_state[p] != cur) {
                 s_last_pause_state[p] = cur;
                 if (cur == 0) {

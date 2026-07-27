@@ -299,6 +299,23 @@ void LauncherUI::RenderHubPanel() {
             show_hub_server_ = true;
         }
         const auto cached_auth_check = fm2k::discord_auth::LoadCached();
+        // Adopt the Discord name as soon as the auth cache has one.
+        //
+        // s_discord_global_name is snapshotted once, on the FIRST hub-panel
+        // render, and s_nick_initialized latches. On first run the sign-in
+        // window auto-opens and this panel renders BEFORE OAuth completes, so
+        // that snapshot is empty -- and stays empty for the rest of the
+        // process even though the pairing worker has since written the real
+        // name into discord_auth.json. With "Use Discord name" checked that
+        // pinned Connect to "(set a nick first)" until the user restarted the
+        // launcher or unchecked the box and typed a nick by hand ("can't play
+        // online without a manually set nickname, even if 'use discord name'
+        // is checked"). Fill only when empty, so this never stomps a name the
+        // user has already got.
+        if (s_discord_global_name.empty() &&
+            !cached_auth_check.discord_global_name.empty()) {
+            s_discord_global_name = cached_auth_check.discord_global_name;
+        }
         // nick_ok: when "Use Discord name" is on, validity depends on whether
         // we know what their Discord name actually is (populated post-OAuth).
         // When off, just whether they typed something.

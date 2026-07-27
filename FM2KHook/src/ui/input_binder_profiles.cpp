@@ -320,6 +320,38 @@ bool Load() {
                 bound[0], (int)Bit::COUNT, bound[1], (int)Bit::COUNT,
                 bound[1] == 0 ? " (P2 unbound → engine's own keys)" : "");
         }
+
+        // PAUSE is the one bit whose absence is silently FATAL rather than
+        // merely inconvenient. The engine toggles g_game_paused (0x4701BC)
+        // only on a RISING EDGE of bit 0x400 in g_combined_input_changes
+        // (vs_round_function @0x4086A0), and that word is built from what our
+        // binder returns — so an unbound PAUSE row means the pause button is
+        // simply dead, with no other symptom to hint at why. We deliberately
+        // do NOT repair the profile here: the user's config is the user's
+        // config. But a dead pause must not be silent. (Residual half of the
+        // "P2 controls & pause dead in offline" report — the P2 half was a
+        // per-player takeover bug, this half is just an unbound row.)
+        //
+        // Only warn when the binder actually OWNS the slot: a slot with zero
+        // bound bits falls through to the engine's own input read, where the
+        // game's native pause key still works, so warning there would be wrong.
+        static int s_last_pause_state[kPlayers] = {-1, -1};
+        for (int p = 0; p < kPlayers; ++p) {
+            const size_t si = (size_t)Bit::START;
+            const bool has_start =
+                g_players[p].bits[si].source     != Binding::Source::NONE ||
+                g_players[p].bits_alt[si].source != Binding::Source::NONE;
+            const int cur = (bound[p] > 0 && !has_start) ? 0 : 1;
+            if (s_last_pause_state[p] != cur) {
+                s_last_pause_state[p] = cur;
+                if (cur == 0) {
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "InputBinder: P%d has NO PAUSE BINDING — the pause "
+                        "button will not work for that player. Bind PAUSE in "
+                        "the input settings to restore it.", p + 1);
+                }
+            }
+        }
     }
     return true;
 }

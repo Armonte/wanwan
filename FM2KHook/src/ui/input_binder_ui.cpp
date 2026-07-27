@@ -564,7 +564,29 @@ bool RenderBody(int player_slot) {
             ImGui::PushID((int)i);
 
             ImGui::TableSetColumnIndex(0);
-            ImGui::TextUnformatted(kBitNames[i]);
+            // An unbound PAUSE row is silently fatal: the engine only toggles
+            // g_game_paused on a rising edge of bit 0x400 built from what the
+            // binder returns, so with no PAUSE binding the pause button is
+            // simply dead and nothing else looks wrong. Every other bit
+            // degrades visibly (you can see the character not move). Flag it
+            // here rather than repairing the profile behind the user's back.
+            {
+                const bool is_pause = ((Bit)i == Bit::START);
+                const bool unbound  =
+                    pb.bits[i].source     == Binding::Source::NONE &&
+                    pb.bits_alt[i].source == Binding::Source::NONE;
+                if (is_pause && unbound) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.15f, 1.0f), "%s",
+                                       kBitNames[i]);
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip(
+                            "PAUSE is not bound — the pause button will not "
+                            "work for this player.");
+                    }
+                } else {
+                    ImGui::TextUnformatted(kBitNames[i]);
+                }
+            }
 
             render_slot(i, /*alt=*/false, /*col_label=*/1, /*col_btns=*/2);
             render_slot(i, /*alt=*/true,  /*col_label=*/3, /*col_btns=*/4);

@@ -44,6 +44,38 @@ gekkonet.cpp, spectator_session.cpp, stress_session.cpp, backend.h, gekkonet.h,
 session.h). It is small and surgical -- it applies onto a reformatted/rewritten
 upstream cleanly under a whitespace-insensitive 3-way merge (see below).
 
+!! STOP -- READ BEFORE UPDATING PAST b5c6528 (assessed 2026-07-27) !!
+--------------------------------------------------------------------
+Upstream tip 675b31d "ReplaySession (#55)" (2026-07-26) is **WIRE-BREAKING**.
+It is one squashed commit over our base: 22 files, +1133/-327.
+
+  * backend.cpp now DELTA-encodes inputs before RLE on send and DeltaDecodes
+    after RLE on receive (stride = _input_size, or _input_size*_num_players for
+    SpectatorInputs packets), and MAX_INPUT_SIZE goes 512 -> 1024. It is
+    signalled by the SAME "compressed" boolean as before, so a b5c6528 peer
+    receiving a 675b31d packet reverses only the RLE and gets GARBAGE INPUTS --
+    silent corruption, NOT a clean version refusal. Adopting this must be a
+    coordinated hard-break release enforced by our version gate, never a quiet
+    bleeding bump.
+  * private/session.h is DELETED (-240) and split into private/session/{session,
+    game_session,spectator_session,stress_session,replay_session}.h. Our
+    session.h patch has to be RELOCATED, not merged. 7 of our 8 patched files
+    are touched (only backend.h is untouched). gekkonet.h also gains ~30 lines
+    of doc comments = pure merge noise.
+  * Value to us is LOW: their replay records confirmed inputs into a generic
+    blob (gekko_start_recording / gekko_stop_recording / gekko_load_replay,
+    GekkoReplaySession kind, GekkoReplayFinished event). We already have a
+    richer FM2K-specific replay layer (.fm2krep/.fm2kset carrying round config,
+    stage id, char ids, seek-to-match, whole-set playback) that a generic
+    input-only replay cannot represent, and switching would break every
+    existing user replay file. Their recorder does solve the same problem our
+    local patch #1 (gekko_confirmed_frame) exists for, so IF we ever adopt it,
+    patch #1 can retire.
+
+Take it only for the delta compression (spectator bandwidth) or the 1024 input
+cap (backfill), and only as a versioned hard break. Do the fork-and-submodule
+step below FIRST -- this update is exactly the kind that makes hand-replay hurt.
+
 How the 2026-07-20 update (8ca4058 -> b5c6528) was done -- reuse this recipe
 ----------------------------------------------------------------------------
 Do NOT hand-apply patches onto rewritten files. Let git's 3-way merge do it:

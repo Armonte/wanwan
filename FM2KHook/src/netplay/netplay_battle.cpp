@@ -125,159 +125,24 @@ bool Netplay_StartBattle() {
             p1_char, p1_name, p2_char, p2_name);
     }
 
-    // Snapshot the actual battle stage_id BEFORE the random-stage block
-    // touches ADDR_SELECTED_STAGE. By this point in Netplay_StartBattle
-    // vs_round_function has already loaded the stage file (the
-    // "<name>.stage" CreateFileA log line a few ms earlier), so the
-    // value at ADDR_SELECTED_STAGE right now is the one that's actually
-    // playing this match. The random-stage block below writes a fresh
-    // value for the *next* match, but that value is what MATCH_START
-    // used to record — leading to "battle on stage X, replay says Y"
-    // mismatches reported on 2026-05-09. Capture pre-roll, use that
-    // for both MATCH_START and SharedMem_PublishMatchStage.
-    const uint32_t mstage_id_pre_roll =
+    // Battle stage_id for MATCH_START + the hub match_result payload.
+    // The random-stage roll is applied by Hook_LoadStageFile at the moment
+    // vs_round_function reads g_selected_stage, which happens BEFORE we get
+    // here -- so 0x43010c now holds the stage actually playing this match and
+    // a plain read is correct. This used to need a pre-roll snapshot because
+    // the roll fired here and clobbered 0x43010c with the NEXT match's stage,
+    // producing the "battle on stage X, replay says Y" reports of 2026-05-09.
+    const uint32_t mstage_id_applied =
         (FM2K::ADDR_SELECTED_STAGE != 0)
             ? *(const uint32_t*)FM2K::ADDR_SELECTED_STAGE
-            : 0u;
-
-    // Random stage (#56 — Lilithport-style seeded xorshift). The
-    // launcher hands us a host-generated seed via FM2K_STAGE_RANDOM_SEED
-    // when both peers agree on random stage. We re-seed once per
-    // process from that env var (g_xorshift_seeded), then advance one
-    // step per Netplay_StartBattle and write the resulting index to
-    // FM2K's stage memory. Both peers run the same xorshift sequence
-    // from the same seed, so rematches keep rolling identically with
-    // zero per-rematch wire traffic.
-    //
-    // KNOWN ISSUE: the write here lands AFTER vs_round_function has
-    // already loaded the stage file for the current match, so the roll
-    // does nothing for THIS battle. Only takes effect if the cached
-    // value happens to influence a subsequent stage read — which in
-    // current FM2K builds it doesn't. The random-stage feature is
-    // slated for replacement by an explicit lobby/game-settings stage
-    // selector, so this isn't being fixed in place.
-    {
-        constexpr uintptr_t kSelectedStageAddr = FM2K::ADDR_SELECTED_STAGE;
-        static bool      g_xorshift_seeded = false;
-        static uint32_t  g_xs_a = 1812433254u, g_xs_b = 3713160357u,
-                         g_xs_c = 3109174145u, g_xs_d = 64984499u;
-        static int       g_stage_min = 0;
-        static int       g_stage_max = -1;   // -1 = random disabled
-
-        if (!g_xorshift_seeded) {
-            g_xorshift_seeded = true;
-            const char* seed_env = std::getenv("FM2K_STAGE_RANDOM_SEED");
-            const char* min_env  = std::getenv("FM2K_STAGE_RANDOM_MIN");
-            const char* max_env  = std::getenv("FM2K_STAGE_RANDOM_MAX");
-            // One-shot diagnostic: if the env vars aren't visible to
-            // the hook process, random-stage silently does nothing
-            // (g_stage_max stays -1) and every match plays on whatever
-            // stage_id the CSS cursor happens to be on. Logging both
-            // presence + value lets us tell apart "host disabled" vs
-            // "env didn't propagate to game process".
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "Netplay: random-stage env: SEED=%s MIN=%s MAX=%s",
-                seed_env ? seed_env : "(unset)",
-                min_env  ? min_env  : "(unset)",
-                max_env  ? max_env  : "(unset)");
-            if (seed_env && *seed_env) {
-                uint32_t seed = (uint32_t)std::strtoul(seed_env, nullptr, 10);
-                if (seed != 0) {
-                    // Lilith's seeding scheme — same constants so a
-                    // shared seed produces the same a[4] state on both
-                    // peers (cross-implementation parity if anyone ever
-                    // wants Lilith-FM2K interop, though we don't ship
-                    // that today).
-                    uint32_t s = seed;
-                    uint32_t* arr[4] = {&g_xs_a, &g_xs_b, &g_xs_c, &g_xs_d};
-                    for (int i = 0; i < 4; ++i) {
-                        s = 1812433253u * (s ^ (s >> 30)) + (uint32_t)i;
-                        *arr[i] = s;
-                    }
-                    g_stage_min = (min_env && *min_env)
-                        ? std::atoi(min_env) : 0;
-                    g_stage_max = (max_env && *max_env)
-                        ? std::atoi(max_env) : -1;
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                        "Netplay: random-stage seeded (seed=%u min=%d max=%d)",
-                        (unsigned)seed, g_stage_min, g_stage_max);
-                }
-            }
-        }
-
-        // Clamp the range to the game's REAL stage list (Patrick,
-        // 2026-06-11: "stage range isn't game specific"). The launcher's
-        // range is a per-game setting now, but a stale or hand-edited
-        // value must still never roll an index past the stage table:
-        // LoadStageFile sprintf's the filename from the 256-byte entry
-        // and an empty one throws a modal "GameStage Open error" box
-        // mid-match. Both peers scan the same table of the same game,
-        // so the clamp is identical on both sides and rolls stay
-        // deterministic. Scanned once, lazily (battle start = game data
-        // long since loaded).
-        if constexpr (FM2K::ADDR_STAGE_FILE_TABLE != 0) {
-            static int s_stage_count = -1;
-            if (s_stage_count < 0 && g_stage_max >= 0) {
-                const char* tbl = (const char*)FM2K::ADDR_STAGE_FILE_TABLE;
-                int n = 0;
-                while (n < 100 && tbl[256 * n] != '\0') ++n;
-                s_stage_count = n;
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "Netplay: random-stage: game defines %d stage(s)", n);
-            }
-            if (g_stage_max >= 0 && s_stage_count >= 0) {
-                if (s_stage_count == 0) {
-                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                        "Netplay: random-stage disabled -- stage table is "
-                        "empty");
-                    g_stage_max = -1;
-                } else if (g_stage_max >= s_stage_count) {
-                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                        "Netplay: random-stage range %d..%d exceeds the "
-                        "game's %d stages -- clamped",
-                        g_stage_min, g_stage_max, s_stage_count);
-                    g_stage_max = s_stage_count - 1;
-                    if (g_stage_min > g_stage_max) g_stage_min = g_stage_max;
-                }
-            }
-        }
-
-        if (g_stage_max >= g_stage_min && g_stage_max >= 0) {
-            // Advance one step. xorshift128 — identical to Lilith's
-            // RandomStage() arrival-no-args branch (stdafx.cpp:670).
-            uint32_t t  = g_xs_a ^ (g_xs_a << 11);
-            g_xs_a = g_xs_b; g_xs_b = g_xs_c; g_xs_c = g_xs_d;
-            g_xs_d = (g_xs_d ^ (g_xs_d >> 19)) ^ (t ^ (t >> 8));
-            const uint32_t span = (uint32_t)(g_stage_max - g_stage_min + 1);
-            const uint32_t roll = g_xs_d % span;
-            const uint32_t stage = (uint32_t)g_stage_min + roll;
-            *(uint32_t*)kSelectedStageAddr = stage;
-            // Also stash for FM95's LoadStageFile_alt hook — vs/story
-            // mode reads its stage_id from a per-character table at
-            // call time, so writing to ADDR_SELECTED_STAGE alone only
-            // covers practice mode. The hook reads g_pending_random_stage
-            // and overrides arg0 when non-FFFFFFFF.
-            g_pending_random_stage = stage;
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "Netplay: random stage rolled=%u (range %d..%d)",
-                stage, g_stage_min, g_stage_max);
-        }
-
-        // Stage_id capture for the hub match_result payload. Uses the
-        // pre-roll snapshot taken at function entry — that's the stage
-        // file vs_round_function already loaded for THIS match. Reading
-        // ADDR_SELECTED_STAGE here would pick up whatever the random
-        // block just wrote (for the next match), producing a record
-        // that doesn't match what players actually saw on screen.
-        // FM95 has no documented selected-stage scalar yet
-        // (ADDR_SELECTED_STAGE == 0); publish unknown.
-        if constexpr (FM2K::ADDR_SELECTED_STAGE != 0) {
-            SharedMem_PublishMatchStage(mstage_id_pre_roll);
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "Netplay: match stage_id=%u", mstage_id_pre_roll);
-        } else {
-            SharedMem_PublishMatchStage(0xFFFFFFFFu);
-        }
+            : 0xFFFFFFFFu;
+    if constexpr (FM2K::ADDR_SELECTED_STAGE != 0) {
+        SharedMem_PublishMatchStage(mstage_id_applied);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "Netplay: match stage_id=%u", mstage_id_applied);
+    } else {
+        // FM95 has no documented selected-stage scalar yet; publish unknown.
+        SharedMem_PublishMatchStage(0xFFFFFFFFu);
     }
 
     // Reset CSS state when entering battle
@@ -549,7 +414,7 @@ bool Netplay_StartBattle() {
         mp2_color = static_cast<uint8_t>(
             *(const uint32_t*)(FM2K::ADDR_CHARSLOT0_COLOR_PICK + FM2K::CHARSLOT_STRIDE));
     }
-    const uint8_t mstage_id = static_cast<uint8_t>(mstage_id_pre_roll);
+    const uint8_t mstage_id = static_cast<uint8_t>(mstage_id_applied);
     SpectatorNode_OnMatchStart(
         /*game_hash*/         0,
         /*initial_rng_seed*/  initial_seed,

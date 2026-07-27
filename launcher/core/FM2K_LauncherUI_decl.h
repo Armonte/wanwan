@@ -343,6 +343,9 @@ private:
     void LoadRandomStageState();
     void SaveRandomStageState();
     void EnsureRandomStageLoaded();
+    // Publish FM2K_STAGE_RANDOM_SEED/_MIN/_MAX to the environment so offline
+    // launches inherit them (online is re-applied by the hub match-start path).
+    void PublishRandomStageEnv();
 
     // Refresh the SDL window title to "FM2K Rollback Launcher — <nick> (W-L-D)"
     // any time the user's record changes. No-op if we don't have a record

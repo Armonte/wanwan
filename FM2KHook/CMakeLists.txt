@@ -59,6 +59,7 @@ set(FM2KHOOK_SOURCES
     src/netplay/netplay_chat.cpp     # chat ring (split from netplay)
     src/netplay/netplay_control.cpp  # HOST_CONFIG packets + OnControlMessage dispatch (split from netplay)
     src/netplay/netplay_battle.cpp   # StartBattle/StartStressBattle (split from netplay)
+    src/netplay/random_stage.cpp     # seeded xorshift roll consumed at the LoadStageFile seam
     src/netplay/netplay_battle_end.cpp  # Netplay_EndBattle teardown (split from netplay_battle)
     src/netplay/netplay_battle_phase.cpp # ProcessBattleInputPhase engine-agnostic rollback driver (split from netplay)
     src/netplay/netplay_battle_events.cpp # Save/Load/Advance gekko event handlers (split from battle_phase; FM95 palette guard gated)

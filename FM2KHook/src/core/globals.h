@@ -231,6 +231,11 @@ namespace FM2K {
     //     in practice mode.
     constexpr uintptr_t ADDR_SELECTED_STAGE       = 0x43274c;
     constexpr uintptr_t ADDR_LOAD_STAGE_FILE_ALT  = 0x4054b0;
+    // FM2K-only seam (LoadStageFile + the two globals the dispatcher reads
+    // around it). FM95 overrides via LoadStageFile_alt's arg0 instead.
+    constexpr uintptr_t ADDR_LOAD_STAGE_FILE      = 0;
+    constexpr uintptr_t ADDR_GAME_MODE_FLAG       = 0;
+    constexpr uintptr_t ADDR_ACTIVE_STAGE_ID      = 0;
     constexpr uintptr_t ADDR_CHAR_STAGE_PER_ROUND = 0x540337;
     // Stage filename table (256-byte name entries; LoadStageFile does
     // sprintf("%s.stage", table[256*idx])). 0 = not mapped on FM95 yet;
@@ -397,6 +402,23 @@ namespace FM2K {
     // out-of-range idx gives an empty/garbage name -> modal "GameStage
     // Open error" box mid-match. First NUL first-byte = end of list.
     constexpr uintptr_t ADDR_STAGE_FILE_TABLE     = 0x43A29C;
+    // LoadStageFile @ 0x4041E0 -- sprintf("%s.stage", stage_table[256*idx]).
+    // IDA-verified in WonderfulWorld_ver_0946: exactly THREE callers, all in
+    // vs_round_function @ 0x4086A0 -- 0x408785 and 0x4087E0 pass
+    // g_selected_stage (the VS and Team match-init paths, mutually exclusive,
+    // once per match), 0x40882C passes a per-character story-table value.
+    // This is the ordering-correct seam for random stage: the dispatcher reads
+    // 0x43010c HERE, so writing 0x43010c after this point only affects the
+    // NEXT match (the old one-match-late bug).
+    constexpr uintptr_t ADDR_LOAD_STAGE_FILE      = 0x4041E0;
+    // g_game_mode_flag @ 0x470058 -- 0 = 1P/story, 1 = VS 1v1, 2 = VS Team.
+    // Selects which branch of vs_round_function case 0/1 runs, i.e. whether
+    // the LoadStageFile call reads g_selected_stage or the story table.
+    constexpr uintptr_t ADDR_GAME_MODE_FLAG       = 0x470058;
+    // g_active_stage_id @ 0x470040 -- the dispatcher copies g_selected_stage
+    // into this ONE LINE BEFORE calling LoadStageFile, so a stage override
+    // applied at the load seam must write both or they disagree.
+    constexpr uintptr_t ADDR_ACTIVE_STAGE_ID      = 0x470040;
 
     // Per-character-slot record table. Each slot is 0xE03F bytes;
     // 8 slots span 0x4D1D80..0x54FF83. Field at slot+0xE00B is the

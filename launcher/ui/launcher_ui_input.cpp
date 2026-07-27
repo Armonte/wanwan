@@ -22,6 +22,7 @@
 #include <shellapi.h>  // Shell_NotifyIcon for challenge toast
 #include <shobjidl.h>  // IFileOpenDialog (modern native folder picker)
 #include <iostream>
+#include <cstdio>   // std::snprintf for the random-stage env publish
 #include <algorithm>
 #include <fstream>
 #include <sstream>
@@ -108,9 +109,47 @@ void LauncherUI::LoadRandomStageState() {
     if (random_stage_min_ < 0)   random_stage_min_ = 0;
     if (random_stage_max_ > 99)  random_stage_max_ = 99;
     if (random_stage_max_ < random_stage_min_) random_stage_max_ = random_stage_min_;
+
+    PublishRandomStageEnv();
+}
+
+// Publish the random-stage settings to the Win32 environment so EVERY launch
+// path (offline, practice, dev dual-client) inherits them via CreateProcess --
+// the same fix SOCD got in v0.2.45. Before this, the vars were set in exactly
+// one place (the hub match-start handler), so random stage only ever worked
+// online; StartOfflineSession never set them and nothing rolled offline.
+//
+// ONLINE AUTHORITY IS PRESERVED, and depends on an invariant worth stating:
+// the hub match-start handler sets all three vars when the host enables random
+// stage and explicitly CLEARS all three when it doesn't. So for an online match
+// the host's seed always overwrites whatever we publish here, and a host who
+// disabled random stage clears it. Do not make that clear-path conditional.
+//
+// Offline gets a fresh per-launch seed -- a fixed one would make every offline
+// session roll the identical stage sequence.
+void LauncherUI::PublishRandomStageEnv() {
+    if (!random_stage_enable_) {
+        ::SetEnvironmentVariableA("FM2K_STAGE_RANDOM_SEED", nullptr);
+        ::SetEnvironmentVariableA("FM2K_STAGE_RANDOM_MIN",  nullptr);
+        ::SetEnvironmentVariableA("FM2K_STAGE_RANDOM_MAX",  nullptr);
+        return;
+    }
+    // Seed 0 means "disabled" to the hook, so never hand it one.
+    unsigned seed = (unsigned)(::GetTickCount() ^ (::GetCurrentProcessId() << 16));
+    if (seed == 0) seed = 1;
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%u", seed);
+    ::SetEnvironmentVariableA("FM2K_STAGE_RANDOM_SEED", buf);
+    std::snprintf(buf, sizeof(buf), "%d", random_stage_min_);
+    ::SetEnvironmentVariableA("FM2K_STAGE_RANDOM_MIN", buf);
+    std::snprintf(buf, sizeof(buf), "%d", random_stage_max_);
+    ::SetEnvironmentVariableA("FM2K_STAGE_RANDOM_MAX", buf);
 }
 
 void LauncherUI::SaveRandomStageState() {
+    // Re-publish on every change so a toggle in the Host Config panel takes
+    // effect on the next offline launch without a launcher restart.
+    PublishRandomStageEnv();
     std::string gid;
     if (selected_game_index_ >= 0 &&
         selected_game_index_ < (int)games_.size()) {

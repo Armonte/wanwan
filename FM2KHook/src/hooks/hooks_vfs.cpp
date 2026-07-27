@@ -75,6 +75,8 @@
 using LoadStageFileAlt_t = int(__cdecl*)(int, int, int);
 static LoadStageFileAlt_t original_LoadStageFileAlt = nullptr;
 extern "C" uint32_t Netplay_PeekNextRolledStage();  // 0xFFFFFFFF if random off
+extern "C" uint32_t RandomStage_ConsumeForLoad();   // advances the roll
+extern "C" bool     RandomStage_IsEnabled();
 // Forward decl — definition at line ~280. Used by Hook_CreateFileA/W to
 // register virtual-file aliases for .player loads (other agent's WIP).
 extern "C" void MaybeRegisterPlayerVFileA(HANDLE h, LPCSTR name);
@@ -91,6 +93,46 @@ static int __cdecl Hook_LoadStageFileAlt(int stage_id, int slot, int palette) {
     return original_LoadStageFileAlt
         ? original_LoadStageFileAlt(stage_id, slot, palette)
         : 0;
+}
+
+// FM2K random-stage seam. vs_round_function reads g_selected_stage (0x43010c)
+// at match init and immediately hands it to LoadStageFile; overriding HERE is
+// what makes the roll apply to THIS match instead of the next one, and it is
+// reachable offline (the old roll site, Netplay_StartBattle, is not).
+using LoadStageFile_t = int(__cdecl*)(int);
+static LoadStageFile_t original_LoadStageFile = nullptr;
+static int __cdecl Hook_LoadStageFile(int stage_idx) {
+    if constexpr (!FM2K::kIsFM95 && FM2K::ADDR_LOAD_STAGE_FILE != 0) {
+        // Spectators and replay playback take their stage from MATCH_START
+        // metadata (spec_playback.cpp) -- both run with g_spectator_mode set.
+        // Rolling locally here would make the viewer/replay show a different
+        // stage than the match did.
+        //
+        // Rollback re-sim must not consume a roll either: 0x43010c already
+        // holds the applied stage, so passing through keeps re-sim idempotent.
+        //
+        // g_game_mode_flag gates out the story-mode call site (0x40882C),
+        // which passes a per-character table value, not g_selected_stage.
+        const uint32_t mode_flag = *(const uint32_t*)FM2K::ADDR_GAME_MODE_FLAG;
+        const bool vs_or_team = (mode_flag == 1u || mode_flag == 2u);
+        if (!g_spectator_mode && !g_is_rolling_back && vs_or_team &&
+            RandomStage_IsEnabled()) {
+            const uint32_t rolled = RandomStage_ConsumeForLoad();
+            if (rolled != 0xFFFFFFFFu) {
+                // The dispatcher already copied the OLD g_selected_stage into
+                // g_active_stage_id one line above this call, so both have to
+                // be re-stamped or the metadata/render disagree with the file
+                // actually loaded.
+                *(uint32_t*)FM2K::ADDR_SELECTED_STAGE  = rolled;
+                *(uint32_t*)FM2K::ADDR_ACTIVE_STAGE_ID = rolled;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "RandomStage: LoadStageFile override %d -> %u (mode_flag=%u)",
+                    stage_idx, rolled, (unsigned)mode_flag);
+                stage_idx = (int)rolled;
+            }
+        }
+    }
+    return original_LoadStageFile ? original_LoadStageFile(stage_idx) : 0;
 }
 
 // VC runtimes route through CreateFileA but newer code paths may use W.
@@ -765,10 +807,60 @@ static BOOL WINAPI Hook_CloseHandle(HANDLE h) {
 }
 
 bool InstallVfsHooks() {
-    // FM95-only: hook LoadStageFile_alt so vs-mode random-stage can rewrite
-    // arg0 at call time. FM2K has no equivalent — its stage selection
-    // already routes through ADDR_SELECTED_STAGE (0x43010c) which the
-    // random-stage block writes directly.
+    // FM2K: hook LoadStageFile so the random-stage roll is applied at the
+    // moment the game reads g_selected_stage, not after. See the comment on
+    // Hook_LoadStageFile -- this fixes the one-match-late bug and is what
+    // makes offline random-stage work at all.
+    if constexpr (!FM2K::kIsFM95) {
+        if (FM2K::ADDR_LOAD_STAGE_FILE != 0) {
+            // SIGNATURE GATE -- do not detour blind.
+            //
+            // 0x4041E0 is LoadStageFile in the common FM2K runtime build, but
+            // it is NOT universal. Surveying the local game library, 14 of 19
+            // .exes are byte-identical here and carry the "%s.stage" format
+            // string; 5 (brkarspd35, CalendarRave, p2dx, start, wh160830) have
+            // completely different code at that address and no "%s.stage" --
+            // different/packed builds. Detouring those would hook an unrelated
+            // function and corrupt the process. Verify the prologue first and
+            // silently stand down when it doesn't match: random stage just
+            // stays inactive for that game instead of crashing it.
+            //
+            // sub esp, 204h        (CHAR FileName[256] + char Buffer[256])
+            // push ebx/esi/edi
+            // mov [esp+0Ch], 0     (NumberOfBytesRead = 0)
+            static const unsigned char kLoadStageFileSig[16] = {
+                0x81, 0xEC, 0x04, 0x02, 0x00, 0x00, 0x53, 0x56,
+                0x57, 0xC7, 0x44, 0x24, 0x0C, 0x00, 0x00, 0x00,
+            };
+            const unsigned char* code =
+                (const unsigned char*)FM2K::ADDR_LOAD_STAGE_FILE;
+            if (::IsBadReadPtr(code, sizeof(kLoadStageFileSig)) ||
+                std::memcmp(code, kLoadStageFileSig,
+                            sizeof(kLoadStageFileSig)) != 0) {
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "Hooks: LoadStageFile signature MISMATCH at 0x%08X — this "
+                    "build differs from the common FM2K runtime. Random stage "
+                    "DISABLED for this game (not hooking, to avoid detouring "
+                    "an unrelated function).",
+                    (unsigned)FM2K::ADDR_LOAD_STAGE_FILE);
+            } else if (MH_CreateHook((void*)FM2K::ADDR_LOAD_STAGE_FILE,
+                              (void*)Hook_LoadStageFile,
+                              (void**)&original_LoadStageFile) != MH_OK ||
+                MH_QueueEnableHook((void*)FM2K::ADDR_LOAD_STAGE_FILE) != MH_OK) {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                    "Hooks: Failed to hook LoadStageFile — random stage will "
+                    "not apply. Non-fatal: stage selection falls back to the "
+                    "game's own pick.");
+            } else {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Hooks: LoadStageFile hooked at 0x%08X (random-stage seam)",
+                    (unsigned)FM2K::ADDR_LOAD_STAGE_FILE);
+            }
+        }
+    }
+
+    // FM95: hook LoadStageFile_alt so vs-mode random-stage can rewrite arg0 at
+    // call time (FM95 has no g_selected_stage scalar to override).
     if constexpr (FM2K::kIsFM95) {
         if (FM2K::ADDR_LOAD_STAGE_FILE_ALT != 0) {
             if (MH_CreateHook((void*)FM2K::ADDR_LOAD_STAGE_FILE_ALT,

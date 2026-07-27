@@ -50,6 +50,9 @@ GAMES = {
     # FM95 engine (Comic Party Wars) -- the launcher sniffs the engine from
     # the exe and injects FM95Hook.dll. Full-width filename is the real one.
     "cpw":    Path("/mnt/c/dev/fm95/CPW/ＣＰＷ.exe"),
+    # Lives in the user's D: library. Useful for random-stage work: unlike
+    # wanwan (2 stages) it has a real stage table, so rolls are distinguishable.
+    "pkmncc": Path("/mnt/d/Games/fm2k/_NODEV/pkmncc/pkmncc.exe"),
 }
 GAME_EXE = GAMES["wanwan"]   # default; overridden by --game in main()
 OUT_DIR  = Path(os.environ.get("FM2K_TEST_OUT_DIR",

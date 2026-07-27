@@ -112,6 +112,26 @@ static bool BinderSlotHasBindings(int s) {
     return false;
 }
 
+// True when this slot binds PAUSE/START (primary or alt).
+//
+// BinderSlotHasBindings above is per-PLAYER, which is too coarse for pause: a
+// profile that binds directions + attacks but leaves START empty still claims
+// the whole slot, so Sample_Win32 returns 0x400 = 0 forever and control never
+// reaches original_get_player_input -- the ONLY reader of the game's own
+// configured pause key (vanilla get_player_input @0x414340 does
+// `if (g_key_state[g_key_config[17*player_id]] & 0x80) v |= 0x400`). The engine
+// pause edge (vs_round_function @0x4086A0: g_combined_input_changes & 0x400 ->
+// g_game_paused @0x4701BC) then never fires and the pause button is simply
+// dead. This is the residual half of the "P2 controls & pause dead in offline"
+// report -- the P2 half was fixed by the per-player fallback, pause needs
+// per-BIT granularity.
+static bool BinderSlotHasStartBinding(int s) {
+    const auto& sb = FM2KInputBinder::Bindings(s);
+    const size_t i = (size_t)FM2KInputBinder::Bit::START;
+    return sb.bits[i].source     != FM2KInputBinder::Binding::Source::NONE ||
+           sb.bits_alt[i].source != FM2KInputBinder::Binding::Source::NONE;
+}
+
 // Fold FM95 facing (g_p_facing_snap[25*idx]) into a RAW 11-bit input, then
 // mask START on CSS and apply SOCD. Shared by the binder-sample path and the
 // netplay synced-input path so both produce engine-relative bits the same way
@@ -884,6 +904,28 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
                 uint16_t left_bit  = (bound & 0x001);
                 uint16_t right_bit = (bound & 0x002);
                 bound = (bound & ~0x003) | (left_bit << 1) | (right_bit >> 1);
+            }
+            // PAUSE per-bit fallback (see BinderSlotHasStartBinding). An
+            // unbound START row would otherwise pin 0x400 low forever and kill
+            // the pause button; pull just that bit from the vanilla read, which
+            // is the only path that consults the game's own pause key.
+            //
+            // Cost is contained: this extra read only happens for slots that
+            // genuinely have no START binding, so the usual configuration pays
+            // nothing (the redundant-poll regression called out at the OPTION
+            // fallback below is exactly what we're avoiding here). Skipped on
+            // CSS, where 0x400 is meaningless and every other path strips it.
+            if (game_mode != 2000u && original_get_player_input &&
+                !BinderSlotHasStartBinding(slot)) {
+                const int vanilla = original_get_player_input(player_id, input_type);
+                bound |= (uint16_t)(vanilla & 0x400);
+                static bool s_logged_pause_fallback[2] = {false, false};
+                if (!s_logged_pause_fallback[slot & 1]) {
+                    s_logged_pause_fallback[slot & 1] = true;
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Input: slot %d has no START binding -- falling back to "
+                        "the game's own pause key so PAUSE still works", slot);
+                }
             }
             bound = Hook_ApplySOCD(bound);
             // Strip meta-bits (OPTION/FN1/FN2) before passing to engine so

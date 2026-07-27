@@ -621,6 +621,16 @@ constexpr uint64_t SPECTATOR_RECONNECT_BACKOFF_MS  = 2000;   // throttle JOIN_RE
 // failure). A genuinely-gone host is retried at most this often, so the
 // spectator stops storming it while it waits out the host-gone watchdog.
 constexpr uint64_t SPECTATOR_RECONNECT_MAX_BACKOFF_MS = 4000;
+// RC full-transport handshake watchdog (task #70). Once JOIN_ACK lands,
+// subscribed_upstream latches true and the reconnect loop shuts off; if the
+// host's one-shot OP_BASELINE+snapshot+backfill burst is then lost beyond RC's
+// 7s message retirement, nothing re-JOINs (silence-failover + op-gap need a TCP
+// recv stamp that's 0 in RC mode; gap-fill needs have_frame_baseline) and the
+// viewer sits subscribed-but-never-admitted until the 30s process-exit. Re-JOIN
+// after this long with no admit to force the host to reset bind state and
+// re-ship. > the 7s RC retirement (don't reset an in-flight transfer) and > the
+// host's 3s reset-suppression (so the re-JOIN actually re-ships).
+constexpr uint64_t SPECTATOR_NOADMIT_REJOIN_MS = 8000;
 // Surgical gap-fill (mid-match snapshot join under loss). When the
 // admission cursor stalls behind buffered future batches for this long,
 // pull the missing range over the reliable conn. Kept small so the gap

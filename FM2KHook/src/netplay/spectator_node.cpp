@@ -242,6 +242,7 @@ void SpectatorNode_Shutdown() {
     g_state.udp_dropped_on_gap     = 0;
     g_state.broadcasting = false;
     g_state.subscribed_upstream = false;
+    g_state.ever_subscribed     = false;   // task #70
     g_state.playing_back = false;
     g_state.pb_boundary         = State::PbBoundary::NONE;
     g_state.pending_reset_input = false;

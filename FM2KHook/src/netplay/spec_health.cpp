@@ -259,6 +259,17 @@ void SpectatorNode_TickHealth() {
     uint32_t recon_interval = recon_base << recon_shift;
     if (recon_interval > SPECTATOR_RECONNECT_MAX_BACKOFF_MS)
         recon_interval = (uint32_t)SPECTATOR_RECONNECT_MAX_BACKOFF_MS;
+    // task #70: once we've been subscribed but never admitted (the handshake
+    // burst was lost), the re-JOIN cadence must be SLOWER than RC's 7s message
+    // retirement -- the standard 2-4s reconnect backoff resets the host's bind
+    // state and RESTARTS the OP_BASELINE+snapshot+backfill burst before RC can
+    // finish retransmitting it, so the two fight and nothing ever completes.
+    // Give each re-ship a full retransmit window. (Pre-subscribe retries stay
+    // fast to establish the connection quickly.)
+    if (g_state.ever_subscribed && !SpectatorNode_HasEverAdmitted() &&
+        recon_interval < SPECTATOR_NOADMIT_REJOIN_MS) {
+        recon_interval = (uint32_t)SPECTATOR_NOADMIT_REJOIN_MS;
+    }
     if (!g_state.session_ended &&            // host said SESSION_END: stop, no storm
         (!g_state.subscribed_upstream || g_state.tcp_rejoin_pending) &&
         g_state.root_addr.sin_port != 0 &&
@@ -278,6 +289,35 @@ void SpectatorNode_TickHealth() {
                     g_state.reconnect_fail_count + 1, recon_interval);
         g_state.last_reconnect_attempt_ms = now;
         ++g_state.reconnect_fail_count;
+        SpectatorNode_RequestJoin(g_state.root_addr, g_state.last_requested_mode);
+    }
+
+    // RC full-transport handshake watchdog (task #70): subscribed but NEVER
+    // admitted. The reconnect gate above is off (subscribed_upstream latched at
+    // JOIN_ACK), but if the host's one-shot OP_BASELINE+snapshot+backfill burst
+    // was lost beyond RC's 7s retirement, no other path re-JOINs in RC full-
+    // transport mode -- the silence-failover + op-gap detectors need a TCP recv
+    // stamp that's 0 here, and gap-fill needs have_frame_baseline (not yet set).
+    // Without this the viewer sat subscribed-but-never-admitted (total=0,
+    // spec_max_frame=0) until the 30s process-exit under heavy loss. Re-JOIN so
+    // the host resets bind state (spec_join.cpp:338) and re-ships the burst.
+    // Reuses last_reconnect_attempt_ms (the first JOIN runs through the loop
+    // above, so it is stamped); the >=8s interval clears both the 7s RC
+    // retirement and the host's 3s reset-suppression.
+    if (!g_state.session_ended &&
+        g_state.subscribed_upstream &&
+        !SpectatorNode_HasEverAdmitted() &&
+        g_state.root_addr.sin_port != 0 &&
+        !SpectatorTCP::IsUpstreamConnected() &&
+        now - g_state.last_reconnect_attempt_ms >= SPECTATOR_NOADMIT_REJOIN_MS)
+    {
+        char buf[48] = {}; FormatAddr(g_state.root_addr, buf, sizeof(buf));
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "SpectatorNode: subscribed but no frame admitted in %llums "
+                    "(RC handshake burst lost under loss) -- re-JOIN %s to force "
+                    "the host to re-ship OP_BASELINE+snapshot+backfill",
+                    (unsigned long long)SPECTATOR_NOADMIT_REJOIN_MS, buf);
+        g_state.last_reconnect_attempt_ms = now;
         SpectatorNode_RequestJoin(g_state.root_addr, g_state.last_requested_mode);
     }
 

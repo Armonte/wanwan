@@ -253,6 +253,13 @@ struct State {
 
     // Viewer-side state (this node subscribed upstream).
     bool                      subscribed_upstream = false;
+    // Latched true the first time subscribed_upstream is set (JOIN_ACK landed).
+    // Stays true even after the no-admit watchdog re-JOINs (which clears
+    // subscribed_upstream). Lets the reconnect loop tell "never connected yet"
+    // (fast retry to establish) from "was subscribed but the handshake burst
+    // was lost" (slow retry so each re-ship gets a full RC retransmit window
+    // before the next re-JOIN restarts it). Reset at teardown. (task #70)
+    bool                      ever_subscribed = false;
     // Pre-subscribe RC stash (task #55): the host binds + streams the
     // backfill the instant it accepts a JOIN_REQ, so RC-delivered spec
     // data can beat our own JOIN_ACK processing by up to ~1s. The

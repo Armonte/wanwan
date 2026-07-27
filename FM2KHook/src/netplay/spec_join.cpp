@@ -702,6 +702,7 @@ void SpectatorNode_HandleJoinAck(const sockaddr_in& from, uint8_t host_session_k
     g_state.join_req_pending      = false;
     g_state.upstream_addr         = from;
     g_state.subscribed_upstream   = true;
+    g_state.ever_subscribed       = true;   // task #70: latch for the reconnect cadence
 
     // Phase F: a fresh UDP admission epoch starts ONLY when a new TCP
     // connection (whose OP_BASELINE re-arms it exactly) is coming --

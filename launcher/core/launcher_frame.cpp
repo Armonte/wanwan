@@ -112,7 +112,14 @@ void FM2KLauncher::Update(float delta_time SDL_UNUSED) {
     }
 
     // DLL handles GekkoNet directly - no launcher-side session needed
-    
+
+    // Hub event drain + match-outcome reporting. MUST run here rather than in
+    // the render path: Render() is skipped entirely while minimized/hidden, so
+    // hosting a set with the launcher minimized used to silently report ZERO
+    // matches and leave the in-game HUD showing "P1"/"P2". ImGui-free by
+    // construction (see LauncherUI::TickAlways).
+    if (ui_) ui_->TickAlways();
+
     // Process DLL events from the game instance
     if (game_instance_ && game_instance_->IsRunning()) {
         game_instance_->ProcessDLLEvents();

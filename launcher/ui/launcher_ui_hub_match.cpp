@@ -371,6 +371,31 @@ void LauncherUI::PollUploadQueue() {
     }).detach();
 }
 
+// Visibility-INDEPENDENT tick, driven from FM2KLauncher::Update().
+//
+// These two used to live in the render path -- PollMatchOutcome() at the top of
+// LauncherUI::Render(), the hub event drain inside RenderHubPanel(). Both are
+// skipped when the launcher is minimized or hidden (FM2K_RollbackClient.cpp:
+// `if (minimized || hidden) { should_render = false; }`), and the panel drain
+// additionally needs "Hub" to be the active dock tab. So playing a whole set
+// with the launcher minimized meant: no match_result ever built or sent, no
+// results.csv row, nothing queued for replay, AND PushStatsToHook() never ran
+// -- which leaves the shared-mem nicks empty, so the in-game HUD falls back to
+// literal "P1"/"P2". That single condition produces both halves of the user
+// reports (a set recorded as ZERO matches, with a player shown as "P1"), and
+// minimizing partway through explains the partial 15-5 -> 12-5 case.
+//
+// Neither function touches ImGui, which is what makes this safe to call from
+// the non-painting tick. Ordering is preserved: Update() runs before Render()
+// in the same loop iteration, so the panel still paints freshly-drained state.
+void LauncherUI::TickAlways() {
+    if (hub_state_) {
+        auto& hs = *hub_state_;
+        hs.client.Poll([this](const fm2k::HubEvent& ev) { HandleHubEvent(ev); });
+    }
+    PollMatchOutcome();
+}
+
 void LauncherUI::PollMatchOutcome() {
     if (!hub_state_) return;
     auto& hs = *hub_state_;

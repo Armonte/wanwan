@@ -380,11 +380,9 @@ void LauncherUI::Render() {
         }
     }
 
-    // Drain any new outcome the hook published into a hub match_result.
-    // Lives at the top of Render so it fires regardless of whether the
-    // user has the Hub panel docked-visible. Idempotent — second call
-    // for the same seq is a no-op.
-    PollMatchOutcome();
+    // NOTE: PollMatchOutcome() used to live here. It now runs in
+    // TickAlways() from FM2KLauncher::Update(), because Render() itself is
+    // skipped entirely while the launcher is minimized -- see TickAlways().
 
     // Drain at most one upload manifest per tick. Throttles network
     // bandwidth/UI hitches and lets transient failures get retried on

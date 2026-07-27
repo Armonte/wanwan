@@ -129,10 +129,11 @@ void LauncherUI::RenderHubPanel() {
         }
     }
 
-    // Drain hub events into local state once per frame.
-    // Drain hub events into local state once per frame (handler split
-    // into launcher_ui_hub_events.cpp).
-    hs.client.Poll([this](const fm2k::HubEvent& ev) { HandleHubEvent(ev); });
+    // NOTE: the hub event drain used to live HERE, inside the panel render.
+    // It now runs in LauncherUI::TickAlways(), driven from FM2KLauncher::
+    // Update(), because this whole function is skipped when the launcher is
+    // minimized (and when "Hub" isn't the active dock tab) -- which silently
+    // stopped match reporting for the entire session. See TickAlways().
 
     // ---- UI ----
     ImGui::SeparatorText(T("hub_section_header"));

@@ -492,6 +492,13 @@ private:
     int port_mapper_last_state_ = -1;
 
 public:
+    // Visibility-INDEPENDENT tick, driven from FM2KLauncher::Update(). Drains
+    // hub events and reports match outcomes. These must keep running while the
+    // launcher is minimized/hidden -- Render() is skipped entirely then, which
+    // used to silently drop every match_result for the session. Never touches
+    // ImGui, which is what makes it safe outside the paint path.
+    void TickAlways();
+
     // Tell the hub the current match (if any) has ended. Called by
     // FM2KLauncher::StopSession on both the user-initiated stop and
     // the game-process-died path. No-op when not in a hub-driven

@@ -863,7 +863,19 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
                 const int over = PerGamePatches_BattleInputOverride(
                     player_id, p1_bound_battle);
                 if (over >= 0) {
-                    bound = (uint16_t)over;
+                    // The solo-driver overrides exist to drive the CHARACTER
+                    // (directions + attacks) so AI scripts can take over. They
+                    // must NOT eat the human's system buttons. PAUSE (0x400) is
+                    // carried through from this slot's OWN sampled input:
+                    // BattleInputOverride returns 0 for BOTH players in
+                    // CPU-vs-CPU, so a plain replacement silently kills the
+                    // pause button for the person sitting there watching, with
+                    // no other symptom to explain it.
+                    //
+                    // This preserves a bit the user actually pressed on their
+                    // own binding -- it does not synthesize input from anywhere
+                    // outside our config.
+                    bound = (uint16_t)over | (uint16_t)(bound & 0x400u);
                 }
             }
             // Apply the same battle facing-fix the original_get_player_input

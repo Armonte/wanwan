@@ -4,33 +4,25 @@ project(FM2KFramestep)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Find SDL2
-find_package(SDL2 REQUIRED)
+# Standalone side tool -- NOT part of the main build (the root CMakeLists
+# only add_subdirectory(FM2KHook)). Configure this directory on its own
+# when you actually need the tool.
+#
+# This used to build framestep.cpp against SDL2 with MSVC-only link flags
+# (/SUBSYSTEM:CONSOLE) in a project that is SDL3 + mingw everywhere else,
+# so it had been unbuildable for a long time while the SDL3 port sat
+# uncompiled next to it. framestep_sdl3.cpp is now the one that builds;
+# the SDL2 original is recoverable from git history if ever needed.
+# framestep.rs is a separate Rust reference impl, not a build input.
 
-# Create the executable
-add_executable(framestep framestep.cpp)
+find_package(SDL3 REQUIRED)
 
-# Link SDL2
-target_link_libraries(framestep PRIVATE SDL2::SDL2 SDL2::SDL2main)
+add_executable(framestep framestep_sdl3.cpp)
 
-# Windows-specific settings
-if(WIN32)
-    # Enable console subsystem for printf output
-    set_target_properties(framestep PROPERTIES
-        LINK_FLAGS "/SUBSYSTEM:CONSOLE"
-    )
-    
-    # Copy SDL2 DLLs to output directory
-    add_custom_command(TARGET framestep POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        $<TARGET_FILE:SDL2::SDL2>
-        $<TARGET_FILE_DIR:framestep>
-    )
-endif()
+target_link_libraries(framestep PRIVATE SDL3::SDL3)
 
-# Compiler-specific settings
 if(MSVC)
     target_compile_options(framestep PRIVATE /W4)
 else()
     target_compile_options(framestep PRIVATE -Wall -Wextra -Wpedantic)
-endif() 
+endif()

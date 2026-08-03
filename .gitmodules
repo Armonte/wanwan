@@ -14,3 +14,6 @@
 [submodule "vendored/miniupnp"]
 	path = vendored/miniupnp
 	url = https://github.com/miniupnp/miniupnp
+[submodule "docs"]
+	path = docs
+	url = https://github.com/Armonte/wanwan-docs.git

@@ -41,6 +41,7 @@ set(FM2KHOOK_SOURCES
     src/hooks/hooks_update.cpp     # Hook_UpdateGameState (split from hooks.cpp)
     src/hooks/hooks_render.cpp     # render path + sound/blit/sprite + diagnostics (split from hooks.cpp)
     src/hooks/hooks_vfs.cpp        # file-I/O + FPK VFS + fast-player-load + FM95 LoadStageFileAlt (split from hooks.cpp)
+    src/hooks/hooks_vfs_serve.cpp  # ReadFile/SetFilePointer/CloseHandle serve path + own installs (split from hooks_vfs)
     src/hooks/input.cpp
     src/hooks/game_patches.cpp
     src/hooks/round_events.cpp
@@ -55,6 +56,7 @@ set(FM2KHOOK_SOURCES
     src/hooks/render_simd.cpp
     # Netplay
     src/netplay/netplay.cpp
+    src/netplay/netplay_heartbeat.cpp  # [BEAT] diagnostic heartbeat (split from netplay.cpp)
     src/netplay/netplay_desync.cpp   # HandleDesyncDetected (split from netplay)
     src/netplay/netplay_chat.cpp     # chat ring (split from netplay)
     src/netplay/netplay_control.cpp  # HOST_CONFIG packets + OnControlMessage dispatch (split from netplay)
@@ -89,7 +91,8 @@ set(FM2KHOOK_SOURCES
     src/netplay/spec_host_events.cpp # host-side event recording + fingerprint (split from spectator_node)
     src/netplay/spec_join.cpp        # join/redirect protocol + GekkoSpectator dedup (split from spectator_node)
     src/netplay/spec_session_file.cpp # .fm2kset/.fm2krep write + load/seek (split from spectator_node)
-    src/netplay/spec_playback.cpp     # op-apply + delay bank + PopFrameInputs driver (split from spectator_node)
+    src/netplay/spec_playback.cpp     # op-apply + PopFrameInputs driver (split from spectator_node)
+    src/netplay/spec_playback_state.cpp # admission pacing + adaptive delay bank + state accessors (split from spec_playback)
     src/netplay/spectator_tcp.cpp
     src/netplay/nat_traversal.cpp
     src/netplay/game_hash.cpp
@@ -112,6 +115,7 @@ set(FM2KHOOK_SOURCES
     src/parity/parity_recorder.cpp
     # Locale spoofing for Japanese-only games (CPW etc.)
     src/locale/locale_spoof.cpp
+    src/locale/locale_spoof_dialog.cpp  # DialogBoxParamA template translation (split from locale_spoof)
     # FPK virtual-file reconstructor (portable C++, no windows.h). Inflates a
     # slim .fpk asset pack back into the exact original .player/.stage/.demo
     # byte stream for the file-VFS in hooks.cpp (FM2K_FPK_VFS gate). Depends on

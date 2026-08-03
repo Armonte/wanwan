@@ -562,3 +562,9 @@ void     SendSessionBackfillFromFrame(const sockaddr_in& to, uint32_t anchor_inp
 void     SendSnapshotTo(const sockaddr_in& to);
 
 }  // namespace specnode
+
+// ---- admission pacing (spec_playback_state.cpp) ----
+// Global scope, matching the SpectatorNode_* accessors it sits with.
+// Called by SpectatorNode_PopFrameInputs, which stayed in spec_playback.cpp,
+// so it cannot be file-static.
+size_t SpecDelayBankFrames();

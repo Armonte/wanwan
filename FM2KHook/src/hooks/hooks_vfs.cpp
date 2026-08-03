@@ -3,6 +3,7 @@
 // Split from hooks.cpp (functions + their MinHook install via InstallVfsHooks).
 #include "hooks.h"
 #include "hooks_internal.h"
+#include "hooks_vfs_internal.h"  // VFile registry shared with hooks_vfs_serve.cpp
 #include "round_events.h"     // C3.5 — vs_round_function detour install
 #include "css_autoconfirm.h"  // CSS lock-and-confirm for offline replay playback
 #include "css_fastsound.h"    // FM2K_FPK_CSS_FASTSOUND: lazy DSound buffers (CSS dip fix)
@@ -324,13 +325,7 @@ static HANDLE WINAPI Hook_CreateFileW(LPCWSTR name, DWORD access, DWORD share,
 
 namespace {
 
-struct VFile {
-    // Shared so the path-keyed .fpk cache (g_fpk_cache) and the active handle
-    // reference ONE allocation -- a cache hit costs a pointer copy, not a
-    // 100MB memcpy, which matters in the game's 32-bit address space.
-    std::shared_ptr<std::vector<uint8_t>> buf;
-    size_t offset = 0;
-};
+// VFile now lives in hooks_vfs_internal.h (shared with the serve TU).
 
 // Toggle initialized at hook install time from FM2K_FAST_PLAYER_LOAD env var.
 bool g_fast_player_load = false;
@@ -343,7 +338,12 @@ bool g_fast_player_load = false;
 bool g_fpk_vfs = false;
 
 // Either gate activates the VFile machinery (register + serve from RAM).
-inline bool VfsActive() { return g_fast_player_load || g_fpk_vfs; }
+}  // anon
+
+// External linkage: the serve hooks in hooks_vfs_serve.cpp gate on this.
+bool VfsActive() { return g_fast_player_load || g_fpk_vfs; }
+
+namespace {
 
 // Ceiling for an inflated .fpk / slurped asset held in RAM. Inflated originals
 // reach ~240MB (BOSS_Miriann.player); cap generously but bound the single 32-bit
@@ -351,11 +351,17 @@ inline bool VfsActive() { return g_fast_player_load || g_fpk_vfs; }
 // 64MB .player-only slurp cap was too small for .stage/.demo + inflated content.
 constexpr long long kVfsMaxBytes = 768LL * 1024 * 1024;
 
+}  // anon -- the registry below needs EXTERNAL linkage (serve TU reads it)
+
 // Map of OS handle → buffered .player content. Real Windows handles are
 // returned to the game (no synthetic-handle plumbing) so any other API
 // the game might call on the handle (GetFileSize, etc.) still works.
-std::mutex                                          g_vfile_mtx;
-std::unordered_map<HANDLE, std::unique_ptr<VFile>>  g_vfiles;
+// Definitions live here; declarations are in hooks_vfs_internal.h so
+// hooks_vfs_serve.cpp can serve reads out of the same registry.
+std::mutex g_vfile_mtx;
+std::unordered_map<HANDLE, std::unique_ptr<VFile>> g_vfiles;
+
+namespace {
 
 // Path-keyed LRU cache of inflated .fpk results. player_data_file_loader
 // (@0x4039F0) re-opens each asset per load event, and CSS auto-browse re-opens
@@ -706,106 +712,6 @@ void MaybeRegisterPlayerVFile(HANDLE h, LPCWSTR name) {
     ::WideCharToMultiByte(CP_ACP, 0, name, -1, ansi, sizeof(ansi), nullptr, nullptr);
     MaybeRegisterPlayerVFileA(h, ansi[0] ? ansi : "<wide>");
 }
-
-// ─── ReadFile / SetFilePointer / CloseHandle hooks ──────────────────────
-// All four hot-path handle APIs get a fast lookup. Non-VFile handles fall
-// through to the original via a single map.find() — typically ~30 ns,
-// invisible against the work the game is doing on the same call.
-
-using ReadFile_t          = BOOL (WINAPI*)(HANDLE, LPVOID, DWORD, LPDWORD, LPOVERLAPPED);
-using SetFilePointer_t    = DWORD(WINAPI*)(HANDLE, LONG, PLONG, DWORD);
-using SetFilePointerEx_t  = BOOL (WINAPI*)(HANDLE, LARGE_INTEGER, PLARGE_INTEGER, DWORD);
-using CloseHandle_t       = BOOL (WINAPI*)(HANDLE);
-
-static ReadFile_t          original_ReadFile         = nullptr;
-static SetFilePointer_t    original_SetFilePointer   = nullptr;
-static SetFilePointerEx_t  original_SetFilePointerEx = nullptr;
-static CloseHandle_t       original_CloseHandle      = nullptr;
-
-static BOOL WINAPI Hook_ReadFile(HANDLE h, LPVOID buf, DWORD n,
-                                 LPDWORD got, LPOVERLAPPED ov) {
-    if (VfsActive()) {
-        std::lock_guard<std::mutex> lk(g_vfile_mtx);
-        auto it = g_vfiles.find(h);
-        if (it != g_vfiles.end()) {
-            VFile& vf = *it->second;
-            DWORD remaining = (vf.offset >= vf.buf->size())
-                              ? 0u
-                              : (DWORD)(vf.buf->size() - vf.offset);
-            DWORD avail = (n < remaining) ? n : remaining;
-            if (avail && buf) {
-                std::memcpy(buf, vf.buf->data() + vf.offset, avail);
-                vf.offset += avail;
-            }
-            if (got) *got = avail;
-            return TRUE;
-        }
-    }
-    return original_ReadFile(h, buf, n, got, ov);
-}
-
-static DWORD WINAPI Hook_SetFilePointer(HANDLE h, LONG dist, PLONG hi,
-                                        DWORD method) {
-    if (VfsActive()) {
-        std::lock_guard<std::mutex> lk(g_vfile_mtx);
-        auto it = g_vfiles.find(h);
-        if (it != g_vfiles.end()) {
-            VFile& vf = *it->second;
-            int64_t dist64 = dist;
-            if (hi) {
-                dist64 = (int64_t)((uint64_t)(uint32_t)dist
-                                  | ((uint64_t)(uint32_t)*hi << 32));
-            }
-            int64_t newpos;
-            switch (method) {
-                case FILE_BEGIN:   newpos = dist64; break;
-                case FILE_CURRENT: newpos = (int64_t)vf.offset + dist64; break;
-                case FILE_END:     newpos = (int64_t)vf.buf->size() + dist64; break;
-                default:           return INVALID_SET_FILE_POINTER;
-            }
-            if (newpos < 0) newpos = 0;
-            if ((uint64_t)newpos > vf.buf->size()) newpos = vf.buf->size();
-            vf.offset = (size_t)newpos;
-            if (hi) *hi = (LONG)((uint64_t)newpos >> 32);
-            return (DWORD)((uint64_t)newpos & 0xFFFFFFFFu);
-        }
-    }
-    return original_SetFilePointer(h, dist, hi, method);
-}
-
-static BOOL WINAPI Hook_SetFilePointerEx(HANDLE h, LARGE_INTEGER dist,
-                                         PLARGE_INTEGER newpos_out,
-                                         DWORD method) {
-    if (VfsActive()) {
-        std::lock_guard<std::mutex> lk(g_vfile_mtx);
-        auto it = g_vfiles.find(h);
-        if (it != g_vfiles.end()) {
-            VFile& vf = *it->second;
-            int64_t newpos;
-            switch (method) {
-                case FILE_BEGIN:   newpos = dist.QuadPart; break;
-                case FILE_CURRENT: newpos = (int64_t)vf.offset + dist.QuadPart; break;
-                case FILE_END:     newpos = (int64_t)vf.buf->size() + dist.QuadPart; break;
-                default:           return FALSE;
-            }
-            if (newpos < 0) newpos = 0;
-            if ((uint64_t)newpos > vf.buf->size()) newpos = vf.buf->size();
-            vf.offset = (size_t)newpos;
-            if (newpos_out) newpos_out->QuadPart = newpos;
-            return TRUE;
-        }
-    }
-    return original_SetFilePointerEx(h, dist, newpos_out, method);
-}
-
-static BOOL WINAPI Hook_CloseHandle(HANDLE h) {
-    if (VfsActive()) {
-        std::lock_guard<std::mutex> lk(g_vfile_mtx);
-        g_vfiles.erase(h);  // no-op if not a VFile handle
-    }
-    return original_CloseHandle(h);
-}
-
 bool InstallVfsHooks() {
     // FM2K: hook LoadStageFile so the random-stage roll is applied at the
     // moment the game reads g_selected_stage, not after. See the comment on
@@ -968,43 +874,10 @@ bool InstallVfsHooks() {
         if (::QueryPerformanceFrequency(&freq) && freq.QuadPart > 0) {
             g_qpc_freq = freq.QuadPart;
         }
-        void* real_ReadFile         = (void*)GetProcAddress(kernel32, "ReadFile");
-        void* real_SetFilePointer   = (void*)GetProcAddress(kernel32, "SetFilePointer");
-        void* real_SetFilePointerEx = (void*)GetProcAddress(kernel32, "SetFilePointerEx");
-        void* real_CloseHandle      = (void*)GetProcAddress(kernel32, "CloseHandle");
-
-        if (real_ReadFile) {
-            if (MH_CreateHook(real_ReadFile, (void*)Hook_ReadFile,
-                              (void**)&original_ReadFile) != MH_OK ||
-                MH_QueueEnableHook(real_ReadFile) != MH_OK) {
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                            "Hooks: Failed to hook ReadFile");
-            }
-        }
-        if (real_SetFilePointer) {
-            if (MH_CreateHook(real_SetFilePointer, (void*)Hook_SetFilePointer,
-                              (void**)&original_SetFilePointer) != MH_OK ||
-                MH_QueueEnableHook(real_SetFilePointer) != MH_OK) {
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                            "Hooks: Failed to hook SetFilePointer");
-            }
-        }
-        if (real_SetFilePointerEx) {
-            if (MH_CreateHook(real_SetFilePointerEx, (void*)Hook_SetFilePointerEx,
-                              (void**)&original_SetFilePointerEx) != MH_OK ||
-                MH_QueueEnableHook(real_SetFilePointerEx) != MH_OK) {
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                            "Hooks: Failed to hook SetFilePointerEx");
-            }
-        }
-        if (real_CloseHandle) {
-            if (MH_CreateHook(real_CloseHandle, (void*)Hook_CloseHandle,
-                              (void**)&original_CloseHandle) != MH_OK ||
-                MH_QueueEnableHook(real_CloseHandle) != MH_OK) {
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                            "Hooks: Failed to hook CloseHandle");
-            }
-        }
+        // Serve path (ReadFile/SetFilePointer/CloseHandle) installs
+        // itself -- see hooks_vfs_serve.cpp. MH_ApplyQueued makes the
+        // ordering between clusters irrelevant.
+        InstallVfsServeHooks(kernel32);
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "Hooks: FM2K_FAST_PLAYER_LOAD=%s FM2K_FPK_VFS=%s "
                     "(ReadFile/SetFP/CloseHandle hooked)",

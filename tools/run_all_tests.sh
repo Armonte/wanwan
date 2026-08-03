@@ -71,6 +71,14 @@ stage() {  # stage <name> <logfile> -- runs $CMD, verdict by EXIT CODE
 
 echo "[run_all] FRAMES=$FRAMES LOSS=$LOSS SPEC_RUNS=$SPEC_RUNS CHECK_DISTANCE=$CD FULL=$FULL"
 
+# Stage 0 — host-native unit tests (doctest suite + delay math + reliable
+# channel). Cheap and toolchain-free, so it runs FIRST: if the wire format or
+# queue mechanics are broken there is no point spending minutes on the
+# determinism and netplay stages. Until 2026-08 this gate did not run the unit
+# suite at all, so "run_all_tests ALL GREEN" silently excluded it.
+CMD="bash '$ROOT/tests/run.sh'"
+stage "unit" "$OUT/0_unit.log"
+
 # Stage 1 — determinism (uses the gate's own exit code).
 CMD="FRAMES=$FRAMES FM2K_CHECK_DISTANCE=$CD bash '$ROOT/tools/ci_determinism_gate.sh'"
 stage "determinism" "$OUT/1_determinism.log"

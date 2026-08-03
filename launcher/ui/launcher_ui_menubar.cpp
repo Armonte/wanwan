@@ -232,6 +232,11 @@ void LauncherUI::RenderMenuBar() {
         char update_pill[80] = {};
         bool show_update_pill = false;
         ImVec4 update_col{};
+        // Pill text is translated, but the two-space visual padding stays
+        // HERE rather than in the string table: LoadIni trims leading and
+        // trailing whitespace off every value, so padding baked into the
+        // .ini would be silently eaten. Translate the body, pad in code.
+        char pill_body[64] = {};
         switch (upd.state) {
             case fm2k::updater::State::UpdateAvailable:
                 // Downgrade case (local > remote): user just flipped to
@@ -239,41 +244,44 @@ void LauncherUI::RenderMenuBar() {
                 // build. Wording shifts from "Update" to "Switch" so
                 // they know they're going backwards intentionally.
                 if (fm2k::updater::IsRemoteOlderThanLocal()) {
-                    std::snprintf(update_pill, sizeof(update_pill),
-                                  "  Switch %s -> %s  ",
+                    std::snprintf(pill_body, sizeof(pill_body),
+                                  T("update_pill_switch"),
                                   fm2k::kAppVersion, upd.remote_version.c_str());
                     update_col      = ImVec4(0.95f, 0.70f, 0.40f, 1.0f);
                 } else {
-                    std::snprintf(update_pill, sizeof(update_pill),
-                                  "  Update %s -> %s  ",
+                    std::snprintf(pill_body, sizeof(pill_body),
+                                  T("update_pill_update"),
                                   fm2k::kAppVersion, upd.remote_version.c_str());
                     update_col      = ImVec4(0.40f, 0.65f, 0.95f, 1.0f);
                 }
+                std::snprintf(update_pill, sizeof(update_pill), "  %s  ", pill_body);
                 show_update_pill = true;
                 break;
             case fm2k::updater::State::Downloading: {
                 int pct = (upd.total_bytes > 0)
                     ? (int)(((uint64_t)upd.downloaded_bytes * 100) / upd.total_bytes)
                     : 0;
-                std::snprintf(update_pill, sizeof(update_pill),
-                              "  Downloading %d%%  ", pct);
+                std::snprintf(pill_body, sizeof(pill_body),
+                              T("update_pill_downloading"), pct);
+                std::snprintf(update_pill, sizeof(update_pill), "  %s  ", pill_body);
                 update_col      = ImVec4(0.40f, 0.65f, 0.95f, 1.0f);
                 show_update_pill = true;
                 break;
             }
             case fm2k::updater::State::Ready:
-                std::snprintf(update_pill, sizeof(update_pill),
-                              "  Apply %s — Restart  ", upd.remote_version.c_str());
+                std::snprintf(pill_body, sizeof(pill_body),
+                              T("update_pill_apply"), upd.remote_version.c_str());
+                std::snprintf(update_pill, sizeof(update_pill), "  %s  ", pill_body);
                 update_col      = ImVec4(0.40f, 0.85f, 0.50f, 1.0f);
                 show_update_pill = true;
                 break;
             case fm2k::updater::State::Failed:
-                // Surface the failure quietly — clickable so the user
+                // Surface the failure quietly -- clickable so the user
                 // can re-trigger via the menu, but not blinking. Most
                 // common failure is "fm2ktest repo doesn't exist yet";
                 // logging will say so too.
                 std::snprintf(update_pill, sizeof(update_pill),
-                              "  Update check failed  ");
+                              "  %s  ", T("update_pill_failed"));
                 update_col      = ImVec4(0.95f, 0.40f, 0.40f, 0.85f);
                 show_update_pill = true;
                 break;
@@ -382,23 +390,23 @@ void LauncherUI::RenderMenuBar() {
             // hovering reveals the diagnostic.
             if (ImGui::IsItemHovered()) {
                 if (upd.state == fm2k::updater::State::Failed) {
-                    ImGui::SetTooltip("%s\nClick to retry.",
+                    ImGui::SetTooltip(T("update_retry"),
                         upd.error_detail.empty()
-                            ? "Update check failed."
+                            ? T("update_check_failed")
                             : upd.error_detail.c_str());
                 } else if (upd.state == fm2k::updater::State::UpdateAvailable) {
-                    ImGui::SetTooltip("Click to download v%s.",
+                    ImGui::SetTooltip(T("update_available_click_to_download"),
                         upd.remote_version.c_str());
                 } else if (upd.state == fm2k::updater::State::Ready) {
-                    ImGui::SetTooltip("Click to apply v%s — launcher will restart.",
+                    ImGui::SetTooltip(T("update_available_click_to_apply"),
                         upd.remote_version.c_str());
                 } else if (upd.state == fm2k::updater::State::Downloading) {
                     if (upd.total_bytes > 0) {
-                        ImGui::SetTooltip("Downloading %u / %u bytes.",
+                        ImGui::SetTooltip(T("update_downloading_progress"),
                             (unsigned)upd.downloaded_bytes,
                             (unsigned)upd.total_bytes);
                     } else {
-                        ImGui::SetTooltip("Downloading %u bytes.",
+                        ImGui::SetTooltip(T("update_downloading"),
                             (unsigned)upd.downloaded_bytes);
                     }
                 }

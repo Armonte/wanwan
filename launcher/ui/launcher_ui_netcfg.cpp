@@ -119,7 +119,7 @@ void LauncherUI::RenderNetworkConfig() {
             // JOIN: Single paste field for ip:port
             static char paste_buf[128] = "";
             ImGui::SetNextItemWidth(200);
-            if (ImGui::InputTextWithHint("##join_addr", "Paste host ip:port here", paste_buf, sizeof(paste_buf))) {
+            if (ImGui::InputTextWithHint("##join_addr", T("label_paste_host_addr"), paste_buf, sizeof(paste_buf))) {
                 network_config_.remote_address = paste_buf;
             }
             ImGui::SameLine();

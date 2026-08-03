@@ -56,7 +56,25 @@ bool LoadIni(const char* path, StringMap& out) {
         }
         while (*val == ' ' || *val == '\t') ++val;
         if (klen == 0) continue;
-        out[std::string(key)] = std::string(val);
+        // Unescape the few C-style escapes the string table is allowed to
+        // use. Values are single-line in the .ini, so a multi-line string
+        // (e.g. update_retry = "%s\nClick to retry.") can only be spelled
+        // as a literal backslash-n and has to be decoded here -- otherwise
+        // the UI renders the backslash. Anything not in this set is passed
+        // through verbatim, backslash included, so an unknown escape can
+        // never silently eat a character.
+        std::string decoded;
+        decoded.reserve(std::strlen(val));
+        for (const char* c = val; *c; ++c) {
+            if (*c != '\\' || c[1] == '\0') { decoded.push_back(*c); continue; }
+            switch (c[1]) {
+                case 'n':  decoded.push_back('\n'); ++c; break;
+                case 't':  decoded.push_back('\t'); ++c; break;
+                case '\\': decoded.push_back('\\'); ++c; break;
+                default:   decoded.push_back(*c);         break;
+            }
+        }
+        out[std::string(key)] = decoded;
         ++n;
     }
     std::fclose(f);

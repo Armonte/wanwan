@@ -1,6 +1,23 @@
 #pragma once
 
 // ============================================================================
+// STATUS: REFERENCE SPEC, NOT A BUILD INPUT.
+//
+// Nothing #includes this file. That is deliberate, not rot -- the addresses
+// below were transcribed by hand into FM2KHook/src/core/globals.h, which is
+// what the hook actually compiles against, and seven comments across the tree
+// (globals.h:81, savestate.h:17, FM2KHook/CMakeLists.txt:22, FM2K_KgtParser
+// .cpp, FM2K_Integration.h:274, ...) cite this file as the source of truth for
+// FM95/CPW addresses.
+//
+// The hazard that creates: this file and globals.h can drift apart silently,
+// since no compiler checks the transcription. If you change an address here,
+// grep globals.h for the FM95 block and change it there too -- and vice versa.
+// See docs/FM95_Support_Status.md, which tracks address drift as a known gap.
+// (Flagged by the 2026-08-03 dead-code audit; kept on purpose.)
+// ============================================================================
+
+// ============================================================================
 // FM95 Integration Header — Comic Party Wars (CPW.exe), the FM95 prototype
 // of FM2K. Address-only translation of FM2K_Integration.h; the launcher /
 // UI / networking layer is binary-agnostic and reused as-is.

@@ -1,7 +1,9 @@
 # Releasing FM2K — release_runbook.md (bleeding / dev / stable)
 
-Authoritative runbook. Lives next to the scripts, tracked in-repo. (The old
-`docs/dev/release_checklist.md` is stale — `main`/`dev`/`0.1.X` — ignore it.)
+Authoritative runbook. Lives next to the scripts, tracked in-repo. The private
+machine-local notes (checkout paths, ssh aliases) are in the gitignored
+`RELEASING.md` at the repo root -- that file defers to this one for procedure,
+so if the two ever disagree again, this one wins.
 
 ## Version is single-sourced
 
@@ -15,7 +17,9 @@ from `FM2K_VERSION`**, so:
 
 > ⚠️ **Bump `FM2K_VERSION` before every cut.** `cut_release.sh` will try to
 > create `v<version>[-bleeding]`; if that tag already exists the cut fails.
-> (This is the #1 footgun — the last bleeding tag was `v0.2.78-bleeding`.)
+> This is the #1 footgun. Check what you're bumping FROM with
+> `git tag --sort=-creatordate | head -3` rather than trusting a number
+> written down here -- a hardcoded "last tag was X" goes stale immediately.
 
 ## Pre-cut gate — must be GREEN
 
@@ -29,10 +33,10 @@ game, play a match, confirm nothing visibly broke.**
 ## Cut
 
 ```bash
-# 1. bump the version
-sed -i 's/FM2K_VERSION="0.2.78"/FM2K_VERSION="0.2.79"/' scripts/make_version.sh
+# 1. bump the version (substitute the real from/to -- see the tag check above)
+sed -i 's/FM2K_VERSION="<old>"/FM2K_VERSION="<new>"/' scripts/make_version.sh
 # 2. commit (cut_release refuses a DIRTY tree — no phantom builds)
-git commit -am "release: v0.2.79"
+git commit -am "release: v<new>"
 # 3. ensure the upload secret is baked (else crash/desync auto-upload ships OFF):
 #    FM2K_LOG_UPLOAD_SECRET must be set — put it in ~/.config/fm2k-release.env
 # 4. cut (builds via go.sh, packages, creates the GitHub release)
@@ -56,6 +60,17 @@ updater watches), NOT this source repo. Auto-update triggers when its
 ## Channels
 - `--bleeding` → `vX.Y.Z-bleeding`, opt-in testers.
 - `--dev` / (default `stable`) → `vX.Y.Z`; stable needs `FM2KTEST_REPO_DIR` set.
+
+Promoting a soaked dev tag to stable (no rebuild):
+
+```bash
+scripts/promote_release.sh 0.2.83      # BARE version -- NO leading "v"
+```
+
+> ⚠️ The script adds the `v` itself (`gh release edit "v${VERSION}"`) and writes
+> the **bare** version into `LatestVersion`. Passing `v0.2.83` therefore looks
+> for tag `vv0.2.83` and would write `v0.2.83` into the file the stable
+> auto-updater version-compares against. Bare version only.
 
 ## Gotchas checklist
 - [ ] `FM2K_VERSION` bumped (tag doesn't already exist)

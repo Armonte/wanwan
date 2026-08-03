@@ -14,13 +14,16 @@ need wsl2 or linux with the i686 mingw toolchain:
 
 then:
 
-    git clone --recursive https://github.com/Armonte/wanwan.git
+    git clone https://github.com/Armonte/wanwan.git
     cd wanwan
-    ./make_build.sh    # inits submodules + runs cmake
+    ./make_build.sh    # inits the submodules it needs + runs cmake
     ./build.sh         # compiles, stripped binaries land in dist/
 
-forgot --recursive? make_build.sh self-heals it. gekkonet and the one kgt parity
-header are vendored in-tree as plain files so they need no submodule step.
+no --recursive needed: make_build.sh initializes exactly the submodules the
+build uses. (--recursive also works, but it will try the private docs/
+submodule and print an auth error you can ignore -- the build does not touch
+it.) gekkonet and the one kgt parity header are vendored in-tree as plain
+files so they need no submodule step.
 SDL, SDL_image, imgui, minhook and miniupnp are submodules make_build.sh pulls
 for you (and only the jpeg/png/tiff image codecs, not the big unused
 avif/jxl/webp ones).
@@ -33,7 +36,10 @@ symbolication. build/ is incremental, don't nuke it between builds.
 
 drop the launcher + both hook dlls in a folder, point it at your fm2k games, go.
 both dlls ship together so it picks the right one per engine (fm2k vs fm95/cpw).
-deeper notes in docs/.
+
+the docs/ directory is a private submodule (reverse-engineering notes and
+internal design docs), so it stays empty on a public clone and the build never
+needs it.
 
 ## deploy (maintainer only)
 
@@ -48,5 +54,4 @@ the PolyForm Noncommercial License 1.0.0 with a revocation addendum -- see
 [LICENSE](LICENSE). short version: personal/noncommercial use, modification and
 noncommercial redistribution are fine; commercial use needs a separate license;
 the grant is revocable. bundled third-party components keep their own (permissive)
-licenses -- see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). the native
-frontend uses Slint under its royalty-free license.
+licenses -- see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

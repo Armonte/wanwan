@@ -29,9 +29,15 @@ copyleft obligations on this project's own code.
 | Opus | audio codec | BSD-3-Clause | `vendored/opus-i686/` |
 | libpng / zlib / libjpeg / libtiff | image codecs inside SDL_image | libpng / zlib / IJG / libtiff (all permissive) | `vendored/SDL_image/external/` |
 
-## Slint (native frontend)
+## Slint (planned native frontend -- NOT YET SHIPPED)
 
-The native frontend is built with [Slint](https://slint.dev), used under the
+> Status: the UI currently ships on Dear ImGui (listed above). There is no
+> Slint code in the tree yet. This section is kept so the terms are already
+> settled when the frontend lands; **drop the "planned" wording the moment a
+> build actually links Slint**, and do not treat it as a current dependency
+> before then.
+
+When it ships, the native frontend will use [Slint](https://slint.dev) under the
 **Slint Royalty-free Desktop, Mobile, and Web Applications License** (granted to
 Armonte Williams). Slint's own copyright and license notices are retained in its
 source. Attribution is provided per that license; see the project's download

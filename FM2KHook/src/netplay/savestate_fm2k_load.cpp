@@ -3,7 +3,7 @@
 #include "savestate.h"
 #include "savestate_internal.h"
 #include "globals.h"
-#include "../hooks/hooks.h"   // RoundEvents_LiveSubstate / Fm2k_ClearAfterimageIndices (task #53)
+#include "../hooks/hooks.h"   // IsBattleMode + RoundEvents_LiveSubstate / Fm2k_ClearAfterimageIndices (task #53) / Fm2k_{Neutralize,Check}... (match-end seam)
 #include <SDL3/SDL_log.h>
 #include <cstring>
 #include <cstdio>
@@ -23,6 +23,25 @@ bool SaveState_Load(int frame) {
     // trails are invisible during results/fade so there is no visual cost.
     const int live_substate_pre = RoundEvents_LiveSubstate();
 
+    // ...except that guard is INERT at the seam it was written for.
+    // RoundEvents_LiveSubstate() reads +0x152 off whatever object is currently
+    // g_object_data_ptr. That is the round object only when called from inside
+    // Hook_vs_round_function; called from SaveState_Load (outside the object
+    // loop) it reads the LAST-walked object, and once the match-complete branch
+    // has spawned the type-10 CSS driver that is game_state_manager's own state
+    // field, whose values are 0/1/4. So `>= 900` is false for exactly the
+    // restores that cross the teardown.
+    //
+    // Live game_mode is the reliable seam test: the engine leaves [3000,4000)
+    // at game_state_manager STATE 0 (0x407247) and only afterwards calls
+    // player_data_file_loader -> ClearCharacterSlot, so "mode has left battle"
+    // strictly precedes the GlobalFree of the character blobs. Captured BEFORE
+    // the restore because g_game_mode (0x470054) sits inside the restored
+    // ADDR_GAME_STATE region and the memcpy below rewinds it (that rewind is
+    // directly observable in a peer's log as [AUTOPLAY] mode= 2000 -> 3000 ->
+    // 2000 across a rollback burst).
+    const uint32_t live_game_mode_pre = *(uint32_t*)FM2K::ADDR_GAME_MODE;
+
     // Handle frame -1 as frame 0 (initial state before first frame)
     if (frame < 0) {
         frame = 0;
@@ -37,17 +56,37 @@ bool SaveState_Load(int frame) {
         return false;
     }
 
+    // The battle->CSS teardown seam, as a property of THIS apply: a BATTLE
+    // snapshot is being written over a process that has already left battle.
+    // Both halves matter --
+    //   * the live half alone is far too broad. SaveState_Load is also reached
+    //     from the SPECTATOR paths (the spectate-session load handler in
+    //     netplay_battle_phase.cpp and SaveState_LoadFromBytes for a snapshot
+    //     join), and a spectator that joins during CSS sits at game_mode 2000
+    //     for its whole CSS phase. Neutralizing script objects there would
+    //     freeze the CSS's own type-4 objects. (Player CSS rollback is a
+    //     different code path entirely -- CssState_Load -- so it never gets
+    //     here.)
+    //   * the snapshot half alone says nothing: mid-battle rollbacks restore
+    //     battle snapshots constantly and are perfectly safe.
+    // g_game_mode (0x470054) lives inside the saved ADDR_GAME_STATE region
+    // (0x470020, 0x220 B), so the snapshot's own mode is available directly.
+    const uint32_t snap_game_mode =
+        *(const uint32_t*)(state->game_state + (FM2K::ADDR_GAME_MODE - ADDR_GAME_STATE));
+    const bool crossing_teardown =
+        IsBattleMode(snap_game_mode) && !IsBattleMode(live_game_mode_pre);
+
     // RNG seed: RESTORE. SaveState_Save zeros the seed in the slot, then
     // SaveState_PatchPostRenderRng (called from RenderFrameWithSnapshot
     // after render returns) writes the post-render rng into the slot. So
     // the value we restore here is post-render rng of whatever frame the
-    // saved slot represents — exactly what forward sim sees as the
+    // saved slot represents -- exactly what forward sim sees as the
     // starting rng for the NEXT frame, which is also what we want replay
     // sim to start with for rollback determinism.
     *(uint32_t*)ADDR_RNG_SEED = state->rng_seed;
 
     // Render frame counter: SKIP restore. Live counter is the only reliable
-    // source — restoring would freeze it at the saved value and break shake
+    // source -- restoring would freeze it at the saved value and break shake
     // parity-flip (see Save() comment). Live memory keeps incrementing from
     // wherever it is, so ProcessShakeEffect's odd/even check actually toggles.
 
@@ -64,7 +103,7 @@ bool SaveState_Load(int frame) {
     // fields (g_charslotN_action_table at slot+0x100, sprite tables, etc)
     // populated by character_data_loader with addresses in THIS process's
     // heap. Bulk-memcpy'ing the host's snapshot onto our slot overwrites
-    // those pointers with host-process heap addresses — they're wild here
+    // those pointers with host-process heap addresses -- they're wild here
     // and the engine AVs the moment something dereferences them (observed
     // in ui_state_manager on pkmncc spec join: `mov ebx, g_charslot0_-
     // action_table` then `mov cx, [edx+ebx+0x20]` AV'd reading host's
@@ -74,17 +113,35 @@ bool SaveState_Load(int frame) {
     // LOOK like heap pointers (>= 0x01000000, i.e. above the static-mem
     // ceiling on 32-bit Win). Capture them. After the memcpy, for each
     // captured offset, if the host's value there ALSO looks heap-shaped
-    // (confirming the field is a pointer in BOTH processes — not a
+    // (confirming the field is a pointer in BOTH processes -- not a
     // coincidentally-high non-pointer value), restore our local pointer.
     // Non-pointer dynamic state (HP, super meter, anim frame indices,
-    // etc — all small values) flows through normally from snapshot.
+    // etc -- all small values) flows through normally from snapshot.
     //
-    // Only enabled for spec mode (g_player_index==2); single-process
-    // rollback for players keeps the bit-for-bit memcpy that determinism
-    // depends on (same heap, valid pointers).
+    // The heap-SHAPE SCAN above is only enabled for spec mode
+    // (g_player_index==2); single-process rollback for players keeps the
+    // bit-for-bit memcpy that determinism depends on (same heap, valid
+    // pointers). NOTE: the narrow FORCED resource carve-out below is a
+    // different thing and now runs for ALL applies -- see its own comment.
     extern int g_player_index;
     const bool is_spec_apply = (g_player_index == 2);
     constexpr uint32_t HEAP_PTR_FLOOR = 0x01000000u;
+
+    // RESOURCE-OWNERSHIP CARVE-OUT WINDOWS (buffer-relative; the save buffer
+    // starts at CHAR_SLOT_BASE = engine slot base + 16, so buffer 0x100 ==
+    // engine slot +0x110 and buffer 0x220C == engine slot +0x221C -- the shift
+    // is uniform across slots so these relative offsets hold for all 8):
+    //   0x100 .. 0x10B (12 B)  = action_table (+0x110), commands_ptr (+0x114),
+    //                            pictures_ptr (+0x118)
+    //   0x220C .. 0x2223 (24 B) = sounds_ptr (+0x221C), sound_channel_id,
+    //                            file_loaded_flag, action_count, picture_count,
+    //                            sound_count
+    // Verified against the CharacterData layout in the IDB and against
+    // resource_cleanup_manager @ 0x403520, which reads EXACTLY these fields
+    // (and gates its whole body on file_loaded_flag) when it GlobalFree's the
+    // slot.
+    constexpr size_t RES_A_OFF = 0x100,  RES_A_LEN = 0x0C;
+    constexpr size_t RES_B_OFF = 0x220C, RES_B_LEN = 0x18;
 
     for (size_t i = 0; i < NUM_CHAR_SLOTS; i++) {
         uintptr_t slot_base = CHAR_SLOT_BASE + (i * CHAR_SLOT_SIZE);
@@ -94,8 +151,48 @@ bool SaveState_Load(int frame) {
         // game hasn't loaded a character there nothing reads those bytes.
         if (state->char_dynamic[i][0] == 0) continue;
 
+        // Preserve the LIVE process's resource bookkeeping across the restore
+        // -- for EVERY apply, not just the cross-process spectator one.
+        //
+        // These are load-time OWNERSHIP state, never gameplay state:
+        // character_data_loader @ 0x403600 GlobalAlloc's action_table (39 B per
+        // action), commands_ptr (16 B per script item, up to 0x10000 items) and
+        // pictures_ptr (20 B per picture) plus the per-sound blocks reachable
+        // through sounds_ptr, and player_data_file_loader @ 0x4039F0 ->
+        // ClearCharacterSlot @ 0x4039B0 GlobalFree's them and then
+        // memory_clear's the slot. That reload runs at EVERY character load
+        // site: the CSS entry after a match AND vs_round_function's own
+        // substate-0/1/100 bodies (6 call sites at 0x4087B2..0x408A29), so the
+        // pointers change under us at every round transition, not only at the
+        // match end.
+        //
+        // Rolling those pointers back is wrong in two directions:
+        //   1. it re-installs a pointer the engine already GlobalFree'd, and
+        //      the next character_state_machine tick reads an opcode through
+        //      it -- the 0x4125FC AV at the match-end seam; and
+        //   2. the NEXT ClearCharacterSlot then GlobalFree's the resurrected
+        //      pointer a second time (latent double-free at the CSS entry).
+        // Keeping the live values makes a restored cursor index the CURRENTLY
+        // loaded blob instead of a dead one. At a round transition the reload
+        // is of the SAME .player file, so content and size are identical and
+        // the restored cursor stays exactly as valid as it was -- the pointer
+        // value is the only thing that moved.
+        //
+        // Determinism: identity write in the steady state. Outside a
+        // free/realloc seam the live values ARE the snapshot values (nothing
+        // but the loader writes them), so this is byte-for-byte the same
+        // restore as before. The values are process-local heap addresses, are
+        // not in GekkoNet's desync fingerprint (rng/HP/timer/input scalars
+        // only, SaveState_CalculateFingerprint), and the sim never branches on
+        // them -- it only dereferences them.
+        uint8_t live_res_a[RES_A_LEN], live_res_b[RES_B_LEN];
+        std::memcpy(live_res_a, (const uint8_t*)dynamic_addr + RES_A_OFF, RES_A_LEN);
+        std::memcpy(live_res_b, (const uint8_t*)dynamic_addr + RES_B_OFF, RES_B_LEN);
+
         if (!is_spec_apply) {
             memcpy((void*)dynamic_addr, state->char_dynamic[i], CHAR_SLOT_DYNAMIC_SIZE);
+            std::memcpy((uint8_t*)dynamic_addr + RES_A_OFF, live_res_a, RES_A_LEN);
+            std::memcpy((uint8_t*)dynamic_addr + RES_B_OFF, live_res_b, RES_B_LEN);
             continue;
         }
 
@@ -103,7 +200,7 @@ bool SaveState_Load(int frame) {
         // CHAR_SLOT_DYNAMIC_SIZE is currently the full slot (14352
         // DWORDs); the first cut at MAX_PRESERVED=1024 hit the cap on
         // both active slots, so we sized up generously. Lives on stack
-        // (~64 KB × 2 fields = 128 KB) — well under the per-thread
+        // (~64 KB × 2 fields = 128 KB) -- well under the per-thread
         // stack budget. SaveState_Load isn't called frequently enough
         // for the upfront cost to matter.
         struct PtrPreserve { uint32_t didx; uint32_t value; };
@@ -123,20 +220,17 @@ bool SaveState_Load(int frame) {
             }
         }
 
-        // FORCED carve-out windows (resource bookkeeping the per-slot
-        // cleanup walks; same rationale as the stage block in the
-        // afterimage apply below -- the heap-shape heuristic fails open
-        // when the live slot hasn't finished loading):
-        //   buffer 0x100..0x10C = game slot+0x110/0x114/0x118 ptrs
-        //   buffer 0x220C..0x2224 = game slot+0x221C sound bookkeeping
-        uint8_t live_res_a[0x0C], live_res_b[0x18];
-        std::memcpy(live_res_a, (const uint8_t*)dynamic_addr + 0x100, sizeof(live_res_a));
-        std::memcpy(live_res_b, (const uint8_t*)dynamic_addr + 0x220C, sizeof(live_res_b));
-
         memcpy((void*)dynamic_addr, state->char_dynamic[i], CHAR_SLOT_DYNAMIC_SIZE);
 
-        std::memcpy((uint8_t*)dynamic_addr + 0x100,  live_res_a, sizeof(live_res_a));
-        std::memcpy((uint8_t*)dynamic_addr + 0x220C, live_res_b, sizeof(live_res_b));
+        // FORCED carve-out windows, captured above the is_spec_apply split.
+        // The spec path needs them because the heap-shape heuristic fails open
+        // when the live slot hasn't finished loading (a live 0 lets the host's
+        // pointer through and ClearStageData/ClearCharacterSlot then frees a
+        // host-heap address); the player path needs them because the engine
+        // reallocates these blocks under a rollback window. Same write, one
+        // reason each.
+        std::memcpy((uint8_t*)dynamic_addr + RES_A_OFF, live_res_a, RES_A_LEN);
+        std::memcpy((uint8_t*)dynamic_addr + RES_B_OFF, live_res_b, RES_B_LEN);
 
         // Restore preserved pointers IF the host's value there is also
         // heap-shaped. Confirms the field is a pointer in both processes
@@ -152,13 +246,13 @@ bool SaveState_Load(int frame) {
             }
         }
         if (pointer_candidates > 0) {
-            // Diagnostic line — fires once per snapshot apply per active
+            // Diagnostic line -- fires once per snapshot apply per active
             // slot. `candidates` is the total count of heap-shaped
             // DWORDs found in the live slot; `preserved` is how many fit
             // in the buffer (cap = MAX_PRESERVED); `restored` is the
             // subset whose post-memcpy host value was ALSO heap-shaped
             // (confirming a real pointer field). If candidates > cap we
-            // need to bump MAX_PRESERVED — silently truncating would
+            // need to bump MAX_PRESERVED -- silently truncating would
             // leave some host pointers in place and re-crash.
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "SaveState: spec char_slot[%zu] candidates=%zu preserved=%zu "
@@ -168,7 +262,7 @@ bool SaveState_Load(int frame) {
             if (pointer_candidates > MAX_PRESERVED) {
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     "SaveState: spec char_slot[%zu] pointer-preserve TRUNCATED "
-                    "(%zu > cap %zu) — host pointers in the uncaptured tail "
+                    "(%zu > cap %zu) -- host pointers in the uncaptured tail "
                     "will fault on first deref; bump MAX_PRESERVED",
                     i, pointer_candidates, MAX_PRESERVED);
             }
@@ -177,14 +271,14 @@ bool SaveState_Load(int frame) {
 
     // Restore object pool
     // Object pool: mirror of the active-slot save. If the save buffer's
-    // first byte is 0 the slot was inactive at save time — zero the live
+    // first byte is 0 the slot was inactive at save time -- zero the live
     // slot to match (and prevent stale active data from bleeding through
     // if the slot is currently live but was dead at the saved frame).
     //
     // Carve-out: per-object color override fields at +68/72/76/80 (16 B at
     // offset 0x44 within each 382-byte object struct). These are written
     // by ProcessColorInterpolation during render and read by
-    // sprite_rendering_engine (`mov edi, [ecx+44h]` @ 0x40D5C7) — sim
+    // sprite_rendering_engine (`mov edi, [ecx+44h]` @ 0x40D5C7) -- sim
     // never reads them. They need to PERSIST across frames so palette mode
     // 1 (Tyrogue's "fade-to-black-and-stay") can keep showing the last
     // interpolated value after the timer hits 0 and ProcessColorInterpolation
@@ -192,7 +286,7 @@ bool SaveState_Load(int frame) {
     // visual snaps back to default palette every frame. Three-slice
     // restore: pre-override, [SKIP] override, post-override. Same per-slot
     // logic for the inactive-slot case (zero the slot but skip the override
-    // bytes — though "inactive" objects shouldn't have meaningful overrides
+    // bytes -- though "inactive" objects shouldn't have meaningful overrides
     // anyway).
     {
         constexpr size_t OBJ_SZ = OBJECT_POOL_STRIDE;
@@ -208,7 +302,7 @@ bool SaveState_Load(int frame) {
         // them. Restoring on Load wipes Tyrogue mode-1 fade-to-black
         // persistence. Skipping the restore matches the same "evolve
         // render-side state continuously" pattern as effect_sys1 / shake
-        // — host's rollback Load leaves it alone, replay's forward sim
+        // -- host's rollback Load leaves it alone, replay's forward sim
         // evolves it naturally, both stay in sync at render time.
         //
         // Spec hub-relay: same cross-process heap-pointer hazard as
@@ -346,7 +440,7 @@ bool SaveState_Load(int frame) {
     // across both host (with rollback) and replay (no rollback) so they
     // produce identical game_rand call sequences during render. (Reverted
     // from a brief experiment that tried Save+Restore on the theory that
-    // re-sim decrements would converge — but that froze host's palette at
+    // re-sim decrements would converge -- but that froze host's palette at
     // pre-render-mod state while replay kept evolving, producing exactly
     // the drift the experiment was meant to fix.)
 
@@ -480,7 +574,7 @@ bool SaveState_Load(int frame) {
     memcpy((void*)WaveCAddrs::OBJECT_NODE_POOL,     state->object_node_pool,        WaveCAddrs::OBJECT_NODE_POOL_SZ);
 
     // Mike Z sound-rollback: restore per-channel "desired" state. Actual DSound
-    // hardware state is NOT touched — the post-advance sync decides which
+    // hardware state is NOT touched -- the post-advance sync decides which
     // restored desires cross into "play now" vs. "leave the channel alone"
     // based on whether the play frame falls inside the rollback window.
     //
@@ -506,8 +600,36 @@ bool SaveState_Load(int frame) {
     }
 
     // task #53 afterimage guard -- see the live_substate_pre capture at entry.
-    if (live_substate_pre >= 900) {
+    // crossing_teardown OR'd in because the substate term alone never fires
+    // once the CSS-init object owns g_object_data_ptr (see the entry comment),
+    // which is precisely the set of restores it was written to cover.
+    if (live_substate_pre >= 900 || crossing_teardown) {
         Fm2k_ClearAfterimageIndices();
+    }
+
+    // Match-end script-VM guard. The primary fix is sim-side (round_events.cpp,
+    // `post >= RSS_MATCH_COMPLETE`), which is what makes both peers and every
+    // resim agree; this is the restore-side backstop for the one case that
+    // cannot reach it: a rollback that lands BEFORE the 902 edge while the live
+    // process has already torn the battle down. Such a restore resurrects live
+    // type-4 objects holding battle-era cursors into blobs the CSS entry has
+    // already GlobalFree'd (or replaced with a smaller one for a different
+    // character), and the very next resim tick would fetch an opcode through
+    // them at 0x4125FC.
+    //
+    // Determinism note, stated plainly: a rollback whose restored frames were
+    // originally simulated BEFORE the heap was freed can never be bit-identical
+    // to that original pass -- SaveState_Load cannot un-GlobalFree memory, so
+    // that window is already outside the deterministic contract regardless of
+    // what we do here (this is the same trade v0.2.81 made for the afterimage
+    // pool). For every restore at or after the 902 edge -- the overwhelmingly
+    // common case, because Fm2k_Neutralize... ran inside the tick that produced
+    // those savestates -- the call below is a pure identity write and changes
+    // nothing. The window it can perturb is bounded by the battle-end swap
+    // frame, a handful of frames later, after which the session is destroyed.
+    if (crossing_teardown) {
+        Fm2k_CheckEndSeamScriptCursors("load-teardown");
+        Fm2k_NeutralizeMatchEndScriptObjects();
     }
 
     return true;

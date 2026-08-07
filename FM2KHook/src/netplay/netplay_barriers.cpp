@@ -96,12 +96,12 @@ void Netplay_SignalBattleEntry() {
 bool Netplay_IsBattleSynced() {
     // Once the game's CSS detects the battle transition (game_mode -> 3000),
     // the trampoline phase classifier flips us into TRAMPOLINE_BATTLE and we
-    // stop driving Netplay_ProcessCSS — so g_css_frame stops advancing. The
+    // stop driving Netplay_ProcessCSS -- so g_css_frame stops advancing. The
     // swap_frame value (g_css_frame + SWAP_FRAME_BUFFER) is therefore
     // unreachable from the CSS session itself. Lockstep already guarantees
     // both peers detect the transition at the same logical frame (the same
     // shared CSS input stream produced the same selected character + lock-in
-    // events), so the agreed-on-both-sides BATTLE_ENTERING is enough — no
+    // events), so the agreed-on-both-sides BATTLE_ENTERING is enough -- no
     // need to also gate on css_frame parity. swap_frame stays in the message
     // for diagnostic logging and future battle-side gating.
     if (!g_battle_synced &&
@@ -109,7 +109,7 @@ bool Netplay_IsBattleSynced() {
         g_remote_battle_entered) {
         g_battle_synced = true;
         // Record completion so the handler can keep ANSWERING the peer's
-        // retries after we disarm (deafness fix — see the state block).
+        // retries after we disarm (deafness fix -- see the state block).
         g_entry_done_epoch = g_entry_epoch;
         g_entry_done_ms    = GetTickCount();
         // Completed-flag announce: saves the lagging peer one retry
@@ -123,7 +123,7 @@ bool Netplay_IsBattleSynced() {
         // the same logical frame, so the two proposals should differ by
         // at most transit skew. A large gap means the CSS sims diverged
         // (different chars/colors are likely locked on each side) and
-        // the upcoming battle is doomed to desync — make that loudly
+        // the upcoming battle is doomed to desync -- make that loudly
         // visible at the moment it's decided, not minutes later.
         if (g_entry_local_proposal != 0 && g_entry_remote_proposal != 0) {
             const uint32_t a = g_entry_local_proposal;
@@ -131,7 +131,7 @@ bool Netplay_IsBattleSynced() {
             const uint32_t gap = (a > b) ? (a - b) : (b - a);
             if (gap > 300) {
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                    "BATTLE SYNC: CSS DIVERGENCE SUSPECTED — flip proposals "
+                    "BATTLE SYNC: CSS DIVERGENCE SUSPECTED -- flip proposals "
                     "%u frames apart (local=%u remote=%u). Both sims should "
                     "leave CSS at the same lockstep frame.",
                     gap, a, b);
@@ -187,7 +187,7 @@ void Netplay_PollBattleSync() {
 
     // Resend BATTLE_ENTERING until remote acknowledges, carrying the latest
     // agreed swap_frame each time. If remote's proposal arrived higher than
-    // ours, the agreed value bumped — keep both sides in sync via resend.
+    // ours, the agreed value bumped -- keep both sides in sync via resend.
     static uint32_t last_send = 0;
     static uint32_t wait_started = 0;
     static uint32_t last_wait_warn = 0;
@@ -201,7 +201,7 @@ void Netplay_PollBattleSync() {
         if (wait_started == 0) wait_started = now;
         if (now - wait_started > 5000 && now - last_wait_warn > 5000) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "BATTLE SYNC: waiting on remote for %us (swap=%u epoch=%u) — "
+                "BATTLE SYNC: waiting on remote for %us (swap=%u epoch=%u) -- "
                 "peer hasn't flipped to battle yet (its CSS sim may be "
                 "behind or diverged)",
                 (now - wait_started) / 1000, g_battle_entry_swap_frame,
@@ -259,17 +259,29 @@ void Netplay_SignalBattleEndAtFrame(uint32_t end_frame) {
 }
 
 bool Netplay_IsBattleEndSynced() {
-    // Same chicken-and-egg as the entry direction: once game_mode leaves
-    // the [3000,4000) battle range, the phase classifier flips to CSS and
-    // RunBattleTick stops driving the battle session — so g_netplay_frame
-    // stops, the swap_frame target is unreachable. Both peers' confirmed
-    // exit detection happens at the same logical battle frame (deterministic
-    // from shared inputs), so the both-signaled gate is sufficient.
+    // Why the both-signaled gate and not a swap_frame comparison: both peers'
+    // confirmed exit detection happens at the same logical battle frame
+    // (deterministic from shared inputs), so both-signaled is sufficient on its
+    // own and does not depend on either peer reaching a particular frame.
+    //
+    // CORRECTION (this comment previously claimed "once game_mode leaves the
+    // [3000,4000) battle range, the phase classifier flips to CSS and
+    // RunBattleTick stops driving the battle session -- so g_netplay_frame
+    // stops"): that is FALSE and it is why the post-teardown window was
+    // believed closed. ClassifyPhase (main_loop_trampoline.cpp) deliberately
+    // PINS TRAMPOLINE_BATTLE for as long as a BATTLE GekkoNet session exists,
+    // precisely so RunBattleTick keeps polling this gate and calling
+    // Netplay_EndBattle. The battle sim therefore keeps running -- saving,
+    // advancing, ROLLING BACK and calling SaveState_Load -- from the mode flip
+    // until the swap frame is reached; measured at 26 frames (~350 ms) on a
+    // 20%-loss run. Anything that assumes the engine's heap is stable for the
+    // whole life of the battle session is wrong across that window; see the
+    // match-end guards in round_events.cpp and savestate_fm2k_load.cpp.
     if (!g_battle_end_synced &&
         g_local_battle_end_signaled &&
         g_remote_battle_end_signaled) {
         g_battle_end_synced = true;
-        // Completion record + announce — mirrors the entry barrier (the
+        // Completion record + announce -- mirrors the entry barrier (the
         // handler answers post-disarm retries from a lagging peer).
         g_end_done_epoch = g_end_epoch;
         g_end_done_ms    = GetTickCount();
@@ -333,7 +345,7 @@ void Netplay_PollBattleEndSync() {
             (now - wait_started) > BattleEndForceMs()) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                 "BATTLE END SYNC: force-completing after %ums waiting on remote "
-                "(reached swap=%u at frame=%u, epoch=%u) — proceeding to CSS",
+                "(reached swap=%u at frame=%u, epoch=%u) -- proceeding to CSS",
                 now - wait_started, g_battle_end_swap_frame, g_netplay_frame,
                 g_end_epoch);
             g_remote_battle_end_signaled = true;  // Netplay_IsBattleEndSynced completes

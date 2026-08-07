@@ -9,7 +9,7 @@ void ShutdownHooks();
 
 // Hook implementations (called by MinHook)
 int __cdecl Hook_GetPlayerInput(int player_id, int input_type);
-// FM95 has SEPARATE per-player input fns — single arg `(player_idx)`. We
+// FM95 has SEPARATE per-player input fns -- single arg `(player_idx)`. We
 // hook both so the binder + facing-flip layer applies on FM95 too. The
 // player_idx the host calls with is 1 (P1) and 2 (P2), used as multiplier
 // into g_p_facing_snap[25*idx].
@@ -21,7 +21,7 @@ BOOL __cdecl Hook_RunGameLoop();
 uint32_t __cdecl Hook_GameRand();
 int __cdecl Hook_ProcessGameInputs();
 
-// Engine-aware phase detection — FM2K reads g_game_mode magic numbers
+// Engine-aware phase detection -- FM2K reads g_game_mode magic numbers
 // (2000=CSS, 3000+=Battle); FM95 walks the object pool for type==19/16
 // with sub_state range. Defined in hooks.cpp; consumed by main_loop_
 // trampoline.cpp's ClassifyPhase + the CSS/battle transition checks.
@@ -38,11 +38,11 @@ int Fm95CurrentPhaseByte();
 // boundary. See hooks_game_mode.cpp / docs RE-2b.
 int Fm95MatchPhaseByte();
 
-// SOCD (Simultaneous Opposite Cardinal Direction) cleaner — strips
+// SOCD (Simultaneous Opposite Cardinal Direction) cleaner -- strips
 // nonsense input combinations like L+R or U+D per the currently-active
 // SOCD mode (env FM2K_SOCD_MODE, runtime override via Hook_SetSOCDMode).
 // Exposed so netplay.cpp can pre-apply on the host side BEFORE storing
-// into the spectator stream — eliminates SOCD-mode-mismatch between
+// into the spectator stream -- eliminates SOCD-mode-mismatch between
 // host and a spectator/replay using a different mode as a source of
 // sim divergence. The spec re-applies on top (idempotent for the
 // resolved input).
@@ -92,5 +92,16 @@ void Hook_FlushRngTrace();
 // per-object afterimage index so render can't chain into freed heap.
 int  RoundEvents_LiveSubstate();
 void Fm2k_ClearAfterimageIndices();
+
+// Match-end script-VM seam (round_events.cpp), sibling of the above one field
+// over. Neutralize: park every live type-4 (script VM) object at
+// script_init_state = 2 so character_state_machine returns at its entry guard
+// (0x411C3F) instead of fetching an opcode through the character slot's
+// commands_ptr, which the battle->CSS teardown GlobalFree'd. Check: the
+// [ENDSEAM-OOB] fencepost -- per live script object, compare cursor*16+16
+// against GlobalSize(commands_ptr) and log loudly on violation (GlobalSize
+// returns 0 on a freed handle, so one probe catches dangling AND shrunk).
+void Fm2k_NeutralizeMatchEndScriptObjects();
+void Fm2k_CheckEndSeamScriptCursors(const char* where);
 
 #endif // HOOKS_H

@@ -1,4 +1,4 @@
-// C3.5 — vs_round_function detour for ROUND_START / ROUND_END emit.
+// C3.5 -- vs_round_function detour for ROUND_START / ROUND_END emit.
 //
 // FM2K-only. The function lives at 0x004086A0 in WonderfulWorld_ver_0946 and
 // is the central round state machine for vs/story/team modes. Each call
@@ -26,7 +26,7 @@
 // vs_round_function dispatcher (FM2K)
 constexpr uintptr_t ADDR_VS_ROUND_FUNCTION = 0x004086A0;
 
-// g_object_data_ptr — pointer to current round-state slot
+// g_object_data_ptr -- pointer to current round-state slot
 constexpr uintptr_t ADDR_G_OBJECT_DATA_PTR = 0x004CFA00;
 constexpr ptrdiff_t OFF_ROUND_SUBSTATE     = 0x152;  // 338
 
@@ -39,12 +39,28 @@ constexpr ptrdiff_t OFF_ROUND_SUBSTATE     = 0x152;  // 338
 // re-populated by the fighter type-4 object's init on subsequent frames.
 // Empirically (v0.2.25 [HP-VERIFY] probe): hp_max=38/39 at *→900 round end,
 // but =1 at 100→110 round start. By 112→200 the fighter init has run +
-// the announce intro is done — hp_max + timer are both correct, and the
+// the announce intro is done -- hp_max + timer are both correct, and the
 // "fight has begun" moment is a more useful seek anchor for replay
 // viewing than the round-init init frame.
 constexpr int RSS_FIGHT_LATCH      = 112;
 constexpr int RSS_ACTIVE           = 200;
 constexpr int RSS_ROUND_END_BANNER = 900;
+
+// RSS_MATCH_COMPLETE = the step the engine only reaches when the round limit
+// is exhausted. 901's body (0x4096ED) increments the substate to 902 and falls
+// into 902's body (0x40970A) in the SAME dispatcher call, where the round-limit
+// test splits:
+//   next round      @ 0x4097F0: substate = RSS_BATTLE_INIT (100), then
+//                               ResetObjectsAndCalculateSpeed() -- the engine
+//                               demotes every type>1 object itself.
+//   match complete  @ 0x409825: create_game_object(10, 0x7F, 0, 0) and return
+//                               -- NO demote; every battle object stays type 4.
+// So the OBSERVABLE post substate is 100 for a next round and 902 for a match
+// end. `post >= 902` is exactly the match-complete seam and can never fire on
+// a normal inter-round transition; 902 is also the highest substate the state
+// machine ever holds (vs_round_function's header comment: 900-901 = round end
+// -> loop to 100 or spawn game_object(10/13,127)).
+constexpr int RSS_MATCH_COMPLETE   = 902;
 
 // ROUND_START payload sources
 constexpr uintptr_t ADDR_P1_HP_MAX  = 0x004DFC91;
@@ -84,14 +100,14 @@ static struct KofSnapshot {
 } s_kof_snapshot;
 
 // Substate values from the round-state machine (subset of the full set):
-//   100 = RSS_BATTLE_INIT — vs_round_function's round-init runs here, which
+//   100 = RSS_BATTLE_INIT -- vs_round_function's round-init runs here, which
 //         INCLUDES the HP reset loop at 0x40899B-B0 (zeroes all 8 char slots,
 //         then player_data_file_loader repopulates with max_hp from file).
-//   110 = RSS_ANNOUNCE_WAIT — by this state, HP has been reset to max.
+//   110 = RSS_ANNOUNCE_WAIT -- by this state, HP has been reset to max.
 //   112 = RSS_FIGHT_LATCH (existing constant)
 //   200 = RSS_ACTIVE (existing constant)
-//   900 = RSS_ROUND_END_BANNER (existing constant) — banner shows + result_kind set
-//   901 = RSS_ROUND_END_DONE — banner finishes, transitions back to BATTLE_INIT
+//   900 = RSS_ROUND_END_BANNER (existing constant) -- banner shows + result_kind set
+//   901 = RSS_ROUND_END_DONE -- banner finishes, transitions back to BATTLE_INIT
 //
 // KOF apply edge: 100 → 110 (post-reset, before announce). Empirically the
 // HP reset happens during substate 100; by 110 the new round's HP_max is
@@ -113,7 +129,7 @@ constexpr uintptr_t ADDR_P2_SUPER_METER          = 0x004EDD1C;  // g_charslot1_s
 // frames (runahead=4 means 1 forward + 4 replay = 5 fires per logical
 // edge). The g_is_rolling_back gate at the top of Hook_vs_round_function
 // is supposed to suppress replay fires but apparently isn't being set
-// during gekkonet replay — separate issue to track down.
+// during gekkonet replay -- separate issue to track down.
 //
 // Belt-and-suspenders dedup: enforce strict START→END→START→END
 // alternation. After a START fires, only an END can fire next; vice
@@ -141,6 +157,161 @@ void Fm2k_ClearAfterimageIndices() {
     for (int i = 0; i < 1024; ++i) pool[i * 382 + 0x151] = 0;
 }
 
+// ---------------------------------------------------------------------------
+// Match-end script-VM seam. Direct sibling of the task #53 afterimage fix, one
+// dangling field over: there the stale per-object index was the afterimage slot
+// (+0x151) into the sprite pool, here it is the script cursor (+0x2C) into the
+// character slot's commands_ptr blob, and the consumer that AVs is
+// character_state_machine's per-opcode fetch (csm_per_opcode_site, 0x4125FC:
+// `mov edx,[ebx+114h]; shl edi,4; add edi,edx; mov al,[edi]`) instead of
+// sprite_rendering_engine.
+//
+// FM2K ObjectSlot (382 B stride @ g_object_pool 0x4701E0), fields used below:
+//   +0x000 type              int  -- 4 = script VM (g_object_function_table[4]
+//                                    = character_state_machine @ 0x411BF0)
+//   +0x02C script_item_idx   int  -- the cursor, * 16 into commands_ptr
+//   +0x030 script_id         int  -- * 39 into action_table
+//   +0x151 afterimage_slot   byte -- the task #53 field
+//   +0x152 script_init_state int  -- VM lifecycle guard, see below
+//   +0x156 player_slot_id    int  -- * 0xE03F into g_char_slots_0
+//   +0x15A entity_kind       int  -- 0/1/5 select a char slot; 2/3/4 select the
+//                                    STATIC g_kgt_file_buffer /
+//                                    g_story_char_config / g_char_physics_table
+//                                    (never freed, never a hazard)
+constexpr uintptr_t ADDR_OBJECT_POOL_RND  = 0x004701E0;
+constexpr size_t    OBJ_STRIDE_RND        = 382;
+constexpr size_t    OBJ_COUNT_RND         = 1024;
+constexpr ptrdiff_t OFF_OBJ_TYPE          = 0x000;
+constexpr ptrdiff_t OFF_OBJ_SCRIPT_CURSOR = 0x02C;
+constexpr ptrdiff_t OFF_OBJ_SCRIPT_ID     = 0x030;
+constexpr ptrdiff_t OFF_OBJ_INIT_STATE    = 0x152;
+constexpr ptrdiff_t OFF_OBJ_PLAYER_SLOT   = 0x156;
+constexpr ptrdiff_t OFF_OBJ_ENTITY_KIND   = 0x15A;
+constexpr int       OBJ_TYPE_SCRIPT_VM    = 4;
+
+// character_state_machine's entry guard @ 0x411C3F:
+//     mov eax,[esi+152h] ; xor ebp,ebp ; sub eax,ebp ; mov edx,1
+//     jz  loc_411C62     ; 0 -> one-time init, then state = 1
+//     dec eax
+//     jz  loc_412238     ; 1 -> opcode dispatch (the crash path)
+//     pop/pop/pop/pop ; add esp,11Ch ; retn      ; anything else -> RETURN
+// The return happens BEFORE any dereference of the character slot: the slot
+// ADDRESS is computed at 0x411C12-1E (imul/add on the static base) but nothing
+// reads +0x110 / +0x114 until the dispatch path. So parking a live VM object at
+// state 2 makes it structurally incapable of touching the freed blob.
+constexpr int CSM_STATE_INIT     = 0;
+constexpr int CSM_STATE_RUNNING  = 1;
+constexpr int CSM_STATE_DONE     = 2;
+
+// g_char_slots_0 -- the ENGINE base. 0x411C1E is unambiguous
+// (`add ebx, offset g_char_slots_0` -> 0x4D1D80). This is deliberately NOT
+// savestate.h's CHAR_SLOT_BASE (0x4D1D90), which is shifted +16 and whose
+// consumers (hooks_getinput.cpp's offsets) are self-consistent with the shift
+// -- correcting that is a separate change. The code below replicates the
+// engine's own address math, so it must use the engine's own base.
+constexpr uintptr_t ADDR_CHAR_SLOTS_0     = 0x004D1D80;
+constexpr size_t    CHAR_SLOT_STRIDE_RND  = 0xE03F;  // 57407
+constexpr ptrdiff_t OFF_CHAR_COMMANDS_PTR = 0x114;   // GlobalAlloc(16 * item_count)
+constexpr size_t    NUM_CHAR_SLOTS_RND    = 8;
+constexpr size_t    SCRIPT_ITEM_SIZE      = 16;
+
+// [ENDSEAM-OOB] fencepost. At the match-complete seam, every LIVE script-VM
+// object is one `mov al,[edi]` away from reading commands_ptr + cursor*16; the
+// crash only manifests when that address happens to land on a decommitted page,
+// so the bad read is far more common than the AV. GlobalSize() on a freed
+// handle returns 0, so a single probe catches BOTH failure modes: the dangling
+// pointer (blob freed by the CSS entry's ClearCharacterSlot) and the shrunk
+// blob (CSS reloaded a character with fewer script items).
+//
+// Always-on, not env-gated: the two call sites are the 902 sim edge (a couple
+// of frames per match) and the post-teardown branch of SaveState_Load (only
+// rollback loads inside the ~26-frame battle-end window), so this is tens of
+// calls per match, each a 1024-slot walk of one dword plus a GlobalSize per
+// live script object (< 20 in 1v1). A heisencrash detector that is off by
+// default catches nothing.
+void Fm2k_CheckEndSeamScriptCursors(const char* where) {
+    const uint8_t* pool = (const uint8_t*)ADDR_OBJECT_POOL_RND;
+    int reported = 0;
+    int violations = 0;
+    for (size_t i = 0; i < OBJ_COUNT_RND; ++i) {
+        const uint8_t* obj = pool + i * OBJ_STRIDE_RND;
+        if (*(const int*)(obj + OFF_OBJ_TYPE) != OBJ_TYPE_SCRIPT_VM) continue;
+        // Already inert (state >= 2, or the neutralize below already ran):
+        // the entry guard returns without touching commands_ptr, so a stale
+        // cursor there is unreachable. Skipping keeps the probe from
+        // re-reporting the same objects on every frame of the seam.
+        const int init_state = *(const int*)(obj + OFF_OBJ_INIT_STATE);
+        if (init_state != CSM_STATE_INIT && init_state != CSM_STATE_RUNNING) continue;
+        const int kind = *(const int*)(obj + OFF_OBJ_ENTITY_KIND);
+        if (kind != 0 && kind != 1 && kind != 5) continue;  // static-table kinds
+        const int slot = *(const int*)(obj + OFF_OBJ_PLAYER_SLOT);
+        if (slot < 0 || (size_t)slot >= NUM_CHAR_SLOTS_RND) continue;
+
+        const int cursor = *(const int*)(obj + OFF_OBJ_SCRIPT_CURSOR);
+        void* blob = *(void* const*)(ADDR_CHAR_SLOTS_0 +
+                                     (size_t)slot * CHAR_SLOT_STRIDE_RND +
+                                     OFF_CHAR_COMMANDS_PTR);
+        const size_t blob_size = blob ? (size_t)GlobalSize((HGLOBAL)blob) : 0;
+        const size_t need = (cursor < 0)
+            ? (size_t)-1
+            : (size_t)cursor * SCRIPT_ITEM_SIZE + SCRIPT_ITEM_SIZE;
+        if (need <= blob_size) continue;
+
+        ++violations;
+        if (reported < 8) {  // cap: 1024 slots could otherwise flood the log
+            ++reported;
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                "[ENDSEAM-OOB] at=%s obj=%zu slot=%d script=%d cursor=%d "
+                "need=%zu blob=%p size=%zu init_state=%d kind=%d",
+                where ? where : "?", i, slot,
+                *(const int*)(obj + OFF_OBJ_SCRIPT_ID), cursor,
+                need, blob, blob_size, init_state, kind);
+        }
+    }
+    if (violations > reported) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+            "[ENDSEAM-OOB] at=%s %d more violation(s) suppressed",
+            where ? where : "?", violations - reported);
+    }
+}
+
+// Park every LIVE script-VM object at script_init_state = 2 so
+// character_state_machine returns at its entry guard instead of fetching an
+// opcode through the character slot's commands_ptr.
+//
+// Why this and NOT a replica of ResetObjectsAndCalculateSpeed @ 0x406450 (the
+// demote the next-round branch runs): that function walks the pool and writes
+// `type = 1` to EVERY slot with type > 1 except g_object_data_ptr, and at the
+// match-complete seam the pool contains one object it must not touch -- the
+// type-10 object create_game_object(10, 0x7F, ...) just spawned at 0x409825,
+// which is game_state_manager, i.e. the object that performs the whole CSS
+// transition (its STATE 0 sets g_game_mode = 2000 at 0x407247). Demoting it
+// would leave the match in limbo with no driver. The next-round branch never
+// has that problem because its demote runs BEFORE any type-10 spawn. Adding an
+// ad-hoc "except type 10" carve-out to a replica of an engine function is
+// exactly the kind of drift that rots; parking the script VM touches only
+// type == 4, which is precisely the set of objects that can reach 0x4125FC.
+//
+// Secondary benefits over the demote: the objects keep their sprite fields so
+// the results transition still draws them (a demote makes them vanish a frame
+// early), and nothing else in the engine reads +0x152 on a type-4 slot.
+void Fm2k_NeutralizeMatchEndScriptObjects() {
+    uint8_t* pool = (uint8_t*)ADDR_OBJECT_POOL_RND;
+    for (size_t i = 0; i < OBJ_COUNT_RND; ++i) {
+        uint8_t* obj = pool + i * OBJ_STRIDE_RND;
+        if (*(const int*)(obj + OFF_OBJ_TYPE) != OBJ_TYPE_SCRIPT_VM) continue;
+        int* init_state = (int*)(obj + OFF_OBJ_INIT_STATE);
+        // Monotone + idempotent: only 0 (pending init) and 1 (running) can
+        // reach the opcode fetch, and anything else already returns. Re-running
+        // this on an already-parked pool is a no-op, which is what makes the
+        // restore-side call in SaveState_Load a pure identity write whenever the
+        // restored frame is at or past the 902 edge.
+        if (*init_state == CSM_STATE_INIT || *init_state == CSM_STATE_RUNNING) {
+            *init_state = CSM_STATE_DONE;
+        }
+    }
+}
+
 static char __cdecl Hook_vs_round_function() {
     const int pre = ReadSubstate();
 
@@ -164,6 +335,35 @@ static char __cdecl Hook_vs_round_function() {
         Fm2k_ClearAfterimageIndices();
     }
 
+    // Match-COMPLETE seam. Same argument as the block above, one field over:
+    // a battle object's script cursor (+0x2C) indexes the character slot's
+    // commands_ptr blob (+0x114), which the CSS entry GlobalFree's
+    // (ClearCharacterSlot -> resource_cleanup_manager, which does NOT null the
+    // pointers) and then re-GlobalAlloc's at a different address and a
+    // different SIZE for whatever character the CSS loads next. Unlike the
+    // next-round branch, the match-complete branch @ 0x409825 never runs
+    // ResetObjectsAndCalculateSpeed, so every fighter/projectile/effect stays
+    // type 4 and keeps ticking into the transition; a rollback restore that
+    // resurrects them then feeds a battle-era cursor to a post-CSS blob and
+    // character_state_machine AVs at 0x4125FC (host crash, run_seed83).
+    //
+    // Sim-tick placement is the load-bearing part, exactly as in v0.2.81: this
+    // runs identically on both peers, in forward passes AND in every resim, so
+    // a rollback to a frame before 902 replays through this edge and re-applies
+    // it, and a rollback to a frame at/after 902 restores an already-parked
+    // pool. The poisoned state is structurally unreachable rather than merely
+    // cleaned up at teardown time (which a mid-batch resim outruns).
+    //
+    // Determinism: same write, same logical frame, both peers. `post >= 902` is
+    // observable only on the match-complete branch (see RSS_MATCH_COMPLETE) --
+    // a normal next-round seam reports post == 100 and is left alone, which
+    // matters because objects legitimately survive a next-round transition
+    // until the engine's own demote kills them.
+    if (post >= RSS_MATCH_COMPLETE) {
+        Fm2k_CheckEndSeamScriptCursors("sim902");
+        Fm2k_NeutralizeMatchEndScriptObjects();
+    }
+
     // AI field writes per frame: drive ai_input_processor's switch via
     // [slot+0xDF65] so the engine runs CPU AI (case 1), Imitate (case 2),
     // or Jump (case 4) for the hijacked slot. Per-frame instead of one-
@@ -173,7 +373,7 @@ static char __cdecl Hook_vs_round_function() {
     //   (b) training F2 cycles change the desired mode mid-battle and we
     //       need the next frame to reflect it without a separate hook.
     //   (c) char_state_machine's CSMK_PLAYER init runs the first frame
-    //       after spawn — its writes would clobber any pre-init one-shot.
+    //       after spawn -- its writes would clobber any pre-init one-shot.
     // No-op when no hijack submode is active.
     PerGamePatches_OnBattleInitComplete();
 
@@ -189,7 +389,7 @@ static char __cdecl Hook_vs_round_function() {
     //
     // Earlier delayed-frame approach (LilithPort-style 1-sec sleep)
     // didn't work in our impl because the apply landed at substate
-    // 901 — HP was still the snapshotted value (write was a no-op),
+    // 901 -- HP was still the snapshotted value (write was a no-op),
     // and the engine reset at 901→100 happened ~2sec after snapshot.
     // Substate-edge apply at 100→110 is unambiguous and post-reset.
     if (g_kof_retention_enabled.load(std::memory_order_relaxed)) {
@@ -215,7 +415,7 @@ static char __cdecl Hook_vs_round_function() {
             if (mode_flag != 2u) {
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "[KOF-RETAIN] snapshot edge hit but mode_flag=%u "
-                    "(need 2 = team) — skip", (unsigned)mode_flag);
+                    "(need 2 = team) -- skip", (unsigned)mode_flag);
             } else {
                 const uint32_t r1_kind = *(uint32_t*)ADDR_P1_RESULT_KIND;
                 const uint32_t r2_kind = *(uint32_t*)ADDR_P2_RESULT_KIND;
@@ -229,7 +429,7 @@ static char __cdecl Hook_vs_round_function() {
                 if (widx >= 2u) {
                     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "[KOF-RETAIN] snapshot edge: draw "
-                        "(r1_kind=%u r2_kind=%u) — no snapshot taken",
+                        "(r1_kind=%u r2_kind=%u) -- no snapshot taken",
                         r1_kind, r2_kind);
                 } else {
                     s_kof_snapshot.pending      = true;
@@ -239,7 +439,7 @@ static char __cdecl Hook_vs_round_function() {
                     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "[KOF-RETAIN] SNAPSHOT: winner=P%u hp=%u meter=%u "
                         "(r1_kind=%u r2_kind=%u, p1_hp=%u p2_hp=%u "
-                        "p1_meter=%u p2_meter=%u) — apply at next 100→110",
+                        "p1_meter=%u p2_meter=%u) -- apply at next 100→110",
                         (unsigned)widx + 1u,
                         s_kof_snapshot.winner_hp, s_kof_snapshot.winner_meter,
                         r1_kind, r2_kind, p1_hp_now, p2_hp_now,
@@ -248,7 +448,7 @@ static char __cdecl Hook_vs_round_function() {
             }
         }
 
-        // (Apply path removed — Option-A code-cave patch on
+        // (Apply path removed -- Option-A code-cave patch on
         // character_state_machine 0x411CB1 intercepts the HP write
         // directly, so the engine never overwrites with max_hp for
         // the winner's slot. See PerGamePatches_InstallKofHpInitPatch
@@ -275,7 +475,7 @@ static char __cdecl Hook_vs_round_function() {
         return ret;
     }
 
-    // [RND-EDGE] substate transition trace (host, non-rollback only) —
+    // [RND-EDGE] substate transition trace (host, non-rollback only) --
     // a handful of lines per round, permanently cheap, and the ground
     // truth for edge-condition bugs like the one below.
     if (pre != post) {
@@ -283,7 +483,7 @@ static char __cdecl Hook_vs_round_function() {
             "[RND-EDGE] %d -> %d", pre, post);
     }
 
-    // ROUND_START — fires on ANY entry into RSS_ACTIVE (the moment the
+    // ROUND_START -- fires on ANY entry into RSS_ACTIVE (the moment the
     // battle becomes interactive), mirroring the END edge's shape. The
     // old exact (RSS_FIGHT_LATCH=112 -> 200) pair silently never matched:
     // per the 0x4086A0 decompile, the announce chain 110->111->112->113
@@ -313,7 +513,7 @@ static char __cdecl Hook_vs_round_function() {
             s_round_idx_counter, p1_hp_max, p2_hp_max, timer_seconds);
     }
 
-    // ROUND_END — substate just transitioned to RSS_ROUND_END_BANNER from
+    // ROUND_END -- substate just transitioned to RSS_ROUND_END_BANNER from
     // any of the win-tail paths. result_kind / HP are already populated.
     if (pre != RSS_ROUND_END_BANNER && post == RSS_ROUND_END_BANNER &&
         s_last_emit != LastEmit::ROUND_END) {
@@ -364,7 +564,7 @@ bool RoundEvents_Install() {
             (void*)ADDR_VS_ROUND_FUNCTION);
         return false;
     }
-    // Queue only — caller (InitializeHooks) flushes all hooks with one
+    // Queue only -- caller (InitializeHooks) flushes all hooks with one
     // MH_ApplyQueued so we pay ONE thread-freeze cost across the whole boot
     // path instead of one per hook.
     if (MH_QueueEnableHook((void*)ADDR_VS_ROUND_FUNCTION) != MH_OK) {
@@ -391,7 +591,7 @@ void RoundEvents_SetKofRetention(bool enabled) {
         enabled ? "ENABLED" : "disabled");
 }
 
-// Snapshot accessors — exposed so PerGamePatches's HpInitInterceptor
+// Snapshot accessors -- exposed so PerGamePatches's HpInitInterceptor
 // can read snapshot state from inside the patched CSMK_PLAYER init.
 bool RoundEvents_KofRetentionEnabled() {
     return g_kof_retention_enabled.load(std::memory_order_relaxed);

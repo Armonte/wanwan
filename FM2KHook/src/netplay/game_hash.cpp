@@ -23,7 +23,7 @@ char     s_describe[128] = {};
 // Full per-file manifest cached alongside the hash so we can dump it
 // to the log on a HELLO mismatch. Two peers can diff each other's
 // hook logs to find the offending file: "Para has Bewear.player size
-// 1234567 but I have 1234580 — they edited the .player." Without
+// 1234567 but I have 1234580 -- they edited the .player." Without
 // this they'd see only the rolled-up 32-bit hashes and have no path
 // to a fix beyond "send each other your install."
 std::string s_manifest;
@@ -31,7 +31,7 @@ std::string s_manifest;
 // Cached entries (name, size, content_hash) so the on-mismatch dump
 // can iterate them directly without re-parsing s_manifest. The
 // string-split path corrupted one entry under conditions we haven't
-// reproduced — bypassing it entirely is the safe move.
+// reproduced -- bypassing it entirely is the safe move.
 struct ManifestEntry {
     std::string name;
     uint64_t    size;
@@ -47,7 +47,7 @@ std::filesystem::path GameDir() {
 }
 
 // Path to the running game executable (the one we're injected into).
-// Used to filter out unrelated .exes that share the game folder —
+// Used to filter out unrelated .exes that share the game folder --
 // installer leftovers (unins000.exe, update.exe), bundled launchers
 // (Pokemon Close Combat Launcher.exe), or third-party tools the user
 // dropped in (antimicrox.exe, lilithport.exe). Only the game's own
@@ -62,7 +62,7 @@ std::filesystem::path GameExePath() {
 
 // UTF-8 path conversion via Win32 wide APIs. std::filesystem::path's
 // narrow accessors go through the system ANSI codepage on MinGW and
-// would mangle JP filenames into '_' / '?' — different output on a
+// would mangle JP filenames into '_' / '?' -- different output on a
 // Japanese-locale peer vs an English-locale peer for the same file
 // on disk, which means different hashes for #57's handshake check.
 // Using wide → UTF-8 makes the canonical bytes identical everywhere.
@@ -141,7 +141,7 @@ uint32_t Compute() {
     }
 
     // Lowercase UTF-8 filename of the game's own executable. Used
-    // below to filter the .exe pass to ONLY the game exe — every
+    // below to filter the .exe pass to ONLY the game exe -- every
     // other .exe in the directory (installer remnants, bundled
     // launchers, antimicrox, etc.) is unrelated to sim correctness.
     std::string game_exe_lower;
@@ -157,7 +157,7 @@ uint32_t Compute() {
     // Per-extension policy:
     //   .player  → name + size only. Palette edits in a .player are
     //              gameplay-neutral (different colors, same frame data /
-    //              hitboxes / scripts) and don't desync — content
+    //              hitboxes / scripts) and don't desync -- content
     //              hashing them would reject those legitimate setups.
     //              Palette swaps overwrite bytes in-place so they keep
     //              size constant; size-changing edits (added frames,
@@ -182,7 +182,7 @@ uint32_t Compute() {
         // Stream-friendly: read in 1 MiB chunks so a multi-MB .kgt
         // doesn't allocate a giant buffer up front. xxhash supports
         // streaming via XXH3_64bits_update / digest, but XXH_NO_STREAM
-        // strips that — so for these small files we read whole and
+        // strips that -- so for these small files we read whole and
         // call the one-shot XXH3_64bits.
         std::error_code ec;
         std::uintmax_t sz = std::filesystem::file_size(p, ec);
@@ -222,7 +222,7 @@ uint32_t Compute() {
         // tools) so cross-install plays don't trip the mismatch check
         // on cosmetic differences. game_exe_lower is the running
         // module's filename; if we couldn't resolve it (rare), fall
-        // back to including all .exes — better safe than nothing.
+        // back to including all .exes -- better safe than nothing.
         const bool is_exe = is_exe_ext &&
             (game_exe_lower.empty() || lower == game_exe_lower);
         if (is_exe_ext && !is_exe) continue;
@@ -283,14 +283,14 @@ uint32_t Compute() {
     if (s_cached_hash == 0 && !entries.empty()) s_cached_hash = 1;
 
     std::snprintf(s_describe, sizeof(s_describe),
-                  "%d .player + %d .kgt + %d .exe — 0x%08X",
+                  "%d .player + %d .kgt + %d .exe -- 0x%08X",
                   n_player, n_kgt, n_exe, s_cached_hash);
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "GameHash: %s", s_describe);
     // Stash the canonical manifest for hash-mismatch diagnostics.
     // Keep it lightweight (one line per file already, no per-line
     // formatting changes needed). Truncated description flag is
-    // implicit — if the dir has 200+ files, the log line will be
+    // implicit -- if the dir has 200+ files, the log line will be
     // long but each line is still parseable.
     s_manifest = canon;
     // Cache the per-entry data too so ForEachManifestEntry can dump

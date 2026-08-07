@@ -37,7 +37,7 @@ static void MultiplexAdapter_Send(GekkoNetAddress* addr, const char* data, int l
         return;
     }
 
-    // Parse "ip:port" — addr->data may not be null-terminated, copy out.
+    // Parse "ip:port" -- addr->data may not be null-terminated, copy out.
     char addr_buf[64] = {};
     int n = (addr->size < (int)sizeof(addr_buf) - 1) ? addr->size : (int)sizeof(addr_buf) - 1;
     std::memcpy(addr_buf, addr->data, n);
@@ -72,7 +72,7 @@ static void MultiplexAdapter_Send(GekkoNetAddress* addr, const char* data, int l
     // can't hole-punch the host is therefore currently UNREACHABLE. The real
     // fix is a spectator-aware relay (hub multiplexes one host to N spec
     // session_ids) or the existing hub WS-fanout path (FM2K_SPEC_TRANSPORT=
-    // relay) — NOT this P2P 0xCF envelope. Until then, symmetric-NAT specs
+    // relay) -- NOT this P2P 0xCF envelope. Until then, symmetric-NAT specs
     // must use the WS-relay transport.
     if (::fm2k::nat::IsRelayMode()) {
         RawSend(data, length);

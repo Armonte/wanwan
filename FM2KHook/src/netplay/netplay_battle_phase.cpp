@@ -96,7 +96,7 @@ static void CollectAndAddLocalInput() {
         // is on, drive both gekko slots with per-player autoplay values
         // (deterministic-pseudo-random from g_input_buffer_index+player_id).
         // Without this, gekko sees Input_CaptureLocal (keyboard, typically
-        // 0) and the .fm2krep + spec stream record 0/0 — but the engine
+        // 0) and the .fm2krep + spec stream record 0/0 -- but the engine
         // sims with autoplay values, so --replay re-runs with 0/0 and
         // diverges from the record at frame 0.
         //
@@ -117,7 +117,7 @@ static void CollectAndAddLocalInput() {
         } else {
             // Local 2P: P1 keeps the captured local input (binder slot 0);
             // P2 gets its OWN binder mask (slot 1). Previously both slots got
-            // the same local_input — a leftover from idle-only stress — which
+            // the same local_input -- a leftover from idle-only stress -- which
             // made the P1 controller drive BOTH players, so you couldn't set
             // up a real combo against an independent P2 (e.g. keyboard).
             uint16_t p2_input = Input_CaptureLocalPlayer(1);
@@ -201,14 +201,14 @@ static void HandleBattleSessionEvents() {
                 // Peer dropped (timeout / closed game / network died). Publish
                 // a DISCONNECT outcome so the launcher's shared-mem poll
                 // forwards a match_result to the hub AND tears down the
-                // surviving local game. Fires on CSS too — without this the
+                // surviving local game. Fires on CSS too -- without this the
                 // survivor froze on the character-select screen with music
                 // playing when their opponent closed during CSS (real bug
                 // report 2026-05-05).
                 if (g_session_kind == SessionKind::BATTLE ||
                     g_session_kind == SessionKind::CSS) {
                     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                        "Netplay: peer disconnected (handle=%d kind=%d) — publishing DISCONNECT outcome",
+                        "Netplay: peer disconnected (handle=%d kind=%d) -- publishing DISCONNECT outcome",
                         event->data.disconnected.handle,
                         (int)g_session_kind);
                     SharedMem_PublishMatchOutcome(FM2K_MATCH_OUTCOME_DISCONNECT);
@@ -362,7 +362,7 @@ bool Netplay_ProcessSpectatorPhase() {
 
     gekko_network_poll(g_session);
 
-    // No local input add — spectator is passive.
+    // No local input add -- spectator is passive.
 
     // Drain session events.
     int event_count = 0;
@@ -393,11 +393,11 @@ bool Netplay_ProcessSpectatorPhase() {
                 break;
             case GekkoSpectatorPaused:
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "Spectator: paused — buffering");
+                    "Spectator: paused -- buffering");
                 break;
             case GekkoSpectatorUnpaused:
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "Spectator: unpaused — playback resumed");
+                    "Spectator: unpaused -- playback resumed");
                 break;
             case GekkoDesyncDetected:
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
@@ -411,7 +411,7 @@ bool Netplay_ProcessSpectatorPhase() {
         }
     }
 
-    // Drain Save/Load/Advance events — same handlers as the host's battle
+    // Drain Save/Load/Advance events -- same handlers as the host's battle
     // path, ensuring the spectator's render-side mutations and virtual
     // clock stay locked to the host's confirmed state.
     int update_count = 0;
@@ -446,7 +446,7 @@ bool Netplay_ProcessSpectatorPhase() {
                 g_p1_input = in[0];
                 g_p2_input = in[1];
                 g_netplay_frame = (uint32_t)update->data.adv.frame;
-                // Lock virtual clock to host's frame schedule — same contract
+                // Lock virtual clock to host's frame schedule -- same contract
                 // as the host's GekkoAdvance handler. This is what closes H3
                 // (g_virtual_time_ms skew vs host's rollback-rewinds).
                 extern uint32_t g_virtual_time_ms;
@@ -455,7 +455,7 @@ bool Netplay_ProcessSpectatorPhase() {
                 if (original_process_game_inputs) original_process_game_inputs();
                 if (original_update_game)         original_update_game();
                 // ParityRecorder::Capture() runs from the trampoline post-tick
-                // (mirrors the offline + battle paths) — keeps the parity
+                // (mirrors the offline + battle paths) -- keeps the parity
                 // header dependency out of netplay.cpp.
                 advanced = true;
 

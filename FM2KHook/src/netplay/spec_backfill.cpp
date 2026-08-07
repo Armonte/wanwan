@@ -41,24 +41,32 @@ namespace specnode {
 // Bytes-based chunking (vs the old fixed-frame chunking) handles variable-
 // length events: a chunk with mostly INPUT events fits ~200 events; a
 // chunk with a 96-byte MATCH_START fits fewer. Sized to stay under typical
-// UDP MTU (1200 B safe) once we keep TCP — over TCP this only matters for
+// UDP MTU (1200 B safe) once we keep TCP -- over TCP this only matters for
 // receive-buffer pacing and avoids an oversized syscall stalling the
 // session_events traversal.
-// 8 KB chunks — a 1000-INPUT backfill (5 B/INPUT) + non-INPUT ops fits
-// in a single chunk. The previous 1 KB cap chunked into ~3 chunks; in
-// practice spectators only ever received the FIRST chunk, leaving a
-// 500+ frame gap that they couldn't bridge before live EVENT_BATCH
-// broadcasts started flowing (host's pkmncc match — see 07:54 logs).
-// Root cause of the multi-chunk delivery loss is still unclear (TCP
-// is reliable; both sides on localhost) but a single-chunk send
-// sidesteps it. 8 KB stays well under the uint16 hdr.flags cap (65 KB).
-constexpr size_t BACKFILL_CHUNK_BYTES = 8192;
+// ONE CHUNK == ONE UDP DATAGRAM, same rule as SPECTATOR_SNAPSHOT_CHUNK_BYTES.
+//
+// This was 8192, chosen back when backfill rode TCP and the observed symptom
+// was "spectators only ever received the FIRST chunk" -- which the note below
+// admitted it could not explain. The RC-default era explains it: RC frames a
+// chunk as [12B RC hdr][10B SpecDataHeader][chunk][4B CRC] and reliable.io
+// fragments anything over fragment_above=1024, with no per-fragment
+// retransmit. An 8192-byte chunk is 9 all-or-nothing fragments -- 0.8^9 = 13%
+// per-attempt success at 20% loss -- and the ORDERED backfill channel
+// head-of-line-blocks on the first one that fails. Losing chunk 0 loses
+// PIN_RNG / MATCH_START / RESET_INPUT_STATE / SOUND_INIT.
+// 900 keeps the framed message at 900+26 = 926 B: one unfragmented datagram,
+// individually FEC-recoverable and individually retransmittable. More chunks
+// (a 100 KB backfill goes 13 -> ~114) cost only per-chunk header bytes; the
+// receiver has no chunk-size assumption (op_base is recomputed per chunk).
+// Still far under the uint16 hdr.flags cap.
+constexpr size_t BACKFILL_CHUNK_BYTES = 900;
 
 // Walk session_events from a given index/INPUT-frame anchor and stream
 // chunked EVENT_BATCH datagrams to a single subscriber. The legacy
 // "from frame 0" backfill is just (first_event_idx=0,
 // start_input_frame=session_start_frame); the snapshot-join path
-// (task #18 phase 3) calls with the snapshot's anchor — events emitted
+// (task #18 phase 3) calls with the snapshot's anchor -- events emitted
 // reflect "everything from the snapshot's frame onward," not the
 // preceding history we already shipped via SNAPSHOT_*.
 void SendSessionEventsTo(const sockaddr_in& to,
@@ -202,8 +210,8 @@ void SendSessionEventsTo(const sockaddr_in& to,
         hdr.frame_count = static_cast<uint16_t>(std::min<uint32_t>(chunk_op_base, 0xFFFFu));
         // EVENT_BATCH: flags carries payload byte count for the receiver's
         // TCP framer (see PayloadLenForType in spectator_tcp.cpp). The
-        // BACKFILL_CHUNK_BYTES=1024 cap keeps this well under the 16-bit
-        // limit. (Was: bit 0 flagged deferred-ops chunk — moot now since
+        // BACKFILL_CHUNK_BYTES cap keeps this well under the 16-bit
+        // limit. (Was: bit 0 flagged deferred-ops chunk -- moot now since
         // the framer needs the byte count regardless.)
         hdr.flags       = static_cast<uint16_t>(std::min<size_t>(payload.size(), 0xFFFFu));
         std::memcpy(buf.data(), &hdr, sizeof(hdr));
@@ -227,8 +235,61 @@ void SendSessionBackfillTo(const sockaddr_in& to) {
     SendSessionEventsTo(to, 0, g_state.session_start_frame);
 }
 
+// Design 2 entry point: ship only the CURRENT char-select phase onward, i.e.
+// from the most recent CSS_ENTERED. This is what a viewer joining an ongoing
+// set between matches gets instead of the whole session.
+//
+// Why this is bounded and the old path was not: session_events is never
+// trimmed, so SendSessionBackfillTo replays every prior CSS phase and every
+// prior battle. Battle frames are cheap in catchup (~0.1ms, render every
+// 64th) but CSS frames are not -- each mirrored cursor move can trigger a
+// synchronous cold .player load of 100-500ms, and needs_css_catchup is
+// hard-wired false, so N prior CSS phases cost tens of seconds. Anchoring
+// here crosses AT MOST ONE seam and replays AT MOST ONE char-select.
+//
+// Falls back to the full backfill when the session has no CSS_ENTERED yet
+// (the very first char-select of a session), which is the fresh
+// session-start join -- that path stays byte-for-byte what it is today.
+// Single source of truth for "is the bounded anchor usable". The bind path
+// consults this BEFORE logging which path it is taking -- otherwise a
+// fresh-session joiner announces BETWEEN-MATCHES and then retracts it one line
+// later when the sender falls back.
+bool HaveBoundedAnchor() {
+    return g_state.have_prior_match && g_state.have_css_anchor &&
+           g_state.css_anchor_event_idx < g_state.session_events.size();
+}
+
+void SendSessionBackfillFromRecentAnchor(const sockaddr_in& to) {
+    const size_t total = g_state.session_events.size();
+    if (total == 0) return;
+    if (!HaveBoundedAnchor()) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "SpectatorNode: no bounded anchor yet (prior_match=%d css_anchor=%d)"
+            " -- shipping the full from-frame-0 backfill",
+            (int)g_state.have_prior_match, (int)g_state.have_css_anchor);
+        SendSessionBackfillTo(to);
+        return;
+    }
+    // Pull the live-flush watermark up to the tip first. SendSessionEventsTo
+    // clamps at last_flushed_event_idx, which trails the tip by up to
+    // BROADCAST_BATCH_FRAMES -- harmless for a from-frame-0 backfill, but the
+    // CSS anchor can BE inside that trailing window when a viewer joins within
+    // a few frames of char-select opening, and the backfill would then ship
+    // nothing at all. Safe here: BroadcastToAll skips this sub until
+    // MarkBackfillComplete, which is exactly what the fence is for, and
+    // OnMatchStart already flushes for the same monotonicity reason.
+    FlushBatch();
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "SpectatorNode: bounded backfill from CSS anchor (event idx=%zu/%zu, "
+        "INPUT-frame=%u of %u) -- skipping %zu event(s) of prior matches",
+        g_state.css_anchor_event_idx, total, g_state.css_anchor_input_frame,
+        g_state.total_input_count, g_state.css_anchor_event_idx);
+    SendSessionEventsTo(to, g_state.css_anchor_event_idx,
+                        g_state.css_anchor_input_frame);
+}
+
 // Phase 3 entry point: ships only events at-or-after the given INPUT-frame
-// anchor. Paired with SendSnapshotTo for CURRENT_MATCH-mode subscribers —
+// anchor. Paired with SendSnapshotTo for CURRENT_MATCH-mode subscribers --
 // the snapshot covers state up to its anchor frame, then this fills in
 // the events from there to live edge.
 //
@@ -303,14 +364,24 @@ void SendSessionBackfillFromFrame(const sockaddr_in& to,
 // (TickHostMaintenance handles that via the backfill_done fence).
 void SendSnapshotTo(const sockaddr_in& to) {
     const auto& cache = g_state.current_snapshot;
-    if (!cache.valid || cache.blob.empty()) return;
+    if (!cache.valid || cache.blob.empty() || cache.wire_blob.empty()) return;
+
+    // The wire form was built ONCE at StashSnapshot. This function used to
+    // re-run ZeroRleCompress over the whole ~1MB blob per recipient, on the
+    // host main loop under g_poll_mutex, so the host hitch scaled with viewer
+    // count and with every re-JOIN re-ship.
+    const std::vector<uint8_t>& wire = cache.wire_blob;
 
     char addr_buf[48] = {};
     FormatAddr(to, addr_buf, sizeof(addr_buf));
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "SpectatorNode: shipping snapshot to %s "
-                "(match=%u, %zu bytes, anchor INPUT-frame=%u)",
-                addr_buf, cache.match_index, cache.blob.size(), cache.input_frame);
+                "(match=%u, raw %zu bytes, wire %zu bytes %s, "
+                "anchor INPUT-frame=%u)",
+                addr_buf, cache.match_index, cache.blob.size(), wire.size(),
+                (cache.wire_flags & SNAPSHOT_FLAG_ZERO_RLE) ? "zero-RLE"
+                                                            : "uncompressed",
+                cache.input_frame);
 
     // ---- SNAPSHOT_BEGIN ----------------------------------------------
     {
@@ -318,8 +389,8 @@ void SendSnapshotTo(const sockaddr_in& to) {
         meta.version            = SPECTATOR_SNAPSHOT_VERSION;
         meta.total_bytes        = (uint32_t)cache.blob.size();
         meta.match_index        = cache.match_index;
-        meta.flags              = 0;
-        meta.compressed_bytes   = (uint32_t)cache.blob.size();
+        meta.flags              = cache.wire_flags;
+        meta.compressed_bytes   = (uint32_t)wire.size();
         // Phase E: tell the spec which mode this snapshot was captured
         // at. v0.2.41 spectators see this as `reserved1` and ignore it
         // (their apply gate is hard-coded to `game_mode >= 3000` which
@@ -334,25 +405,18 @@ void SendSnapshotTo(const sockaddr_in& to) {
         hdr.type        = SpecDataType::SNAPSHOT_BEGIN;
         hdr.start_frame = cache.input_frame;       // anchor for spectator's next_expected_frame
         hdr.frame_count = 0;
-        hdr.flags       = (uint16_t)sizeof(meta);  // 16 — payload byte count
-        // Zero-RLE the blob; ship compressed when it actually wins.
-        static std::vector<uint8_t> s_wire;   // reused scratch
-        ZeroRleCompress(cache.blob, s_wire);
-        const bool use_rle = s_wire.size() < cache.blob.size();
-        const std::vector<uint8_t>& wire = use_rle ? s_wire : cache.blob;
-        if (use_rle) {
-            meta.flags            |= SNAPSHOT_FLAG_ZERO_RLE;
-            meta.compressed_bytes  = (uint32_t)s_wire.size();
-        }
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "SpectatorNode: snapshot wire size %zu bytes (%s, raw %zu)",
-            wire.size(), use_rle ? "zero-RLE" : "uncompressed",
-            cache.blob.size());
+        hdr.flags       = (uint16_t)sizeof(meta);  // 20 -- payload byte count
         std::memcpy(buf.data(), &hdr, sizeof(hdr));
         std::memcpy(buf.data() + sizeof(hdr), &meta, sizeof(meta));
         OutboundSendTo(to, buf.data(), buf.size());
+    }
 
     // ---- SNAPSHOT_CHUNK xN -------------------------------------------
+    // Chunk boundaries are a pure function of SPECTATOR_SNAPSHOT_CHUNK_BYTES,
+    // so a re-ship of the SAME cached snapshot produces byte-identical chunks
+    // at identical offsets -- which is what makes the viewer's coverage-set
+    // reassembly and its BEGIN-continue rule able to treat a re-ship as a
+    // resume rather than a restart.
     size_t emitted = 0;
     while (emitted < wire.size()) {
         const size_t remaining = wire.size() - emitted;
@@ -372,7 +436,6 @@ void SendSnapshotTo(const sockaddr_in& to) {
 
         emitted += chunk_n;
     }
-    }
 
     // ---- SNAPSHOT_END -------------------------------------------------
     {
@@ -389,10 +452,12 @@ void SendSnapshotTo(const sockaddr_in& to) {
     }
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "SpectatorNode: snapshot shipped (%zu bytes in %zu chunks, fletcher32=0x%08X)",
-                cache.blob.size(),
-                (cache.blob.size() + SPECTATOR_SNAPSHOT_CHUNK_BYTES - 1) /
+                "SpectatorNode: snapshot shipped (%zu wire bytes in %zu chunks "
+                "of %zu, raw %zu, fletcher32=0x%08X)",
+                wire.size(),
+                (wire.size() + SPECTATOR_SNAPSHOT_CHUNK_BYTES - 1) /
                     SPECTATOR_SNAPSHOT_CHUNK_BYTES,
+                SPECTATOR_SNAPSHOT_CHUNK_BYTES, cache.blob.size(),
                 cache.checksum);
 }
 

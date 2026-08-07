@@ -1,4 +1,4 @@
-// SpectatorTCP — TCP transport for the spectator INPUT_BATCH stream.
+// SpectatorTCP -- TCP transport for the spectator INPUT_BATCH stream.
 //
 // See spectator_tcp.h for full design rationale. This file is the SDL3_net
 // implementation: a single listener on the host, a per-subscriber stream
@@ -22,7 +22,7 @@
 #include <string>
 #include <vector>
 
-// Forward declaration — defined in spectator_node.cpp. The `from` field is
+// Forward declaration -- defined in spectator_node.cpp. The `from` field is
 // unused for TCP-sourced frames (dispatch logic doesn't depend on it for
 // upstream-INPUT_BATCH/INITIAL_MATCH/MATCH_END), so we pass a zeroed sockaddr.
 extern void SpectatorNode_OnUpstreamTcpDead();
@@ -42,7 +42,7 @@ struct SubConn {
     sockaddr_in           addr;       // (ip, source-port) tuple from JOIN_REQ
     NET_StreamSocket*     sock;
     std::vector<uint8_t>  read_buf;   // partial-frame staging (currently
-                                      // unused — host doesn't read structured
+                                      // unused -- host doesn't read structured
                                       // data from subscribers post-INPUT_REQUEST
                                       // removal; we just discard inbound bytes).
     bool                  backfill_done = false;
@@ -50,7 +50,7 @@ struct SubConn {
                                       // by SpectatorNode_TickHostMaintenance
                                       // after SendInitialMatchTo +
                                       // SendSessionBackfillTo finish. Until
-                                      // then, BroadcastToAll skips this sub —
+                                      // then, BroadcastToAll skips this sub --
                                       // closes the race where a live FlushBatch
                                       // would otherwise reach the spectator
                                       // before its backfill bytes, anchoring
@@ -111,7 +111,7 @@ bool AddrEquals(const sockaddr_in& a, const sockaddr_in& b) {
         && a.sin_addr.s_addr == b.sin_addr.s_addr;
 }
 
-// IP-only match (used by RegisterAcceptedClient — TCP source port differs
+// IP-only match (used by RegisterAcceptedClient -- TCP source port differs
 // from the UDP source port, so we can't full-tuple match here).
 bool AddrIpEquals(const sockaddr_in& a, const sockaddr_in& b) {
     return a.sin_family == b.sin_family
@@ -238,7 +238,7 @@ void PollIncoming() {
             doomed.push_back(i);
         }
         // n == 0: nothing pending. n > 0: spectator → host TCP messages
-        // don't exist (post-INPUT_REQUEST removal) — discard.
+        // don't exist (post-INPUT_REQUEST removal) -- discard.
     }
     // Erase in reverse-index order so earlier indices remain valid.
     for (size_t k = doomed.size(); k-- > 0; ) {
@@ -382,7 +382,7 @@ bool PerformTcpStun() {
     const char* hub_addr_str = std::getenv("FM2K_HUB_TCP_STUN_ADDR");
     if (!hub_addr_str || !*hub_addr_str) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "TCP-STUN: FM2K_HUB_TCP_STUN_ADDR unset — skipping");
+                    "TCP-STUN: FM2K_HUB_TCP_STUN_ADDR unset -- skipping");
         return false;
     }
     std::string hub_str = hub_addr_str;
@@ -407,7 +407,7 @@ bool PerformTcpStun() {
     // conditions; total cap is 1s connect + 500ms recv = 1.5s worst case.
     struct in_addr hub_addr{};
     if (inet_pton(AF_INET, host.c_str(), &hub_addr) != 1) {
-        // Hostname — resolve via sync getaddrinfo (UDP-STUN uses the
+        // Hostname -- resolve via sync getaddrinfo (UDP-STUN uses the
         // same path successfully; SDL_net is what was hanging, not DNS).
         addrinfo hints{}, *res = nullptr;
         hints.ai_family   = AF_INET;
@@ -434,7 +434,7 @@ bool PerformTcpStun() {
 
     // Set SO_REUSEADDR so we can bind to the same port the spec listener
     // already has open. This is what creates the NAT mapping we want
-    // to probe — host punches to whatever external port maps from
+    // to probe -- host punches to whatever external port maps from
     // g_listen_port, so we MUST connect from g_listen_port.
     BOOL reuse = TRUE;
     setsockopt(sock, SOL_SOCKET, SO_REUSEADDR,
@@ -546,7 +546,7 @@ bool ConnectUpstream(const char* host_ip, uint16_t host_tcp_port) {
                      host_ip, SDL_GetError());
         return false;
     }
-    // 200ms is plenty for a literal-IP "resolve" — the SDL_net path turns
+    // 200ms is plenty for a literal-IP "resolve" -- the SDL_net path turns
     // dotted-quad strings into addresses without a DNS round-trip.
     const int rc = NET_WaitUntilResolved(addr, 200);
     if (rc != 1) {
@@ -557,8 +557,8 @@ bool ConnectUpstream(const char* host_ip, uint16_t host_tcp_port) {
         return false;
     }
     // Source the outbound connect from our own listener port (when one is
-    // bound) so the host's TCP simultaneous-open punch — which targets our
-    // spec_tcp_port via the hub-coordinated spectator_incoming flow — sees
+    // bound) so the host's TCP simultaneous-open punch -- which targets our
+    // spec_tcp_port via the hub-coordinated spectator_incoming flow -- sees
     // a matching 4-tuple at its NAT and lets the reply SYN-ACK back through.
     // local_port=0 falls back to NET_CreateClient's kernel-ephemeral.
     //
@@ -701,7 +701,7 @@ void PollUpstream() {
             if (ShouldLog(g_throttle_corrupt_stream)) {
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                              "SpectatorTCP: corrupt upstream stream "
-                             "(magic=0x%02X) — dropping connection",
+                             "(magic=0x%02X) -- dropping connection",
                              hdr.magic);
             }
             NET_DestroyStreamSocket(g_upstream_sock);
@@ -713,7 +713,7 @@ void PollUpstream() {
         const size_t payload_len = PayloadLenForType(hdr);
         if (payload_len == SIZE_MAX) {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "SpectatorTCP: unknown SpecDataType=%u upstream — "
+                         "SpectatorTCP: unknown SpecDataType=%u upstream -- "
                          "dropping connection",
                          static_cast<unsigned>(hdr.type));
             NET_DestroyStreamSocket(g_upstream_sock);

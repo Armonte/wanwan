@@ -191,7 +191,7 @@ void OutboundSendTo(const sockaddr_in& to, const void* buf, size_t len) {
             sockaddr_storage ss{};
             std::memcpy(&ss, &to, sizeof(to));
             // SNAPSHOT_BEGIN/CHUNK/END are content-addressed (reassembled by byte
-            // offset), so they ride an UNORDERED channel — a lost chunk delays only
+            // offset), so they ride an UNORDERED channel -- a lost chunk delays only
             // itself, not the other 65 (no head-of-line block on the 1MB transfer).
             // Backfill EVENT_BATCH + OP_BASELINE stay on the ORDERED bulk channel.
             uint8_t rc_chan = RC_CHAN_SPEC_SNAPSHOT;
@@ -282,7 +282,7 @@ void FormatAddr(const sockaddr_in& a, char* out, size_t out_sz) {
 
 // Append one event's wire encoding into a byte vector. Used by both the
 // live broadcast path (FlushBatch) and the backfill path
-// (SendSessionBackfillTo) — keeps wire-encoding logic in one place.
+// (SendSessionBackfillTo) -- keeps wire-encoding logic in one place.
 void AppendEventToWire(std::vector<uint8_t>& out, const SessionEvent& ev,
                        const std::vector<MatchHeader>& headers) {
     uint8_t buf[SESSION_EVENT_MAX_WIRE_SIZE];
@@ -330,7 +330,7 @@ void AppendEventToWire(std::vector<uint8_t>& out, const SessionEvent& ev,
 }
 
 // Count INPUT events in [first, last) of a SessionEvent slice. Used to
-// populate SpecDataHeader.frame_count for log/diagnostic purposes — wire
+// populate SpecDataHeader.frame_count for log/diagnostic purposes -- wire
 // dedup uses start_frame.
 uint32_t CountInputs(const std::vector<SessionEvent>& events,
                      size_t first, size_t last) {
@@ -342,7 +342,7 @@ uint32_t CountInputs(const std::vector<SessionEvent>& events,
 }
 
 // Emit an EVENT_BATCH datagram covering all events appended since the last
-// flush. TCP guarantees in-order, exactly-once delivery — no redundancy
+// flush. TCP guarantees in-order, exactly-once delivery -- no redundancy
 // window. The header carries:
 //   start_frame = session-relative INPUT-frame index of the first INPUT in
 //                 this batch (= flushed_input_count at entry). Used by the
@@ -397,7 +397,7 @@ void FlushBatch() {
     hdr.frame_count = static_cast<uint16_t>(std::min<uint32_t>(op_base, 0xFFFFu));
     // For EVENT_BATCH, flags carries the payload byte count so the TCP
     // framer can size the receive without re-decoding events. 16-bit cap
-    // (65535) is well above any reasonable live FlushBatch — backfill
+    // (65535) is well above any reasonable live FlushBatch -- backfill
     // chunks are explicitly bounded at BACKFILL_CHUNK_BYTES=1024.
     hdr.flags       = static_cast<uint16_t>(std::min<size_t>(payload.size(), 0xFFFFu));
     std::memcpy(buf.data(), &hdr, sizeof(hdr));
@@ -409,7 +409,7 @@ void FlushBatch() {
 // ─── Phase F: UDP input accelerator (host side) ──────────────────────────
 
 // Kill switch: FM2K_SPEC_UDP=0 disables both the host sender and the viewer
-// admission. Default ON — EXCEPT when the ReliableChannel carries the spectator
+// admission. Default ON -- EXCEPT when the ReliableChannel carries the spectator
 // stream (FM2K_SPEC_RC=1): RC+Reed-Solomon+CRC is a single reliable-ordered,
 // low-latency, integrity-checked input path that makes this accelerator obsolete.
 // The accelerator is a SECOND, non-CRC-protected input path; under loss it can
@@ -563,7 +563,7 @@ void SpecReplayPreSubStash() {
 // --- Global-scope (not specnode): ReliableChannel consumer glue -------------
 // RC delivery -> the same handler TCP-arrived spec data uses. Ordered channel
 // guarantees ops-before-inputs and contiguous frames, which HandleSpecData
-// already assumes — so the consumer contract is preserved by construction.
+// already assumes -- so the consumer contract is preserved by construction.
 static void RcSpectatorDeliver(void* /*ctx*/, const sockaddr_storage& from,
                                uint8_t channel, const uint8_t* data, int len) {
     // Live (ch1, ordered), backfill/op (ch2, ordered), and snapshot blob (ch3,

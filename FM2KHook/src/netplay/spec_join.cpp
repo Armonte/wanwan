@@ -1,20 +1,17 @@
-// Spectator join/redirect protocol (host-side accept/redirect + viewer-side
-// request/ack), the GekkoSpectator dedup set, and BuildJoinAckPacket. Extracted
-// VERBATIM from spectator_node.cpp. Public API (decls in spectator_node.h);
-// reaches specnode helpers via using.
+// Spectator join protocol, HOST side: JOIN_REQ accept/redirect, the
+// GekkoSpectator dedup set, SESSION_END broadcast, and JOIN_ACK construction.
+// The viewer half (request/ack/redirect/kick) lives in the sibling
+// spec_join_viewer.cpp; they share spec_join_internal.h. Public API decls in
+// spectator_node.h; reaches specnode helpers via using.
 #include "spectator_node.h"
 #include "spectator_node_internal.h"  // shared State model + g_state (split for sibling TUs)
-#include "spec_wire.h"            // zero-RLE codec (SessionEvent_* live in spectator_node.h)
-#include "spec_relay_queue.h"     // hub-relay outbound queue (Phase 2c)
+#include "spec_join_internal.h"       // shared with spec_join_viewer.cpp
 #include "spectator_tcp.h"        // TCP transport for INPUT_BATCH stream
 #include "control_channel.h"
-#include "nat_traversal.h"        // GetRelayAddr for the spec-relay fallback (#58)
 #include "netplay.h"
-#include "replay.h"
-#include "savestate.h"            // SaveState_Save / Peek for snapshot capture
 #include "netplay_state.h"
+#include "../core/globals.h"          // FM2K::ADDR_* -- CSS char/stage reads for the JOIN_ACK
 #include "../audio/sound_rollback.h"  // Op apply: SOUND_INIT
-#include "../hooks/css_autoconfirm.h" // Replay-mode CSS lock-and-confirm
 #include "../hooks/per_game_patches.h" // PerGamePatches_SetRuntimeBtbOverrides
 #include "../ui/shared_mem.h"         // C10: SharedMem_PublishMatchSession / RoundResult
 #include "version_local.h"            // fm2k::kAppVersion -- spectate version gate
@@ -22,8 +19,9 @@
 
 // kAppVersion "0.M.P" -> (M, P) for the SPEC_JOIN_VERSIONED gate. Parsed
 // once; a malformed string (never happens -- make_version.sh stamps it)
-// degrades to 0.0, which simply fails the gate closed.
-static void AppVersionBytes(uint8_t* out_minor, uint8_t* out_patch) {
+// degrades to 0.0, which simply fails the gate closed. Declared in
+// spec_join_internal.h because the viewer TU stamps it into every JOIN_REQ.
+void SpecJoin_AppVersionBytes(uint8_t* out_minor, uint8_t* out_patch) {
     static uint8_t s_minor = 0xFF, s_patch = 0xFF;
     if (s_minor == 0xFF) {
         unsigned mj = 0, mn = 0, pa = 0;
@@ -84,20 +82,25 @@ void SpectatorNode_ClearGekkoSpectatorTracking() {
     }
 }
 
-CtrlPacket BuildJoinAckPacket() {
+// Core ACK builder. `advertised_kind` is what goes on the wire; `with_chars`
+// asks for the live battle char/stage/color read. They are separate arguments
+// on purpose: the battle-entry refresh advertises kind 3 (not 2) but still
+// wants the chars, and a FULL_SESSION grant advertises CSS/NONE and must carry
+// NO chars at all -- a /F-boot seed handed to a from-frame-0 mirror is exactly
+// the bug this split of the builder exists to prevent.
+static CtrlPacket BuildJoinAckWithKind(uint8_t advertised_kind, bool with_chars) {
     CtrlPacket ack = {};
     ack.header.type = CtrlMsg::SPEC_JOIN_ACK;
-    const NetplaySessionKind k = Netplay_GetSessionKind();
-    ack.data.spec_join_ack.host_session_kind = static_cast<uint8_t>(k);
+    ack.data.spec_join_ack.host_session_kind = advertised_kind;
     // Tell the spectator which TCP port to dial for the INPUT_BATCH
     // stream. Zero would mean the listener failed at startup, in which
     // case the spectator refuses the subscription.
     ack.data.spec_join_ack.host_tcp_port = SpectatorTCP::GetListenPort();
-    // Default "unknown" — only valid when host is in battle.
+    // Default "unknown" -- only valid when host is in battle.
     ack.data.spec_join_ack.host_p1_char = 0xFF;
     ack.data.spec_join_ack.host_p2_char = 0xFF;
     ack.data.spec_join_ack.host_stage   = 0xFF;
-    if (k == NetplaySessionKind::BATTLE) {
+    if (with_chars) {
         // Read the engine's current post-CSS-confirm chars + stage so
         // the spec can /F-boot with the RIGHT character files. These
         // live at ADDR_P1_SELECTED_CHAR / ADDR_P2_SELECTED_CHAR (the
@@ -105,7 +108,7 @@ CtrlPacket BuildJoinAckPacket() {
         // chars p1=N(...) p2=N(...)" log) and ADDR_SELECTED_STAGE.
         //
         // Note: g_config_value1/3 (0x4300E0/0x4300F0) are only
-        // populated when the HOST itself was /F-launched — for a
+        // populated when the HOST itself was /F-launched -- for a
         // normal CSS walk they stay at 0, which is why the previous
         // read gave us p1=0/p2=0 and pkmncc crashed loading a
         // mirror Blaziken matchup.
@@ -131,6 +134,34 @@ CtrlPacket BuildJoinAckPacket() {
     return ack;
 }
 
+// LIVE REFRESH. Carries where the host is RIGHT NOW, tagged so no viewer can
+// mistake it for its grant. Used by the battle-entry re-broadcast in
+// spectator_node.cpp (one packet to every subscriber, so it cannot be
+// per-subscriber) and by the re-ACKs that deliberately change nothing --
+// those go to demonstrably-live mirroring viewers, for which the host's
+// current phase is the useful truth. Chars ride along when in battle: handing
+// already-mirroring viewers the now-real chars/stage is the point of it.
+CtrlPacket BuildJoinAckPacket() {
+    const NetplaySessionKind k = Netplay_GetSessionKind();
+    const bool battle = (k == NetplaySessionKind::BATTLE);
+    return BuildJoinAckWithKind(
+        static_cast<uint8_t>(static_cast<uint8_t>(k) | SPEC_ACK_LIVE_REFRESH),
+        battle);
+}
+
+// Per-subscriber grant. Every ACK this host sends to a specific subscriber
+// goes through here, so the kind a viewer is told is ALWAYS the kind that was
+// pinned alongside its join_mode -- decided once, from one
+// Netplay_GetSessionKind() read, and re-decided only when the host
+// deliberately re-pins the mode (the destructive-reset branch, which updates
+// both in the same block).
+CtrlPacket BuildJoinAckPacketFor(const Subscriber& sub) {
+    // No SPEC_ACK_LIVE_REFRESH bit: this IS the grant. Chars only for a BATTLE
+    // grant -- handing /F-boot seeds to a from-frame-0 mirror is the defect.
+    return BuildJoinAckWithKind(sub.pinned_ack_kind,
+                                sub.pinned_ack_kind == SPEC_ACK_KIND_BATTLE);
+}
+
 void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
                                  uint8_t caps, uint32_t resume_frame,
                                  uint8_t ver_minor, uint8_t ver_patch) {
@@ -141,7 +172,7 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
     // null-redirect the capacity path uses -- the viewer gives up cleanly.
     {
         uint8_t my_minor = 0, my_patch = 0;
-        AppVersionBytes(&my_minor, &my_patch);
+        SpecJoin_AppVersionBytes(&my_minor, &my_patch);
         const bool versioned = (caps & SPEC_JOIN_VERSIONED) != 0;
         if (!versioned || ver_minor != my_minor || ver_patch != my_patch) {
             char addr_buf[48] = {};
@@ -168,22 +199,59 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
     // can never diverge. (The bind used to decide from its own LATER
     // state: a CSS-time joiner whose bind fired after battle started
     // got a battle snapshot against a title-screen engine = deadlock.)
-    if (mode == SpecJoinMode::CURRENT_MATCH && resume_frame == 0 &&
-        Netplay_GetSessionKind() != NetplaySessionKind::BATTLE) {
-        mode = SpecJoinMode::FULL_SESSION;
+    //
+    // ONE read, reused for both halves of the decision. That comment above
+    // was aspirational until now: the mode came from this read, but the ACK's
+    // kind came from a SECOND Netplay_GetSessionKind() inside the builder --
+    // and the battle-entry re-broadcast took a THIRD. A host crossing into
+    // battle between them handed a FULL_SESSION-granted viewer kind=BATTLE,
+    // which is the desync this fixes. pinned_ack_kind rides on the Subscriber
+    // so every later re-ACK repeats the same answer.
+    const NetplaySessionKind kind_at_pin = Netplay_GetSessionKind();
+    // Design 2: the CURRENT_MATCH -> FULL_SESSION downgrade that used to live
+    // here is GONE. It fired whenever the host was not in battle, which is the
+    // common case for a hub "spectate" click, and FULL_SESSION means the bind
+    // ships session_events from index 0 -- every prior char-select and every
+    // prior battle of an ongoing set. Battle frames replay cheaply, but each
+    // mirrored CSS cursor move can trigger a cold .player load, so a viewer
+    // joining a long set watched ~a minute of fast-forward before reaching
+    // live. The mode now survives, and the bind serves a bounded backfill
+    // anchored at the current char-select instead (spec_health.cpp).
+    //
+    // FULL_SESSION is still honoured when the VIEWER asks for it
+    // (FM2K_SPECTATE_MODE=full, netplay.cpp) -- that is the streamer/archivist
+    // opt-in and the escape hatch if a bounded join ever misbehaves.
+    //
+    // Nothing about the viewer's boot posture changes: pinned_kind below is
+    // still CSS/NONE for a non-battle join, so the viewer natural-boots and
+    // mirrors char-select exactly as it does today. Only the host's choice of
+    // where the stream STARTS moves.
+    if (mode == SpecJoinMode::FULL_SESSION) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "SpectatorNode: pre-battle JOIN -- pinning mode to "
-            "FULL_SESSION (from-frame-0 stream, no snapshot)");
+            "SpectatorNode: viewer explicitly requested FULL_SESSION -- "
+            "from-frame-0 stream (deep-join bound opted out)");
     }
+    // The grant advertised to this subscriber, from the same read. BATTLE
+    // means and ONLY means "snapshot join: /F-boot into battle, a snapshot is
+    // coming". A FULL_SESSION grant therefore never advertises BATTLE even
+    // when the host is in battle -- that viewer gets the from-frame-0 stream,
+    // which starts at CSS, so CSS is the posture it must boot into. Getting
+    // this backwards is the whole defect: a FULL_SESSION viewer told BATTLE
+    // /F-boots and then feeds itself CSS inputs as battle inputs.
+    const uint8_t pinned_kind =
+        (mode == SpecJoinMode::CURRENT_MATCH &&
+         kind_at_pin == NetplaySessionKind::BATTLE)
+            ? SPEC_ACK_KIND_BATTLE
+            : (kind_at_pin == NetplaySessionKind::BATTLE
+                   ? SPEC_ACK_KIND_CSS
+                   : static_cast<uint8_t>(kind_at_pin));
     char addr_buf[48] = {};
     FormatAddr(from, addr_buf, sizeof(addr_buf));
-
-    auto BuildJoinAck = []() { return BuildJoinAckPacket(); };
 
     // Helper: if there's a live GekkoNet session on this node (player slot),
     // add the joining spectator as a GekkoSpectator actor so confirmed-input
     // events and (battle) Save/Load events reach them natively. Both CSS
-    // and BATTLE sessions get spectators added — CSS doesn't emit Save/Load
+    // and BATTLE sessions get spectators added -- CSS doesn't emit Save/Load
     // (lockstep suppresses them) but it does emit GekkoAdvanceEvent per
     // confirmed frame, and that's the source of truth that drives the
     // spectator's local sim 1:1 with the host.
@@ -227,7 +295,7 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
             if ((s_cap_log++ & 0x1F) == 0) {
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     "SpectatorNode: GekkoSpectator actor cap %zu reached (%zu addrs this "
-                    "session) — %s served via SpectatorNode stream only (no native actor)",
+                    "session) -- %s served via SpectatorNode stream only (no native actor)",
                     kMaxGekkoSpectators, g_gekko_spectator_addrs.size(), addr_str);
             }
             return;
@@ -247,7 +315,7 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
     // JOIN_REQ re-fires the bind + backfill path. Without this, a previous
     // spectator session whose TCP read-errored leaves the slot with
     // tcp_bound=true; the next JOIN_REQ from same UDP source treats it as
-    // a duplicate and never re-ships snapshot/backfill — symptom is the
+    // a duplicate and never re-ships snapshot/backfill -- symptom is the
     // spectator's silence-failover triggering every 5s in a reconnect
     // loop with the host accepting TCP but never sending data.
     //
@@ -284,7 +352,7 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
                 reliable_path_up) {
                 sub.last_seen_ms = GetTickCount64();
                 sub.udp_ok       = udp_ok;
-                CtrlPacket ack = BuildJoinAckPacket();
+                CtrlPacket ack = BuildJoinAckPacket();  // live: no re-pin
                 ControlChannel_SendTo(ack, sub.addr);
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "SpectatorNode: gap-fill for %s from INPUT-frame=%u "
@@ -309,7 +377,11 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
                     now_ms - sub.last_reset_ms < 3000) {
                     sub.last_seen_ms = now_ms;
                     sub.udp_ok       = udp_ok;
-                    CtrlPacket ack = BuildJoinAckPacket();
+                    // Re-STATE the existing grant rather than live state: this
+                    // is the branch a first-time viewer whose accept ACK was
+                    // lost lands on, and a refresh here could not subscribe it.
+                    // Nothing was re-pinned, so pinned_ack_kind is still right.
+                    CtrlPacket ack = BuildJoinAckPacketFor(sub);
                     ControlChannel_SendTo(ack, sub.addr);
                     return;
                 }
@@ -325,12 +397,12 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
                 // blackout -> P1/P2 barrier wedge).
                 sub.last_seen_ms = GetTickCount64();
                 sub.udp_ok       = udp_ok;
-                CtrlPacket ack = BuildJoinAckPacket();
+                CtrlPacket ack = BuildJoinAckPacket();  // live: no re-pin
                 ControlChannel_SendTo(ack, sub.addr);
                 return;
             }
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                        "SpectatorNode: JOIN_REQ from existing subscriber %s — "
+                        "SpectatorNode: JOIN_REQ from existing subscriber %s -- "
                         "resetting bind state for fresh backfill (mode=%s)",
                         addr_buf,
                         mode == SpecJoinMode::CURRENT_MATCH ? "CURRENT_MATCH"
@@ -338,6 +410,9 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
             sub.tcp_bound    = false;
             sub.ack_frame    = 0;
             sub.join_mode    = mode;
+            // Deliberate re-pin: the grant is being recomputed, so the kind
+            // advertised from here on must move with it, never independently.
+            sub.pinned_ack_kind = pinned_kind;
             sub.udp_ok       = udp_ok;
             sub.resume_frame = resume_frame;
             sub.last_seen_ms = GetTickCount64();
@@ -364,7 +439,7 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
                         sub.spec_user_id.c_str(), addr_buf);
                 }
             }
-            CtrlPacket ack = BuildJoinAck();
+            CtrlPacket ack = BuildJoinAckPacketFor(sub);
             ControlChannel_SendTo(ack, from);
             return;
         }
@@ -377,6 +452,7 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
         sub.ack_frame    = 0;
         sub.tcp_bound    = false;
         sub.join_mode    = mode;
+        sub.pinned_ack_kind = pinned_kind;
         sub.udp_ok       = udp_ok;
         sub.resume_frame = resume_frame;
         // Phase 2c: pop the cached spec_user_id (if any) for this addr.
@@ -424,7 +500,7 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
                     g_state.spec_transport_relay ? "RELAY" : "TCP",
                     sub.spec_user_id.empty() ? "(none)" : sub.spec_user_id.c_str());
 
-        CtrlPacket ack = BuildJoinAck();
+        CtrlPacket ack = BuildJoinAckPacketFor(sub);
         ControlChannel_SendTo(ack, from);
 
         // If we already have a live GekkoNet session, add this late joiner
@@ -437,7 +513,7 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
         return;
     }
 
-    // At capacity — random redirect à la CCCaster.
+    // At capacity -- random redirect à la CCCaster.
     if (!g_state.subscribers.empty()) {
         const size_t i = static_cast<size_t>(std::rand()) % g_state.subscribers.size();
         const sockaddr_in& target = g_state.subscribers[i].addr;
@@ -456,7 +532,7 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
         return;
     }
 
-    // Capacity=0, no subscribers — reject with null redirect. Viewer gives up.
+    // Capacity=0, no subscribers -- reject with null redirect. Viewer gives up.
     CtrlPacket redir = {};
     redir.header.type = CtrlMsg::SPEC_JOIN_REDIRECT;
     redir.data.spec_redirect.redirect_ip   = 0;
@@ -473,7 +549,7 @@ void SpectatorNode_HandleLeave(const sockaddr_in& from) {
     if (g_state.subscribed_upstream && AddrEqual(g_state.upstream_addr, from)) {
         char buf[48] = {}; FormatAddr(from, buf, sizeof(buf));
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: upstream %s sent SPEC_LEAVE — failing over to root",
+                    "SpectatorNode: upstream %s sent SPEC_LEAVE -- failing over to root",
                     buf);
         g_state.subscribed_upstream = false;
         // TickHealth will pick up the disconnected state and trigger
@@ -512,19 +588,6 @@ void SpectatorNode_BroadcastSessionEnd() {
                 g_state.subscribers.size());
 }
 
-// Viewer side: upstream sent SPEC_SESSION_END. Unlike SPEC_LEAVE (which fails
-// over to root), this means the whole session is OVER -- set session_ended so
-// the reconnect path in TickHealth stays parked instead of storming a dead host.
-void SpectatorNode_HandleSessionEnd(const sockaddr_in& from) {
-    if (g_state.subscribed_upstream && AddrEqual(g_state.upstream_addr, from)) {
-        char buf[48] = {}; FormatAddr(from, buf, sizeof(buf));
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: upstream %s sent SPEC_SESSION_END — session "
-                    "over, stopping (no reconnect)", buf);
-        g_state.session_ended = true;
-        g_state.subscribed_upstream = false;
-    }
-}
 
 void SpectatorNode_HandleHeartbeat(const sockaddr_in& from) {
     // Viewer side: an echo from the upstream is the gameplay-independent
@@ -567,384 +630,3 @@ std::vector<sockaddr_in> SpectatorNode_GetSubscriberAddrs() {
     return out;
 }
 
-// -----------------------------------------------------------------------------
-// VIEWER-SIDE
-// -----------------------------------------------------------------------------
-
-bool SpectatorNode_RequestJoin(const sockaddr_in& upstream, SpecJoinMode mode) {
-    g_state.upstream_addr       = upstream;
-    g_state.subscribed_upstream = false;
-    g_state.pre_sub_stash.clear();        // fresh join -- drop any stale stash
-    g_state.pre_sub_stash_bytes = 0;
-    g_state.session_ended       = false;  // fresh join clears any prior SESSION_END
-    g_state.last_requested_mode = mode;  // sticky — see comment in State decl
-    // Bump reconnect timestamp so TickHealth's failover backoff covers the
-    // INITIAL JOIN_REQ too. Without this, last_reconnect_attempt_ms stays
-    // 0 after the first send, the next TickHealth pass sees
-    // `now - 0 >= BACKOFF_MS`, and fires a second RequestJoin within
-    // milliseconds — clobbering the spectator's declared mode before the
-    // host's first JOIN_ACK even arrives.
-    g_state.last_reconnect_attempt_ms = GetTickCount64();
-    g_state.join_req_pending    = true;  // Gates HandleJoinAck so a stray
-                                         // JOIN_ACK from the wire doesn't
-                                         // promote a non-spectator client
-                                         // into spectator mode.
-    CtrlPacket req = {};
-    req.header.type            = CtrlMsg::SPEC_JOIN_REQ;
-    req.data.spec_join_req.mode = static_cast<uint8_t>(mode);
-    // Phase F capability advertisement (remaining reserved bytes stay
-    // zero from the {} init above). Old hosts ignore reserved bits.
-    if (SpecUdpEnabled()) {
-        req.data.spec_join_req.reserved[0] |= SPEC_JOIN_UDP_OK;
-    }
-    // Light re-join: mid-stream viewers declare where their admission
-    // cursor stands so the host backfills exactly the gap (no snapshot).
-    if (g_state.have_frame_baseline && g_state.pb_started) {
-        req.data.spec_join_req.reserved[0] |= SPEC_JOIN_RESUME;
-        const uint32_t resume = g_state.next_expected_frame;
-        std::memcpy(&req.data.spec_join_req.reserved[1], &resume, 4);
-    }
-    // Version gate advertisement (reserved[5]=minor, reserved[6]=patch).
-    req.data.spec_join_req.reserved[0] |= SPEC_JOIN_VERSIONED;
-    AppVersionBytes(&req.data.spec_join_req.reserved[5],
-                    &req.data.spec_join_req.reserved[6]);
-    ControlChannel_SendTo(req, upstream);
-    return true;
-}
-
-void SpectatorNode_RequestGapFill() {
-    // Surgical gap-fill: the live stream is flowing (we're still
-    // subscribed) but our admission cursor stalled behind a gap that
-    // neither the backfill nor the mid-stream live channel filled. Ask
-    // the host to re-ship [next_expected .. live-cursor) over the reliable
-    // conn. Unlike RequestJoin this leaves subscribed_upstream / bind state
-    // untouched -- the host's HandleJoinReq recognises resume_frame>0 on a
-    // still-live sub and ships the gap WITHOUT dropping the connection or
-    // re-sending the snapshot.
-    if (g_state.upstream_addr.sin_port == 0) return;
-    CtrlPacket req = {};
-    req.header.type             = CtrlMsg::SPEC_JOIN_REQ;
-    req.data.spec_join_req.mode = static_cast<uint8_t>(g_state.last_requested_mode);
-    if (SpecUdpEnabled()) {
-        req.data.spec_join_req.reserved[0] |= SPEC_JOIN_UDP_OK;
-    }
-    req.data.spec_join_req.reserved[0] |= SPEC_JOIN_RESUME;
-    const uint32_t resume = g_state.next_expected_frame;
-    std::memcpy(&req.data.spec_join_req.reserved[1], &resume, 4);
-    // Version gate: every JOIN_REQ (incl. gap-fill re-joins) must carry
-    // the version bytes or the host's gate rejects it.
-    req.data.spec_join_req.reserved[0] |= SPEC_JOIN_VERSIONED;
-    AppVersionBytes(&req.data.spec_join_req.reserved[5],
-                    &req.data.spec_join_req.reserved[6]);
-    ControlChannel_SendTo(req, g_state.upstream_addr);
-}
-
-void SpectatorNode_HandleJoinAck(const sockaddr_in& from, uint8_t host_session_kind,
-                                 uint16_t host_tcp_port,
-                                 uint8_t host_p1_char, uint8_t host_p2_char,
-                                 uint8_t host_stage,
-                                 uint8_t host_p1_color, uint8_t host_p2_color) {
-    // If host advertised real chars (in-battle), forward to the BTB
-    // runtime-override channel so the slot-0 /F dispatcher loads the
-    // host's actual character files. We CAN'T use SetEnvironmentVariableA
-    // + getenv here — Win32 SetEnv updates the process env block but
-    // not the CRT's _environ cache, so getenv() in BTB returns the stale
-    // launcher-provided placeholder (char 0). PerGamePatches keeps a
-    // hook-internal struct that BTB reads first; this bypasses the CRT
-    // cache entirely.
-    if (host_session_kind != 2 /* pre-battle: CSS or NONE */) {
-        // Tournament flow: the host's players are still at CSS (or
-        // between sessions). The viewer must NOT /F-boot -- it walks
-        // title->CSS naturally and replays the from-frame-0 stream,
-        // watching the lock-ins live.
-        PerGamePatches_AbortBtbNaturalBoot();
-        g_state.natural_boot = true;
-        // The join mode is pinned HOST-side at JOIN_REQ time (a
-        // CURRENT_MATCH request reaching a pre-battle host becomes
-        // FULL_SESSION there) -- a spec-side re-request raced: it made
-        // the host reset bind state and drop the freshly-dialed TCP
-        // conn, leaving a 15s zombie (2026-06-11 12:49).
-    }
-    if (host_session_kind == 2 /* BATTLE */) {
-        PerGamePatches_SetRuntimeBtbOverrides(host_p1_char,
-                                              host_p2_char,
-                                              host_stage,
-                                              host_p1_color,
-                                              host_p2_color);
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "SpectatorNode: seeded runtime BTB from JOIN_ACK "
-            "(p1=%u/c%u p2=%u/c%u stage=%u)",
-            (unsigned)host_p1_char, (unsigned)host_p1_color,
-            (unsigned)host_p2_char, (unsigned)host_p2_color,
-            (unsigned)host_stage);
-    }
-
-    // SPEC_JOIN_ACK is dual-purpose:
-    //   1. First-time arrival (initial subscribe): completes the JOIN_REQ
-    //      handshake, pins RNG, marks subscribed_upstream, opens TCP up.
-    //   2. Re-broadcast on host session-kind change (host crosses a
-    //      session boundary like CSS->battle or first-CSS-create): the
-    //      payload's host_session_kind tells the spectator which kind to
-    //      mirror. Treated as authoritative current-host-kind.
-    //
-    // Both paths funnel through the same handler so the spectator can
-    // recover cleanly if the host transitions before the JOIN_REQ ack
-    // round-trip lands. Stray ACKs from non-upstream peers are still
-    // dropped (sender addr check below).
-    const bool first_time = g_state.join_req_pending;
-
-    if (!first_time && !AddrEqual(g_state.upstream_addr, from)) {
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: ignoring SPEC_JOIN_ACK from non-upstream peer");
-        return;
-    }
-
-    g_state.join_req_pending      = false;
-    g_state.upstream_addr         = from;
-    g_state.subscribed_upstream   = true;
-    g_state.ever_subscribed       = true;   // task #70: latch for the reconnect cadence
-
-    // Phase F: a fresh UDP admission epoch starts ONLY when a new TCP
-    // connection (whose OP_BASELINE re-arms it exactly) is coming --
-    // i.e. when we are NOT currently connected and will dial below.
-    // The host re-broadcasts JOIN_ACK informationally at every battle
-    // entry (char/color refresh for late joiners); disarming on those
-    // killed UDP admission on every viewer at every battle start, with
-    // no OP_BASELINE ever coming to re-arm it -- the recurring "UDP
-    // dies at battle entry" (2026-06-11 15:04).
-    if (!SpectatorTCP::IsUpstreamConnected()) {
-        g_state.udp_epoch_armed = false;
-    }
-
-    // RNG sync + queue clear: ONLY apply on FIRST-TIME subscribe (spectator
-    // is still at title/pre-CSS, no game state to lose). On reconnect-after-
-    // silence-failover or on re-broadcast ACK, spectator's local sim is
-    // mid-match — clobbering RNG / wiping the queue would erase in-progress
-    // state. Gate both on first-time only.
-    //
-    // have_frame_baseline sub-gate (review hole 9): RequestJoin sets
-    // join_req_pending on EVERY reconnect attempt, so first_time is true
-    // for genuine reconnects too. If a baseline already exists, the queue
-    // holds received-but-unplayed frames the dedup cursor has already
-    // counted -- clearing them would skip those frames forever. Only a
-    // truly fresh viewer (no baseline yet) gets the clear + RNG pin.
-    if (first_time && !g_state.have_frame_baseline) {
-        *(uint32_t*)0x41FB1C = 0x12345678;
-        g_state.pb_queue.clear();
-        g_state.pb_current_p1 = 0;
-        g_state.pb_current_p2 = 0;
-        g_state.pb_boundary         = State::PbBoundary::NONE;
-        g_state.pending_reset_input = false;
-        g_state.pending_sound_init  = false;
-        CssAutoConfirm_SetSeamHold(false);
-    }
-    g_state.playing_back = true;
-
-    // Dial the host's TCP port. Bulk INPUT_BATCH / INITIAL_MATCH /
-    // MATCH_END flow over TCP exclusively in legacy mode. In relay
-    // mode (Phase 3), spec data arrives via hub WS -> launcher -> our
-    // inbound ring, so there's no P2P TCP to dial.
-    if (g_state.spec_transport_relay) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "SpectatorNode: JOIN_ACK accepted in relay mode -- skipping "
-            "ConnectUpstream (spec data arrives via hub via launcher via "
-            "inbound shared-mem ring)");
-    } else if (SpecRcSnapshotEnabled()) {
-        // RC full-transport mode: live events AND snapshot+backfill all
-        // ride RC over UDP -- TCP is not load-bearing, so don't dial it.
-        // Dialing anyway was actively harmful (task #55): when the dial
-        // failed (Nathan's NAT), each failure escalated through
-        // OnUpstreamTcpDead -> background re-JOIN -> host "resetting bind
-        // state for fresh backfill" -- a 2s churn loop that reset the RC
-        // stream forever and the viewer never admitted a frame.
-        static bool s_logged = false;
-        if (!s_logged) {
-            s_logged = true;
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "SpectatorNode: JOIN_ACK accepted in RC full-transport mode "
-                "-- skipping ConnectUpstream (all spec data rides RC/UDP)");
-        }
-    } else {
-        if (host_tcp_port == 0) {
-            // Mixed-mode failure: we're a TCP-mode spec but the host
-            // didn't advertise a TCP port. Two likely causes:
-            //   1. Host is running FM2K_SPEC_TRANSPORT=relay; their hook
-            //      skipped the TCP listener, so GetListenPort()=0. Our
-            //      launcher should have auto-set FM2K_SPEC_TRANSPORT=relay
-            //      via spectate_grant.spec_transport (Phase 4). If we're
-            //      here, our launcher is older than that or the env
-            //      didn't propagate.
-            //   2. Host has a genuinely broken hook init (listener bind
-            //      failed on all candidates).
-            // Either way the spec won't get data; refuse cleanly with
-            // an actionable error message rather than the silent dial.
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                "SpectatorNode: JOIN_ACK from host advertises no TCP port "
-                "AND we are in legacy TCP mode -- likely a relay-mode host "
-                "but our launcher didn't auto-derive (Phase 4 requires "
-                ">= v0.2.58). Workaround: set FM2K_SPEC_TRANSPORT=relay "
-                "in the spec's env before launching, OR update the spec's "
-                "launcher. Refusing the subscription.");
-            g_state.subscribed_upstream = false;
-            return;
-        }
-        char host_ip[INET_ADDRSTRLEN] = {};
-        inet_ntop(AF_INET, (void*)&from.sin_addr, host_ip, sizeof(host_ip));
-        if (SpectatorTCP::IsUpstreamConnected()) {
-            // Session-kind-change re-broadcast over a healthy connection
-            // (e.g. the battle-entry JOIN_ACK that seeds BTB chars):
-            // nothing to dial, keep the stream.
-        } else if (!SpectatorTCP::ConnectUpstream(host_ip, host_tcp_port)) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                "SpectatorNode: SpectatorTCP::ConnectUpstream(%s:%u) failed",
-                host_ip, (unsigned)host_tcp_port);
-            g_state.subscribed_upstream = false;
-            return;
-        }
-    }
-
-    char buf[48] = {}; FormatAddr(from, buf, sizeof(buf));
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "SpectatorNode: JOIN_ACK from %s (host_kind=%u, tcp_port=%u) — subscribed",
-                buf, (unsigned)host_session_kind, (unsigned)host_tcp_port);
-
-    // host_session_kind == 0 (NONE): host has no session active yet
-    // (e.g. JOIN_REQ landed during host's title-skip phase before its
-    // first CSS session was created). DO NOT create a SpectateSession
-    // with a guessed config — that caused config mismatch deadlocks
-    // before. Wait for host's follow-up SPEC_JOIN_ACK after session create.
-    if (host_session_kind == 0) {
-        char buf2[48] = {}; FormatAddr(from, buf2, sizeof(buf2));
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: host has no session yet — waiting (from=%s)", buf2);
-        SpecReplayPreSubStash();  // task #55: anything that beat this ACK
-        return;
-    }
-
-    NetplaySessionKind kind = (host_session_kind == 1)
-        ? NetplaySessionKind::CSS
-        : NetplaySessionKind::BATTLE;
-
-    char host_addr_str[64];
-    snprintf(host_addr_str, sizeof(host_addr_str), "%s:%u",
-             inet_ntoa(from.sin_addr), ntohs(from.sin_port));
-
-    // If a SpectateSession is already alive, only act on a kind CHANGE.
-    // Same-kind re-broadcasts (host re-acks for liveness / new spectator
-    // joining the same session) are no-ops via Netplay_StartSpectateSession's
-    // own idempotency guard.
-    const NetplaySessionKind current = Netplay_GetSessionKind();
-    if (current == NetplaySessionKind::SPECTATE) {
-        // Wrong-kind alive — treat as a phase swap. swap_frame=0 fires
-        // immediately on the next AdvanceEvent.
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: host kind changed mid-session, requesting swap to kind=%d",
-                    (int)kind);
-        if (kind == NetplaySessionKind::BATTLE) {
-            Netplay_OnHostBattleEntering(0);
-        } else {
-            Netplay_OnHostBattleEnd(0);
-        }
-        SpecReplayPreSubStash();  // task #55: anything that beat this ACK
-        return;
-    }
-
-    Netplay_StartSpectateSession(kind, host_addr_str);
-    SpecReplayPreSubStash();  // task #55: backfill that beat the first ACK
-}
-
-// task #58: viewer auto-fallback onto the hub spec relay. Called by the
-// connect watchdog when the direct join produced no admitted frames after
-// its grace window. Swaps the upstream to the relay endpoint and re-JOINs
-// with the sticky mode; every send to the new upstream wraps into the
-// 0xCF envelope by destination match (SendToMaybeRelayWrapped) and the
-// host sees a normal direct-looking spectator at the relay's per-session
-// socket -- no host-side involvement at all. One-shot: if the relay leg
-// ALSO produces nothing, the 30s connect deadline still closes cleanly.
-bool SpectatorNode_EngageRelayFallback() {
-    static bool s_engaged = false;
-    if (s_engaged) return false;
-    const sockaddr_in* relay = ::fm2k::nat::GetRelayAddr();
-    if (!relay) return false;   // launcher provided no spec_relay block
-    s_engaged = true;
-    char buf[48] = {}; FormatAddr(*relay, buf, sizeof(buf));
-    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-        "SpectatorNode: direct join produced no frames -- engaging hub "
-        "spec-relay fallback via %s", buf);
-    SpectatorNode_RequestJoin(*relay, g_state.last_requested_mode);
-    return true;
-}
-
-void SpectatorNode_HandleJoinRedirect(const sockaddr_in& from,
-                                      uint32_t redirect_ip,
-                                      uint16_t redirect_port)
-{
-    (void)from;
-    if (redirect_ip == 0 && redirect_port == 0) {
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: Redirect with no target — giving up");
-        g_state.subscribed_upstream = false;
-        return;
-    }
-    sockaddr_in target = {};
-    target.sin_family      = AF_INET;
-    target.sin_addr.s_addr = redirect_ip;
-    target.sin_port        = htons(redirect_port);
-    char buf[48] = {}; FormatAddr(target, buf, sizeof(buf));
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "SpectatorNode: Redirecting to %s (mode=%s)", buf,
-                g_state.last_requested_mode == SpecJoinMode::CURRENT_MATCH
-                    ? "CURRENT_MATCH" : "FULL_SESSION");
-    SpectatorNode_RequestJoin(target, g_state.last_requested_mode);
-}
-
-
-void SpectatorNode_OnUpstreamTcpDead() {
-    if (!g_state.subscribed_upstream) return;
-    if (g_state.tcp_rejoin_pending) return;  // already riding it out
-    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-        "SpectatorNode: upstream TCP died -- riding on UDP, re-JOIN in "
-        "background (q=%zu, ops_seen=%u, boundary=%d)",
-        g_state.pb_queue.size(), g_state.ops_seen,
-        (int)g_state.pb_boundary);
-    // The subscription and UDP admission stay ARMED. The host's node-
-    // level subscriber entry survives its TCP-layer erase (heartbeats
-    // flow over UDP), so datagrams -- inputs AND the redundant ops tail
-    // -- keep arriving through the dead window. Dropping the
-    // subscription here used to reject every one of them: an 8-second
-    // self-inflicted starvation while 5 re-JOINs begged a host whose
-    // control channel was stalled in its own boundary (2026-06-11).
-    // Op indexing is global, so ops_seen survives the rebind; the new
-    // connection's OP_BASELINE re-seeds only the per-conn dedup cursor.
-    g_state.tcp_rejoin_pending = true;
-    // TickHealth's reconnect branch (rejoin pending + no live conn)
-    // fires RequestJoin on its 2s backoff; the host's existing-sub path
-    // resets bind state and re-ships backfill on the fresh socket.
-}
-
-bool SpectatorNode_InBoundary() {
-    return g_state.pb_boundary != State::PbBoundary::NONE;
-}
-
-bool SpectatorNode_QueueHasPendingOp() {
-    for (const auto& ev : g_state.pb_queue) {
-        if (ev.type != SessionEventType::INPUT) return true;
-    }
-    return false;
-}
-
-// Self-sufficient join kick for the /F dispatch hold: the JOIN_REQ is
-// normally sent by Netplay_InitAsSpectator on the DLL-init path, but the
-// dispatcher's first-tick hold can win that race -- it would then pump a
-// socket with NO join in flight and sit black until the host's battle-
-// entry re-broadcast finally arrived (the "black screen until P1/P2
-// confirm" failure). Re-requests at 1Hz until subscribed; harmless when
-// the original request already landed (host's existing-sub path ACKs
-// idempotently).
-void SpectatorNode_KickJoin() {
-    if (g_state.subscribed_upstream) return;
-    if (g_state.root_addr.sin_port == 0) return;  // init hasn't configured us yet
-    const uint64_t now = GetTickCount64();
-    if (now - g_state.last_reconnect_attempt_ms < 1000) return;
-    SpectatorNode_RequestJoin(g_state.root_addr, g_state.last_requested_mode);
-}

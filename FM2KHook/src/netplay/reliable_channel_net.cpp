@@ -1,4 +1,4 @@
-// reliable_channel_net.cpp — address-keyed glue between the ReliableChannel
+// reliable_channel_net.cpp -- address-keyed glue between the ReliableChannel
 // layer and the shared control-channel UDP socket.
 //
 // One reliable.io endpoint per peer address (keyed by Addr_ActorString), so a
@@ -105,7 +105,7 @@ RcPeer* GetOrCreate(const sockaddr_storage& addr) {
             if (p->second->last_activity < stalest->second->last_activity) stalest = p;
         }
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "ReliableChannel: peer cap %zu reached — evicting stalest %s to admit %s",
+            "ReliableChannel: peer cap %zu reached -- evicting stalest %s to admit %s",
             RC_MAX_PEERS, stalest->first.c_str(), key.c_str());
         EvictPeer(stalest->first);
     }

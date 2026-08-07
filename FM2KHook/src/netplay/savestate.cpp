@@ -11,7 +11,7 @@
 // aware FM2K::ADDR_* constants from globals.h so the FM95 build picks up
 // FM95 addresses automatically. The remaining constants here are FM2K-
 // specific (input tracking @ 0x447EE0, render frame counter, input history
-// extension, game state block) — they have no FM95 equivalent yet, and
+// extension, game state block) -- they have no FM95 equivalent yet, and
 // savestate is a no-op on FM95 (rollback isn't activated; trampoline
 // refactor in Task 7 will design FM95's save layout).
 #include "savestate_internal.h"  // shared rollback buffers + region constants + hashing
@@ -28,12 +28,12 @@ SaveStateData g_state_buffer[MAX_ROLLBACK_FRAMES];
 int g_last_saved_slot  = -1;
 int g_last_saved_frame = -1;
 
-// Parallel "post-render RNG" buffer — separate from g_state_buffer because
+// Parallel "post-render RNG" buffer -- separate from g_state_buffer because
 // SaveState_Save overwrites rng_seed on REPLAY saves, wiping the value
 // PatchPostRenderRng wrote during the original forward pass. During a
 // rollback batch, render fires only ONCE (after the last AdvanceEvent),
 // so intermediate frames in the batch never get their POST-render RNG
-// applied to the engine — replay sim_K+2 starts from POST-sim-K+1 instead
+// applied to the engine -- replay sim_K+2 starts from POST-sim-K+1 instead
 // of POST-render-K+1, accumulating render's RNG delta as divergence.
 //
 // Phase F (#23): the v0.2.43 user-reported desyncs all show "RNG_Seed
@@ -43,8 +43,8 @@ int g_last_saved_frame = -1;
 // starts from the same RNG the forward pass's sim started from.
 //
 // Frame number stored alongside so a wrap-around (rollback >MAX_ROLLBACK_
-// FRAMES, which we don't expect to actually happen — typical rewinds are
-// <10 — but be defensive) doesn't restore a stale value from a previous
+// FRAMES, which we don't expect to actually happen -- typical rewinds are
+// <10 -- but be defensive) doesn't restore a stale value from a previous
 // session.
 uint32_t g_post_render_rng[MAX_ROLLBACK_FRAMES] = {};
 int32_t  g_post_render_rng_frame[MAX_ROLLBACK_FRAMES] = {};
@@ -123,7 +123,7 @@ void SaveState_FlushRngTrace(int player_index, const char* reason) {
 // hitting 1 GB/s and saturating one core. XXH3 runs 15-30 GB/s on the
 // same hardware and has strictly better collision resistance. Kept the
 // Fletcher32 symbol as a compatibility wrapper so call sites don't need
-// to change — they still see `uint32_t Fletcher32(ptr, len)`.
+// to change -- they still see `uint32_t Fletcher32(ptr, len)`.
 #define XXH_INLINE_ALL
 #define XXH_NO_STREAM
 #include "../../../vendored/xxhash/xxhash.h"
@@ -178,7 +178,7 @@ void SaveState_Init() {
         g_replay_saves[i].frame_number = -1;
         g_replay_saves[i].valid = false;
     }
-    // Reset the post-render-RNG parallel buffer — stale values from a
+    // Reset the post-render-RNG parallel buffer -- stale values from a
     // previous session would cause the Phase F fix to apply the wrong
     // RNG at the start of AdvanceEvents in the new session.
     for (int i = 0; i < MAX_ROLLBACK_FRAMES; i++) {
@@ -188,7 +188,7 @@ void SaveState_Init() {
     // Truncate the consolidated replay-diff log so each battle session starts
     // with a fresh file.
     if (FILE* f = fopen(ReplayDiffLogPath(), "w")) {
-        fprintf(f, "# replay-diff log — appends one block per replay save that\n"
+        fprintf(f, "# replay-diff log -- appends one block per replay save that\n"
                    "# diverges from its forward save. fopen+fclose per write.\n");
         fclose(f);
     }
@@ -200,7 +200,7 @@ void SaveState_Init() {
 // Reset frame-index / edge-detection state to a deterministic value so
 // input-change detection produces identical local input streams on both
 // peers (or host vs replay). MUST be called BEFORE the first AdvanceEvent
-// — used to be lazy-fired on the first SaveEvent which is post-PGI, and
+// -- used to be lazy-fired on the first SaveEvent which is post-PGI, and
 // that off-by-one timing caused cumulative drift over rollback cycles
 // (replay_selftest harness's frame-91 RNG divergence). Now: eager call
 // at battle init from Netplay_Start*Battle.
@@ -209,7 +209,7 @@ void SaveState_DoInitialSync() {
     if constexpr (FM2K::kIsFM2K) {
         // FM2K edge-detection working set + input history. The bare literals
         // (0x447F00/40/60) and the savestate_internal.h ADDR_* constants are
-        // ALL FM2K addresses — on FM95 they stomp unrelated memory, which is
+        // ALL FM2K addresses -- on FM95 they stomp unrelated memory, which is
         // why this branch is engine-gated (the FM95 equivalents live in
         // savestate_fm95.cpp's fm95save:: namespace).
         *(uint32_t*)ADDR_INPUT_BUFFER_INDEX = 0;         // Reset buf_idx
@@ -220,7 +220,7 @@ void SaveState_DoInitialSync() {
         memset((void*)ADDR_INPUT_HISTORY, 0, SIZE_INPUT_HISTORY);
     } else {
         // FM95: reset buf_idx 0x437700 + the 3 input rings + edge state +
-        // current inputs (fm95save:: addresses). BLOCKER fix — before this
+        // current inputs (fm95save:: addresses). BLOCKER fix -- before this
         // split, the FM2K body above ran on FM95 and corrupted memory at
         // every stress/battle start.
         SaveState_Fm95ResetInputSync();
@@ -231,7 +231,7 @@ void SaveState_DoInitialSync() {
     // after this change. Possibly the zero clobbers state real
     // netplay needs. Reverting to bisect.
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "SaveState: Initial sync (eager, pre-first-AdvEvent) — "
+        "SaveState: Initial sync (eager, pre-first-AdvEvent) -- "
         "reset buf_idx/render_fc/input edge state");
     g_initial_sync_done = true;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
@@ -259,7 +259,7 @@ bool SaveState_GetPostRenderRng(int frame, uint32_t* out_rng) {
 }
 
 // =============================================================================
-// SNAPSHOT SERIALIZATION (task #18 phase 2) — engine-agnostic
+// SNAPSHOT SERIALIZATION (task #18 phase 2) -- engine-agnostic
 // =============================================================================
 //
 // Build-agnostic helpers; both FM2K and FM95 builds compile these. The slot
@@ -269,7 +269,7 @@ bool SaveState_GetPostRenderRng(int frame, uint32_t* out_rng) {
 //
 // Spectator-join wire format will round-trip these bytes through
 // SaveState_LoadFromBytes (added in phase 4) without external interpretation
-// — they're an opaque blob from the spectator's perspective. Both peers
+// -- they're an opaque blob from the spectator's perspective. Both peers
 // must run the same engine variant for SaveState_Load to succeed; mismatches
 // are caught by checksum verification before Load is attempted.
 

@@ -23,6 +23,7 @@
 #include <unordered_map>
 #include <vector>
 #include <cstring>
+#include <cstddef>       // std::ptrdiff_t (pre-anchor queue trim)
 #include <cstdlib>
 #include <cstdio>
 #include <ctime>
@@ -54,9 +55,9 @@ namespace {
 
 // (SendInputRequest + RespondToInputRequest deleted: TCP guarantees in-order
 // delivery exactly once, so the spectator-side gap-recovery handshake is
-// dead code. The whole class of UDP-loss recovery — REDUNDANCY_WINDOW,
+// dead code. The whole class of UDP-loss recovery -- REDUNDANCY_WINDOW,
 // INPUT_REQUEST_POLL_MS in TickHealth, the on-gap immediate request inside
-// HandleSpecData — has been removed.)
+// HandleSpecData -- has been removed.)
 
 } // namespace
 
@@ -64,7 +65,7 @@ namespace {
 // SESSION EVENT WIRE FORMAT (C1)
 // =============================================================================
 //
-// Pure byte-level encoders/decoders. No socket / state side effects — these
+// Pure byte-level encoders/decoders. No socket / state side effects -- these
 // just mediate between SessionEvent values and packed wire bytes. Production
 // integration (vector<SessionEvent> session_history, head-of-queue drain in
 // RunSpectatorTick, etc.) is layered on top in C2+.
@@ -145,7 +146,7 @@ void SpectatorNode_Init() {
     // failed with WSAEACCES (Windows-reserved range), needed +1000 OR
     // port=0 to bind successfully.
     //
-    // Idempotent — re-Init won't double-bind.
+    // Idempotent -- re-Init won't double-bind.
     const uint16_t udp_port = NetSocket_GetLocalPort();
     const uint16_t candidate_ports[] = {
         (uint16_t)(udp_port + 100),
@@ -159,19 +160,19 @@ void SpectatorNode_Init() {
             if (cand == 0) {
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "SpectatorNode: TCP listener bound via OS-picked port "
-                    "(actual port %u — preferred offsets all hit "
+                    "(actual port %u -- preferred offsets all hit "
                     "WSAEACCES, usually Windows reserved-port range)",
                     (unsigned)SpectatorTCP::GetListenPort());
             }
             break;
         }
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "SpectatorNode: TCP listener bind on port %u failed — "
+            "SpectatorNode: TCP listener bind on port %u failed -- "
             "trying next candidate", (unsigned)cand);
     }
     if (!spec_listener_bound) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-            "SpectatorNode: Init — TCP listener failed to bind on ANY "
+            "SpectatorNode: Init -- TCP listener failed to bind on ANY "
             "candidate port (udp=%u, +100, +1000, OS-picked all failed); "
             "spectator subscriptions will fail",
             (unsigned)udp_port);
@@ -182,11 +183,11 @@ void SpectatorNode_Init() {
                 g_state.capacity, BROADCAST_BATCH_FRAMES,
                 (unsigned)SpectatorTCP::GetListenPort());
 
-    // TCP-STUN — discover external TCP addr by source-binding an outbound
+    // TCP-STUN -- discover external TCP addr by source-binding an outbound
     // connect to (hub:tcp_stun) from our listener port. Only meaningful
     // for spectators (where the cross-NAT punch path needs the *external*
     // tcp_port for the host-side punch to fire at the right port). Hosts
-    // run this too for symmetry — costs ~50ms once and pre-populates
+    // run this too for symmetry -- costs ~50ms once and pre-populates
     // the field if the host ever later acts as a spectator (daisy chain).
     // Failure here is logged but non-fatal; punching falls back to local
     // listener port which works on port-preserving NATs.
@@ -196,7 +197,7 @@ void SpectatorNode_Init() {
 void SpectatorNode_Shutdown() {
     // C7: write full session log on shutdown if there's anything to flush.
     // Skipped on the spectator side where session_events is the relay log
-    // (correct to write — the relay's local view IS the canonical session
+    // (correct to write -- the relay's local view IS the canonical session
     // for any sub-spectators, even if we'd be one of two writers when
     // host + spectator both run on this machine; per-process file paths
     // already include timestamp + pid disambiguation).
@@ -284,7 +285,7 @@ void SpectatorNode_SetCapacity(size_t max_direct) {
 // Why call SaveState_Save(0) ourselves: the GekkoNet driver normally
 // triggers Save in its first AdvanceEvent (a few sim frames after
 // Netplay_StartBattle), but we want the snapshot CAPTURED at the same
-// logical instant the host emitted MATCH_START — before any battle
+// logical instant the host emitted MATCH_START -- before any battle
 // frame has run, so the spectator's state on Load is "match just
 // starting, frame 0 input pending." That keeps the wire-anchor clean:
 // snapshot.input_frame == g_state.total_input_count, and the very next
@@ -292,7 +293,7 @@ void SpectatorNode_SetCapacity(size_t max_direct) {
 // frame after Load.
 
 void SpectatorNode_StashSnapshot() {
-    // Skip during a rollback rewind — the FM2K state at this moment isn't
+    // Skip during a rollback rewind -- the FM2K state at this moment isn't
     // the canonical battle-start state we want to capture. In practice
     // StashSnapshot is called from Netplay_StartBattle which is the seam
     // frame between CSS and battle (no preceding battle inputs to roll
@@ -302,7 +303,7 @@ void SpectatorNode_StashSnapshot() {
     // stays as the previous match's (or empty if first match).
     if (g_is_rolling_back) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "SpectatorNode: StashSnapshot skipped — called during rollback "
+            "SpectatorNode: StashSnapshot skipped -- called during rollback "
             "rewind (snapshot cache stays %s)",
             g_state.current_snapshot.valid ? "previous match's" : "empty");
         return;
@@ -313,7 +314,7 @@ void SpectatorNode_StashSnapshot() {
     // GekkoNet's later first-Save is a no-op for the initial-sync reset.
     if (!SaveState_Save(0)) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "SpectatorNode: StashSnapshot — SaveState_Save(0) failed; "
+            "SpectatorNode: StashSnapshot -- SaveState_Save(0) failed; "
             "snapshot cache stays %s",
             g_state.current_snapshot.valid ? "the previous match's" : "empty");
         return;
@@ -323,7 +324,7 @@ void SpectatorNode_StashSnapshot() {
     const size_t   slot_size  = SaveState_GetSlotByteSize();
     if (!slot_bytes || slot_size == 0) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "SpectatorNode: StashSnapshot — slot bytes unavailable post-Save");
+            "SpectatorNode: StashSnapshot -- slot bytes unavailable post-Save");
         return;
     }
 
@@ -337,16 +338,42 @@ void SpectatorNode_StashSnapshot() {
     cache.match_index = g_state.match_headers.empty() ? 0u
                         : (uint32_t)(g_state.match_headers.size() - 1);
     cache.checksum    = Fletcher32(cache.blob.data(), cache.blob.size());
+    // Compress ONCE, here, instead of once per recipient inside SendSnapshotTo.
+    // That call ran ZeroRleCompress over ~1MB on the host main loop while
+    // holding g_poll_mutex, for EVERY viewer AND every re-JOIN re-ship, into a
+    // function-local `static` scratch (also a latent aliasing hazard if two
+    // ships ever interleaved). SNAPSHOT_END still carries the RAW fletcher32,
+    // so the viewer's verification path is unchanged. Keep the raw blob: it is
+    // the source of meta.total_bytes and of SpectatorNode_GetSnapshotInfo.
+    {
+        std::vector<uint8_t> rle;
+        ZeroRleCompress(cache.blob, rle);
+        if (rle.size() < cache.blob.size()) {
+            cache.wire_blob.swap(rle);
+            cache.wire_flags = SNAPSHOT_FLAG_ZERO_RLE;
+        } else {
+            cache.wire_blob = cache.blob;   // compression lost; ship raw
+            cache.wire_flags = 0;
+        }
+    }
     // Phase E: record game_mode at capture time so the spec-side apply
     // can wait for a matching mode. CSS captures get applied during the
     // spec's CSS; battle captures wait for battle.
     cache.captured_game_mode = *(const uint32_t*)FM2K::ADDR_GAME_MODE;
     cache.valid       = true;
 
+    // [SPEC-SNAP] wire_bytes + chunk count are the numbers every snapshot
+    // bandwidth decision depends on -- log them at capture so they are a
+    // first-class measurement instead of being inferred per recipient.
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "SpectatorNode: snapshot cached (match=%u, %zu bytes, "
-        "input_frame=%u, fletcher32=0x%08X, captured_game_mode=%u)",
-        cache.match_index, cache.blob.size(),
+        "[SPEC-SNAP] snapshot cached (match=%u, raw=%zu bytes, wire=%zu bytes "
+        "%s, %zu chunks of %zu, input_frame=%u, fletcher32=0x%08X, "
+        "captured_game_mode=%u)",
+        cache.match_index, cache.blob.size(), cache.wire_blob.size(),
+        (cache.wire_flags & SNAPSHOT_FLAG_ZERO_RLE) ? "zero-RLE" : "uncompressed",
+        (cache.wire_blob.size() + SPECTATOR_SNAPSHOT_CHUNK_BYTES - 1) /
+            SPECTATOR_SNAPSHOT_CHUNK_BYTES,
+        SPECTATOR_SNAPSHOT_CHUNK_BYTES,
         cache.input_frame, cache.checksum, cache.captured_game_mode);
 
     // Session-kind-change re-broadcast: battle just started, so the
@@ -397,12 +424,19 @@ void SpectatorNode_ApplyPendingPinRng() {
 
 void SpectatorNode_ApplyPendingSnapshot() {
     auto& inbox = g_state.pb_snapshot_inbox;
+    // Reclaim a transfer that stopped making progress. This is the only tick
+    // the inbox gets: everything else in the snapshot path is arrival-driven,
+    // so a dead transfer used to stay `active` forever -- holding ~1MB, making
+    // "slow" and "dead" indistinguishable in the log, and (before the
+    // BEGIN-continue rule) leaving the next BEGIN to blow away whatever
+    // progress a healthy retry had made.
+    if (SpectatorNode_SweepStaleSnapshotInbox()) return;
     if (!inbox.pending_apply) return;
 
     // Wait until the spectator's local engine has reached the SAME
     // phase the snapshot was captured at. The savestate captures the
-    // engine state — object pool, character data, DDraw surfaces, etc.
-    // — and applying it before the local engine has done its own
+    // engine state -- object pool, character data, DDraw surfaces, etc.
+    // -- and applying it before the local engine has done its own
     // init-for-that-phase lands the captured bytes into structurally-
     // incompatible memory:
     //   - DDraw/D3D9 surfaces sized for the wrong phase layout
@@ -481,7 +515,7 @@ void SpectatorNode_ApplyPendingSnapshot() {
     if (!SaveState_LoadFromBytes(inbox.blob.data(), inbox.blob.size())) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
             "SpectatorNode: SaveState_LoadFromBytes failed at deferred "
-            "apply (match=%u, %zu bytes, mode=%u) — discarding snapshot",
+            "apply (match=%u, %zu bytes, mode=%u) -- discarding snapshot",
             inbox.meta.match_index, inbox.blob.size(), game_mode);
         inbox = State::SnapshotInbox{};
         return;
@@ -490,7 +524,7 @@ void SpectatorNode_ApplyPendingSnapshot() {
     const uint32_t anchor = inbox.anchor_frame;
 
     // Anchor the EVENT_BATCH stream cursor at the snapshot's INPUT-frame
-    // position. Subsequent batches start at this frame index — see
+    // position. Subsequent batches start at this frame index -- see
     // SendSessionBackfillFromFrame on the host side.
     //
     // 2026-05-17 fix: don't reflexively clear pb_queue + reset
@@ -504,7 +538,7 @@ void SpectatorNode_ApplyPendingSnapshot() {
     // with all subsequent live batches "out-of-order" (host at frame
     // 1100+, spec expecting 333).
     //
-    // Only reset state when our cursor is BEHIND the anchor — that's the
+    // Only reset state when our cursor is BEHIND the anchor -- that's the
     // FULL_SESSION → CURRENT_MATCH renegotiation case where pb_queue
     // holds stale pre-anchor frames the snapshot supersedes.
     if (!g_state.have_frame_baseline ||
@@ -517,6 +551,60 @@ void SpectatorNode_ApplyPendingSnapshot() {
         g_state.pb_reorder.erase(g_state.pb_reorder.begin(),
                                  g_state.pb_reorder.lower_bound(anchor));
         g_state.next_expected_frame = anchor;
+    } else {
+        // Cursor is at/past the anchor, so the branch above trusts pb_queue as
+        // "anchor..live". That trust holds for a normal CURRENT_MATCH bind --
+        // the host ships only the tail -- but NOT after a FULL_SESSION ->
+        // CURRENT_MATCH re-pin: the pre-subscribe stash is deliberately kept
+        // across a re-JOIN to the same upstream, so the replayed queue can
+        // still start at INPUT-frame 0 while live batches have already run the
+        // cursor past the anchor. The test above then reads "caught up" and
+        // keeps the whole from-frame-0 CSS backlog in front of a mid-battle
+        // anchor; the viewer simulates those CSS frames as battle frames on
+        // top of the snapshot (the hp=690/700 timer=1 bad head, off-205).
+        //
+        // Drop ONLY the strictly-pre-anchor prefix. pb_queue carries no frame
+        // numbers -- INPUT events are positional, exactly one per frame -- so
+        // the head frame is (next_expected_frame - queued INPUT count).
+        //
+        // INVARIANT this relies on: every writer that pushes an INPUT onto
+        // pb_queue advances next_expected_frame by exactly one in the same
+        // step, and non-INPUT ops never touch it. Maintained at the two live
+        // admit sites, spec_recv.cpp's EVENT_BATCH path and its UDP
+        // accelerator path. Do not add a third INPUT writer without keeping
+        // the cursor in step, or this trim loses its frame reference.
+        //
+        // We cut after the Nth INPUT where N = anchor - head_frame, which leaves the
+        // anchor's own INPUT and every event after it untouched. Ops sitting
+        // between the last dropped INPUT and the anchor's INPUT are KEPT (the
+        // cut stops at the INPUT count, never past it), so the error direction
+        // is always "keep", never "lose". Nothing at or after the anchor can
+        // be dropped by construction.
+        size_t queued_inputs = 0;
+        for (const auto& ev : g_state.pb_queue) {
+            if (ev.type == SessionEventType::INPUT) ++queued_inputs;
+        }
+        const uint32_t head_frame =
+            (g_state.next_expected_frame >= (uint32_t)queued_inputs)
+                ? (uint32_t)(g_state.next_expected_frame - (uint32_t)queued_inputs)
+                : 0u;
+        if (head_frame < anchor) {
+            const uint32_t skip = anchor - head_frame;
+            size_t cut = 0, seen = 0;
+            while (cut < g_state.pb_queue.size() && seen < (size_t)skip) {
+                if (g_state.pb_queue[cut].type == SessionEventType::INPUT) ++seen;
+                ++cut;
+            }
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "SpectatorNode: dropping %zu pre-anchor event(s) (%u INPUT "
+                "frame(s) from head=%u) ahead of snapshot anchor=%u -- a "
+                "from-frame-0 backlog survived a CURRENT_MATCH re-pin; %zu "
+                "event(s) at/after the anchor kept",
+                cut, skip, head_frame, anchor, g_state.pb_queue.size() - cut);
+            g_state.pb_queue.erase(g_state.pb_queue.begin(),
+                                   g_state.pb_queue.begin() +
+                                       static_cast<std::ptrdiff_t>(cut));
+        }
     }
     g_state.have_frame_baseline    = true;
     g_state.highest_consumed_frame = 0;
@@ -549,7 +637,7 @@ void SpectatorNode_ApplyPendingSnapshot() {
     }
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "SpectatorNode: SNAPSHOT applied (match=%u, %zu bytes) — "
+        "SpectatorNode: SNAPSHOT applied (match=%u, %zu bytes) -- "
         "anchor INPUT-frame=%u, local game_mode=%u",
         inbox.meta.match_index, inbox.blob.size(),
         anchor, game_mode);
@@ -591,7 +679,7 @@ void SpectatorNode_SetRootAddr(const sockaddr_in& root) {
 }
 
 // Periodic health tick. Three jobs:
-//   1. Heartbeat to current upstream every HEARTBEAT_INTERVAL_MS — lets
+//   1. Heartbeat to current upstream every HEARTBEAT_INTERVAL_MS -- lets
 //      upstream's expiry sweep know we're still alive (otherwise it'd
 //      drop us after SUBSCRIBER_EXPIRY_MS of silence).
 //   2. Failover on silence: if no inbound from upstream for

@@ -1,11 +1,11 @@
 #pragma once
 
-// upload_queue — drop a manifest JSON into <game_dir>/upload_queue/ that
+// upload_queue -- drop a manifest JSON into <game_dir>/upload_queue/ that
 // the launcher uploads to the hub. Used for crash + desync diagnostic
 // auto-collection.
 //
 // Design: hook only does fopen/fwrite/fclose. No threading, no network,
-// no allocator-sensitive work — safe to call from a desync terminate
+// no allocator-sensitive work -- safe to call from a desync terminate
 // path or an unhandled exception filter where the process is about to
 // die.
 //
@@ -24,7 +24,7 @@ namespace fm2k::upload_queue {
 // whatever it knows; missing fields are written as null/empty so the
 // receiver-side schema check still passes. session_id and match_id may
 // be zero/empty for crashes that happen outside an active match (CSS,
-// title, boot) — that's fine, just makes the upload search-by harder.
+// title, boot) -- that's fine, just makes the upload search-by harder.
 struct Manifest {
     const char* kind            = "unknown";  // "desync" | "crash" | "exception_recovered"
     int32_t     frame           = -1;          // engine frame at the event; -1 = unknown
@@ -42,7 +42,7 @@ struct Manifest {
 
 // Write the manifest to disk. Returns true on success. The launcher
 // will discover and process the file on its next tick. Safe to call
-// from crash handlers — uses only fopen/fwrite/fclose, no allocations
+// from crash handlers -- uses only fopen/fwrite/fclose, no allocations
 // that would block on a corrupt heap.
 //
 // On success, writes:

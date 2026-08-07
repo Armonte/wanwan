@@ -222,7 +222,7 @@ uint32_t SpectatorNode_MsSinceLastAdmit() {
 bool SpectatorNode_HasEverAdmitted() { return g_first_input_admit_ms != 0; }
 
 // True once the upstream told us the whole session is OVER (SPEC_SESSION_END
-// — the host quit cleanly). Distinguishes a GRACEFUL stream end (drain what's
+// -- the host quit cleanly). Distinguishes a GRACEFUL stream end (drain what's
 // left, then close with "stream ended") from an ungraceful host vanish
 // (crash/drop, handled by the host-gone watchdog). See trampoline_spectator.
 bool SpectatorNode_SessionEnded() { return g_state.session_ended; }
@@ -276,7 +276,7 @@ bool SpectatorNode_IsPlayingBack() {
     // (active matches, MATCH_END drains, post-match idle, between-match
     // CSS), only resetting on shutdown / leave. This is what makes
     // Hook_GetPlayerInput unconditionally route through the
-    // spectator-cached values — important because the spectator is
+    // spectator-cached values -- important because the spectator is
     // marked Netplay_IsConnected() (we set it in InitAsSpectator), so
     // without this gate the CSS branch of Hook_GetPlayerInput would
     // serve garbage from the spectator's empty CSS input buffers.

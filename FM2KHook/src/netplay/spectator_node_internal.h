@@ -5,6 +5,7 @@
 // spectator_node*.cpp set -- not a public API.
 #include "spectator_node.h"     // SessionEvent, SpecJoinMode, SnapshotMetadata, SPEC_UDP_WINDOW, SPECTATOR_DEFAULT_CAPACITY, SESSION_EVENT_MATCH_HDR_SIZE
 #include "spec_relay_queue.h"   // fm2k::spec_relay::Ring
+#include "spec_snapshot_coverage.h"  // fm2k::specsnap::CoverageSet (snapshot inbox)
 #include "control_channel.h"    // CtrlPacket (BuildJoinAckPacket)
 #include <winsock2.h>           // sockaddr_in
 #include <array>
@@ -21,14 +22,14 @@ constexpr size_t BROADCAST_BATCH_FRAMES = 8;
 // Redundancy window: each batch carries the last N confirmed frames (not
 // just the BROADCAST_BATCH_FRAMES new ones). This means each frame appears
 // in floor(REDUNDANCY_WINDOW / BROADCAST_BATCH_FRAMES) consecutive batches,
-// so a single dropped UDP packet doesn't lose any inputs — the next batch
+// so a single dropped UDP packet doesn't lose any inputs -- the next batch
 // re-delivers them. With WINDOW=32 and BATCH=8, each frame ships in 4
 // batches: tolerates up to 3 consecutive packet losses before any data is
 // genuinely lost.
 //
 // Wire cost: ~128 B / batch payload (32 frames × 4 B) + 10 B header + UDP
 // overhead ≈ 180 B / packet. At 12.5 batches/sec that's ~2.3 KB/s per
-// subscriber — still nothing.
+// subscriber -- still nothing.
 constexpr size_t REDUNDANCY_WINDOW = 32;
 
 // Subscriber entry from the host's perspective.
@@ -39,10 +40,10 @@ struct Subscriber {
                                // only ever set to 0, never read/gated. Do NOT make a
                                // backfill/pacing decision off this until a SPEC_ACK
                                // message actually populates it (would let the host see
-                               // how far behind each subscriber is — a real future win).
+                               // how far behind each subscriber is -- a real future win).
     bool         tcp_bound;    // True once SpectatorTCP::RegisterAcceptedClient(addr)
                                // has paired this sub with an accepted TCP socket.
-                               // Until then, INITIAL_MATCH + backfill are deferred —
+                               // Until then, INITIAL_MATCH + backfill are deferred --
                                // any send before binding silently drops on the floor.
     SpecJoinMode join_mode;    // Backfill preference declared in SPEC_JOIN_REQ.
                                // Phase 1: stored only; phase 3 branches on it
@@ -70,6 +71,37 @@ struct Subscriber {
     // per 3s -- a genuinely restarted viewer still recovers within 3s,
     // a retry storm degrades to background noise.
     uint64_t     last_reset_ms = 0;
+    // Snapshot re-ship floor. Every destructive reset re-runs the bind path,
+    // which used to re-ship the FULL snapshot on every re-JOIN -- tens of KB
+    // when the zero-RLE wins, up to ~1MB when it does not, onto the exact link
+    // whose loss provoked the re-JOIN, and the viewer discards a re-join
+    // snapshot anyway once it has started playing back. Floored to one per
+    // SPECTATOR_SNAPSHOT_RESHIP_MS; the backfill still ships on every rebind
+    // because it is the only thing besides an applied snapshot that can set
+    // the viewer's have_frame_baseline. Keyed by match so a NEW match's
+    // snapshot -- genuinely different state the viewer has never seen -- is
+    // never withheld. 0 / 0xFFFFFFFF = nothing shipped yet.
+    //
+    // snapshot_reship_skips bounds the damage when the throttle guesses
+    // wrong. The host cannot tell "the viewer lost my backfill" from "the
+    // viewer lost my snapshot" -- a viewer with no baseline sends
+    // resume_frame=0 either way -- and withholding a snapshot the viewer
+    // really is missing lets its bounded download-window hold expire into the
+    // from-scratch battle path (a silent desync, strictly worse than the
+    // freeze this is fixing). So: never suppress twice in a row. Reset to 0
+    // on every actual ship.
+    uint64_t     last_snapshot_ship_ms   = 0;
+    uint32_t     last_snapshot_match_idx = 0xFFFFFFFFu;
+    uint8_t      snapshot_reship_skips   = 0;
+    // The host_session_kind advertised to THIS subscriber, pinned in the same
+    // block as join_mode from a single Netplay_GetSessionKind() read. Every
+    // ACK to this sub repeats it, so a host that crosses CSS -> battle between
+    // the accept and a later re-ACK can never tell a FULL_SESSION-granted
+    // viewer "BATTLE" -- which made it /F-boot and then replay the
+    // from-frame-0 CSS stream as battle input from uninitialised state
+    // (deterministic ~205-frame desync, 2/16 at 20% loss). Changes ONLY when
+    // the host deliberately re-pins join_mode. SPEC_ACK_KIND_* values.
+    uint8_t      pinned_ack_kind         = SPEC_ACK_KIND_NONE;
 };
 
 // Cached initial-match metadata so new joiners get a consistent handoff.
@@ -126,6 +158,29 @@ struct State {
     std::vector<MatchHeader>  match_headers;     // side table for MATCH_START
     uint32_t                  total_input_count   = 0;  // INPUT events in session_events
     uint32_t                  session_start_frame = 0;  // INPUT-frame index of session_events[0]
+    // Deep-join anchor (Design 2). Index into session_events of the most
+    // recent CSS_ENTERED op, and the INPUT-frame the next INPUT after it
+    // carries. Lets a between-matches joiner be backfilled from the CURRENT
+    // char-select instead of from frame 0: a viewer joining an ongoing set
+    // used to replay every prior CSS phase and every prior battle, which is
+    // ~a minute of fast-forward dominated by cold .player loads.
+    //
+    // CSS_ENTERED specifically, not "the most recent boundary of either kind":
+    // it is the only anchor that guarantees the mirror starts at CSS frame 0,
+    // which the seam machinery assumes. Anchoring on a bare MATCH_END would
+    // start a fresh viewer on a results screen it has no MATCH_START for.
+    // Maintained O(1) in AppendOpAndFlush; no log trimming in this wave, so
+    // these indices stay valid for the life of the session.
+    bool                      have_css_anchor         = false;
+    size_t                    css_anchor_event_idx    = 0;
+    uint32_t                  css_anchor_input_frame  = 0;
+    // Gate for the above: only bound the backfill once a match has actually
+    // ENDED. Before that the session is still its first char-select plus its
+    // first battle -- there is no prior match to skip, and anchoring on the
+    // first CSS_ENTERED would drop whatever ops precede it (PIN_RNG and
+    // friends). A fresh session-start join therefore keeps taking the
+    // from-frame-0 path byte for byte.
+    bool                      have_prior_match        = false;
                                                          // (always 0 unless we ever drop history)
 
     // Pending broadcast cursor: events past this index are unflushed.
@@ -184,10 +239,20 @@ struct State {
     //
     // Empty / invalid before the first match starts. New session_events
     // accumulating during pre-battle CSS don't disturb the previous
-    // snapshot — it just goes stale until the next StashSnapshot
+    // snapshot -- it just goes stale until the next StashSnapshot
     // overwrites it.
     struct SnapshotCache {
         std::vector<uint8_t> blob;
+        // Pre-compressed WIRE form of `blob`, built ONCE at capture
+        // (StashSnapshot) instead of once per recipient inside
+        // SendSnapshotTo. The old per-recipient ZeroRleCompress ran over
+        // ~1MB on the host main loop while holding g_poll_mutex, so the
+        // host hitch scaled with viewer count and with every re-JOIN
+        // re-ship. wire_flags carries SNAPSHOT_FLAG_ZERO_RLE iff the
+        // compressed form actually won; when it did not, wire_blob is a
+        // copy of the raw blob so the ship path stays branch-free.
+        std::vector<uint8_t> wire_blob;
+        uint16_t             wire_flags         = 0;
         uint32_t             input_frame        = 0;
         uint32_t             match_index        = 0;
         uint32_t             checksum           = 0;
@@ -195,7 +260,7 @@ struct State {
         // snapshot (2000 = CSS, 3000 = battle). Phase E uses this to gate
         // the spec-side apply on a matching mode so a CSS snapshot doesn't
         // get applied during the spec's battle phase (wrong state regions
-        // would dominate). 0 means "legacy battle-only capture" — apply
+        // would dominate). 0 means "legacy battle-only capture" -- apply
         // when spec reaches game_mode >= 3000.
         uint32_t             captured_game_mode = 0;
         bool                 valid              = false;
@@ -223,7 +288,27 @@ struct State {
         std::vector<uint8_t> blob;
         SnapshotMetadata     meta            = {};
         uint32_t             anchor_frame    = 0;
+        // UNIQUE covered bytes, derived from `covered` below. NOT a running
+        // sum of chunk lengths: the old counter added `n` unconditionally on
+        // every chunk, so a re-shipped chunk (new RC msg_seq, same offset --
+        // RC only dedups within one seq space) DOUBLE-COUNTED and the exact
+        // `== wire_bytes` finalize test could then never pass. The transfer
+        // wedged forever, logging "END seen but inbox incomplete" at 1Hz with
+        // N sometimes GREATER than M.
         size_t               bytes_received  = 0;
+        // Coverage set: merged, non-overlapping [start,end) byte ranges that
+        // have actually landed in `blob`. Idempotent by construction -- a
+        // duplicate or partially-overlapping chunk contributes only the bytes
+        // it newly covers. Completion is "one interval spanning [0,wire)",
+        // which cannot be faked by overshoot. Chunk-size agnostic, so a
+        // re-ship that used a different chunking still composes.
+        fm2k::specsnap::CoverageSet covered;
+        // Staleness tracking (there was NO timeout at all before: an
+        // abandoned transfer sat `active` forever, blocking the BEGIN
+        // restart path, holding ~1MB, and spamming the 1Hz gap warning with
+        // no way to tell a dead transfer from a slow one).
+        uint64_t             started_ms      = 0;
+        uint64_t             last_progress_ms = 0;
         bool                 active          = false;
         // Set by SNAPSHOT_END once the blob has been validated (size +
         // fletcher32) but the SaveState_LoadFromBytes call is held back
@@ -280,18 +365,26 @@ struct State {
     // 5s budget and failover used to guillotine the join repeatedly.
     bool live_established = false;
     bool                      join_req_pending    = false;  // We sent SPEC_JOIN_REQ; expect ACK.
+    // Set when a first-time JOIN_ACK granted BATTLE, i.e. we /F-booted into
+    // battle on the promise of a snapshot. TickHealth clears it the moment any
+    // snapshot byte shows up (or one applies) and otherwise raises the
+    // grant-vs-stream contradiction: booted for a snapshot join, the stream
+    // arrived, no snapshot ever did. That combination means the ACK we obeyed
+    // did not describe the stream the host actually assigned us, and simulating
+    // on is how a mismatched pairing turns into a silent desync.
+    bool                      spec_boot_expects_snapshot = false;
     sockaddr_in               upstream_addr       = {};
     // Sticky copy of the mode we declared on the FIRST RequestJoin from
     // Netplay_StartSpectator. The reconnect path (silence failover) calls
     // RequestJoin(root) without specifying a mode, which would otherwise
     // fall through to the SpectatorNode_RequestJoin default (FULL_SESSION)
-    // and clobber the original CURRENT_MATCH preference — host then ships
+    // and clobber the original CURRENT_MATCH preference -- host then ships
     // no snapshot, spec sits with placeholder chars on a /F-booted battle.
     SpecJoinMode              last_requested_mode = SpecJoinMode::FULL_SESSION;
     // Failover support. root_addr is the originally-configured upstream
     // (the actual match host). If our current upstream goes silent we
     // fall back to root, which always-on by design. Liveness is tracked
-    // via SpectatorTCP::LastUpstreamRecvMs() (TCP-side) — this struct
+    // via SpectatorTCP::LastUpstreamRecvMs() (TCP-side) -- this struct
     // owns only handshake / heartbeat send-cadence state.
     sockaddr_in               root_addr           = {};
     uint64_t                  last_heartbeat_send_ms = 0;
@@ -312,10 +405,10 @@ struct State {
     bool                      have_frame_baseline = false;
     uint32_t                  next_expected_frame = 0;  // session-relative INPUT-frame index
     // Cross-channel reorder buffer (ReliableChannel: snapshot/backfill on
-    // RC_CHAN_SPEC_SNAPSHOT, live on RC_CHAN_SPEC — independently ordered). Under
+    // RC_CHAN_SPEC_SNAPSHOT, live on RC_CHAN_SPEC -- independently ordered). Under
     // loss the two channels' ARRIVAL order != host-append order, so we buffer
     // out-of-order EVENT_BATCH payloads keyed by start_frame and drain them in
-    // frame order — restoring host-append order for both inputs AND ops. Empty
+    // frame order -- restoring host-append order for both inputs AND ops. Empty
     // (no cost) on a single ordered stream (TCP). Bounded to avoid unbounded hold.
     struct ReorderBatch {
         int32_t op_base = -1;   // EVENT_BATCH2 absolute op base; -1 = legacy
@@ -468,7 +561,7 @@ struct State {
     uint32_t                  udp_paused_on_gate    = 0;
     uint32_t                  udp_dropped_on_gap    = 0;
 
-    // C7 — host's session_id for this peer connection. Generated lazily
+    // C7 -- host's session_id for this peer connection. Generated lazily
     // (first AppendSessionId call) and stays stable until the SpectatorNode
     // is shut down or the next AppendSessionId overwrites it. The wire
     // event sources g_state.session_events; the file writer sources this
@@ -516,7 +609,15 @@ extern State g_state;
 
 // Built in spec_join.cpp; also called by StashSnapshot (spectator_node.cpp) for
 // the battle-entry JOIN_ACK re-broadcast. Unique name -> kept at global scope.
+// LIVE REFRESH (host's current kind, SPEC_ACK_LIVE_REFRESH bit set): the
+// battle-entry re-broadcast, plus the re-ACK paths that deliberately change
+// nothing. Says where the host IS; can never complete a first-time handshake.
+// GRANT (BuildJoinAckPacketFor, bit clear): what THIS subscriber was pinned
+// to. Every send that pins, re-pins, or re-states a subscriber's join_mode
+// must use it, so the viewer's boot decision follows its own grant and not
+// whatever phase the host happened to reach in between.
 CtrlPacket BuildJoinAckPacket();
+CtrlPacket BuildJoinAckPacketFor(const Subscriber& sub);
 
 // Internal cross-TU API for the spectator node. The implementation is split
 // across spec_*.cpp; these all share g_state above. Wrapped in `specnode` so
@@ -559,9 +660,22 @@ size_t   BackfillFirstIdxForFrame(uint32_t anchor_input_frame);
 void     SendSessionEventsTo(const sockaddr_in& to, size_t first_event_idx, uint32_t start_input_frame);
 void     SendSessionBackfillTo(const sockaddr_in& to);
 void     SendSessionBackfillFromFrame(const sockaddr_in& to, uint32_t anchor_input_frame);
+// Design 2: bounded backfill from the most recent CSS_ENTERED (falls back to
+// SendSessionBackfillTo when the session has no char-select boundary yet).
+// HaveBoundedAnchor() reports whether that fallback would trigger, so callers
+// can log the path they will actually take rather than the one they intended.
+bool     HaveBoundedAnchor();
+void     SendSessionBackfillFromRecentAnchor(const sockaddr_in& to);
 void     SendSnapshotTo(const sockaddr_in& to);
 
 }  // namespace specnode
+
+// ---- snapshot inbox staleness sweep (spec_recv.cpp) ----
+// Global scope (spec_recv.cpp has no namespace block). Called once per
+// spectator tick from SpectatorNode_ApplyPendingSnapshot; returns true if it
+// reclaimed a dead transfer. Chunk arrival cannot drive this -- a dead
+// transfer has no arrivals, which is exactly why it used to wedge forever.
+bool SpectatorNode_SweepStaleSnapshotInbox();
 
 // ---- admission pacing (spec_playback_state.cpp) ----
 // Global scope, matching the SpectatorNode_* accessors it sits with.

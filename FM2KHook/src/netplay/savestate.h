@@ -16,7 +16,7 @@
 //     hit-junction tables, opponent ptr, throw state, etc.).
 // FM95's char data is ~all static (per FM95_Integration.h: palette + image
 // descriptors + sounds + script payload all loaded once from .player file).
-// FM95 char_dynamic is empty in the FM95 SaveStateData — the per-instance
+// FM95 char_dynamic is empty in the FM95 SaveStateData -- the per-instance
 // state lives in the object pool, which we DO capture.
 // ============================================================================
 #if defined(ENGINE_FM95)
@@ -42,7 +42,7 @@ constexpr uintptr_t CHAR_SLOT_BASE = 0x4D1D90;    // g_character_data_base (corr
 //         one-time spectator-join/replay TRANSMISSION blob, NOT per-frame cost.
 //   FM95: ~50KB per slot (object pool + input rings + minimal scalars).
 //         FM95 doesn't have FM2K's afterimage_pool / input_tracking_state /
-//         palette flash arithmetic regions — fewer subsystems to mirror.
+//         palette flash arithmetic regions -- fewer subsystems to mirror.
 // ============================================================================
 struct SaveStateData {
     uint32_t frame_number;
@@ -52,7 +52,7 @@ struct SaveStateData {
     uint32_t render_frame_counter;                         // FM2K: 0x4456FC ; FM95: g_game_tick_counter @ 0x4DD7A8
 
 #if defined(ENGINE_FM95)
-    // FM95 lean save layout — fields ordered per docs/FM95_Savestate_Inventory.md.
+    // FM95 lean save layout -- fields ordered per docs/FM95_Savestate_Inventory.md.
     // ~45 KB per slot. char_dynamic is zero-sized (FM95 char data is static
     // after .player load; per-instance state lives in object_pool).
     //
@@ -61,22 +61,22 @@ struct SaveStateData {
     // Block B: game-state scalars (frame counter is in render_frame_counter
     // field above; rng_seed too). Just need game_mode.
     uint32_t game_mode;                                    // src: 0x425558
-    // Block C: timer subsystems — three contiguous blocks at 0x509080..0x5090B0.
+    // Block C: timer subsystems -- three contiguous blocks at 0x509080..0x5090B0.
     uint8_t  timer_blocks[0x30];                           // src: 0x509080
     // Block D: input ring + edge-detection state.
     uint8_t  p1_input_history[0x400];                      // src: 0x431720
     uint8_t  p2_input_history[0x400];                      // src: 0x431B20
-    uint8_t  input_history_extra[0x400];                   // src: 0x431320 — combo replay ring
+    uint8_t  input_history_extra[0x400];                   // src: 0x431320 -- combo replay ring
     uint32_t p1_input_current;                             // src: 0x437750
     uint32_t p2_input_current;                             // src: 0x437754
     uint32_t p1_input_persistent;                          // src: 0x425500
-    uint8_t  input_edge_state[0x10];                       // src: 0x4255A8..B7 — current/pressed for both players
+    uint8_t  input_edge_state[0x10];                       // src: 0x4255A8..B7 -- current/pressed for both players
     // Block E + F merged: per-player arrays + round state form one
     // contiguous range at 0x5E98A0..0x5E9A40 (416 B). Saving as one
     // memcpy is simpler than chasing each 25-stride field individually.
     uint8_t  player_round_state[0x1A0];                    // src: 0x5E98A0
     // Block G: round/match TRANSITION scalars that vs_round_function mutates
-    // but that live OUTSIDE every block above — added 2026-07-11 after the
+    // but that live OUTSIDE every block above -- added 2026-07-11 after the
     // stress soak desynced at a round transition (mode 3, ~frame 1297). A
     // rollback crossing a round boundary must restore these or the re-sim
     // consumes RNG differently (round-count-driven) and diverges.
@@ -97,13 +97,13 @@ struct SaveStateData {
 #endif
 
 #if !defined(ENGINE_FM95)
-    // g_round_end_flag — written/read by vs_round_function, drives round
+    // g_round_end_flag -- written/read by vs_round_function, drives round
     // transitions. Not previously saved; IDA audit flagged it as unsaved
     // state that rollback must cover for clean round-boundary replay.
     uint32_t round_end_flag;                               // 0x424718
 
     // Mike Z rollback-safe sound layer: per-channel "desired" state. Not
-    // DSound hardware state — only the sim's authoritative record of what
+    // DSound hardware state -- only the sim's authoritative record of what
     // should be playing on each channel. Sound-layer sync at end of each
     // displayed frame reconciles this to the real DSound buffers with the
     // rollback-window filter (see sound_rollback.h).
@@ -119,19 +119,19 @@ struct SaveStateData {
     uint8_t  object_list_heads_tails[0x400];               // 0x430240..0x430640 (1024 B)
     uint8_t  object_node_pool[0x2000];                     // 0x4CFA20 (8192 B)
 #else
-    // FM95: Mike Z sound layer (engine-agnostic — applies to any rollback
+    // FM95: Mike Z sound layer (engine-agnostic -- applies to any rollback
     // target with a per-channel sound dispatch). Other Wave C subsystems
     // don't exist on FM95.
     SoundRollback::DesiredState sound_desired[SoundRollback::MAX_CHANNELS];
 #endif
-    // BGM (MIDI/CD/stop) rollback state — single global stream, both engines.
+    // BGM (MIDI/CD/stop) rollback state -- single global stream, both engines.
     // Deterministic fields only (see sound_rollback.h); the real MCI stream is
     // reconstructed by SyncAfterAdvance, not saved.
     SoundRollback::DesiredBgm bgm_desired;
 
     // Per-region CRCs captured AT SAVE TIME (the forward-sim state at this
     // frame). On desync, we dump these alongside the CURRENT (post-replay)
-    // per-region CRCs — a single log file shows which region diverged between
+    // per-region CRCs -- a single log file shows which region diverged between
     // the two without having to diff two dump files across peers.
     struct SavedRegionCRCs {
         uint32_t rng;
@@ -145,7 +145,7 @@ struct SaveStateData {
         uint32_t afterimage_pool;
         uint32_t list_heads_tails;
         uint32_t node_pool;
-        uint32_t current_object_ptr_val;  // value, not CRC — 4 bytes only
+        uint32_t current_object_ptr_val;  // value, not CRC -- 4 bytes only
         uint32_t gameplay_fingerprint;
         uint32_t combined;
 
@@ -185,7 +185,7 @@ struct SaveStateData {
     } saved_region_crcs;
 };
 
-// Addresses for Wave C audit regions — FM2K only. FM95 has no equivalent
+// Addresses for Wave C audit regions -- FM2K only. FM95 has no equivalent
 // afterimage/object-list/node-pool subsystems (different state-machine
 // architecture per the IDA decomp). Stubbed to zero so any consumer that
 // reads the symbols still compiles on FM95.
@@ -236,11 +236,11 @@ uint32_t SaveState_GetLastChecksum(int frame);
 // SaveState_GetSlotByteSize() reports the per-slot byte count up-front
 // (= sizeof(SaveStateData)) so callers can size their buffer correctly.
 // On FM2K with the full save layout that's around 1 MB; FM95's lean layout
-// is ~45 KB. The actual bytes are an opaque blob — they round-trip through
+// is ~45 KB. The actual bytes are an opaque blob -- they round-trip through
 // SaveState_LoadFromBytes (added in phase 4) without external interpretation.
 //
 // The pointer returned by SaveState_PeekLastSavedSlotBytes is valid only
-// until the next SaveState_Save call — callers that need to keep the bytes
+// until the next SaveState_Save call -- callers that need to keep the bytes
 // around must memcpy. Returns nullptr if no Save has run yet.
 size_t         SaveState_GetSlotByteSize();
 const uint8_t* SaveState_PeekLastSavedSlotBytes();
@@ -249,7 +249,7 @@ const uint8_t* SaveState_PeekLastSavedSlotBytes();
 // rollback-buffer slot indicated by the embedded frame_number, register
 // it as the "last saved slot," and apply it to live memory by invoking
 // SaveState_Load on the same frame. The blob is opaque from the caller's
-// perspective — it must have come from PeekLastSavedSlotBytes on the same
+// perspective -- it must have come from PeekLastSavedSlotBytes on the same
 // engine variant (FM2K vs FM95) and the same build (slot layout is not
 // version-stable).
 //
@@ -274,10 +274,10 @@ bool           SaveState_LoadFromBytes(const uint8_t* bytes, size_t n);
 //       at the next frame (forward's pre-sim rng = post-render-of-prev-frame
 //       rng; replay must match), and
 //   (b) the runahead-rewind Load every wall-clock frame does the same thing
-//       as a real rollback would — restoring the post-render rng so live rng
+//       as a real rollback would -- restoring the post-render rng so live rng
 //       matches across forward and replay.
 // Without this back-patch, render-side rand calls accumulate forever on
-// forward but never on replay, and the two diverge after any rollback —
+// forward but never on replay, and the two diverge after any rollback --
 // which is what produced the rng-region forward/replay DIFFs in
 // FM2K_P*_desync_f*.log.
 //
@@ -293,7 +293,7 @@ void SaveState_PatchPostRenderRng(uint32_t rng);
 // that was never rendered doesn't replay a stale value).
 //
 // Used by Netplay_ProcessBattleInputPhase to re-establish the right
-// starting RNG at the head of each replay AdvanceEvent — without this,
+// starting RNG at the head of each replay AdvanceEvent -- without this,
 // intermediate frames in a multi-frame rollback batch run their sim
 // from POST-sim-prev (replay) instead of POST-render-prev (forward),
 // and the render-side game_rand delta accumulates as divergence.
@@ -312,7 +312,7 @@ struct RegionChecksums {
     uint32_t combined;
 
     // Gameplay fingerprint: hash over just the game-visible fields (HP, positions,
-    // RNG, round timer, current inputs). Process-independent by design — no
+    // RNG, round timer, current inputs). Process-independent by design -- no
     // pointers, no heap addresses, no interpreter-internal state. If the full
     // combined hash differs but this matches, we have a false-positive desync:
     // players would see identical gameplay, only the internal memory layout

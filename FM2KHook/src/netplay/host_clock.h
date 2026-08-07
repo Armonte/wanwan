@@ -1,4 +1,4 @@
-// host_clock.h — host-clock sync + "rift" frame pacing.
+// host_clock.h -- host-clock sync + "rift" frame pacing.
 //
 // One peer (the host) is the authoritative clock; the other estimates a µs offset
 // (single-sample latch, 150ms hysteresis). Both stamp packets in the shared host-clock
@@ -6,7 +6,7 @@
 // "rift":
 //   rift = mostRecentConfirmedRemoteFrame + oneWayLatencyFrames + 1 - localSimFrame
 // (>0 => local behind/speed up; <0 => local ahead/slow down). The smoothed rift, blended
-// with GekkoNet's own frame-advantage, feeds the existing frame-pacing sleep — pacing more
+// with GekkoNet's own frame-advantage, feeds the existing frame-pacing sleep -- pacing more
 // smoothly than arrival-jitter frame-advantage under high/asymmetric latency.
 //
 // Modeled on a shipping rollback engine's pacing. Generic naming; no product references.
@@ -50,7 +50,7 @@ void OnInboundTimestamp(uint64_t peer_host_clock_send_us, uint32_t peer_frame,
 // clocks under asymmetric routing (fundamental limit shared by NTP and the reference
 // engine; the host-clock offset is biased by ~one transit and yields only EXCESS-over-
 // minimum, not absolute). The host clock's real value is offset sync + a jitter-free
-// projection, NOT beating RTT/2 — so we do not let its biased excess inflate the rift.
+// projection, NOT beating RTT/2 -- so we do not let its biased excess inflate the rift.
 float OneWayLatencyFrames(uint32_t rtt_ms);
 
 // Diagnostic: the host-clock-MEASURED one-way in frames (excess over the windowed-min

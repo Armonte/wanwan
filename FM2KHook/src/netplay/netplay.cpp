@@ -66,11 +66,11 @@ SessionKind g_session_kind = SessionKind::NONE;
 
 // CSS lockstep parameters (ported from the legacy CCCaster-style ring-buffer
 // implementation). With GekkoNet's prediction=0 mode, local_delay is the
-// per-player input commitment delay — peer A's input committed at frame F
+// per-player input commitment delay -- peer A's input committed at frame F
 // becomes the input applied at frame F+local_delay, identical semantics to
 // the previous "store at frame+delay, read at frame" model.
 
-// CSS state — input transport now lives inside the CSS GekkoSession
+// CSS state -- input transport now lives inside the CSS GekkoSession
 bool g_css_active        = false;  // Currently in CSS mode (game-side detection)
 bool g_css_synced        = false;  // Both peers BATTLE_READY, CSS GekkoSession ready
 bool g_remote_css_ready  = false;  // Remote has entered CSS
@@ -85,7 +85,7 @@ uint16_t g_css_advance_p1     = 0;
 uint16_t g_css_advance_p2     = 0;
 bool     g_css_advance_ready  = false;
 
-// GekkoNet session pointer + readiness flag (shared by CSS and battle —
+// GekkoNet session pointer + readiness flag (shared by CSS and battle --
 // only one is alive at a time, distinguished by g_session_kind).
 GekkoSession* g_session = nullptr;
 bool g_session_ready = false;
@@ -100,7 +100,7 @@ uint32_t g_desync_count = 0;
 uint32_t g_last_desync_log_tick = 0;
 int g_local_delay = 1;  // Computed from RTT at battle start
 
-// Tuning knobs — set at battle session start, mirrored here so
+// Tuning knobs -- set at battle session start, mirrored here so
 // Netplay_TickHeartbeat can echo the live values into [BEAT] lines.
 // `g_runahead_user_pref` is the configured "on" value (env / future
 // UI default); `g_runahead_active` is the value actually applied to
@@ -148,12 +148,12 @@ uint32_t g_beat_window_rb_count = 0;   // real rollbacks observed
 uint64_t g_beat_last_emit_ms    = 0;
 
 
-// Synthetic desync trigger — checks FM2K_FORCE_DESYNC_AT_FRAME env
+// Synthetic desync trigger -- checks FM2K_FORCE_DESYNC_AT_FRAME env
 // var once at hook init. When the netplay frame counter reaches the
 // configured value, calls HandleDesyncDetected with synthetic flag
 // set. Both peers receive the same env var (the launcher inherits
 // it), both fire at the same frame, both end up with the same
-// match_token-derived match_id — perfect smoke test for the upload
+// match_token-derived match_id -- perfect smoke test for the upload
 // + cross-peer pairing pipeline.
 //
 // Set to -1 (default) to disable.
@@ -187,7 +187,7 @@ void MaybeFireSyntheticDesync() {
 // at the FIRST battle-session start after CONNECTED and reused for every
 // subsequent CSS->battle transition until disconnect. Without this we
 // recomputed per-battle off whatever stale rtt_worst happened to be sitting
-// in the bucket — a single CSS spike would slam delay to 15 on a 6 ms link.
+// in the bucket -- a single CSS spike would slam delay to 15 on a 6 ms link.
 // Cleared on Netplay_Shutdown / Netplay_OnDisconnect so a reconnect picks
 // a fresh value next time.
 int  g_session_delay_cached       = 0;
@@ -195,7 +195,7 @@ bool g_session_delay_cache_valid  = false;
 
 // Highest frame number we've ever recorded into the replay/spectator stream.
 // Reset on each Netplay_StartBattle (g_netplay_frame also resets to 0).
-// Gates the GekkoAdvance recording path against runahead duplicates — each
+// Gates the GekkoAdvance recording path against runahead duplicates -- each
 // frame is advanced multiple times under runahead, but only the first
 // monotonic forward crossing is "the" confirmed advance.
 uint32_t g_highest_recorded_frame = 0;
@@ -230,9 +230,9 @@ uint32_t g_battle_entry_swap_frame = 0;     // Latest agreed swap frame.
 // "Are we expecting BATTLE_ENTERING right now?" gate. Set when a new CSS
 // GekkoSession comes up (we're entering the CSS phase that will swap to
 // battle); cleared once we've started the battle session. Without this,
-// stale BATTLE_ENTERING packets from a previous match — sent during that
+// stale BATTLE_ENTERING packets from a previous match -- sent during that
 // match's CSS phase but delayed in flight or kernel-buffered, arriving
-// 100–200ms AFTER the previous match's Netplay_EndBattle reset us — get
+// 100–200ms AFTER the previous match's Netplay_EndBattle reset us -- get
 // blindly accepted and pre-poison g_battle_entry_swap_frame for the new
 // match. Symptom: every subsequent match's "BATTLE SYNC: both peers
 // signaled" line shows the SAME stale swap_frame, the BATTLE_ENTERING
@@ -258,7 +258,7 @@ bool     g_battle_end_armed           = false;
 // the instant it has A's signal, swaps sessions, and disarms ~30ms later.
 // If B's OWN signal packets were all lost in flight, A keeps resending
 // into a peer that now drops everything at the armed gate without
-// answering — A wedges in the barrier indefinitely (observed: 593
+// answering -- A wedges in the barrier indefinitely (observed: 593
 // BATTLE_ENTERING resends over 36s). With B's signal sent effectively
 // once or twice in the short window, that's roughly a coin-flip per
 // barrier at 20% loss. Fix: a peer that COMPLETED a barrier keeps
@@ -288,7 +288,7 @@ uint8_t NextBarrierEpoch() {
 
 // Frames of slack added to the proposed swap_frame so both peers have time
 // to drain in-flight inputs and converge their proposals before reaching it.
-// 8 @ 100 FPS = 80ms — comfortably above typical RTT. Tunable.
+// 8 @ 100 FPS = 80ms -- comfortably above typical RTT. Tunable.
 
 // Handshake state
 bool g_received_hello = false;
@@ -304,7 +304,7 @@ bool g_received_hello_ack = false;
 // =============================================================================
 
 // Forward decls for SOCD-mode helpers in hooks.cpp (file-scope so all
-// uses below — Netplay_BroadcastHostConfig + the HOST_CONFIG receiver —
+// uses below -- Netplay_BroadcastHostConfig + the HOST_CONFIG receiver --
 // can reach them).
 extern "C" int  Hook_GetSOCDModePublic();
 extern "C" void Hook_SetSOCDMode(int mode);
@@ -312,8 +312,8 @@ extern "C" void Hook_SetSOCDMode(int mode);
 // Random-stage handoff to the FM95 LoadStageFile_alt hook. Set when the
 // xorshift block in Netplay_StartBattleSession produces a fresh roll;
 // read by Hook_LoadStageFileAlt to override the function's arg0. 0xFFFFFFFF
-// means "random not enabled / no override" — hook passes the original
-// arg0 through unchanged. FM2K doesn't read this — its ADDR_SELECTED_STAGE
+// means "random not enabled / no override" -- hook passes the original
+// arg0 through unchanged. FM2K doesn't read this -- its ADDR_SELECTED_STAGE
 // write goes to the canonical 0x43010c which the game reads natively.
 uint32_t g_pending_random_stage = 0xFFFFFFFFu;
 extern "C" uint32_t Netplay_PeekNextRolledStage() {
@@ -339,7 +339,7 @@ bool Netplay_Init(int player_index, uint16_t local_port, const char* remote_addr
     g_p2_input = 0;
     fm2k::hostclock::Reset();   // fresh clock offset + rift window per session
 
-    // Reset CSS state — input transport now lives in the CSS GekkoSession,
+    // Reset CSS state -- input transport now lives in the CSS GekkoSession,
     // so the legacy ring-buffer fields are gone. The session itself is
     // created on first BATTLE_READY rendezvous and torn down on battle entry.
     g_session_kind      = SessionKind::NONE;
@@ -366,7 +366,7 @@ bool Netplay_Init(int player_index, uint16_t local_port, const char* remote_addr
     g_battle_end_swap_frame      = 0;
     g_battle_end_armed           = false;
 
-    // Fresh connection — restart the barrier epoch sequence on both sides.
+    // Fresh connection -- restart the barrier epoch sequence on both sides.
     // (Netplay_EndBattle deliberately does NOT touch these: the completion
     // records must survive into the next CSS so a lagging peer's barrier
     // retries still get answered.)
@@ -406,12 +406,12 @@ bool Netplay_Init(int player_index, uint16_t local_port, const char* remote_addr
         }
     }
 
-    // Initialize spectator tree node AFTER NetSocket — its TCP listener
+    // Initialize spectator tree node AFTER NetSocket -- its TCP listener
     // binds to the UDP socket's port number (TCP/UDP share port space).
     SpectatorNode_Init();
 
     // Hub-driven NAT traversal. If FM2K_HUB_* env vars are present,
-    // the launcher started this match via the hub — fire a STUN probe
+    // the launcher started this match via the hub -- fire a STUN probe
     // (so the hub can reflect our public mapping) and start the
     // peer-to-peer burst-punch using the supplied match_token. If the
     // env vars aren't set, this match was a legacy direct-connect:
@@ -426,7 +426,7 @@ bool Netplay_Init(int player_index, uint16_t local_port, const char* remote_addr
         }
 
         // Discover + advertise our own global IPv6 endpoint (independent of the
-        // v4 hub STUN — v6 needs no reflection). When both peers have global v6
+        // v4 hub STUN -- v6 needs no reflection). When both peers have global v6
         // this opens a DIRECT, NAT-free, relay-free path; the burst already
         // punches the peer's v6 candidate (StartPunch), this supplies OUR half.
         ::fm2k::nat::DiscoverAndPublishLocalV6();
@@ -530,7 +530,7 @@ bool Netplay_Init(int player_index, uint16_t local_port, const char* remote_addr
 }
 
 bool Netplay_InitAsSpectator(uint16_t local_port, const char* host_addr) {
-    g_player_index = 2;  // sentinel — not a player slot
+    g_player_index = 2;  // sentinel -- not a player slot
     g_simple_state = SimpleState::CONNECTED;  // skip handshake; spectators don't HELLO
     g_session = nullptr;
     g_session_ready = false;
@@ -570,7 +570,7 @@ bool Netplay_InitAsSpectator(uint16_t local_port, const char* host_addr) {
             return false;
         }
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "Replay: loaded — trampoline will drive playback");
+            "Replay: loaded -- trampoline will drive playback");
         return true;
     }
 
@@ -612,7 +612,7 @@ bool Netplay_InitAsSpectator(uint16_t local_port, const char* host_addr) {
     // Phase 5: launcher controls the join mode via FM2K_SPECTATE_MODE env var.
     //   "current" → CURRENT_MATCH (CCCaster-style snapshot join, default)
     //   "full"    → FULL_SESSION  (replay-from-frame-0)
-    // Anything else (or unset) defaults to CURRENT_MATCH — the user-facing
+    // Anything else (or unset) defaults to CURRENT_MATCH -- the user-facing
     // intent for live spectating; FULL_SESSION is opt-in for streamers.
     SpecJoinMode mode = SpecJoinMode::CURRENT_MATCH;
     if (const char* env = std::getenv("FM2K_SPECTATE_MODE")) {
@@ -622,11 +622,11 @@ bool Netplay_InitAsSpectator(uint16_t local_port, const char* host_addr) {
     }
     // Hub-driven NAT registration. Same as Netplay_Init's player path:
     // fire a STUN probe so the hub learns OUR external UDP mapping
-    // (from the spec hook's UDP socket — same one ControlChannel uses
+    // (from the spec hook's UDP socket -- same one ControlChannel uses
     // for SPEC_JOIN_REQ + SPEC_HEARTBEAT). Without this, hub's
     // user.udp_addr is whatever an earlier game STUN landed (or
     // empty), spectator_incoming forwards the wrong port to the
-    // host, and the host's UDP NAT-punch heartbeat goes nowhere —
+    // host, and the host's UDP NAT-punch heartbeat goes nowhere --
     // spec then sits on "Connecting..." through the entire reconnect
     // backoff.
     {
@@ -637,7 +637,7 @@ bool Netplay_InitAsSpectator(uint16_t local_port, const char* host_addr) {
         } else {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                 "Netplay (spectator): FM2K_HUB_UDP_ADDR or FM2K_HUB_USER_ID "
-                "unset — STUN probe skipped, host's punch may target wrong "
+                "unset -- STUN probe skipped, host's punch may target wrong "
                 "port (cross-NAT spec will likely fail)");
         }
     }
@@ -698,7 +698,7 @@ bool Netplay_IsSessionReady() {
 }
 
 // =============================================================================
-// CSS PROCESSING — GekkoNet lockstep (input_prediction_window = 0)
+// CSS PROCESSING -- GekkoNet lockstep (input_prediction_window = 0)
 //
 // CSS used to ride a custom CCCaster-style ring buffer over CtrlMsg::CSS_INPUT.
 // It's now a GekkoGameSession with prediction_window=0, which gives true
@@ -706,7 +706,7 @@ bool Netplay_IsSessionReady() {
 // inputs for the current frame have arrived. Save/Load events are suppressed
 // in lockstep mode (game_session.cpp:226-228, 365-367, 537), so CSS state is
 // derived purely from the shared seed (0x12345678 reseeded on sync) +
-// identical confirmed inputs — same determinism as today, but riding a
+// identical confirmed inputs -- same determinism as today, but riding a
 // well-tested transport.
 // =============================================================================
 // LEGACY API
@@ -735,7 +735,7 @@ void Netplay_PollGekkoNet() {
 }
 
 void Netplay_ResetCSSState() {
-    // Tear down the CSS GekkoSession if it's still alive — happens when this
+    // Tear down the CSS GekkoSession if it's still alive -- happens when this
     // is called outside the normal battle-entry path (e.g. peer disconnect).
     if (g_session && g_session_kind == SessionKind::CSS) {
         Netplay_EndCSSSession();
@@ -844,7 +844,7 @@ void Netplay_HandleFrameTime() {
 // ============================================================================
 // WndProc subclass calls Netplay_RequestRunaheadToggle from the message-pump
 // thread on VK_F8 press. The actual gekko_set_runahead call MUST happen on
-// the same thread that owns g_session — see Netplay_PollRunaheadToggle below,
+// the same thread that owns g_session -- see Netplay_PollRunaheadToggle below,
 // which the trampoline calls at the top of every battle tick before
 // Netplay_ProcessBattleInputPhase. Atomic flag + load/store keeps the cross-
 // thread handoff clean without any extra mutex.

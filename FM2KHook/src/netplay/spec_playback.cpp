@@ -33,6 +33,23 @@
 #include <ctime>
 using namespace specnode;
 
+// ---------------------------------------------------------------------------
+// Seam synthetic-walk bookkeeping (shared between ApplySessionEvent's MATCH_END
+// case and PopFrameInputs' SEAM branch, hence file scope rather than function
+// statics). Deliberately NOT fields on State: State lives in the shared
+// spectator_node_internal.h and nothing outside this TU reads these.
+//
+//  s_seam_walk_pops   -- synthetic confirm edges fed by the "our results screen
+//                        overran the stream's CSS" walk since this boundary
+//                        opened. Bounds the walk (see PopFrameInputs).
+//  s_seam_walk_masked -- one-shot: the walk armed CssAutoConfirm's confirm mask
+//                        so its synthetic 0x010 edges cannot lock characters
+//                        when the engine reaches CSS.
+// Both are re-armed at the single NONE -> SEAM edge (MATCH_END apply).
+// ---------------------------------------------------------------------------
+static uint32_t s_seam_walk_pops   = 0;
+static bool     s_seam_walk_masked = false;
+
 namespace specnode {
 
 void ApplyResetInputState() {
@@ -232,7 +249,7 @@ void ApplySessionEvent(const SessionEvent& ev) {
             break;
         }
         case SessionEventType::MATCH_END: {
-            // Don't clear pb_queue — let queued post-MATCH_END frames drain
+            // Don't clear pb_queue -- let queued post-MATCH_END frames drain
             // (they render the final battle frames). The next MATCH_START
             // resets metadata and flips playing_back back on.
             g_state.playing_back = false;
@@ -269,6 +286,32 @@ void ApplySessionEvent(const SessionEvent& ev) {
                     //      17/6, 2026-06-11).
                     // No pinning, no synthetic CSS walk, no forced locks:
                     // the players' real confirms drive everything.
+                    //
+                    // BOUNDARY-ENTRY RE-ARM. Everything the boundary state
+                    // machine consumes has to be per-boundary, and this is the
+                    // ONLY NONE -> SEAM edge in the tree (MATCH_START owns the
+                    // only SEAM -> PINNING edge; PopFrameInputs owns the only
+                    // exits back to NONE), so it is the correct place to reset.
+                    //
+                    // pb_boundary_left_battle in particular was set at
+                    // PopFrameInputs' boundary block and never cleared ANYWHERE
+                    // -- from the SECOND boundary onward it was already true on
+                    // entry, so the PINNING release below degraded from the
+                    // edge trigger back to the level trigger its own comment
+                    // says was the bug (release fired on the OLD match's
+                    // results screen, which is still mode 3000, feeding the new
+                    // match's inputs into it and letting CssAutoConfirm
+                    // disengage before CSS opened). Guarded on the NONE edge so
+                    // a duplicate/late MATCH_END arriving while we are already
+                    // in SEAM or PINNING cannot re-arm mid-walk. On the FIRST
+                    // boundary all three are already at these values, so this
+                    // is a no-op there -- the healthy single-match path is
+                    // bit-identical.
+                    if (g_state.pb_boundary == State::PbBoundary::NONE) {
+                        g_state.pb_boundary_left_battle = false;
+                        s_seam_walk_pops   = 0;
+                        s_seam_walk_masked = false;
+                    }
                     g_state.pb_boundary = State::PbBoundary::SEAM;
                     g_state.pb_css_marker_seen = false;
                 }
@@ -294,7 +337,7 @@ void ApplySessionEvent(const SessionEvent& ev) {
                 const uint32_t local_hash = SpectatorFingerprint_Compute();
                 if (host_hash != local_hash) {
                     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                        "[SPEC-FP-MISMATCH] host=0x%08X spectator=0x%08X — "
+                        "[SPEC-FP-MISMATCH] host=0x%08X spectator=0x%08X -- "
                         "DESYNC at this logical frame (next INPUT is the "
                         "first divergent sim step)",
                         host_hash, local_hash);
@@ -306,7 +349,7 @@ void ApplySessionEvent(const SessionEvent& ev) {
             break;
         }
         case SessionEventType::ROUND_START: {
-            // C3.5 — informational on the spectator. Simulation drives banner
+            // C3.5 -- informational on the spectator. Simulation drives banner
             // and round-reset state from INPUT events; ROUND_START is a marker
             // for replay-file slicing (round_offsets[]) and overlay diagnostics.
             const auto& p = ev.u.round_start;
@@ -325,7 +368,7 @@ void ApplySessionEvent(const SessionEvent& ev) {
             break;
         }
         case SessionEventType::SESSION_ID:
-            // C7 — informational on the spectator. The host's session_id
+            // C7 -- informational on the spectator. The host's session_id
             // already lives at the head of the event stream by the time
             // we apply this; nothing else to do beyond logging. Spectator
             // recordings (.fm2kset / .fm2krep) will inherit this id when
@@ -336,7 +379,7 @@ void ApplySessionEvent(const SessionEvent& ev) {
                 (unsigned long long)ev.u.session_id);
             break;
         case SessionEventType::INPUT:
-            // Should not reach here — INPUT is handled by the pop path in
+            // Should not reach here -- INPUT is handled by the pop path in
             // PopFrameInputs, not the drain.
             break;
     }
@@ -376,10 +419,22 @@ bool SpectatorNode_PopFrameInputs(uint16_t* p1_input, uint16_t* p2_input) {
         static uint32_t s_snap_hold_ticks = 0;
         auto& inbox = g_state.pb_snapshot_inbox;
         constexpr uint32_t kMaxHoldTicks = 240;   // ~2.4s at 100fps
+        // captured_game_mode is a RANGE test, not == 3000. It is snapshotted
+        // from live *ADDR_GAME_MODE at StashSnapshot, and every other battle
+        // test in the tree (hooks_game_mode.cpp, trampoline_spectator.cpp,
+        // the results-tail guard below) is >= 3000 && < 4000. Worse, the apply
+        // gate this hold exists to wait FOR -- ApplyPendingSnapshot's
+        // `game_mode >= captured` -- is already >=-based, so the two disagreed:
+        // a battle captured at any mode other than exactly 3000 skipped the
+        // hold entirely and every mid-battle snapshot join silently took the
+        // from-scratch (guaranteed rng-offset) path. 0 stays accepted as the
+        // legacy "field absent" encoding, same as ApplyPendingSnapshot.
+        const uint32_t captured_mode = inbox.meta.captured_game_mode;
+        const bool captured_in_battle =
+            (captured_mode >= 3000u && captured_mode < 4000u) ||
+            captured_mode == 0u;
         if (inbox.active && !g_state.pb_snapshot_applied_once &&
-            !g_state.pb_started &&
-            (inbox.meta.captured_game_mode == 3000u ||
-             inbox.meta.captured_game_mode == 0u) &&
+            !g_state.pb_started && captured_in_battle &&
             *(uint32_t*)FM2K::ADDR_GAME_MODE >= 3000u) {
             if (s_snap_hold_ticks < kMaxHoldTicks) {
                 if (++s_snap_hold_ticks == kMaxHoldTicks) {
@@ -399,7 +454,7 @@ bool SpectatorNode_PopFrameInputs(uint16_t* p1_input, uint16_t* p2_input) {
     }
 
     // Drain non-INPUT events from the head before popping the next INPUT.
-    // Each non-INPUT event dispatches to ApplySessionEvent — RNG pin,
+    // Each non-INPUT event dispatches to ApplySessionEvent -- RNG pin,
     // input-state reset, sound dedup init, etc. The dispatch happens at
     // the moment the spectator's local sim is about to consume the next
     // INPUT, which is the same logical-frame moment the host's pin
@@ -407,7 +462,7 @@ bool SpectatorNode_PopFrameInputs(uint16_t* p1_input, uint16_t* p2_input) {
     //
     // SEAM extension: between MATCH_END and MATCH_START applies, INPUT
     // events at the head are consumed-and-discarded instead of breaking
-    // the drain — they are the host's results/CSS frames and must not
+    // the drain -- they are the host's results/CSS frames and must not
     // drive the spectator's local sim (see PbBoundary). The drain
     // naturally reaches the boundary init ops + MATCH_START, whose apply
     // flips the state to PINNING and stops the discard.
@@ -460,7 +515,9 @@ bool SpectatorNode_PopFrameInputs(uint16_t* p1_input, uint16_t* p2_input) {
     // counts as "the new battle". The old level check released instantly
     // when MATCH_START arrived while results were still on screen (UDP
     // live edge), feeding the new match's inputs into the old screen and
-    // letting CssAutoConfirm disengage before CSS opened.
+    // letting CssAutoConfirm disengage before CSS opened. The latch is
+    // re-armed per boundary at the MATCH_END (NONE -> SEAM) edge -- left
+    // sticky it decays back into that exact level trigger from boundary 2 on.
     if (g_state.pb_boundary != State::PbBoundary::NONE) {
         const uint32_t mode = *(uint32_t*)FM2K::ADDR_GAME_MODE;
         if (mode < 3000u) g_state.pb_boundary_left_battle = true;
@@ -500,10 +557,71 @@ bool SpectatorNode_PopFrameInputs(uint16_t* p1_input, uint16_t* p2_input) {
                 // overran by a few frames: park the CSS inputs (they
                 // mirror from CSS frame 0) and walk the remaining
                 // results on synthetic edges.
+                //
+                // BOUNDED. 0x010 is the confirm/attack bit and this walk feeds
+                // it to BOTH players; unbounded it is the "both players jabbing
+                // 5a forever" report. Three guards, each closing one hole:
+                //
+                //  (a) STARVATION vs SEAM. q == 0 here does not mean "the host
+                //      is at CSS and we are behind" -- it means the stream ran
+                //      dry, and RunSpectatorTick's boundary bypass deliberately
+                //      keeps ticking us at q == 0 so a boundary walk can make
+                //      progress, so we kept driving the engine with no stream
+                //      left to check against. The genuine case ALWAYS has the
+                //      host's parked CSS inputs queued (that is what "the
+                //      stream reached CSS" means), so q > 0 keeps the legit
+                //      advance and drops only the starved one. Cost of holding
+                //      is one arrival gap -- the host produces continuously.
+                //
+                //  (b) NO CONFIRM MASK. The sibling lean-seam branch engages
+                //      CssAutoConfirm's hold for exactly this reason; this one
+                //      never did. FM2K's VS rematch CSS auto-advances even on
+                //      neutral inputs (previous match's locks persist --
+                //      css_autoconfirm.h) and a synthetic confirm actively
+                //      drives it, so the walk could lock the OLD characters and
+                //      carry the engine into a rematch battle -- after which
+                //      mode stays >= 3000, the marker stays seen, and the
+                //      branch jabs for the rest of the session. Masked, the
+                //      walk cannot lock: at CSS the confirm/color bits are
+                //      stripped (directions still pass, cursor still mirrors)
+                //      and locking belongs to the MATCH_START pin, which
+                //      bypasses the mask. Inert until the engine reaches mode
+                //      2000, so arming it changes nothing on the path that
+                //      resolves in a few frames. Release is the existing seam
+                //      contract (battle-align complete / PINNING -> NONE /
+                //      post-CSS countdown), unchanged.
+                //
+                //  (c) NO TERMINATION. The real exits are the next MATCH_START
+                //      draining at the head (SEAM -> PINNING) or the engine
+                //      reaching CSS (the lean-seam branch below); if neither
+                //      happens the conditions are self-sustaining. Stop driving
+                //      after kMaxSeamWalkPops and hold neutral -- a results
+                //      screen that has not cleared in ~6s is not a results
+                //      screen, and an idle picture beats a sim running on
+                //      synthetic input. Re-armed per boundary at MATCH_END.
                 if (!g_state.subscribed_upstream) return false;
-                static uint32_t s_seam_tick3 = 0;
-                const uint16_t synthetic =
-                    (s_seam_tick3++ & 1u) ? 0x010u : 0u;
+                if (g_state.pb_queue.empty()) return false;          // (a)
+                if (!s_seam_walk_masked) {                           // (b)
+                    s_seam_walk_masked = true;
+                    CssAutoConfirm_SetSeamHold(true, 0xFF, 0xFF);
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "SpectatorNode: seam results-overrun walk -- confirm "
+                        "mask armed before feeding synthetic edges (q=%zu)",
+                        g_state.pb_queue.size());
+                }
+                constexpr uint32_t kMaxSeamWalkPops = 600;  // ~6s at 100fps
+                uint16_t synthetic = 0;
+                if (s_seam_walk_pops < kMaxSeamWalkPops) {           // (c)
+                    synthetic = (s_seam_walk_pops++ & 1u) ? 0x010u : 0u;
+                } else if (s_seam_walk_pops == kMaxSeamWalkPops) {
+                    ++s_seam_walk_pops;   // one-shot: log once, then hold
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "SpectatorNode: seam results-overrun walk hit its %u-pop "
+                        "bound with mode=%u still >= 3000 -- stopping synthetic "
+                        "confirms and holding neutral (waiting on MATCH_START "
+                        "or a real CSS transition, q=%zu)",
+                        kMaxSeamWalkPops, mode, g_state.pb_queue.size());
+                }
                 g_state.pb_current_p1 = synthetic;
                 g_state.pb_current_p2 = synthetic;
                 if (p1_input) *p1_input = synthetic;
@@ -739,7 +857,7 @@ bool SpectatorNode_PopFrameInputs(uint16_t* p1_input, uint16_t* p2_input) {
 
     // Offline-replay gate (FM2K only for now).
     //
-    // The .fm2krep file is sliced from MATCH_START → MATCH_END — its INPUTs
+    // The .fm2krep file is sliced from MATCH_START → MATCH_END -- its INPUTs
     // are battle-phase inputs, not CSS-traversal inputs. If we pop them
     // during the spectator's own CSS phase (driven by the auto-CSS hook's
     // direct memory writes rather than these INPUTs), they get applied to
@@ -777,7 +895,7 @@ bool SpectatorNode_PopFrameInputs(uint16_t* p1_input, uint16_t* p2_input) {
             // The gate's purpose is to keep the queue's first INPUT at the
             // head until the local game crosses into battle so spectator's
             // bf=0 reads host's bf=0 input. Once we've entered battle once,
-            // misalignment can't happen anymore — and post-match phases
+            // misalignment can't happen anymore -- and post-match phases
             // (mode dropping back below 3000 for results / CSS rematch /
             // game-over screens) need queue inputs to drain so trailing
             // ROUND_END / MATCH_END / next match's MATCH_START events
@@ -792,9 +910,9 @@ bool SpectatorNode_PopFrameInputs(uint16_t* p1_input, uint16_t* p2_input) {
             if (!s_battle_entered && mode < 3000u) {
                 // Pre-battle: don't pop the queue. Synthesize a sentinel
                 // input. Title (mode==1000) needs a confirm-button press
-                // edge each frame to advance the menu — alternate
+                // edge each frame to advance the menu -- alternate
                 // 0x010/0x000 so the edge detector fires repeatedly.
-                // CSS (mode==2000) gets neutral — CssAutoConfirm pins
+                // CSS (mode==2000) gets neutral -- CssAutoConfirm pins
                 // cursor + action_state directly.
                 uint16_t synthetic = 0;
                 if (mode == 1000u) {

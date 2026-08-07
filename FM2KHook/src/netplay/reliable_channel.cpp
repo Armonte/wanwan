@@ -1,32 +1,26 @@
-// reliable_channel.cpp — see reliable_channel.h.
+// reliable_channel.cpp -- see reliable_channel.h.
 //
 // Layering:
 //   Send(channel,class,msg) -> frame [chan|class|msg_seq|len|payload]
+//                           -> paced send queue (token bucket + cwnd)
 //                           -> reliable_endpoint_send_packet (seq/ack/fragment)
-//                           -> transmit cb -> prefix 0xCB -> RawSend -> wire
-//   wire -> OnDatagram(strip 0xCB) -> reliable_endpoint_receive_packet (reassemble)
-//                                  -> process cb -> parse frame -> ordered deliver
-//   Update() -> reliable_endpoint_update + ack-driven retransmit of unacked.
+//                           -> TransmitCb -> FEC wrap -> 0xCB -> RawSend -> wire
+//   wire -> OnDatagram(strip 0xCB) -> FEC demux/recover
+//                                  -> reliable_endpoint_receive_packet (reassemble)
+//                                  -> ProcessCb -> parse frame -> ordered deliver
+//   Update() -> reliable_endpoint_update + ack-carrier + ordered-stall sweep
+//               + paced drain + ack-driven retransmit of unacked.
 //
-// FEC (parity / Reed-Solomon over K-packet groups) is the next layer and slots
-// in around send_packet/process (see design doc). Not present yet: this gives
-// reliable-ordered-over-UDP, which already avoids TCP's congestion collapse under
-// loss; FEC removes the remaining per-loss HOL stall.
-#include "reliable_channel.h"
+// This TU owns framing, ordering/dedup, the RC-level cumulative ack, pacing and
+// retransmit. The FEC codec (parity encode on egress, group reassembly and RS
+// recovery on ingress) lives in the sibling reliable_channel_fec.cpp; the state
+// model both share is reliable_channel_internal.h.
+#include "reliable_channel_internal.h"
 
-extern "C" {
-#include "reliable.h"
-}
-#include "rc_reed_solomon.h"
-
-#include <SDL3/SDL_log.h>   // ooo-buffer-full diagnostic (bounded, ~1/64)
+#include <SDL3/SDL_log.h>   // ooo-buffer-full + stall/retire diagnostics
 #include <cstring>
 #include <cstdint>
 #include <cstdlib>   // std::getenv -- FM2K_RC_STATS gate
-#include <deque>
-#include <map>
-#include <set>
-#include <unordered_map>
 #include <vector>
 
 namespace fm2k {
@@ -56,308 +50,50 @@ uint32_t Crc32(const uint8_t* p, size_t n) {
     return c ^ 0xFFFFFFFFu;
 }
 
-constexpr uint8_t  RC_WIRE_TAG   = 0xCB;   // first byte on the wire (RawReceive demux)
-constexpr size_t   RC_CRC_BYTES  = 4;      // CRC32 trailer per framed message
-constexpr double   RESEND_AFTER  = 0.10;   // legacy fixed timeout; default is now
-                                           // AUTO (0 => 2x RTT). Kept for callers
-                                           // that want a fixed value via SetResendSeconds.
-// Cap on the per-channel out-of-order reassembly buffer. A reliable-ordered
-// channel only buffers a few messages ahead while a gap fills; a persistent
-// large gap means the stream is stuck (lost/un-retransmitted packet, or a
-// malicious peer flooding high sequence numbers). Bound the memory: beyond
-// this we stop buffering (the stall is then detected by the consumer's
-// gap-fill / reconnect watchdog, which re-syncs the channel).
-constexpr size_t   RC_OOO_MAX    = 1024;
-constexpr size_t   RC_HDR_BYTES  = 1 + 1 + 8 + 2;  // chan + class + msg_seq + len
-constexpr uint8_t  RC_ACK_CARRIER_CHANNEL = 0xFF;  // reserved carrier; never delivered to app
-constexpr double   RC_ACK_FLUSH_INTERVAL  = 0.033; // ~3 frames @100fps
-
-// ---- FEC (XOR parity over groups of K packets) -----------------------------
-// Each outgoing reliable.io datagram is wrapped with a 1-byte FEC role. Data
-// datagrams stream immediately at real size; after every K data datagrams a
-// single PARITY datagram is emitted = XOR of the group's "coded forms"
-// ([u16 inner_len][inner], zero-padded to the group max). If exactly ONE of the
-// K data datagrams is lost, the receiver reconstructs it from parity + the K-1
-// survivors WITHOUT a retransmit round-trip — this is what removes the per-loss
-// head-of-line stall an ordered stream otherwise suffers. >1 loss in a group
-// falls back to reliable.io retransmit (only that group stalls, not the tail).
-// XOR/1-parity is the starting codec; Reed-Solomon (K+M) is the burst-loss
-// upgrade and slots into the same encode/decode seam.
-enum FecRole : uint8_t { FEC_DATA = 0, FEC_PARITY = 1, FEC_RAW = 2 };
-constexpr uint8_t  FEC_GROUP_K   = 8;      // data packets per group
-constexpr uint8_t  FEC_GROUP_M   = 4;      // parity packets per group (recovers up to M losses instantly).
-                                           // M=4 (33% parity) keeps the live stream bit-exact + live to
-                                           // ~15-20% loss as the SOLE input path; M=2 was marginal at 15%.
-constexpr size_t   FEC_RX_GROUPS = 64;     // bounded reassembly window
-// wire headers after the 0xCB tag:
-//   data  : [role u8][group u16][index u8][k u8][m u8][inner_len u16][inner...]
-//   parity: [role u8][group u16][j u8][k u8][m u8][pad_len u16][parity...]
-//   raw   : [role u8][inner...]
-constexpr size_t   FEC_DATA_HDR   = 1 + 2 + 1 + 1 + 1 + 2;
-constexpr size_t   FEC_PARITY_HDR = 1 + 2 + 1 + 1 + 1 + 2;
-constexpr size_t   FEC_RAW_HDR    = 1;
-
-struct FecEncoder {
-    uint16_t group = 0;
-    uint8_t  index = 0;
-    std::vector<std::vector<uint8_t>> coded;  // buffered coded forms for the current group
-};
-
-// "coded form" of a data packet = [u16 inner_len][inner], zero-padded to L (the
-// group's max coded length). RS operates on these fixed-length blocks.
-struct FecGroupRx {
-    uint8_t  k = 0, m = 0;
-    bool     params_known = false;
-    std::map<uint8_t, std::vector<uint8_t>> data;    // index -> inner reliable.io packet
-    std::map<uint8_t, std::vector<uint8_t>> parity;  // j -> parity block (length L)
-    uint16_t L = 0;                                   // padded coded-form length
-    bool     recovered = false;
-};
-
-struct FecDecoder {
-    std::map<uint16_t, FecGroupRx> groups;
-};
-
-struct Unacked {
-    std::vector<uint8_t> framed;  // full framed message (chan..payload)
-    double   sent_time;
-    double   first_time = -1.0;   // first send; used for the 7s stuck-connection retire
-    uint16_t pkt_seq;             // reliable.io packet seq that last carried it
-};
-
-struct TxChannel {
-    uint64_t next_msg_seq = 0;
-    std::map<uint64_t, Unacked> unacked;  // reliable msgs awaiting ack, by msg_seq
-};
-
-struct RxChannel {
-    bool     started = false;
-    uint64_t next_deliver = 0;                    // ordered: next msg_seq to hand up
-    std::map<uint64_t, std::vector<uint8_t>> ooo; // ordered: buffered out-of-order
-    // Reliable-UNORDERED: deliver each msg once on first receipt, but ACK the
-    // CONTIGUOUS received prefix (un_next_ack) so a gap is never falsely acked
-    // (which would stop the sender retransmitting a lost msg). SACK-style.
-    uint64_t un_next_ack = 0;                     // lowest seq not yet received
-    std::set<uint64_t> un_recv_above;             // received seqs above un_next_ack (holes filled)
-    bool     cls_ordered = true;                  // which ack model this channel uses
-    bool     cls_known = false;
-};
-
-// A framed message waiting to be paced onto the wire. Pacing exists so a bulk
-// burst (e.g. a ~1MB snapshot = hundreds of datagrams) can't flood the UDP path
-// and self-inflict loss + head-of-line stall. Send() enqueues; Update() drains
-// under a token-bucket rate + a congestion window (max reliable msgs in flight).
-struct PendingSend {
-    std::vector<uint8_t> framed;
-    uint8_t  chan;
-    uint8_t  cls;   // fm2k::rc::Class as int
-    uint64_t msg_seq;
-};
-
-}  // namespace
-
-struct Endpoint {
-    reliable_endpoint_t* rel = nullptr;
-    RawSendFn raw_send = nullptr;  void* raw_send_ctx = nullptr;
-    DeliverFn deliver  = nullptr;  void* deliver_ctx  = nullptr;
-    uint64_t id = 0;               // endpoint id (peer key) -- [RC-STATS] tag
-    double   last_stats_log = 0.0; // FM2K_RC_STATS 1Hz throttle
-    std::unordered_map<uint8_t, TxChannel> tx;
-    std::unordered_map<uint8_t, RxChannel> rx;
-    std::vector<uint8_t> scratch;  // reused wire buffer (0xCB + reliable packet)
-    FecEncoder fec_enc;
-    FecDecoder fec_dec;
-    bool    fec_enabled = true;
-    uint8_t fec_k = FEC_GROUP_K;
-    uint8_t fec_m = FEC_GROUP_M;
-    // Adaptive-M: scale parity to measured loss (reliable.io packet_loss %) so low
-    // loss is efficient and high loss stays live. reference-style bandwidth thrift.
-    bool    fec_adaptive = true;
-    double  last_adapt_time = -1.0;
-    // FEC suppression under send-queue backpressure (the reference engine: suppress FEC on
-    // LimitExceeded / send-queue > ~20 for 3s) — during a bulk backlog, parity is
-    // wasted bandwidth; drop it so the actual data drains, restore after.
-    bool    fec_suppressed = false;
-    double  fec_suppress_until = 0.0;
-    // Default to AUTO retransmit timing (0 => clamp(2x measured RTT, 80ms,
-    // 750ms) in Update). The old fixed 100ms default retransmitted BEFORE the
-    // ack could arrive on any cross-region link (RTT > 100ms), multiplying
-    // bandwidth exactly when the link is worst. SetResendSeconds still overrides.
-    double  resend_after = 0.0;
-    // Ack-carrier: reliable.io piggybacks acks on outgoing packets only, so on a
-    // one-way stream the receiver must periodically send SOMETHING or the sender
-    // resends forever. Track receives-since-last-carrier and flush a tiny
-    // unreliable packet (header carries the acks) on a cadence.
-    uint32_t rx_since_carrier = 0;
-    double   last_carrier_time = 0.0;
-    // Send pacing (token bucket) + congestion window (max reliable in-flight).
-    // Defaults let small live batches send immediately (burst covers them) while
-    // a bulk burst drains at rate_pps. cwnd provides backpressure under loss.
-    std::deque<PendingSend> send_queue;
-    double   tokens = 0.0;
-    double   last_pump = -1.0;
-    double   rate_pps = 3000.0;   // paced datagrams/sec
-    double   burst_max = 24.0;    // token-bucket cap (immediate burst allowance)
-    int      cwnd = 96;           // max reliable msgs awaiting ack before we stall new sends
-};
-
-namespace {
-
 void EnsureReliableInit() {
     static bool inited = false;
     if (!inited) { reliable_init(); inited = true; }
 }
 
-// Emit one already-built datagram body (FEC header + payload) to the wire,
-// prefixing the 0xCB demux tag.
-void SendWire(Endpoint* ep, const uint8_t* body, size_t body_len) {
-    if (!ep->raw_send || body_len == 0) return;
-    ep->scratch.clear();
-    ep->scratch.reserve(body_len + 1);
-    ep->scratch.push_back(RC_WIRE_TAG);
-    ep->scratch.insert(ep->scratch.end(), body, body + body_len);
-    ep->raw_send(ep->raw_send_ctx, ep->scratch.data(), static_cast<int>(ep->scratch.size()));
-}
-
-// reliable.io -> wire: FEC-encode each outgoing datagram.
-void TransmitCb(void* context, uint64_t /*id*/, uint16_t /*seq*/, uint8_t* data, int bytes) {
-    Endpoint* ep = static_cast<Endpoint*>(context);
-    if (!ep->raw_send || bytes <= 0) return;
-
-    if (!ep->fec_enabled || ep->fec_suppressed) {
-        // No parity: abandon any partial group so it can't resume with stale state.
-        if (ep->fec_enc.index != 0) { ep->fec_enc.index = 0; ep->fec_enc.coded.clear(); }
-        std::vector<uint8_t> body; body.reserve(1 + bytes);
-        body.push_back(FEC_RAW);
-        body.insert(body.end(), data, data + bytes);
-        SendWire(ep, body.data(), body.size());
-        return;
-    }
-
-    FecEncoder& e = ep->fec_enc;
-    uint8_t K = ep->fec_k, M = ep->fec_m;
-    uint16_t inner_len = static_cast<uint16_t>(bytes);
-    // DATA datagram (streams immediately at real size).
-    std::vector<uint8_t> body; body.reserve(FEC_DATA_HDR + bytes);
-    body.push_back(FEC_DATA);
-    body.push_back(static_cast<uint8_t>(e.group & 0xFF));
-    body.push_back(static_cast<uint8_t>(e.group >> 8));
-    body.push_back(e.index);
-    body.push_back(K);
-    body.push_back(M);
-    body.push_back(static_cast<uint8_t>(inner_len & 0xFF));
-    body.push_back(static_cast<uint8_t>(inner_len >> 8));
-    body.insert(body.end(), data, data + bytes);
-    SendWire(ep, body.data(), body.size());
-
-    // buffer the coded form [u16 inner_len][inner] for RS parity computation.
-    std::vector<uint8_t> coded; coded.reserve(2 + bytes);
-    coded.push_back(static_cast<uint8_t>(inner_len & 0xFF));
-    coded.push_back(static_cast<uint8_t>(inner_len >> 8));
-    coded.insert(coded.end(), data, data + bytes);
-    e.coded.push_back(std::move(coded));
-
-    if (++e.index >= K) {
-        // Group complete: pad all coded forms to L=max, RS-encode M parity blocks.
-        size_t L = 0;
-        for (auto& c : e.coded) if (c.size() > L) L = c.size();
-        std::vector<std::vector<uint8_t>> dblk(K);
-        std::vector<const uint8_t*> dptr(K);
-        for (int i = 0; i < K; i++) {
-            dblk[i] = e.coded[i];
-            dblk[i].resize(L, 0);
-            dptr[i] = dblk[i].data();
-        }
-        std::vector<std::vector<uint8_t>> pblk(M, std::vector<uint8_t>(L, 0));
-        std::vector<uint8_t*> pptr(M);
-        for (int j = 0; j < M; j++) pptr[j] = pblk[j].data();
-        rs::encode(K, M, static_cast<int>(L), dptr.data(), pptr.data());
-        uint16_t L16 = static_cast<uint16_t>(L);
-        for (int j = 0; j < M; j++) {
-            std::vector<uint8_t> pbody; pbody.reserve(FEC_PARITY_HDR + L);
-            pbody.push_back(FEC_PARITY);
-            pbody.push_back(static_cast<uint8_t>(e.group & 0xFF));
-            pbody.push_back(static_cast<uint8_t>(e.group >> 8));
-            pbody.push_back(static_cast<uint8_t>(j));
-            pbody.push_back(K);
-            pbody.push_back(M);
-            pbody.push_back(static_cast<uint8_t>(L16 & 0xFF));
-            pbody.push_back(static_cast<uint8_t>(L16 >> 8));
-            pbody.insert(pbody.end(), pblk[j].begin(), pblk[j].end());
-            SendWire(ep, pbody.data(), pbody.size());
-        }
-        e.group++;
-        e.index = 0;
-        e.coded.clear();
-    }
-}
-
-// Feed a recovered/received inner reliable.io packet into the endpoint.
-void FeedInner(Endpoint* ep, const uint8_t* inner, int inner_len) {
-    if (inner_len > 0)
-        reliable_endpoint_receive_packet(ep->rel, const_cast<uint8_t*>(inner), inner_len);
-}
-
-// Try to RS-reconstruct a group's missing data packets from survivors + parity.
-void FecTryRecover(Endpoint* ep, uint16_t group_id, FecGroupRx& g) {
-    if (g.recovered || !g.params_known || g.L == 0) return;
-    int K = g.k, M = g.m, L = g.L;
-    // Need all K data present to skip; otherwise need >= K of (data+parity).
-    if (static_cast<int>(g.data.size()) >= K) { g.recovered = true; return; }
-    if (static_cast<int>(g.data.size() + g.parity.size()) < K) return;  // not enough yet
-    if (static_cast<int>(g.data.size()) == K) { g.recovered = true; return; }
-
-    // Build the K present rows/blocks (data rows first, then parity), each length L.
-    std::vector<int> rows;
-    std::vector<std::vector<uint8_t>> blkstore;
-    std::vector<const uint8_t*> blks;
-    blkstore.reserve(K);
-    for (auto& kv : g.data) {
-        if (static_cast<int>(rows.size()) >= K) break;
-        // coded form [u16 len][inner] padded to L
-        std::vector<uint8_t> coded; coded.reserve(L);
-        uint16_t il = static_cast<uint16_t>(kv.second.size());
-        coded.push_back(static_cast<uint8_t>(il & 0xFF));
-        coded.push_back(static_cast<uint8_t>(il >> 8));
-        coded.insert(coded.end(), kv.second.begin(), kv.second.end());
-        coded.resize(L, 0);
-        rows.push_back(kv.first);
-        blkstore.push_back(std::move(coded));
-    }
-    for (auto& kv : g.parity) {
-        if (static_cast<int>(rows.size()) >= K) break;
-        std::vector<uint8_t> pb = kv.second; pb.resize(L, 0);
-        rows.push_back(K + kv.first);
-        blkstore.push_back(std::move(pb));
-    }
-    if (static_cast<int>(rows.size()) < K) return;
-    for (auto& b : blkstore) blks.push_back(b.data());
-
-    std::vector<std::vector<uint8_t>> out(K, std::vector<uint8_t>(L, 0));
-    std::vector<uint8_t*> optr(K);
-    for (int i = 0; i < K; i++) optr[i] = out[i].data();
-    if (!rs::decode(K, M, L, rows, blks, optr.data())) { g.recovered = true; return; }
-
-    // Feed any data index that was missing (recovered coded form -> inner).
-    for (int i = 0; i < K; i++) {
-        if (g.data.count(static_cast<uint8_t>(i))) continue;
-        const std::vector<uint8_t>& c = out[i];
-        if (c.size() < 2) continue;
-        uint16_t mlen = static_cast<uint16_t>(c[0]) | (static_cast<uint16_t>(c[1]) << 8);
-        if (2u + mlen <= c.size()) FeedInner(ep, c.data() + 2, mlen);
-    }
-    g.recovered = true;
-    (void)group_id;
-}
-
-void FecGc(FecDecoder& dec) {
-    while (dec.groups.size() > FEC_RX_GROUPS) dec.groups.erase(dec.groups.begin());
-}
-
 void DeliverOrdered(Endpoint* ep, uint8_t chan, RxChannel& rc,
                     uint64_t seq, const uint8_t* payload, int plen) {
-    if (!rc.started) { rc.started = true; rc.next_deliver = seq; }  // mid-join: start here
-    if (seq < rc.next_deliver) return;                              // already delivered
+    if (!rc.started) {
+        // A fresh channel anchors at ZERO -- NOT at whatever seq happens to
+        // arrive first. The old "mid-join: start here" anchor silently ate the
+        // head of every burst: send msg 0 and msg 1 back to back, lose 0, and
+        // msg 1 anchors the channel at 1. The ack carrier then advertises
+        // next_deliver=1 as "cumulative delivered", which tells the SENDER to
+        // erase msg 0 from its unacked map (DeliverOne's ack path) -- so the
+        // retransmit that would have healed it never happens. Permanent,
+        // silent, zero log output; for a join backfill that is PIN_RNG /
+        // MATCH_START / RESET_INPUT_STATE / SOUND_INIT and the first ~1600
+        // INPUTs gone while the viewer happily runs a battle it never got a
+        // MATCH_START for.
+        // The two cases ARE separable, and cwnd is what separates them: the
+        // sender stalls at ~96 unacked messages, so it cannot be 256+ messages
+        // into a stream with ZERO of them delivered. A first-seen seq below
+        // that is therefore a stream at its beginning with a lost head (anchor
+        // at 0 and let retransmit fill it); a first-seen seq at or above it can
+        // only be a genuine mid-join -- OUR endpoint was recreated while the
+        // peer's survived -- where anchoring at 0 would strand the channel
+        // until the RC_ORDERED_STALL_SEC sweep.
+        rc.started = true;
+        rc.next_deliver = (seq >= RC_RESTART_BACKJUMP) ? seq : 0;
+        rc.last_progress_time = ep->now_time;
+    }
+    if (seq < rc.next_deliver) {
+        if (rc.next_deliver - seq < RC_RESTART_BACKJUMP) return;  // true duplicate
+        // Sender restart: its endpoint was destroyed and recreated, so its
+        // msg_seq restarted at 0 while our cursor stayed high. Every message of
+        // the new stream would otherwise read as a duplicate, forever.
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "ReliableChannel: chan=%u peer msg_seq jumped back %llu -> %llu "
+            "(sender endpoint restarted) -- resetting ordered rx cursor",
+            (unsigned)chan, (unsigned long long)rc.next_deliver,
+            (unsigned long long)seq);
+        rc.next_deliver = seq;
+        rc.ooo.clear();
+    }
     if (seq == rc.next_deliver) {
         if (ep->deliver) ep->deliver(ep->deliver_ctx, chan, payload, plen);
         rc.next_deliver++;
@@ -370,18 +106,19 @@ void DeliverOrdered(Endpoint* ep, uint8_t chan, RxChannel& rc,
             rc.next_deliver++;
             it = rc.ooo.find(rc.next_deliver);
         }
+        rc.last_progress_time = ep->now_time;
     } else if (rc.ooo.size() < RC_OOO_MAX) {
         rc.ooo.emplace(seq, std::vector<uint8_t>(payload, payload + plen));  // buffer, in order
     } else {
         // Reassembly buffer full: the gap at next_deliver isn't filling. Stop
-        // hoarding memory — drop this future message. reliable.io already
+        // hoarding memory -- drop this future message. reliable.io already
         // acked the packet, so the channel will now stall at the gap; the
         // consumer's stall watchdog re-JOINs and re-syncs. Bounded, not OOM.
         static uint32_t s_ooo_drop_log = 0;
         if ((s_ooo_drop_log++ & 0x3F) == 0) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                 "ReliableChannel: ooo buffer full (%zu) at next=%llu, dropping "
-                "seq=%llu — channel stalled, awaiting reconnect",
+                "seq=%llu -- channel stalled, awaiting reconnect",
                 rc.ooo.size(), (unsigned long long)rc.next_deliver,
                 (unsigned long long)seq);
         }
@@ -419,7 +156,7 @@ void DeliverOne(Endpoint* ep, uint8_t chan, uint8_t cls, uint64_t seq,
     if (chan == RC_ACK_CARRIER_CHANNEL) {
         // RC-level cumulative ack table: [u8 count]{ u8 chan, u64 next_expected }.
         // Clears our unacked for msgs the peer has actually DELIVERED (CRC-verified,
-        // in order) — NOT merely transport-received. This is why a corrupt packet
+        // in order) -- NOT merely transport-received. This is why a corrupt packet
         // (reliable.io-acked but CRC-dropped) still gets retransmitted.
         if (len >= 1) {
             uint8_t cnt = payload[0];
@@ -447,6 +184,19 @@ void DeliverOne(Endpoint* ep, uint8_t chan, uint8_t cls, uint64_t seq,
     } else if (cls == static_cast<uint8_t>(Class::ReliableUnordered)) {
         RxChannel& rc = ep->rx[chan];
         rc.cls_known = true; rc.cls_ordered = false;
+        // Sender restart, same reasoning as DeliverOrdered: a real duplicate is
+        // always recent, so a far-below seq means the peer's endpoint was
+        // recreated and its msg_seq restarted at 0. Without this the whole new
+        // stream reads as duplicates and the blob channel goes permanently deaf.
+        if (rc.un_next_ack > seq && rc.un_next_ack - seq >= RC_RESTART_BACKJUMP) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "ReliableChannel: chan=%u (unordered) peer msg_seq jumped back "
+                "%llu -> %llu (sender endpoint restarted) -- resetting rx cursor",
+                (unsigned)chan, (unsigned long long)rc.un_next_ack,
+                (unsigned long long)seq);
+            rc.un_next_ack = seq;
+            rc.un_recv_above.clear();
+        }
         if (seq < rc.un_next_ack || rc.un_recv_above.count(seq)) return;  // duplicate
         if (ep->deliver) ep->deliver(ep->deliver_ctx, chan, payload, len);  // deliver first receipt
         if (seq == rc.un_next_ack) {
@@ -488,6 +238,25 @@ size_t InFlight(Endpoint* ep) {
     return n;
 }
 
+// How many UDP datagrams one reliable.io packet actually becomes, including FEC
+// parity. THE PACER'S OLD "1 token per packet" WAS THE BUG: a 16KB snapshot
+// chunk cost one token and emitted 17 fragment datagrams, so the configured
+// 3000 pps was really ~51,000 datagrams/s (~53 MB/s offered) and the token
+// bucket -- the entire reason a bulk burst can't self-inflict loss -- was a
+// no-op for exactly the burst it existed to pace.
+double WireCost(const Endpoint* ep, size_t packet_bytes) {
+    double dgrams = 1.0;
+    if (packet_bytes > RC_FRAGMENT_ABOVE) {
+        dgrams = static_cast<double>((packet_bytes + RC_FRAGMENT_SIZE - 1) /
+                                     RC_FRAGMENT_SIZE);
+    }
+    // FEC emits M parity datagrams per K data datagrams. They are real wire
+    // cost and must be paced like everything else.
+    if (ep->fec_enabled && !ep->fec_suppressed && ep->fec_k > 0)
+        dgrams *= 1.0 + static_cast<double>(ep->fec_m) / static_cast<double>(ep->fec_k);
+    return dgrams;
+}
+
 // Drain the paced send queue: token-bucket rate + congestion-window backpressure.
 void PumpSendQueue(Endpoint* ep, double now) {
     if (ep->last_pump < 0.0) {
@@ -515,6 +284,7 @@ void PumpSendQueue(Endpoint* ep, double now) {
             bool reliable = ps.cls != static_cast<uint8_t>(Class::Unreliable);
             if (reliable && inflight >= static_cast<size_t>(ep->cwnd)) break;      // cwnd cap
             if (!pkt.empty() && pkt.size() + ps.framed.size() > RC_NAGLE_MAX) break; // packet full
+            const size_t framed_bytes = ps.framed.size();
             pkt.insert(pkt.end(), ps.framed.begin(), ps.framed.end());  // copy into packet
             if (reliable) {
                 Unacked u; u.framed = std::move(ps.framed); u.sent_time = now;
@@ -522,12 +292,17 @@ void PumpSendQueue(Endpoint* ep, double now) {
                 ep->tx[ps.chan].unacked.emplace(ps.msg_seq, std::move(u));  // per-msg retransmit
                 inflight++;
             }
+            ep->send_queue_bytes = (ep->send_queue_bytes >= framed_bytes)
+                                       ? ep->send_queue_bytes - framed_bytes : 0;
             ep->send_queue.pop_front();
             if (pkt.size() >= RC_NAGLE_MAX) break;  // approx full (a lone big msg goes alone)
         }
         if (pkt.empty()) break;
         SendFramedNow(ep, pkt);  // one reliable.io packet (may fragment if > MTU)
-        ep->tokens -= 1.0;       // 1 token per packet
+        // Charge what actually goes on the wire: fragments + FEC parity. Tokens
+        // may dip negative for a large packet; that is the point -- the next
+        // pump waits it off rather than pretending the packet was free.
+        ep->tokens -= WireCost(ep, pkt.size());
     }
 }
 
@@ -553,15 +328,16 @@ Endpoint* Create(uint64_t id, RawSendFn raw_send, void* raw_send_ctx,
     // the failing run; intermittent because zero-RLE chunk sizes depend on
     // the captured battle state). 64KB headroom fits any framed message
     // this codebase produces with 4x margin.
-    cfg.max_packet_size = 64 * 1024;
-    cfg.fragment_above  = 1024;
+    cfg.max_packet_size = static_cast<int>(RC_MAX_PACKET_BYTES);
+    cfg.fragment_above  = static_cast<int>(RC_FRAGMENT_ABOVE);
     cfg.max_fragments   = 64;
-    cfg.fragment_size   = 1024;
+    cfg.fragment_size   = static_cast<int>(RC_FRAGMENT_SIZE);
     cfg.fragment_reassembly_buffer_size = 256;
     cfg.context = ep;
     cfg.id = id;
     cfg.transmit_packet_function = &TransmitCb;
     cfg.process_packet_function  = &ProcessCb;
+    ep->now_time = now;
     ep->rel = reliable_endpoint_create(&cfg, now);
     if (!ep->rel) { delete ep; return nullptr; }
     return ep;
@@ -575,75 +351,52 @@ void Destroy(Endpoint* ep) {
 
 void Send(Endpoint* ep, uint8_t chan, Class cls, const uint8_t* data, int len) {
     if (!ep || !ep->rel || len < 0) return;
+    const size_t framed_bytes = RC_HDR_BYTES + static_cast<size_t>(len) + RC_CRC_BYTES;
+    // Both rejections below happen BEFORE a msg_seq is allocated. The old code
+    // burned the seq first and then returned, which punched a hole the peer's
+    // ordered channel would wait on forever -- the very "silent permanent
+    // stream gap" the guard was added to prevent.
+    //
+    // Envelope guard: reliable.io rejects oversize with a VOID return and our
+    // retransmit would spin on it until the 7s retire (the task-#55 snapshot
+    // bug). Never let an oversize message enter the pipeline quietly.
+    if (framed_bytes > RC_MAX_PACKET_BYTES) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+            "[RC] framed msg %zu B exceeds the 64KB envelope (chan=%u cls=%u) "
+            "-- reliable.io would drop it silently; REJECTING at Send. "
+            "Fragment the payload at the app layer.",
+            framed_bytes, (unsigned)chan, (unsigned)cls);
+        return;
+    }
+    // Memory bound: a host serving N spectators queues a whole snapshot per
+    // viewer, and a viewer whose acks are black-holed stalls its endpoint on
+    // cwnd while re-ships keep arriving. Loud, and recoverable -- the app-level
+    // repair for a missing snapshot is a re-ship, not a transport retransmit.
+    if (ep->send_queue_bytes + framed_bytes > RC_MAX_QUEUED_BYTES) {
+        static double s_last_full_log = -1.0;
+        if (s_last_full_log < 0.0 || ep->now_time - s_last_full_log >= 1.0) {
+            s_last_full_log = ep->now_time;
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                "[RC] send queue full: %zu B queued (%zu msgs), rejecting a %zu B "
+                "msg on chan=%u -- peer is not draining; app-level re-ship must repair",
+                ep->send_queue_bytes, ep->send_queue.size(), framed_bytes,
+                (unsigned)chan);
+        }
+        return;
+    }
     TxChannel& tc = ep->tx[chan];
     PendingSend ps;
     ps.chan = chan;
     ps.cls = static_cast<uint8_t>(cls);
     ps.msg_seq = tc.next_msg_seq++;
     BuildFramed(chan, cls, ps.msg_seq, data, len, ps.framed);
-    // Envelope guard: reliable.io rejects oversize with a VOID return and
-    // our retransmit would spin on it until the 7s retire -- a silent
-    // permanent stream gap (the task-#55 snapshot bug). Never let an
-    // oversize message enter the pipeline quietly.
-    if (ps.framed.size() > 64u * 1024u) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-            "[RC] framed msg %zu B exceeds the 64KB envelope (chan=%u cls=%u) "
-            "-- reliable.io would drop it silently; REJECTING at Send. "
-            "Fragment the payload at the app layer.",
-            ps.framed.size(), (unsigned)chan, (unsigned)cls);
-        return;
-    }
+    ep->send_queue_bytes += ps.framed.size();
     ep->send_queue.push_back(std::move(ps));  // paced out in Update()
-}
-
-void OnDatagram(Endpoint* ep, const uint8_t* data, int len) {
-    if (!ep || !ep->rel || len <= 0) return;
-    ep->rx_since_carrier++;  // received something -> owe the peer an ack carrier
-    // caller already stripped the 0xCB tag; first byte is the FEC role.
-    uint8_t role = data[0];
-
-    if (role == FEC_RAW) {
-        FeedInner(ep, data + FEC_RAW_HDR, len - static_cast<int>(FEC_RAW_HDR));
-        return;
-    }
-
-    if (role == FEC_DATA) {
-        if (len < static_cast<int>(FEC_DATA_HDR)) return;
-        uint16_t group = static_cast<uint16_t>(data[1]) | (static_cast<uint16_t>(data[2]) << 8);
-        uint8_t  index = data[3];
-        uint8_t  k     = data[4];
-        uint8_t  m     = data[5];
-        uint16_t ilen  = static_cast<uint16_t>(data[6]) | (static_cast<uint16_t>(data[7]) << 8);
-        if (FEC_DATA_HDR + ilen > static_cast<size_t>(len)) return;
-        const uint8_t* inner = data + FEC_DATA_HDR;
-        FeedInner(ep, inner, ilen);  // deliver immediately; don't wait on FEC
-        FecGroupRx& g = ep->fec_dec.groups[group];
-        g.k = k; g.m = m; g.params_known = true;
-        g.data.emplace(index, std::vector<uint8_t>(inner, inner + ilen));
-        FecTryRecover(ep, group, g);
-        FecGc(ep->fec_dec);
-        return;
-    }
-
-    if (role == FEC_PARITY) {
-        if (len < static_cast<int>(FEC_PARITY_HDR)) return;
-        uint16_t group   = static_cast<uint16_t>(data[1]) | (static_cast<uint16_t>(data[2]) << 8);
-        uint8_t  j       = data[3];
-        uint8_t  k       = data[4];
-        uint8_t  m       = data[5];
-        uint16_t Llen    = static_cast<uint16_t>(data[6]) | (static_cast<uint16_t>(data[7]) << 8);
-        if (FEC_PARITY_HDR + Llen > static_cast<size_t>(len)) return;
-        FecGroupRx& g = ep->fec_dec.groups[group];
-        g.k = k; g.m = m; g.params_known = true; g.L = Llen;
-        g.parity.emplace(j, std::vector<uint8_t>(data + FEC_PARITY_HDR, data + FEC_PARITY_HDR + Llen));
-        FecTryRecover(ep, group, g);
-        FecGc(ep->fec_dec);
-        return;
-    }
 }
 
 void Update(Endpoint* ep, double now) {
     if (!ep || !ep->rel) return;
+    ep->now_time = now;   // DeliverOrdered timestamps progress off this
     reliable_endpoint_update(ep->rel, now);
 
     // FM2K_RC_STATS=1: 1Hz per-endpoint stats dump (task #55 snapshot-over-RC
@@ -667,10 +420,11 @@ void Update(Endpoint* ep, double now) {
             }
             const uint64_t* c = reliable_endpoint_counters(ep->rel);
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "[RC-STATS] ep=%llu q=%zu unacked=%zu oldest=%.1fs | "
+                "[RC-STATS] ep=%llu q=%zu qb=%zu fec_supp=%d unacked=%zu oldest=%.1fs | "
                 "sent=%llu recv=%llu acked=%llu stale=%llu invalid=%llu "
                 "TOO_LARGE=%llu frag_sent=%llu frag_recv=%llu FRAG_INVALID=%llu",
-                (unsigned long long)ep->id, queue, unacked_total, oldest,
+                (unsigned long long)ep->id, queue, ep->send_queue_bytes,
+                (int)ep->fec_suppressed, unacked_total, oldest,
                 (unsigned long long)c[0], (unsigned long long)c[1],
                 (unsigned long long)c[2], (unsigned long long)c[3],
                 (unsigned long long)c[4], (unsigned long long)c[5],
@@ -681,7 +435,7 @@ void Update(Endpoint* ep, double now) {
 
     // 0) ack-carrier: periodically send our RC-level cumulative ack table so the
     // peer can clear/retransmit precisely on what we've DELIVERED. Sent DIRECTLY
-    // (not queued) so acks always flow — never blocked by pacing or a cwnd-stalled
+    // (not queued) so acks always flow -- never blocked by pacing or a cwnd-stalled
     // reliable head (which would otherwise deadlock recovery).
     if (ep->rx_since_carrier > 0 && now - ep->last_carrier_time >= RC_ACK_FLUSH_INTERVAL) {
         // body = [u8 count]{ u8 chan, u64 next_expected } for each started rx channel.
@@ -709,17 +463,38 @@ void Update(Endpoint* ep, double now) {
     }
 
     // 1) unacked clearing is driven by the peer's RC-level cumulative acks (in
-    // ProcessCb), NOT reliable.io transport acks — because reliable.io acks a
+    // ProcessCb), NOT reliable.io transport acks -- because reliable.io acks a
     // corrupt-but-received packet, which must NOT count as delivered. We still
     // drain reliable.io's ack list so it doesn't leak (it feeds RTT internally).
     int num_acks = 0;
     (void)reliable_endpoint_get_acks(ep->rel, &num_acks);
     if (num_acks > 0) reliable_endpoint_clear_acks(ep->rel);
 
-    // 1a) FEC suppression under send-queue backpressure (the reference engine: >~20 backlog
-    // or transport LimitExceeded → suppress FEC 3s). During a bulk backlog parity
-    // is wasted bandwidth; drop it so the actual data drains, restore after.
-    if (ep->send_queue.size() > 20) ep->fec_suppress_until = now + 3.0;
+    // 1a) FEC suppression under SUSTAINED send-queue backpressure.
+    //
+    // This was `if (send_queue.size() > 20) suppress for 3s` -- a MESSAGE COUNT
+    // threshold, inherited from a reference engine whose messages are uniformly
+    // small. It disabled parity for exactly the one payload on this link that
+    // needs erasure coding: a snapshot has always been 100+ queued messages
+    // (and is now ~1130 of them, one datagram each), so parity was off for the
+    // whole transfer plus 3s of hangover, every time.
+    //
+    // Two corrections:
+    //   * measure BYTES -- a count is meaningless once message sizes vary by
+    //     16x, and bytes are what the link actually cares about;
+    //   * require the backlog to PERSIST. A bulk burst is offered all at once
+    //     and drains at the paced rate in a fraction of a second; that is
+    //     healthy and must keep its parity. Only a queue that stays deep (the
+    //     peer has stopped acking, so cwnd has stalled the drain) is the
+    //     "parity is wasted bandwidth" case suppression exists for -- and in
+    //     that state parity is not what is failing anyway.
+    if (ep->send_queue_bytes > RC_FEC_SUPPRESS_BYTES) {
+        if (ep->fec_backlog_since < 0.0) ep->fec_backlog_since = now;
+        if (now - ep->fec_backlog_since >= RC_FEC_SUPPRESS_SUSTAIN_SEC)
+            ep->fec_suppress_until = now + RC_FEC_SUPPRESS_SEC;
+    } else {
+        ep->fec_backlog_since = -1.0;
+    }
     ep->fec_suppressed = (now < ep->fec_suppress_until);
 
     // 1a2) Adaptive-M: retune parity to measured loss every ~0.5s. Low loss →
@@ -739,12 +514,45 @@ void Update(Endpoint* ep, double now) {
         ep->fec_m = m;
     }
 
+    // 1a3) ordered-channel stall recovery. A message the sender retired at 7s
+    // (below) will NEVER be sent again, so a receiver waiting on that hole
+    // waits forever: next_deliver pins, every later message piles into `ooo`
+    // until RC_OOO_MAX and is then dropped, and RC state is per-endpoint so no
+    // app-level re-JOIN repairs it. The old retire log promised "a permanent
+    // gap until re-JOIN" that re-JOIN could not actually honour. Past the
+    // retire horizon, skip the hole LOUDLY and drain what we have -- a visible
+    // gap the consumer can resync from beats a silently dead channel.
+    for (auto& [rxchan, rc] : ep->rx) {
+        if (!rc.cls_ordered || !rc.started || rc.ooo.empty()) continue;
+        if (rc.last_progress_time < 0.0) { rc.last_progress_time = now; continue; }
+        if (now - rc.last_progress_time < RC_ORDERED_STALL_SEC) continue;
+        const uint64_t skip_to = rc.ooo.begin()->first;
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "[RC] ordered chan=%u stalled %.1fs at msg_seq=%llu with %zu buffered "
+            "-- the sender has retired that message; SKIPPING to %llu "
+            "(permanent gap, consumer must resync)",
+            (unsigned)rxchan, now - rc.last_progress_time,
+            (unsigned long long)rc.next_deliver, rc.ooo.size(),
+            (unsigned long long)skip_to);
+        rc.next_deliver = skip_to;
+        rc.last_progress_time = now;
+        auto it = rc.ooo.find(rc.next_deliver);
+        while (it != rc.ooo.end()) {
+            if (ep->deliver) ep->deliver(ep->deliver_ctx, rxchan,
+                                         it->second.data(),
+                                         static_cast<int>(it->second.size()));
+            rc.ooo.erase(it);
+            rc.next_deliver++;
+            it = rc.ooo.find(rc.next_deliver);
+        }
+    }
+
     // 1b) drain the paced send queue (token bucket rate + cwnd backpressure).
     PumpSendQueue(ep, now);
 
     // 2) retransmit reliable msgs unacked for too long. Timeout = clamp(2*RTT,
     // 80ms, 750ms) (matches the reference engine's reference reliable peer). Messages unacked for
-    // 7s are retired (connection stuck) — the consumer's stall watchdog re-JOINs.
+    // 7s are retired (connection stuck) -- the consumer's stall watchdog re-JOINs.
     double resend = ep->resend_after;
     if (resend <= 0.0) {  // auto
         float rtt = reliable_endpoint_rtt(ep->rel) / 1000.0f;  // reliable.io RTT is ms
@@ -758,10 +566,23 @@ void Update(Endpoint* ep, double now) {
             Unacked& u = it->second;
             if (u.first_time < 0.0) u.first_time = now;
             if (now - u.first_time >= 7.0) {
-                // Retiring a RELIABLE message is a delivery-contract break --
-                // legitimate only because the consumer's stall watchdog
-                // re-JOINs. It must never be silent again (the silent retire
-                // hid the oversize-chunk drop for weeks).
+                // Retiring a RELIABLE message is a delivery-contract break. It
+                // is survivable because both sides now have a repair: an
+                // ORDERED channel skips the hole after RC_ORDERED_STALL_SEC
+                // (see 1a3) instead of pinning forever, and a retired snapshot
+                // chunk on the UNORDERED blob channel is re-supplied by the
+                // host's rate-limited re-ship, which the viewer's BEGIN-continue
+                // rule now folds into the transfer already in progress instead
+                // of restarting it.
+                // The TTL itself is deliberately NOT channel-aware: at one
+                // datagram per chunk, 7s is ~9+ independent retransmit attempts
+                // at ~80% each, so a chunk essentially never reaches the retire
+                // horizon unless the link is genuinely dead -- and extending the
+                // TTL for a dead link would keep 1000+ messages resident and
+                // retransmitting, which is the congestion collapse this whole
+                // change set exists to remove.
+                // It must never be silent again (the silent retire hid the
+                // oversize-chunk drop for weeks).
                 static double s_last_retire_log = 0.0;
                 if (now - s_last_retire_log >= 1.0) {
                     s_last_retire_log = now;

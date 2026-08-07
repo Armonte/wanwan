@@ -33,15 +33,75 @@
 #include <cstdio>
 using namespace specnode;
 
-// Write one chunk into the blob (idempotent by offset; RC already dedups by seq).
+// Snapshot inbox staleness horizon. There used to be NO timeout at all: an
+// abandoned transfer stayed `active` forever, held ~1MB, blocked nothing from
+// restarting it, and logged "waiting on stragglers" at 1Hz indistinguishably
+// from a slow-but-healthy one. RC retransmits an unacked message every
+// clamp(2*RTT, 80ms, 750ms) and retires it at 7s, so 20s with zero forward
+// progress means the host has genuinely stopped shipping.
+constexpr uint64_t kSnapshotInboxStaleMs = 20000;
+
+// Coverage-set blowup guard. A well-behaved sender emits
+// ceil(wire / SPECTATOR_SNAPSHOT_CHUNK_BYTES) disjoint ranges (~1130 for an
+// uncompressed 1.08MB blob) which merge down as holes fill. Anyone can inject
+// SNAPSHOT_CHUNK (HandleSpecData ignores `from`), so bound the interval count
+// rather than letting 1-byte chunks at alternating offsets pin map memory.
+constexpr size_t kMaxCoverageIntervals = 4096;
+
+// Write one chunk into the blob. IDEMPOTENT: re-delivering a chunk (host
+// re-ship, pre-BEGIN stash replay landing on already-applied bytes) rewrites
+// the same bytes and contributes nothing to the coverage set.
 static void ApplySnapshotChunk(State::SnapshotInbox& inbox, size_t off,
                                const uint8_t* data, size_t n) {
     if (n == 0 || off + n > inbox.blob.size()) return;  // stray/bad -> ignore
+    if (inbox.covered.size() >= kMaxCoverageIntervals) {
+        static uint32_t s_last_cap_ms = 0;
+        const uint32_t now_ms = GetTickCount();
+        if (now_ms - s_last_cap_ms >= 1000) {
+            s_last_cap_ms = now_ms;
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "SpectatorNode: snapshot coverage set at cap (%zu ranges) -- "
+                "dropping chunk off=%zu n=%zu; the transfer will time out and reset",
+                inbox.covered.size(), off, n);
+        }
+        return;
+    }
     std::memcpy(inbox.blob.data() + off, data, n);
-    inbox.bytes_received += n;
+    const size_t fresh = fm2k::specsnap::CoverRange(
+        inbox.covered, static_cast<uint32_t>(off), static_cast<uint32_t>(n));
+    inbox.bytes_received += fresh;
+    if (fresh > 0) inbox.last_progress_ms = GetTickCount64();
 }
 
-// Finalize once the full blob is present AND SNAPSHOT_END's checksum is known —
+// Drop a transfer that has made no forward progress inside the staleness
+// horizon. Called every spectator tick from SpectatorNode_ApplyPendingSnapshot
+// (chunk arrival can't drive this -- a dead transfer has no arrivals).
+bool SpectatorNode_SweepStaleSnapshotInbox() {
+    auto& inbox = g_state.pb_snapshot_inbox;
+    if (inbox.pending_apply) return false;   // complete, waiting on the phase gate
+    // Two reclaimable shapes: a transfer stuck mid-download, and a pre-BEGIN
+    // chunk stash whose BEGIN never arrived (up to 2MB pinned with nothing to
+    // apply it to).
+    if (!inbox.active && inbox.pending_chunks.empty()) return false;
+    const uint64_t now_ms = GetTickCount64();
+    const uint64_t last   = inbox.last_progress_ms ? inbox.last_progress_ms
+                                                   : inbox.started_ms;
+    if (last == 0 || now_ms - last < kSnapshotInboxStaleMs) return false;
+    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+        "SpectatorNode: snapshot inbox STALE -- no progress for %llums "
+        "(active=%d, %zu/%u wire bytes, %zu coverage ranges, %zu stashed "
+        "pre-BEGIN chunks, end_seen=%d) -- resetting so a fresh SNAPSHOT_BEGIN "
+        "can start clean",
+        (unsigned long long)(now_ms - last), (int)inbox.active,
+        inbox.bytes_received,
+        (inbox.meta.flags & SNAPSHOT_FLAG_ZERO_RLE) ? inbox.meta.compressed_bytes
+                                                    : inbox.meta.total_bytes,
+        inbox.covered.size(), inbox.pending_chunks.size(), (int)inbox.end_seen);
+    inbox = State::SnapshotInbox{};
+    return true;
+}
+
+// Finalize once the full blob is present AND SNAPSHOT_END's checksum is known --
 // order-independent (unordered blob channel: END may precede the last chunks).
 // Decompress, verify fletcher32, mark pending_apply.
 static void TryFinalizeSnapshot(State::SnapshotInbox& inbox) {
@@ -49,19 +109,21 @@ static void TryFinalizeSnapshot(State::SnapshotInbox& inbox) {
     const uint32_t expected_wire =
         (inbox.meta.flags & SNAPSHOT_FLAG_ZERO_RLE)
             ? inbox.meta.compressed_bytes : inbox.meta.total_bytes;
-    if (inbox.bytes_received != expected_wire) {
+    if (!fm2k::specsnap::FullyCovered(inbox.covered, expected_wire)) {
         // Not all chunks yet (unordered channel: END may precede stragglers)
         // -- OR the transfer is permanently stuck. Log the gap at 1Hz so a
         // never-finalizing snapshot is visible instead of silent (task #55:
         // the viewer previously idled on placeholder chars with no clue).
+        // The hole count is the actionable number: a shrinking count is a
+        // healthy transfer, a static one is a dead chunk awaiting re-ship.
         static uint32_t s_last_gap_ms = 0;
         const uint32_t now_ms = GetTickCount();
         if (now_ms - s_last_gap_ms >= 1000) {
             s_last_gap_ms = now_ms;
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                 "SpectatorNode: snapshot END seen but inbox incomplete -- "
-                "%u/%u wire bytes received (waiting on stragglers)",
-                inbox.bytes_received, expected_wire);
+                "%zu/%u wire bytes covered in %zu range(s) (waiting on stragglers)",
+                inbox.bytes_received, expected_wire, inbox.covered.size());
         }
         return;
     }
@@ -87,6 +149,7 @@ static void TryFinalizeSnapshot(State::SnapshotInbox& inbox) {
     }
     inbox.pending_apply = true;
     inbox.active        = false;
+    inbox.covered.clear();   // fully covered; free the interval set
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
         "SpectatorNode: snapshot finalized (match=%u, %zu bytes, fletcher32=0x%08X) "
         "anchor INPUT-frame=%u (deferred apply)",
@@ -109,11 +172,11 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
         case SpecDataType::INITIAL_MATCH:
         case SpecDataType::INPUT_BATCH:
         case SpecDataType::INPUT_REQUEST:
-            // Legacy wire types — retired in C12. Production hosts ship
+            // Legacy wire types -- retired in C12. Production hosts ship
             // MATCH_START / MATCH_END / FINGERPRINT / per-INPUT events
             // inside EVENT_BATCH datagrams. The enum values stay in
             // spectator_node.h for ABI but receivers no longer act on them
-            // (silently drop instead of warn — old peers shouldn't exist
+            // (silently drop instead of warn -- old peers shouldn't exist
             // in practice and a stale packet during a hub-driven session
             // swap shouldn't spam the log).
             break;
@@ -147,7 +210,7 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
             } else if (meta.version != SPECTATOR_SNAPSHOT_VERSION) {
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                     "SpectatorNode: SNAPSHOT_BEGIN version mismatch "
-                    "(got %u, want <= %u) — dropping snapshot, peer must "
+                    "(got %u, want <= %u) -- dropping snapshot, peer must "
                     "rejoin with FULL_SESSION",
                     meta.version, SPECTATOR_SNAPSHOT_VERSION);
                 g_state.pb_snapshot_inbox = State::SnapshotInbox{};
@@ -169,26 +232,87 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
                 meta.total_bytes != expected_slot_size) {
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                     "SpectatorNode: SNAPSHOT_BEGIN size mismatch "
-                    "(blob=%u, slot=%zu) — engine variant mismatch?",
+                    "(blob=%u, slot=%zu) -- engine variant mismatch?",
                     meta.total_bytes, expected_slot_size);
                 g_state.pb_snapshot_inbox = State::SnapshotInbox{};
                 break;
             }
 
             auto& inbox = g_state.pb_snapshot_inbox;
-            if (inbox.active) {
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: SNAPSHOT_BEGIN restart "
-                    "(prior inbox had %zu/%u bytes, dropping)",
-                    inbox.bytes_received, inbox.meta.total_bytes);
+            const uint64_t begin_now_ms = GetTickCount64();
+            // Does this BEGIN describe the SAME transfer the inbox already
+            // holds? A host re-ship (destructive-reset re-JOIN path) repeats
+            // byte-identical metadata AND byte-identical chunk contents, so it
+            // must CONTINUE the in-progress transfer. The old unconditional
+            // restart was strictly destructive: it zeroed the byte counter and
+            // reallocated the blob, discarding every chunk already delivered --
+            // and RC had acked those under the previous msg_seqs, so they were
+            // never re-delivered. Under loss that turned a re-ship (the only
+            // repair we have) into a guaranteed net loss of progress.
+            const bool same_transfer =
+                inbox.meta.version            == meta.version &&
+                inbox.meta.flags              == meta.flags &&
+                inbox.meta.total_bytes        == meta.total_bytes &&
+                inbox.meta.match_index        == meta.match_index &&
+                inbox.meta.compressed_bytes   == meta.compressed_bytes &&
+                inbox.meta.captured_game_mode == meta.captured_game_mode &&
+                inbox.anchor_frame            == hdr.start_frame;
+
+            if (inbox.pending_apply) {
+                // Already finalized and waiting on the phase gate. A duplicate
+                // BEGIN for the same snapshot -- or a stale re-ship of an OLDER
+                // one arriving during rebind churn -- must not wipe it. The old
+                // code set pending_apply = false unconditionally here, so a
+                // single late BEGIN threw away a complete, checksum-verified
+                // snapshot.
+                const bool older =
+                    meta.match_index < inbox.meta.match_index ||
+                    (meta.match_index == inbox.meta.match_index &&
+                     hdr.start_frame  <  inbox.anchor_frame);
+                if (same_transfer || older) {
+                    static uint32_t s_last_dup_ms = 0;
+                    const uint32_t nm = GetTickCount();
+                    if (nm - s_last_dup_ms >= 1000) {
+                        s_last_dup_ms = nm;
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                            "SpectatorNode: SNAPSHOT_BEGIN (match=%u anchor=%u) "
+                            "for an already-finalized%s snapshot -- ignoring, "
+                            "the pending apply stands",
+                            meta.match_index, hdr.start_frame,
+                            same_transfer ? "" : " newer");
+                    }
+                    break;
+                }
+                // A genuinely NEWER snapshot supersedes the pending one.
             }
-            inbox.meta           = meta;
-            inbox.anchor_frame   = hdr.start_frame;
-            inbox.bytes_received = 0;
-            inbox.blob.assign(wire_bytes, 0);   // wire (possibly compressed) bytes
-            inbox.active         = true;
-            inbox.end_seen       = false;
-            inbox.pending_apply  = false;
+
+            const bool fresh_start = !(inbox.active && same_transfer);
+            if (fresh_start) {
+                if (inbox.active) {
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "SpectatorNode: SNAPSHOT_BEGIN restart -- different "
+                        "snapshot (prior inbox had %zu/%u wire bytes for "
+                        "match=%u anchor=%u, dropping)",
+                        inbox.bytes_received, inbox.meta.total_bytes,
+                        inbox.meta.match_index, inbox.anchor_frame);
+                }
+                inbox.bytes_received = 0;
+                inbox.covered.clear();
+                inbox.blob.assign(wire_bytes, 0);  // wire (possibly compressed) bytes
+                inbox.end_seen       = false;
+                inbox.started_ms     = begin_now_ms;
+            } else {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "SpectatorNode: SNAPSHOT_BEGIN duplicate for the transfer "
+                    "in progress -- CONTINUING (%zu/%u wire bytes covered in "
+                    "%zu range(s))",
+                    inbox.bytes_received, wire_bytes, inbox.covered.size());
+            }
+            inbox.meta             = meta;
+            inbox.anchor_frame     = hdr.start_frame;
+            inbox.active           = true;
+            inbox.pending_apply    = false;
+            inbox.last_progress_ms = begin_now_ms;
             // Replay chunks that arrived before this BEGIN (unordered blob channel).
             {
                 auto pend = std::move(inbox.pending_chunks);
@@ -202,8 +326,10 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
                 inbox.end_checksum      = inbox.pending_end_checksum;
                 inbox.end_seen          = true;
                 inbox.pending_end_valid = false;
-                TryFinalizeSnapshot(inbox);
             }
+            // On a CONTINUE the END may already have been seen and the missing
+            // chunks may have landed in the meantime, so always re-test.
+            TryFinalizeSnapshot(inbox);
 
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "SpectatorNode: SNAPSHOT_BEGIN match=%u, %u bytes, "
@@ -221,19 +347,25 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
             // at game_mode=3000 overwrites the entire char-data pool
             // with the host's actual matchup state.
             //
-            // For CSS snapshots (captured_game_mode=2000), DON'T arm —
+            // For CSS snapshots (captured_game_mode=2000), DON'T arm --
             // the snapshot itself will populate cursor positions +
             // selected chars when it applies at game_mode==2000, and
             // CssAutoConfirm's pinning logic would fight the loaded
             // state.
-            if (g_spectator_mode && meta.captured_game_mode == 3000u) {
+            // Only on a FRESH transfer: a duplicate BEGIN that merely continues
+            // an in-progress download must not re-arm the pin (it was already
+            // armed by the original BEGIN, and re-arming mid-CSS-walk restarts
+            // the placeholder drive). Under the old unconditional-restart
+            // semantics every BEGIN was a fresh start, so this is behavior-
+            // preserving for every case that existed before.
+            if (fresh_start && g_spectator_mode && meta.captured_game_mode == 3000u) {
                 CssAutoConfirm_OnReplayMatchStart(
                     /*p1_char=*/0, /*p1_color=*/0,
                     /*p2_char=*/0, /*p2_color=*/0,
                     /*stage_id=*/0);
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "SpectatorNode: armed CssAutoConfirm for spec "
-                    "(battle snapshot — drive CSS forward to game_mode "
+                    "(battle snapshot -- drive CSS forward to game_mode "
                     "3000 with placeholder chars; snapshot apply will "
                     "overwrite)");
             }
@@ -256,9 +388,14 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
                 // Hold chunks that arrive before SNAPSHOT_BEGIN (cross-channel
                 // reorder). Bound BOTH the count and the TOTAL BYTES so an
                 // attacker on the spectator input path can't pin memory with a
-                // flood of pre-BEGIN chunks. A legit snapshot is ~1MB raw
-                // (≤~66 chunks of 16KB); 256 chunks / 2MB is generous headroom.
-                constexpr size_t kMaxPendingChunks = 256;
+                // flood of pre-BEGIN chunks.
+                // The COUNT cap has to track the chunk size: at 16KB/chunk 256
+                // slots held 4MB (bytes bound first), but at 960B/chunk they
+                // hold only 245KB, so the count would bind first and silently
+                // throw away most of a pre-BEGIN burst -- exactly the bytes RC
+                // has already acked and will never re-send. 2048 slots x 960B
+                // = ~2MB, so the byte cap is the binding one again.
+                constexpr size_t kMaxPendingChunks = 2048;
                 constexpr size_t kMaxPendingBytes  = 2u * 1024 * 1024;
                 if (inbox.pending_chunks.size() < kMaxPendingChunks &&
                     inbox.pending_bytes + chunk_n <= kMaxPendingBytes) {
@@ -266,6 +403,9 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
                         static_cast<uint32_t>(off),
                         std::vector<uint8_t>(payload, payload + chunk_n));
                     inbox.pending_bytes += chunk_n;
+                    // Stamp progress so the staleness sweep can reclaim a stash
+                    // whose BEGIN never arrives.
+                    inbox.last_progress_ms = GetTickCount64();
                 }
                 break;
             }
@@ -345,7 +485,7 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
             //
             // Receive-side gate: subscription is the only thing that
             // matters here. `playing_back` was the legacy
-            // "between INITIAL_MATCH and MATCH_END" state — but
+            // "between INITIAL_MATCH and MATCH_END" state -- but
             // MATCH_END now arrives in-band as an event and flips
             // playing_back=false at apply time (drain-at-head). If we
             // gated receive on playing_back we'd drop the CSS frames
@@ -434,7 +574,7 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
 
                     // Non-INPUT event. Apply when its position (= cursor_input,
                     // i.e. the index of the next INPUT) is at or after the
-                    // current dedup cursor — meaning the INPUT it logically
+                    // current dedup cursor -- meaning the INPUT it logically
                     // precedes hasn't been consumed yet. Otherwise the op is
                     // stale (the spectator has already executed past that
                     // boundary in a previous batch).
@@ -512,7 +652,7 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
                     gap_first, expected_at_entry,
                     start_frame, op_base, pushed_inputs, skipped_inputs);
             }
-            // pb_queue / batch / subs status — diagnostic (~1 line/sec).
+            // pb_queue / batch / subs status -- diagnostic (~1 line/sec).
             // Routed via SDL_LOG_CATEGORY_CUSTOM into quill's backtrace
             // ring; only flushed to disk on a subsequent LOG_ERROR or
             // when FM2K_SPECTATOR_DEBUG=1 is set for live diagnostic.
@@ -534,7 +674,7 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
             // single ordered stream (rc_channel==0, i.e. TCP) may establish the frame
             // baseline. A live (RC_CHAN_SPEC) batch arriving before the baseline, or
             // any batch ahead of next_expected_frame, is buffered by start_frame and
-            // drained in frame order — so ops+inputs resume host-append order.
+            // drained in frame order -- so ops+inputs resume host-append order.
             const bool can_base = (rc_channel == 0 || rc_channel == RC_CHAN_SPEC_SNAPSHOT);
             auto buffer_batch = [&]() {
                 if (g_state.pb_reorder.size() < 1024) {

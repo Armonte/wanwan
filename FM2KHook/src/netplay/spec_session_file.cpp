@@ -33,7 +33,7 @@
 using namespace specnode;
 
 // =============================================================================
-// SESSION FILE FORMAT (C7) — .fm2kset / .fm2krep
+// SESSION FILE FORMAT (C7) -- .fm2kset / .fm2krep
 // =============================================================================
 //
 // On-disk layout: [SessionFileHeader (32 B)] [packed SessionEvent[] bytes]
@@ -41,7 +41,7 @@ using namespace specnode;
 // Same wire encoding as EVENT_BATCH payload (SessionEvent_Encode*), so
 // loaders can reuse SessionEvent_Decode without an intermediate format.
 // Events are self-describing (1-byte tag + variant payload), so no
-// separate side table is needed — MATCH_START's 96-byte ReplayHeader is
+// separate side table is needed -- MATCH_START's 96-byte ReplayHeader is
 // inline in the encoded byte stream.
 
 namespace {
@@ -50,7 +50,7 @@ constexpr uint32_t SESSION_FILE_MAGIC   = 0x53534D46;  // 'FMSS' little-endian
 constexpr uint16_t SESSION_FILE_VERSION = 2;           // 256 B header (C7)
 
 #pragma pack(push, 1)
-// C7 — 256 B enriched header.
+// C7 -- 256 B enriched header.
 //
 // Carries everything the launcher's replay-browser tree needs without
 // rescanning the body bytes: nicks, character/color, winner + per-side
@@ -86,13 +86,13 @@ struct FM2KSessionFileHeader {
     uint8_t  match_index;        // .fm2krep: 1-based; .fm2kset: 0
     uint64_t session_id;         // shared across .fm2krep slices of one .fm2kset
 
-    // seek anchors — body-relative byte offsets pointing at ROUND_START
+    // seek anchors -- body-relative byte offsets pointing at ROUND_START
     // tag bytes. Unused slots = 0. Capped at 8 (best-of-15 doesn't exist).
     uint8_t  round_count;        // 0..8
     uint8_t  reserved0[3];
     uint32_t round_offsets[8];
 
-    // future-proofing — all zeros for v2 readers
+    // future-proofing -- all zeros for v2 readers
     uint8_t  reserved[76];
 };
 static_assert(sizeof(FM2KSessionFileHeader) == 256,
@@ -193,7 +193,7 @@ bool WriteSessionFileImpl(const char* path,
     hdr.finished_at_unix = now_unix;   //   both anchors when .fm2kset is
                                        //   written at session end.
                                        //   (Full session walks already
-                                       //   emit at shutdown — close enough
+                                       //   emit at shutdown -- close enough
                                        //   for chronological sort.)
     hdr.event_count      = static_cast<uint32_t>(last - first);
     hdr.input_count      = input_count;
@@ -226,7 +226,7 @@ bool WriteSessionFileImpl(const char* path,
     // launcher writes ui_my_nick + ui_peer_nick to SharedMem at HELLO
     // exchange time; we read them here and assign to p1/p2 based on
     // which side we are (host = player_index 0 = p1).
-    // Only host (0) and joiner (1) participate in the match — spec
+    // Only host (0) and joiner (1) participate in the match -- spec
     // (player_index = 2 sentinel) has its own nick but neither matches
     // P1 nor P2. For spec-written .fm2kset / .fm2krep we leave nicks
     // zero rather than write spec's-own-nick as one of the participants.
@@ -256,7 +256,7 @@ bool WriteSessionFileImpl(const char* path,
                 if (*p == '\\' || *p == '/') basename = p + 1;
             }
             std::strncpy(hdr.game_id, basename, sizeof(hdr.game_id) - 1);
-            // Strip ".exe" suffix — zero from dot to end (not just dot itself,
+            // Strip ".exe" suffix -- zero from dot to end (not just dot itself,
             // otherwise trailing "exe" bytes after the inline NUL show up in
             // downstream consumers that don't stop at first NUL).
             if (char* dot = std::strrchr(hdr.game_id, '.')) {
@@ -323,7 +323,7 @@ bool SpectatorNode_WriteCurrentBattleFile(const char* path) {
                                 /*is_battle_slice=*/true);
 }
 
-// State-init event types — emitted unconditionally during a Pass-1 walk
+// State-init event types -- emitted unconditionally during a Pass-1 walk
 // up to the seek anchor. These rebuild engine state (RNG seed, input ring
 // reset, sound layer init, match header) so playback resumes correctly at
 // the anchor without replaying every prior INPUT. ROUND_END is included
@@ -371,7 +371,7 @@ bool SpectatorNode_LoadSessionFile(const char* path, const SeekTarget& seek) {
     // Resolve the seek anchor against header round_offsets[] before
     // touching pb_queue. If the seek is unsatisfiable (round idx out of
     // range, header missing round table, etc.) bail without disturbing
-    // playback state — caller can retry without seek.
+    // playback state -- caller can retry without seek.
     size_t anchor_offset = 0;  // 0 = no seek, walk from body start
     if (seek.kind == SeekEventKind::MATCH_START && seek.idx == 0) {
         std::fclose(fp);
@@ -384,7 +384,7 @@ bool SpectatorNode_LoadSessionFile(const char* path, const SeekTarget& seek) {
             (hdr.flags & (1u << 1)) == 0) {
             std::fclose(fp);
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                "SpectatorNode: %s has no round_offsets — seek unavailable",
+                "SpectatorNode: %s has no round_offsets -- seek unavailable",
                 path);
             return false;
         }
@@ -485,7 +485,7 @@ bool SpectatorNode_LoadSessionFile(const char* path, const SeekTarget& seek) {
     uint32_t pushed_inputs = 0;
     uint32_t pre_anchor_skipped = 0;
 
-    // Pass 1 — body[0..anchor_offset). Emit only state-init events
+    // Pass 1 -- body[0..anchor_offset). Emit only state-init events
     // (skipped if anchor_offset == 0, i.e. no-seek).
     while (off < anchor_offset) {
         SessionEvent ev{};
@@ -521,7 +521,7 @@ bool SpectatorNode_LoadSessionFile(const char* path, const SeekTarget& seek) {
         off += r;
     }
 
-    // Pass 2 — body[anchor_offset..body_len). Emit everything.
+    // Pass 2 -- body[anchor_offset..body_len). Emit everything.
     while (off < body_len) {
         SessionEvent ev{};
         uint8_t hdr_buf[SESSION_EVENT_MATCH_HDR_SIZE] = {};
@@ -541,7 +541,7 @@ bool SpectatorNode_LoadSessionFile(const char* path, const SeekTarget& seek) {
     if (seek.kind == SeekEventKind::ROUND_START ||
         seek.kind == SeekEventKind::MATCH_START) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "SpectatorNode: loaded %s — seek=%s %u, "
+            "SpectatorNode: loaded %s -- seek=%s %u, "
             "%u state-init kept + %u skipped pre-anchor, "
             "%u INPUTs queued post-anchor (%u total events)",
             path,
@@ -552,7 +552,7 @@ bool SpectatorNode_LoadSessionFile(const char* path, const SeekTarget& seek) {
             pre_anchor_skipped, pushed_inputs, reported_event_count);
     } else {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "SpectatorNode: loaded %s — %u events (%u INPUTs) into pb_queue",
+            "SpectatorNode: loaded %s -- %u events (%u INPUTs) into pb_queue",
             path, reported_event_count, pushed_inputs);
     }
     return true;

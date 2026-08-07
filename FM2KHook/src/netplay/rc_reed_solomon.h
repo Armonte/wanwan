@@ -1,8 +1,8 @@
-// rc_reed_solomon.h — compact systematic Reed-Solomon erasure code over GF(256).
+// rc_reed_solomon.h -- compact systematic Reed-Solomon erasure code over GF(256).
 //
 // For the ReliableChannel FEC: K data blocks + M parity blocks; ANY K of the
 // (K+M) recover all K data. Unlike single-XOR-parity (recovers 1 loss/group),
-// RS recovers up to M losses per group INSTANTLY (no retransmit round-trip) —
+// RS recovers up to M losses per group INSTANTLY (no retransmit round-trip) --
 // which is what lets the live spectator stream keep pace under multi-loss bursts.
 //
 // Cauchy generator matrix (every square submatrix invertible -> MDS -> any K

@@ -81,7 +81,7 @@ size_t WirePayloadSize(SessionEventType t) {
         case SessionEventType::SESSION_ID:        return 8;   // u64
         case SessionEventType::CSS_ENTERED:       return 6;   // cursor xy x2 + sel x2
     }
-    return SIZE_MAX;  // unknown tag — caller treats as malformed
+    return SIZE_MAX;  // unknown tag -- caller treats as malformed
 }
 
 bool IsValidEventTag(uint8_t tag) {
@@ -210,7 +210,7 @@ size_t SessionEvent_Decode(const uint8_t* in, size_t in_len,
                 std::memcpy(&out_event->u.fingerprint_hash, in + 1, 4);
                 break;
             case SessionEventType::MATCH_START:
-                // u.match_start_idx left at 0 — caller assigns when appending
+                // u.match_start_idx left at 0 -- caller assigns when appending
                 // to its match_headers side table.
                 break;
             case SessionEventType::ROUND_START:

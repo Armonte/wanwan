@@ -1,7 +1,7 @@
-// Replay — wire-payload schema for the MATCH_START SessionEvent.
+// Replay -- wire-payload schema for the MATCH_START SessionEvent.
 //
 // HISTORICAL: in v0.2.x this was a separate replay-file format with its own
-// recording + playback API. Retired in v0.2.27 — the v2 .fm2krep file
+// recording + playback API. Retired in v0.2.27 -- the v2 .fm2krep file
 // format owned by spectator_node.cpp (`FM2KSessionFileHeader` + packed
 // `SessionEvent[]` body) is a strict superset and now the canonical
 // per-battle replay representation.
@@ -23,7 +23,7 @@ constexpr uint32_t REPLAY_MAGIC   = 0x52504D46;  // 'FM2KREP' tag (FMPR little-e
 constexpr uint16_t REPLAY_VERSION = 1;
 
 #pragma pack(push, 1)
-// 96-byte header — laid out exactly as the MATCH_START SessionEvent
+// 96-byte header -- laid out exactly as the MATCH_START SessionEvent
 // payload. Fields beyond what the wire/file format consumes are kept
 // reserved/zero so the schema can grow without breaking older readers.
 struct ReplayHeader {
@@ -32,8 +32,8 @@ struct ReplayHeader {
     uint16_t flags;              // Reserved
     uint64_t unix_timestamp;     // When the match started
     uint32_t game_hash;          // FM2K game identifier (for cross-variant replays)
-    uint32_t initial_rng_seed;   // RNG seed at battle start — required for determinism
-    uint32_t initial_state_hash; // Fingerprint at battle start — sanity check on playback
+    uint32_t initial_rng_seed;   // RNG seed at battle start -- required for determinism
+    uint32_t initial_state_hash; // Fingerprint at battle start -- sanity check on playback
     uint8_t  p1_char_slot;       // Character selections
     uint8_t  p1_color;
     uint8_t  p2_char_slot;
@@ -52,7 +52,7 @@ struct ReplayHeader {
     uint32_t round_count;        // g_default_round @0x430124 (0 = legacy/unknown)
     uint8_t  reserved[3];        // Pad to 96 bytes
     uint32_t frame_count;        // Reserved (was finalized by legacy writer; v2 .fm2krep
-                                 //   writer doesn't populate — use FM2KSessionFileHeader's
+                                 //   writer doesn't populate -- use FM2KSessionFileHeader's
                                  //   event_count / input_count instead).
 };
 static_assert(sizeof(ReplayHeader) == 96, "ReplayHeader must be 96 bytes");

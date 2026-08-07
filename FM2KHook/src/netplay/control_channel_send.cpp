@@ -39,7 +39,7 @@ void ControlChannel_SendHelloAck(uint8_t player_id) {
 void ControlChannel_SendPing() {
     CtrlPacket pkt = {};
     pkt.header.type = CtrlMsg::PING;
-    pkt.data.ping.send_ms = GetTimeMs();  // overlaps sync.frame — send time for RTT
+    pkt.data.ping.send_ms = GetTimeMs();  // overlaps sync.frame -- send time for RTT
     // Carry this node's host-clock send stamp + current battle frame so the peer can
     // sync its clock and project our frame (jitter-free frame-advantage).
     uint64_t h = fm2k::hostclock::Enabled() ? fm2k::hostclock::StampOutbound() : 0;

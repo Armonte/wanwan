@@ -74,7 +74,8 @@ set(FM2KHOOK_SOURCES
     src/netplay/control_channel_send.cpp   # ControlChannel_Send* packet builders (split from control_channel)
     src/netplay/control_channel_gekko.cpp  # GekkoNet MultiplexAdapter (split from control_channel)
     src/netplay/host_clock.cpp             # host-clock sync + rift frame pacing (FM2K_HOST_CLOCK)
-    src/netplay/reliable_channel.cpp       # reliable-ordered + XOR-FEC channel layer over reliable.io
+    src/netplay/reliable_channel.cpp       # reliable-ordered channel layer over reliable.io
+    src/netplay/reliable_channel_fec.cpp   # its FEC half: parity encode on egress, RS recovery on ingress
     src/netplay/reliable_channel_net.cpp   # control-channel glue: 0xCB demux + RawSend egress + poll Update
     src/netplay/savestate.cpp           # common: lifecycle + buffers + RNG-trace + hashing
     src/netplay/savestate_fm95.cpp      # FM95 save/load body (#if ENGINE_FM95)
@@ -90,6 +91,7 @@ set(FM2KHOOK_SOURCES
     src/netplay/spec_impair.cpp     # test-only spectator-downlink loss shim (FM2K_SPEC_DROP)
     src/netplay/spec_host_events.cpp # host-side event recording + fingerprint (split from spectator_node)
     src/netplay/spec_join.cpp        # join/redirect protocol + GekkoSpectator dedup (split from spectator_node)
+    src/netplay/spec_join_viewer.cpp # viewer-side JOIN_REQ/ACK/redirect/kick (split from spec_join)
     src/netplay/spec_session_file.cpp # .fm2kset/.fm2krep write + load/seek (split from spectator_node)
     src/netplay/spec_playback.cpp     # op-apply + PopFrameInputs driver (split from spectator_node)
     src/netplay/spec_playback_state.cpp # admission pacing + adaptive delay bank + state accessors (split from spec_playback)

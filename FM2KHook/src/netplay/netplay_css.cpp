@@ -42,7 +42,7 @@ void Netplay_PollCSS() {
 }
 
 bool Netplay_CanAdvanceCSS() {
-    // Not synced yet — let game run freely (pre-CSS or waiting for remote)
+    // Not synced yet -- let game run freely (pre-CSS or waiting for remote)
     if (!g_css_synced) {
         return true;
     }
@@ -266,10 +266,10 @@ void Netplay_CssFlushRemaining() {
 
 bool Netplay_ProcessCSS() {
     // Poll for incoming control-channel messages (BATTLE_READY rendezvous,
-    // BATTLE_ENTERING, etc.) — independent of GekkoNet's transport.
+    // BATTLE_ENTERING, etc.) -- independent of GekkoNet's transport.
     ControlChannel_Poll();
 
-    // Not connected yet — let game run with local input
+    // Not connected yet -- let game run with local input
     if (g_simple_state < SimpleState::CONNECTED) {
         return true;
     }
@@ -294,7 +294,7 @@ bool Netplay_ProcessCSS() {
     // confirmed in the GekkoNet CSS session.
     //
     // Why not gate on `!g_remote_css_ready`? That flag flips true the
-    // moment THIS side receives one BATTLE_READY from the peer — which
+    // moment THIS side receives one BATTLE_READY from the peer -- which
     // can happen before this side has even entered CSS, because the peer
     // who-entered-first is spamming. Then when this side finally enters
     // CSS, the unconditional first-send fires (line 762) but the spam
@@ -371,7 +371,7 @@ bool Netplay_ProcessCSS() {
         // Arm BATTLE_ENTERING acceptance for this match. Stale packets from
         // the prior match arriving before this point are dropped; from
         // here through the actual battle-session start they're accepted
-        // as legitimate signaling. The epoch tags this barrier instance —
+        // as legitimate signaling. The epoch tags this barrier instance --
         // both peers arm here (bilateral CSS rendezvous) so counters match.
         g_battle_entry_armed = true;
         g_entry_epoch = NextBarrierEpoch();
@@ -466,7 +466,7 @@ bool Netplay_ProcessCSS() {
                 // FM2K Hook_ComputeAutoplayCssInput reads game_mode==2000
                 // (never true on FM95) → would feed 0 and both peers stall in
                 // CSS with p1/p2=0x0000. Fall back to 0 pre-battle if nav is
-                // off (shouldn't happen — this branch is autoplay-gated).
+                // off (shouldn't happen -- this branch is autoplay-gated).
                 const int nav = Fm95ComputeAutoplayNav();
                 local_raw = (nav >= 0) ? (uint16_t)nav : 0u;
             } else
@@ -505,12 +505,12 @@ bool Netplay_ProcessCSS() {
                 // Peer's CSS-phase Gekko session went silent past
                 // DISCONNECT_TIMEOUT. Publish CSS_ABORT (NOT DISCONNECT)
                 // so the launcher closes the surviving local game but
-                // doesn't record this in W/L/D — battle never started,
+                // doesn't record this in W/L/D -- battle never started,
                 // there's no result to commit. DISCONNECT outcome is
                 // reserved for "peer dropped during battle", which IS
                 // a forfeit and counts.
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "CSS: peer disconnected (handle=%d) — publishing CSS_ABORT outcome",
+                    "CSS: peer disconnected (handle=%d) -- publishing CSS_ABORT outcome",
                     event->data.disconnected.handle);
                 SharedMem_PublishMatchOutcome(FM2K_MATCH_OUTCOME_CSS_ABORT);
                 break;
@@ -628,18 +628,18 @@ void Netplay_EmitCssFpHost() {
 
 void AddSubscribedSpectatorsToSession() {
     // Spectators are NOT GekkoSpectator actors. Input distribution to
-    // spectators flows over the SpectatorNode INPUT_BATCH path — every
+    // spectators flows over the SpectatorNode INPUT_BATCH path -- every
     // confirmed (p1, p2) frame is recorded into session_history at
     // Hook_GetPlayerInput's capture_and_return and the host's
     // FlushBatch broadcasts to every subscriber.
     //
-    // Adding spectators to GekkoNet was the wrong architecture — it required
+    // Adding spectators to GekkoNet was the wrong architecture -- it required
     // host/spectator sub-state to match at session-create time, which is
     // launch-timing dependent and a snapshot transfer to fix. Pure input
     // replay sidesteps all of that: spectator boots → starts consuming
     // host's recorded inputs from frame 0 → walks title→CSS→battle in
     // lockstep with host's recorded execution.
-    (void)0;  // intentionally empty — kept as a hook for future per-session
+    (void)0;  // intentionally empty -- kept as a hook for future per-session
               // setup if needed.
 }
 
@@ -725,17 +725,17 @@ bool Netplay_StartCSSSession() {
     // before battle entry), so default is plenty.
     // GekkoNet NATIVE-spectator actor cap (a SECONDARY confirmed-input path).
     // This is intentionally NOT the same number as SPECTATOR_DEFAULT_CAPACITY
-    // (=32), which is the SpectatorNode direct-subscriber cap (TCP/RC — the
+    // (=32), which is the SpectatorNode direct-subscriber cap (TCP/RC -- the
     // PRIMARY spectator transport). SpectatorNode serves everyone up to 32;
     // the native actor path is a small extra and is separately hard-bounded in
-    // spec_join.cpp (kMaxGekkoSpectators). Keep low — GekkoNet iterates all
+    // spec_join.cpp (kMaxGekkoSpectators). Keep low -- GekkoNet iterates all
     // actors per tick.
     config.max_spectators           = 4;
-    config.spectator_delay          = 0;    // see battle-session comment — disables pause-buffer
+    config.spectator_delay          = 0;    // see battle-session comment -- disables pause-buffer
     // input_history_size: host keeps every confirmed CSS input frame in
     // _net_spectator_queue, capped at this many. Late-joining spectators
     // (last_acked_frame == NULL_FRAME) get the entire history streamed
-    // on connect. 60000 frames = 10 min @ 100 FPS — plenty for a CSS
+    // on connect. 60000 frames = 10 min @ 100 FPS -- plenty for a CSS
     // lobby session that ran for an unusually long pre-match wait.
     // See vendored/GekkoNet patch + README.md:36.
     config.input_history_size       = 60000;
@@ -782,7 +782,7 @@ bool Netplay_StartCSSSession() {
     // No runahead in lockstep mode (suppressed by IsLockstepActive at
     // game_session.cpp:537 even if requested).
 
-    // Set kind BEFORE the spectator add — AddSubscribedSpectatorsToSession
+    // Set kind BEFORE the spectator add -- AddSubscribedSpectatorsToSession
     // re-broadcasts SPEC_JOIN_ACK carrying g_session_kind, which spectators
     // use to swap their SpectateSession config to match.
     g_session_kind      = SessionKind::CSS;

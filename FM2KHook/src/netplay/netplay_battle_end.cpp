@@ -45,14 +45,14 @@ void Netplay_EndBattle() {
     if constexpr (FM2K::kIsFM2K) {
         Fm2k_ClearAfterimageIndices();
     }
-    // Capture match outcome BEFORE we destroy the session — reading HP
+    // Capture match outcome BEFORE we destroy the session -- reading HP
     // at this point reflects the final state of the just-ended battle.
     // Outcome is from the local player's perspective; the launcher
     // forwards it as a `match_result` to the hub, which correlates
     // both peers' reports for stats. Only meaningful for actual
     // GekkoGameSessions (player vs player); spectate sessions and
     // stress runs skip the publish.
-    // C7 — capture winner / per-side round wins for both the launcher's
+    // C7 -- capture winner / per-side round wins for both the launcher's
     // SharedMem outcome publish AND the SessionEvent MATCH_END payload that
     // ships to subscribers + replay files. Same data, two consumers.
     uint8_t  match_winner_idx  = 2;  // 0=P1, 1=P2, 2=draw / unknown
@@ -75,7 +75,7 @@ void Netplay_EndBattle() {
             // at offset -0x18 from HP. 0 at match start, increments each
             // round the player wins. Hooks.cpp's `g_match_phase` /
             // `g_round_sub_state` labels at the same addresses are
-            // misleading — those are per-slot rounds-won, not phase fields.
+            // misleading -- those are per-slot rounds-won, not phase fields.
             const uint32_t p1_hp   = *(uint32_t*)0x4DFC85;
             const uint32_t p2_hp   = *(uint32_t*)0x4EDCC4;
             // Live counters get RESET by the match-over object's update
@@ -106,7 +106,7 @@ void Netplay_EndBattle() {
                 "outcome=%d winner_idx=%u",
                 p1_hp, p2_hp, p1_wins, p2_wins, (int)outcome, (unsigned)widx);
         } else {
-            // FM95: round-win-counter-based outcome — mirrors the
+            // FM95: round-win-counter-based outcome -- mirrors the
             // game's own decision in obj_match_result_state @ 0x410db0
             // case 4: whoever has more rounds won is the match winner.
             // These counters reset to 0 only at the START of a new
@@ -186,16 +186,16 @@ void Netplay_EndBattle() {
         g_session_kind  = SessionKind::NONE;
     }
 
-    // (Legacy Replay::Replay_EndRecording call retired in v0.2.27 — the
+    // (Legacy Replay::Replay_EndRecording call retired in v0.2.27 -- the
     // SpectatorNode_WriteCurrentBattleFile call below writes the v2
     // .fm2krep file that supersedes the legacy 96-byte-header format.)
 
-    // Tell the spectator tree the match is over — subscribers receive
+    // Tell the spectator tree the match is over -- subscribers receive
     // MATCH_END and go idle until the next SpectatorNode_OnMatchStart.
     // C7: payload carries winner + per-side rounds + frames_total for
     // self-describing .fm2krep files. frames_total is computed inside
     // SpectatorNode_AppendMatchEnd via session-input-frame delta against
-    // the most-recent MATCH_START — host-side bookkeeping, no caller
+    // the most-recent MATCH_START -- host-side bookkeeping, no caller
     // input needed for that field.
     MatchEndPayload match_end_payload = {};
     match_end_payload.winner_idx     = match_winner_idx;
@@ -205,16 +205,16 @@ void Netplay_EndBattle() {
     SpectatorNode_OnMatchEnd(match_end_payload);
 
     // (Removed in v0.2.20: post-MATCH_END SpectatorNode_StashSnapshot. It
-    // crashed users on the first 3000→2000 transition — likely SaveState_Save
+    // crashed users on the first 3000→2000 transition -- likely SaveState_Save
     // running its replay-diff scan against torn-down FM2K state after
     // gekko_destroy. CURRENT_MATCH-mode spectator joining mid-CSS still
     // receives the start-of-match snapshot from Netplay_StartBattle's
-    // StashSnapshot — they replay the prior match's frames, which is
+    // StashSnapshot -- they replay the prior match's frames, which is
     // suboptimal but correct. Phase 6 robustness pass can re-add a
     // between-match cache freshen with a JIT live-peek (no SaveState_Save)
     // path that doesn't trigger the replay-diff scan.)
 
-    // Per-battle .fm2krep — slice the SessionEvent log between the most
+    // Per-battle .fm2krep -- slice the SessionEvent log between the most
     // recent MATCH_START and the just-appended MATCH_END. Same on-disk
     // shape as .fm2kset (full session); is_battle_slice flag distinguishes.
     //
@@ -287,7 +287,7 @@ void Netplay_EndBattle() {
     // Stale-advance scrub: pre-rendezvous CSS frames consume
     // Netplay_GetCSSInput before the new session delivers anything. The
     // last advance pair of the PREVIOUS CSS session must not leak into
-    // them — each peer stops consuming its old session at its own flip
+    // them -- each peer stops consuming its old session at its own flip
     // frame, so the leftovers can differ across peers and seed a CSS
     // divergence before the lockstep stream even starts.
     g_css_advance_p1    = 0;
@@ -307,7 +307,7 @@ void Netplay_EndBattle() {
     g_battle_entry_swap_frame = 0;
     g_battle_entry_armed      = false;
 
-    // Reset battle-end sync state — fresh for the rematch's next return.
+    // Reset battle-end sync state -- fresh for the rematch's next return.
     g_local_battle_end_signaled  = false;
     g_remote_battle_end_signaled = false;
     g_battle_end_synced          = false;

@@ -65,7 +65,7 @@ void Netplay_PushChatMessage(bool from_remote, const char* text) {
 
     size_t next = (g_chat_head + 1) % CHAT_RING_CAP;
     if (next == g_chat_tail) {
-        // Ring full — drop oldest to keep the newest message visible.
+        // Ring full -- drop oldest to keep the newest message visible.
         g_chat_tail = (g_chat_tail + 1) % CHAT_RING_CAP;
     }
     g_chat_ring[g_chat_head] = e;

@@ -24,7 +24,7 @@ uint32_t SaveState_CalculateFingerprint();
 #include <windows.h>
 #include "trampoline_internal.h"
 
-// Spectator playback — pure input-replay model.
+// Spectator playback -- pure input-replay model.
 //
 // CONTRACT: spectator's local FM2K only advances sim when it has a confirmed
 // (p1, p2) input pair from the host for the next frame. Pop one → run one
@@ -33,7 +33,7 @@ uint32_t SaveState_CalculateFingerprint();
 // Why this works: every change to FM2K's state is input-driven from a
 // canonical default state at boot. Host records every confirmed (p1, p2)
 // it returns from Hook_GetPlayerInput (title-screen auto-mash, CSS cursor
-// moves, battle commands — the whole stream). Spectator drains the same
+// moves, battle commands -- the whole stream). Spectator drains the same
 // stream → identical state by construction.
 //
 // Three regimes by queue depth:
@@ -130,7 +130,7 @@ static bool SpectatorSimOneFrame() {
                 // g_spec_skip flag miss under loss.
                 g_spec_skip_next_battle_init = false;
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpecSim: first mode_pre==3000 iteration — entry init "
+                    "SpecSim: first mode_pre==3000 iteration -- entry init "
                     "already sequenced at snapshot apply, skipping (snap=%d)",
                     (int)SpectatorNode_SnapshotAppliedOnce());
             } else {
@@ -142,7 +142,7 @@ static bool SpectatorSimOneFrame() {
                 SaveState_DoInitialSync();
                 SpectatorNode_ApplyPendingPinRng();
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpecSim: first mode_pre==3000 iteration — applied "
+                    "SpecSim: first mode_pre==3000 iteration -- applied "
                     "initial-sync + PIN_RNG pre-PGI");
             }
         }
@@ -180,7 +180,7 @@ static bool SpectatorSimOneFrame() {
 
     // [SPEC-TRACE] per-frame for first 100 battle frames. Routed through
     // SDL_LOG_CATEGORY_CUSTOM so LogOutputFunction sends it to quill's
-    // backtrace ring instead of disk — captured forever-cheap, only
+    // backtrace ring instead of disk -- captured forever-cheap, only
     // flushed to disk on a subsequent LOG_ERROR. FM2K_SPECTATOR_DEBUG=1
     // routes CUSTOM to disk like a normal log line for verbose sessions.
     if (s_spec_trace_in_battle && s_spec_trace_bf < 100) {
@@ -196,7 +196,7 @@ static bool SpectatorSimOneFrame() {
     // simulated frame (catch-up included). Logs once we're in battle
     // (mode 3000) at battle-frame multiples of 30 (~3x per sec). Pairs
     // with the host's matching log at netplay.cpp's AdvanceEvent recording
-    // site — grep both .log files for the same sim_frame to find first
+    // site -- grep both .log files for the same sim_frame to find first
     // divergence.
     {
         static uint32_t s_pop_count = 0;
@@ -289,7 +289,7 @@ static bool SpectatorSimOneFrame() {
 void RunSpectatorTick() {
     Hook_CheckGameModeTransition_Public();
 
-    // Drain UDP — control channel (0xCC: SPEC_JOIN_ACK / HEARTBEAT) and
+    // Drain UDP -- control channel (0xCC: SPEC_JOIN_ACK / HEARTBEAT) and
     // 0xCE INPUT_BATCH datagrams land on the same multiplex socket.
     ControlChannel_Poll();
 
@@ -305,7 +305,7 @@ void RunSpectatorTick() {
     SpectatorNode_ApplyPendingSnapshot();
 
     // Cache offline-replay mode once. Several gates downstream behave
-    // differently for replay vs. live spec — replay has no upstream so
+    // differently for replay vs. live spec -- replay has no upstream so
     // jitter-floor / catchup logic is meaningless.
     static int s_offline_replay_cached = -1;
     if (s_offline_replay_cached < 0) {
@@ -315,6 +315,17 @@ void RunSpectatorTick() {
     const bool s_offline_replay_env_active = (s_offline_replay_cached == 1);
 
     const size_t qd = SpectatorNode_PendingFrameCount();
+
+    // END-OF-STREAM DRAIN. Once the upstream announced SESSION_END the host is
+    // gone: there is nothing left to buffer AGAINST, so the delay bank has no
+    // purpose from here on. Leaving the below-bank slowdown armed throttles the
+    // final drain to as little as 40% exactly while the graceful-exit path is
+    // waiting on PendingFrameCount()==0 -- and the 8s host-gone watchdog above
+    // then kills the viewer mid-drain, which is the sweep's "ended N frames
+    // behind the host" fingerprint. Play out what we hold instead. Live-only:
+    // offline replay has its own drain-exit below and must stay strict 1:1.
+    const bool stream_over = !s_offline_replay_env_active &&
+                             SpectatorNode_SessionEnded();
 
     // [SPEC-Q] 1Hz heartbeat: phase + queue depth + pop counters. The
     // [SPEC-FP] trace only logs in battle (mode>=3000), leaving the
@@ -365,13 +376,74 @@ void RunSpectatorTick() {
             static std::atomic<bool> s_ended_armed{false};
             if (!s_ended_armed.exchange(true)) {
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: stream ended — host left the session "
+                    "SpectatorNode: stream ended -- host left the session "
                     "cleanly; closing");
                 ExitProcess(0);
             }
         }
+        // SESSION ENDED BEFORE PLAYBACK EVER STARTED. The queue-EMPTY,
+        // never-admitted sibling of the graceful drain above: session_ended is
+        // latched but not one frame was ever admitted, so there is nothing to
+        // drain and nothing will ever arrive -- the host is shutting down.
+        // Made materially more reachable by the H6 change in
+        // SpectatorNode_HandleSessionEnd (spec_join.cpp), which now accepts
+        // SESSION_END during a re-JOIN window (subscribed_upstream is cleared
+        // by RequestJoin, so a shutting-down host's broadcast used to be
+        // dropped). Without this branch such a viewer fell through to the 30s
+        // CONNECT-ESTABLISHMENT DEADLINE below and exited with
+        // "connect never established ... (join handshake failed / host
+        // unreachable)", which is both a 30s stare at a dead window and a
+        // wrong diagnosis: the handshake was fine, the host simply left first.
+        //
+        // Short grace rather than an instant exit: OP_BASELINE / backfill
+        // datagrams already on the wire when the host shut down can still land
+        // and admit, at which point HasEverAdmitted() flips, this branch stops
+        // matching, and the normal graceful-drain path above (plus the 20s
+        // drain budget below) takes over -- the viewer gets to watch what it
+        // did receive instead of being killed at the door. 2s is well past a
+        // loopback/LAN in-flight window and far short of the 30s stare.
+        constexpr uint32_t kEndBeforePlaybackGraceMs = 2000;
+        static uint64_t s_end_noplay_since = 0;
+        if (!SpectatorNode_SessionEnded() || SpectatorNode_HasEverAdmitted()) {
+            // Not (or no longer) in this state: drop the stamp so a later
+            // latch always gets a fresh grace window. session_ended is
+            // clearable by a fresh RequestJoin (spec_join.cpp), and
+            // HasEverAdmitted flipping true is the normal way out of here.
+            s_end_noplay_since = 0;
+        } else {
+            const uint64_t end_now = GetTickCount64();
+            if (s_end_noplay_since == 0) s_end_noplay_since = end_now;
+            if (end_now - s_end_noplay_since > kEndBeforePlaybackGraceMs) {
+                static std::atomic<bool> s_end_noplay_armed{false};
+                if (!s_end_noplay_armed.exchange(true)) {
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "SpectatorNode: host ended the session before playback "
+                        "started -- SPEC_SESSION_END arrived with zero frames "
+                        "ever admitted and nothing left in flight after %ums; "
+                        "closing (the join handshake did NOT fail)",
+                        kEndBeforePlaybackGraceMs);
+                    ExitProcess(0);
+                }
+            }
+        }
         const uint32_t since_admit = SpectatorNode_MsSinceLastAdmit();
-        if (since_admit > s_gone_ms) {
+        // GRACEFUL-END DRAIN GRACE. After SESSION_END there is by definition
+        // nothing left to admit, so since_admit climbs on a perfectly healthy
+        // viewer that is simply still playing out its delay bank. At the plain
+        // 8s budget that KILLED viewers mid-drain -- a bank grown to 1000+
+        // frames under loss needs well over 10s at 1x -- which is the sweep's
+        // "ended N frames behind the host" LAG fingerprint. Extend the budget
+        // only while the stream ended cleanly AND we still hold frames; the
+        // graceful exit above fires the instant the queue empties, so a healthy
+        // viewer closes at exactly the same moment it does today (sooner, with
+        // the end-of-stream drain below). An explicitly larger
+        // FM2K_SPEC_HOST_GONE_MS still wins.
+        const bool draining_after_end = SpectatorNode_SessionEnded() &&
+                                        SpectatorNode_PendingFrameCount() > 0;
+        const uint32_t gone_budget =
+            draining_after_end ? ((s_gone_ms > 20000u) ? s_gone_ms : 20000u)
+                               : s_gone_ms;
+        if (since_admit > gone_budget) {
             static std::atomic<bool> s_gone_armed{false};
             if (!s_gone_armed.exchange(true)) {
                 // UNGRACEFUL vanish (crash / network drop / TerminateProcess):
@@ -379,7 +451,7 @@ void RunSpectatorTick() {
                 // reconnect path has been backing off (exponential) rather
                 // than storming; give up now and close cleanly.
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: host disconnected — no new content for %ums "
+                    "SpectatorNode: host disconnected -- no new content for %ums "
                     "(host crashed/left ungracefully or wedged); closing stream",
                     since_admit);
                 ExitProcess(0);
@@ -390,7 +462,7 @@ void RunSpectatorTick() {
         // connect/snapshot), which means a spectator whose JOIN handshake never
         // completes under loss hung on "Connecting..." FOREVER (had to be closed
         // by hand). If we've NEVER admitted a frame after a generous window, the
-        // connect failed — exit cleanly instead of hanging. Tunable via
+        // connect failed -- exit cleanly instead of hanging. Tunable via
         // FM2K_SPEC_CONNECT_TIMEOUT_MS (default 30s: covers a slow boot-walk +
         // retried join under heavy loss with wide margin).
         static const uint32_t s_connect_ms = []{
@@ -413,7 +485,7 @@ void RunSpectatorTick() {
             if (!s_connect_armed.exchange(true)) {
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     "SpectatorNode: connect never established after %ums "
-                    "(join handshake failed / host unreachable) — exiting process",
+                    "(join handshake failed / host unreachable) -- exiting process",
                     s_connect_ms);
                 ExitProcess(0);
             }
@@ -421,15 +493,15 @@ void RunSpectatorTick() {
     }
 
     // Jitter-buffer floor only applies to LIVE spec (waiting on host's next
-    // batch). Offline replay has no upstream — the file is the entire input
-    // stream — so the last ≤8 events (typically post-match INPUTs +
+    // batch). Offline replay has no upstream -- the file is the entire input
+    // stream -- so the last ≤8 events (typically post-match INPUTs +
     // MATCH_END) would be stranded under the LIVE floor. Drain to zero
     // instead, which lets MATCH_END apply and the playback finishes cleanly.
     //
     // Boundary bypass (Phase F): the floor must not strand a queued
     // boundary op or freeze an active SEAM/PINNING walk. With the UDP
     // accelerator the spec rides AT the live edge, so the stream pause at
-    // a match seam arrives with q < floor — the old unconditional freeze
+    // a match seam arrives with q < floor -- the old unconditional freeze
     // trapped MATCH_END behind the last tail inputs forever (q:7 zombie,
     // 2026-06-11). If any non-INPUT op is queued, drain toward it; if a
     // boundary is active, the synthetic feed must keep ticking even at
@@ -445,7 +517,7 @@ void RunSpectatorTick() {
         (qd > 0 && qd < SPECTATOR_LIVE_TARGET &&
          SpectatorNode_QueueHasPendingOp());
     if (qd < SpectatorTargetDelayFrames() &&
-        !s_offline_replay_env_active && !boundary_bypass) {
+        !s_offline_replay_env_active && !boundary_bypass && !stream_over) {
         // BANK MAINTENANCE: smoothly slow the playout IN PROPORTION to how far
         // the buffer is below target, instead of slamming to a binary 50% glide.
         // A spectator is a jitter-buffered video player: paces to the host's
@@ -469,7 +541,7 @@ void RunSpectatorTick() {
         // fall through: sim exactly one frame this tick (full speed)
     }
     if (qd == 0 && !boundary_bypass) {
-        // Truly empty — even offline replay has nothing left to do.
+        // Truly empty -- even offline replay has nothing left to do.
         //
         // For offline replay (FM2K_REPLAY_FILE set): the entire file was
         // loaded into pb_queue at startup; queue==0 + playing_back==false
@@ -477,9 +549,9 @@ void RunSpectatorTick() {
         // events. Without an exit here the replay viewer freezes on the
         // last rendered frame indefinitely. ExitProcess from a hook is
         // aggressive but the launcher spawned us specifically for replay
-        // playback — when playback ends, the process is done.
+        // playback -- when playback ends, the process is done.
         //
-        // Live spec falls through to RenderFrameWithSnapshot — peer might
+        // Live spec falls through to RenderFrameWithSnapshot -- peer might
         // still send more events (next match) and we want to stay alive. The
         // host-gone/wedged case is handled by the no-forward-progress watchdog
         // above (MsSinceLastAdmit), which fires even when the queue is NOT empty
@@ -489,7 +561,7 @@ void RunSpectatorTick() {
             static std::atomic<bool> s_exit_armed{false};
             if (!s_exit_armed.exchange(true)) {
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: offline replay drained — exiting process");
+                    "SpectatorNode: offline replay drained -- exiting process");
                 ExitProcess(0);
             }
         }
@@ -499,7 +571,7 @@ void RunSpectatorTick() {
 
     // Catch-up inner loop (C5.5). When the queue is far ahead of the
     // jitter floor, drain multiple sim steps per trampoline tick to close
-    // the gap to live edge — without this, late join replays from session
+    // the gap to live edge -- without this, late join replays from session
     // start at 1 frame per tick and a 30k-event backlog takes 5 minutes
     // to drain. Audio dispatch and render are gated on g_spectator_catchup
     // so we don't blast compressed audio or burn render bandwidth during
@@ -516,7 +588,7 @@ void RunSpectatorTick() {
     // LastUpstreamRecvMs). We poll every iteration during catchup since
     // a single SpectatorSimOneFrame can take 100s of ms when FM2K's
     // CSS-cursor-move triggers a synchronous .player character file
-    // load — much longer than the ~10ms a normal sim tick takes.
+    // load -- much longer than the ~10ms a normal sim tick takes.
     //
     // We do NOT call SpectatorNode_TickHealth here: its silence-failover
     // would fire during legitimate catchup (we've been "silent" because
@@ -527,19 +599,19 @@ void RunSpectatorTick() {
     // Catchup policy (post-mvp tuning):
     //
     //   1. ONE-SHOT at join. On the first run where the queue is over the
-    //      lag target — typically right after JOIN_ACK + backfill replay —
+    //      lag target -- typically right after JOIN_ACK + backfill replay --
     //      we burn through the buffered events to reach the live edge.
     //      After that, even if the buffer grows from network jitter,
     //      packet loss, or a reconnect-with-backfill, we play at normal
     //      1-frame-per-tick speed. Once you've been caught up, you stay
     //      at whatever delay naturally accumulates from later disruption
-    //      — no jarring superspeed snap-to-live.
+    //      -- no jarring superspeed snap-to-live.
     //
     //   2. NO AUTOMATIC SAFETY DRAIN. Buffer is allowed to grow if the
     //      spectator falls behind; the user explicitly asked us not to
     //      speed up after lag/loss recovery. Memory cost is bounded by
     //      the sender (host TCP send blocks via backpressure if our
-    //      kernel recv buffer fills) — not by us auto-draining.
+    //      kernel recv buffer fills) -- not by us auto-draining.
     //
     //   3. ENV OVERRIDE. FM2K_SPECTATOR_ALWAYS_CATCHUP=1 keeps the
     //      always-catch-up behaviour for users who explicitly want low-
@@ -556,23 +628,23 @@ void RunSpectatorTick() {
         s_always_catchup_env = (v && v[0] == '1' && v[1] == '\0') ? 1 : 0;
     }
     // Offline-replay mode: catchup is meaningless because the entire file
-    // is pre-loaded into pb_queue at startup — without this gate, the
+    // is pre-loaded into pb_queue at startup -- without this gate, the
     // catchup loop drains the whole match at unbounded rate and battle
     // visibly fast-forwards. We always run at 1 frame per outer tick
     // instead, matching live-pace 100fps playback. (Offline-replay env-var
-    // detection is hoisted to the top of RunSpectatorTick — same cached
+    // detection is hoisted to the top of RunSpectatorTick -- same cached
     // value is reused here.)
     static bool s_initial_catchup_done   = false;
     static bool s_initial_catchup_active = false;
     if (s_offline_replay_env_active) {
-        // Permanent disable — never engage catchup for offline replay.
+        // Permanent disable -- never engage catchup for offline replay.
         s_initial_catchup_done = true;
         s_initial_catchup_active = false;
     }
 
     // CSS catchup is now allowed. Earlier we suppressed it because catchup
     // ran PGI+UG without render, and CSS character-preview state is heavily
-    // render-RNG dependent (cursor flicker, palette interp) — diverging there
+    // render-RNG dependent (cursor flicker, palette interp) -- diverging there
     // bled into battle as mirrored-character desync. Now that render fires
     // inside the catchup loop alongside sim, RNG stays locked to host and
     // CSS can drain like any other phase. The 250ms burst cap still bounds
@@ -582,8 +654,8 @@ void RunSpectatorTick() {
 
     // Initial catchup state machine. Engages once when the queue first
     // exceeds the lag target (typically right after JOIN_ACK + backfill
-    // replay), stays engaged across MANY outer ticks — bounded per-tick by
-    // CATCHUP_MAX_BURST_MS so we yield between bursts — until the queue
+    // replay), stays engaged across MANY outer ticks -- bounded per-tick by
+    // CATCHUP_MAX_BURST_MS so we yield between bursts -- until the queue
     // actually drops to the live edge. Then disengages permanently for
     // this session: later jitter or packet-loss accumulation no longer
     // re-triggers a catchup burst (no jarring superspeed snap-to-live).
@@ -620,14 +692,14 @@ void RunSpectatorTick() {
     // NEXT battle hundreds of frames behind. Engaging during CSS keeps
     // the spec close to live without disrupting the in-battle viewing
     // experience. (Render is gated on g_spectator_catchup so cursor
-    // animations still draw — see RenderFrameWithSnapshot in the loop.)
+    // animations still draw -- see RenderFrameWithSnapshot in the loop.)
     const uint32_t live_game_mode    = *(uint32_t*)FM2K::ADDR_GAME_MODE;
     // NO turbo at CSS, ever: hover-triggered .player loads are real
     // deterministic sim work (100-500ms of CPU each) that the host paid
-    // at human pace -- any multi-pop burst stalls into a slideshow. CSS
-    // drains at a smooth 2x via the steady-state gentle drain; residual
-    // backlog clears in battle where frames cost ~0.1ms.
-    const bool needs_css_catchup     = false;
+    // at human pace -- any multi-pop burst stalls into a slideshow. The
+    // old `needs_css_catchup = false` placeholder is gone; the same policy
+    // is now expressed once, as the mode gate on the sustained drain below.
+    // Residual CSS backlog clears in battle where frames cost ~0.1ms.
     // Emergency battle drain: entering battle hundreds of frames behind
     // previously had NO recovery path -- lag compounded into a perceived
     // hang. Battle frames are cheap; turbo to the live band. NEVER for
@@ -639,19 +711,105 @@ void RunSpectatorTick() {
     const bool needs_battle_emergency = !s_offline_replay_env_active &&
                                         (live_game_mode >= 3000u) &&
                                         qd > SpectatorTargetDelayFrames() + 600;
-    // Render parity is required during catchup — every phase. Render-side
+    // Render parity is required during catchup -- every phase. Render-side
     // game_rand mutations (ProcessShakeEffect mode 4, ProcessColorInterpolation
     // mode 3, particle FX) run on the host once per simulated frame. If the
     // spectator's catchup loop runs PGI+UG N times but renders only once per
     // outer tick, the host advances the RNG by N renders' worth while we
     // advance by 1, and state diverges in proportion to catchup speedup.
     // Symptom: F12-fast-forward in battle desynced HP/positions/scripts even
-    // with PIN_RNG synced — render mutations had been silently dropped for
+    // with PIN_RNG synced -- render mutations had been silently dropped for
     // 50+ catchup-loop iterations. Render in the loop costs more GPU but
     // keeps RNG locked to host across CSS, battle, and inter-match drain.
     g_spectator_catchup = needs_initial_catchup || needs_always_catchup ||
-                          needs_user_ff       || needs_css_catchup ||
-                          needs_battle_emergency;
+                          needs_user_ff       || needs_battle_emergency;
+
+    // ---- SUSTAINED OVERSHOOT DRAIN (gentle; NOT the catchup turbo) --------
+    // Steady state below is exactly 1x wall clock, so a viewer that ends up N
+    // frames past its delay bank stays N frames past it for the whole session.
+    // Reachable three ways, all observed: the one-shot initial catchup latching
+    // done on a transient dip mid-backfill; an arrival burst that the 1x playout
+    // can never bleed; and the adaptive bank drifting DOWN at 10 frames/s after
+    // a calm patch (spec_playback_state.cpp's shrink comment already assumes a
+    // "gentle drain bleeds the excess cushion as the target falls" -- this is
+    // that drain, which did not actually exist). Before this, the only drains
+    // left after the one-shot latched were battle-emergency at target+600, F12,
+    // and FM2K_SPECTATOR_ALWAYS_CATCHUP.
+    //
+    // Deliberately NOT routed through g_spectator_catchup: that flag mutes
+    // audio (hooks_render.cpp) and suppresses the silence failover
+    // (spec_health.cpp), neither of which may be disabled for the many seconds
+    // a gentle drain runs. Instead it is a small multiplier on the steady-state
+    // wall-clock accumulator -- bounded by real time, still one render per outer
+    // tick, still hard-capped at 4 frames/tick, so it can never fast-forward.
+    //
+    // LOSS ABSORPTION IS PRESERVED BY CONSTRUCTION: the drain's floor IS
+    // SpectatorTargetDelayFrames(). The adaptive bank grows INSTANTLY when
+    // admission gaps grow, so a lossy link raises the target, the overshoot
+    // disappears and the drain disengages within a tick. It only ever bleeds
+    // depth the bank itself has stopped asking for.
+    //
+    // (Considered: the netplay lesson that catch-up fights gekko's pacing, and
+    // the resulting revert. It does not transfer -- the spectator sim is not
+    // gekko-paced, it is a jitter-buffered player draining a one-way stream, so
+    // there is no controller to fight. What it DOES have to not fight is the
+    // adaptive bank, which is why the floor is the bank and never the live edge.)
+    double steady_rate = 1.0;
+    {
+        constexpr uint64_t kDrainSustainMs = 3000;  // overshoot must HOLD
+        constexpr double   kDrainRate      = 1.25;  // +25% == 25 frames/s bleed
+        static bool     s_drain_active    = false;
+        static uint64_t s_overshoot_since = 0;
+        const size_t   tgt = SpectatorTargetDelayFrames();
+        // Relative deadband: a big bank means a link whose queue legitimately
+        // swings by a big ABSOLUTE number of frames, where a fixed threshold
+        // would chatter. Floored at 50 so a small bank still has a real
+        // deadband. Engage is sustained (kDrainSustainMs of continuous
+        // overshoot, so a single-tick burst can never arm it); release is at
+        // the target itself, giving margin+ frames of hysteresis in between.
+        const size_t margin = (tgt / 4 > 50) ? tgt / 4 : 50;
+        const uint64_t dnow = GetTickCount64();
+        if (qd > tgt + margin) {
+            if (s_overshoot_since == 0) s_overshoot_since = dnow;
+        } else {
+            s_overshoot_since = 0;
+        }
+        if (!s_drain_active) {
+            if (s_overshoot_since != 0 &&
+                dnow - s_overshoot_since >= kDrainSustainMs) {
+                s_drain_active = true;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "[SPEC-DRAIN] engaged: q=%zu held above bank+%zu for %llums "
+                    "-- gentle %.2fx playout until q<=%zu",
+                    qd, margin, (unsigned long long)kDrainSustainMs,
+                    kDrainRate, tgt);
+            }
+        } else if (qd <= tgt) {
+            s_drain_active = false;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "[SPEC-DRAIN] released: q=%zu back at the bank (%zu) "
+                "-- 1x wall clock resumed", qd, tgt);
+        }
+        // Where the drain may act. mode >= 3000 (battle/results) only: that is
+        // where frames cost ~0.1ms. CSS stays 1x forever for the same reason
+        // the CSS turbo was hardwired off -- a hover-triggered .player load is
+        // 100-500ms of real sim work and any speed-up there is a slideshow.
+        // Also never during a SEAM/PINNING walk: those pops are SYNTHETIC and
+        // consume nothing from the queue, so "draining" would only jab the
+        // results screen faster (see the bounded seam walk in spec_playback).
+        const bool in_boundary_walk = SpectatorNode_InBoundary();
+        const bool drain_ok = !s_offline_replay_env_active &&
+                              !in_boundary_walk &&
+                              live_game_mode >= 3000u;
+        // stream_over bypasses the PHASE gate (the host is gone; finishing what
+        // we hold is the only remaining job, and a fast-forwarded tail beats
+        // being cut off mid-match) but keeps the boundary gate for the same
+        // reason drain_ok has it.
+        const bool tail_drain = stream_over && !in_boundary_walk && qd > 0;
+        if ((s_drain_active && drain_ok) || tail_drain) {
+            steady_rate = kDrainRate;
+        }
+    }
 
     const uint64_t catchup_start_ms = GetTickCount64();
     uint32_t catchup_frames = 0;
@@ -678,7 +836,7 @@ void RunSpectatorTick() {
             return;  // catchup-final tick already sim'd + rendered
         }
         if (GetTickCount64() - catchup_start_ms >= CATCHUP_MAX_BURST_MS) {
-            // Bounded — yield to the outer tick. Catchup re-engages next
+            // Bounded -- yield to the outer tick. Catchup re-engages next
             // tick if we're still over the lag target. We've already
             // rendered this iteration, so return without the trailing
             // steady-state sim+render.
@@ -704,7 +862,11 @@ void RunSpectatorTick() {
         static uint64_t s_last_step_ms = 0;
         const uint64_t now_ms = GetTickCount64();
         if (s_last_step_ms != 0) {
-            double due = (double)(now_ms - s_last_step_ms) / 10.0;
+            // steady_rate is 1.0 unless the sustained overshoot drain (or the
+            // end-of-stream drain) is engaged -- see the [SPEC-DRAIN] block
+            // above. Applied BEFORE the cap so the "never a jarring turbo"
+            // bound stays exactly 4 frames per outer tick either way.
+            double due = (double)(now_ms - s_last_step_ms) / 10.0 * steady_rate;
             if (due > 4.0) due = 4.0;   // hard cap: never a jarring turbo
             g_spec_steady_accum += due;
             if (g_spec_steady_accum > 4.0) g_spec_steady_accum = 4.0;
@@ -727,16 +889,16 @@ void RunSpectatorTick() {
         return;
     }
     // FIXED-TIMESTEP CATCH-UP (2026-07-06). The outer tick is paced to 10ms
-    // (100fps) via SleepToTarget, but under load — RC retransmit/FEC + render
-    // overrunning 10ms at 20% loss — a tick takes ~12-14ms, so the effective
+    // (100fps) via SleepToTarget, but under load -- RC retransmit/FEC + render
+    // overrunning 10ms at 20% loss -- a tick takes ~12-14ms, so the effective
     // advance rate falls BELOW the host's 100fps production (measured ~70-90
     // pops/s) and the spectator drowns with no recovery. SleepToTarget can only
     // pad a fast tick UP; it can't speed a slow one. Fix: advance on the WALL
-    // CLOCK, not 1-per-tick — if this tick took N×10ms, advance N frames so the
+    // CLOCK, not 1-per-tick -- if this tick took N×10ms, advance N frames so the
     // effective playout stays locked to 100fps and can't fall behind. Fractional
     // accumulator; the extra is CAPPED (never a turbo) and stops on underrun
     // (qd==0) so it can't over-drain. Offline replay stays 1:1 (whole file
-    // queued at boot). This is the missing symmetric speed-up — steady, invisible,
+    // queued at boot). This is the missing symmetric speed-up -- steady, invisible,
     // and keyed on the RIGHT signal (wall-clock deficit), not queue depth.
     RenderFrameWithSnapshot();
 }

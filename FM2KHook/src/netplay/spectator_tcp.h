@@ -1,4 +1,4 @@
-// SpectatorTCP — TCP transport for the spectator INPUT_BATCH stream.
+// SpectatorTCP -- TCP transport for the spectator INPUT_BATCH stream.
 //
 // Why TCP for spectators: under packet loss / high RTT our hand-rolled UDP
 // recovery (REDUNDANCY_WINDOW + INPUT_REQUEST + on-gap retransmit) was a
@@ -19,15 +19,15 @@
 //   - Spectator → sub-spectator daisy-chain relay (rare; v1 keeps UDP).
 //
 // What moves to TCP (this module):
-//   - INPUT_BATCH     — host → subscriber per-frame stream.
-//   - INITIAL_MATCH   — host → subscriber match metadata.
-//   - MATCH_END       — host → subscriber session terminator.
+//   - INPUT_BATCH     -- host → subscriber per-frame stream.
+//   - INITIAL_MATCH   -- host → subscriber match metadata.
+//   - MATCH_END       -- host → subscriber session terminator.
 //
 // Wire framing is unchanged: 10-byte SpecDataHeader followed by payload
 // of size (header.frame_count * 4) for INPUT_BATCH, 96 bytes for
 // INITIAL_MATCH, 0 bytes for MATCH_END. TCP is a stream, so receivers
 // MUST maintain a per-connection partial-read buffer that tolerates
-// being interrupted between bytes — see SpectatorTCP_PollIncoming /
+// being interrupted between bytes -- see SpectatorTCP_PollIncoming /
 // PollUpstream impls.
 
 #pragma once
@@ -44,7 +44,7 @@ namespace SpectatorTCP {
 
 // Bring up the TCP listener on `bind_port`. If port==0, the OS picks an
 // ephemeral port; query the actual bound port via GetListenPort. Idempotent
-// — calling a second time is a no-op (returns true if listener is alive).
+// -- calling a second time is a no-op (returns true if listener is alive).
 // Returns false on socket-create / bind failure (port collision, etc).
 bool StartListener(uint16_t bind_port);
 
@@ -67,7 +67,7 @@ void PollIncoming();
 
 // Pair an accepted-but-unidentified client with a subscriber whose
 // SPEC_JOIN_REQ arrived over UDP. Called from SpectatorNode_HandleJoinReq
-// once the JOIN_ACK has been sent — the spectator will TCP-connect right
+// once the JOIN_ACK has been sent -- the spectator will TCP-connect right
 // after, and the next PollAccepts sees that connect. Match by source IP
 // (the same host:port the JOIN_REQ came from); the spectator-side TCP
 // client will use the same source IP, but a different ephemeral source
@@ -85,7 +85,7 @@ bool RegisterAcceptedClient(const sockaddr_in& sub_addr);
 // the bytes are queued in the per-connection out buffer and drained
 // later in PollIncoming.
 //
-// Skips subscribers whose backfill hasn't completed yet — see
+// Skips subscribers whose backfill hasn't completed yet -- see
 // MarkBackfillComplete. This avoids the race where a live FlushBatch
 // reaches a freshly-bound spectator before its backfill bytes anchor
 // next_expected_frame at session start.
@@ -141,7 +141,7 @@ bool IsUpstreamConnected();
 // listener's port (g_listen_port) so the kernel-NAT registers a
 // (listener_port -> hub:tcp_stun) outbound flow, the hub observes the
 // external mapping, and replies with the (ip, port) it saw. We block
-// up to ~500 ms for the round-trip — runs once at hook init, before
+// up to ~500 ms for the round-trip -- runs once at hook init, before
 // the spectator's first JOIN_REQ goes out, so the right external port
 // is known by the time the launcher's `tcp_addr` message reaches the
 // hub. Stashes results in g_external_tcp_{ip_be,port}; query via

@@ -76,13 +76,13 @@ enum class CtrlMsg : uint8_t {
     BATTLE_END,         // Match over
 
     // Chat (peer-to-peer text over the control channel). Short messages only
-    // — full chat with history / lobby goes over the lobby TCP channel once
+    // -- full chat with history / lobby goes over the lobby TCP channel once
     // the matchmaking server lands (phase 2+ of matchmaking design).
     CHAT,
 
     // Spectator tree coordination (see docs/FM2K_Spectator_Design.md).
     // Bulk stream data (INITIAL_MATCH / INPUT_BATCH / MATCH_END / CSS_UPDATE)
-    // goes over a separate 0xCE-prefixed datagram path — too variable-size
+    // goes over a separate 0xCE-prefixed datagram path -- too variable-size
     // for the fixed CtrlPacket. These CtrlMsg values cover control-plane
     // coordination only.
     SPEC_JOIN_REQ,      // Viewer asks upstream node to be a subscriber
@@ -91,7 +91,7 @@ enum class CtrlMsg : uint8_t {
     SPEC_HEARTBEAT,     // 1s keepalive both directions
     SPEC_LEAVE,         // Clean disconnect from subscriber tree
 
-    // Host config snapshot — host pushes its match-config (selected stage,
+    // Host config snapshot -- host pushes its match-config (selected stage,
     // round count, time limit, game speed, SOCD mode) to client so both
     // peers run with identical settings without the user having to mirror
     // them by hand. Sent at HELLO_ACK and again whenever the host UI
@@ -99,14 +99,14 @@ enum class CtrlMsg : uint8_t {
     // mapped fields and adopts the SOCD mode locally.
     HOST_CONFIG,
 
-    // DELAY_PROPOSAL — each peer broadcasts its own input-delay
+    // DELAY_PROPOSAL -- each peer broadcasts its own input-delay
     // candidate over the control channel through CSS so both sides
     // converge on max(mine, theirs) at battle start. Without it peers
     // computed delay independently off their own RTT samples and ended
     // up asymmetric on jittery links (#24).
     DELAY_PROPOSAL,
 
-    // SPEC_SESSION_END — host is exiting cleanly (player quit / left the match).
+    // SPEC_SESSION_END -- host is exiting cleanly (player quit / left the match).
     // Broadcast to all subscribers so they STOP, instead of treating the dropped
     // stream as a transient glitch and storm-reconnecting to a now-dead host.
     // Appended at the end so existing wire values don't renumber; older peers
@@ -225,21 +225,21 @@ struct CtrlPacket {
             uint32_t frame;
         } ping;
 
-        // CHAT data — short messages (gg, wp, ez, etc.). Longer chat goes
+        // CHAT data -- short messages (gg, wp, ez, etc.). Longer chat goes
         // over the lobby TCP channel. Null-terminated within the 24 bytes.
         struct {
             char text[24];
         } chat;
 
-        // SPEC_JOIN_REDIRECT — upstream is full, try this peer instead.
+        // SPEC_JOIN_REDIRECT -- upstream is full, try this peer instead.
         struct {
             uint32_t redirect_ip;    // IPv4 in network byte order
             uint16_t redirect_port;  // host byte order
         } spec_redirect;
 
-        // SPEC_JOIN_ACK — host tells joining spectator which session kind
+        // SPEC_JOIN_ACK -- host tells joining spectator which session kind
         // to mirror (CSS=1, BATTLE=2, NONE=0=between-matches). Plus the
-        // host's TCP listener port — spectator MUST dial it to receive
+        // host's TCP listener port -- spectator MUST dial it to receive
         // the INPUT_BATCH / INITIAL_MATCH / MATCH_END stream. UDP carries
         // only handshake + heartbeat; TCP carries the bulk stream.
         //
@@ -264,7 +264,7 @@ struct CtrlPacket {
             uint8_t  host_p2_color;
         } spec_join_ack;
 
-        // SPEC_JOIN_REQ — viewer's mode preference.
+        // SPEC_JOIN_REQ -- viewer's mode preference.
         //   mode = 0 (FULL_SESSION):  legacy default, replay from session
         //                             frame 0 (streamer / archivist mode).
         //   mode = 1 (CURRENT_MATCH): CCCaster-style snapshot join, host
@@ -272,13 +272,13 @@ struct CtrlPacket {
         //                             so the spectator skips all previous
         //                             matches. Default for live viewers.
         // Older spectator builds send this struct as zeros, which lands
-        // on FULL_SESSION — the back-compat path.
+        // on FULL_SESSION -- the back-compat path.
         struct {
             uint8_t mode;          // SpecJoinMode value
             uint8_t reserved[7];
         } spec_join_req;
 
-        // HOST_CONFIG — host's authoritative match settings, mirrored to
+        // HOST_CONFIG -- host's authoritative match settings, mirrored to
         // client + spectators so everyone runs with identical rules.
         // Address-mapped fields are written via direct memcpy to the
         // documented FM2K addresses inside the receiver.
@@ -296,7 +296,7 @@ struct CtrlPacket {
             uint8_t  reserved[3];
         } host_config;
 
-        // DELAY_PROPOSAL — this peer's input-delay candidate. See the
+        // DELAY_PROPOSAL -- this peer's input-delay candidate. See the
         // CtrlMsg::DELAY_PROPOSAL comment. mode is informational (which
         // formula produced the number); the receiver only needs delay.
         struct {
@@ -350,7 +350,7 @@ constexpr uint8_t NETPLAY_PROTOCOL_VERSION = 1;
 
 // Timeouts (in milliseconds)
 constexpr uint32_t CONNECT_TIMEOUT_MS = 5000;       // 5 seconds to connect
-// Heartbeat cadence — tuned 2026-05-05 to balance "fast detection on
+// Heartbeat cadence -- tuned 2026-05-05 to balance "fast detection on
 // real DC" vs "ride out lag spikes / Win32 modal title-drag pauses".
 // 250ms ping × 6 missed = 1500ms tolerance. The hook also installs a
 // WM_TIMER pump in imgui_overlay's WndProc that keeps ControlChannel_

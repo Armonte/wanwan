@@ -12,7 +12,7 @@
 // --- Per-region save sub-profiler (FM2K_PERF_PROFILE=1) ------------------
 // Attributes per-save cost to specific memcpy blocks. Same env gate as the
 // netplay-side [PERF] line. Reports avg microsec/region every 500 saves.
-// MEASURED 2026-07-06 (1v1, ~active slots): ~105us/save total —
+// MEASURED 2026-07-06 (1v1, ~active slots): ~105us/save total --
 // afterimage=37 char=27 obj=22 sound=10 (+ throttled fullcrc ~1/sec 180us).
 // The active-slot char/obj optimizations already cut this ~15x from the
 // original full-copy cost; per-frame save is ~1% of the 10ms budget, not a
@@ -62,7 +62,7 @@ bool SaveState_Save(int frame) {
     }
 
     // Initial-sync step: SaveState_DoInitialSync() now fires eagerly from
-    // Netplay_Start*Battle BEFORE the first AdvEvent — see the comment
+    // Netplay_Start*Battle BEFORE the first AdvEvent -- see the comment
     // at SaveState_DoInitialSync() below for the full reasoning. The
     // lazy reset that used to fire here (gated on g_initial_sync_done)
     // clobbered the first frame's PGI work and mis-aligned host's
@@ -90,7 +90,7 @@ bool SaveState_Save(int frame) {
 
     // Track the slot for SaveState_PatchPostRenderRng. Set BEFORE we mutate
     // the slot so a same-frame re-save (replay save) still reaches the same
-    // slot — both forward and replay back-patch the same address.
+    // slot -- both forward and replay back-patch the same address.
     g_last_saved_slot  = slot;
     g_last_saved_frame = frame;
 
@@ -103,7 +103,7 @@ bool SaveState_Save(int frame) {
 
     // Byte-level first-diff detector + side-file writer. MUST run BEFORE the
     // memcpy block below overwrites state->object_pool / afterimage_pool /
-    // char_dynamic with live (replay) bytes — otherwise fwd and cur become
+    // char_dynamic with live (replay) bytes -- otherwise fwd and cur become
     // identical and the scan reports nothing. On a replay save,
     // state->object_pool still holds the FORWARD bytes from the first save.
     //
@@ -114,7 +114,7 @@ bool SaveState_Save(int frame) {
     // Throttle the entire replay-diff scan to run at most once per second.
     // Without the throttle every replay save (100 Hz) computed Fletcher32
     // over ~1 MB of memory (object_pool + afterimage_pool + 8 × char_slot)
-    // just to produce diagnostics — dominant CPU cost in stress mode.
+    // just to produce diagnostics -- dominant CPU cost in stress mode.
     // Gekko's own desync detection (via gameplay_fingerprint as the save
     // checksum) is unaffected; this only gates the per-byte localization
     // scan used for post-desync investigation.
@@ -127,7 +127,7 @@ bool SaveState_Save(int frame) {
         const auto& fwd_crcs = state->saved_region_crcs;
 
         // Compute current (replay-side) region CRCs inline so we can gate the
-        // diff log on actual divergence. Per-region only here — full
+        // diff log on actual divergence. Per-region only here -- full
         // this_save_crcs is built AFTER the memcpy below.
         uint32_t cur_obj_crc = Fletcher32((uint8_t*)ADDR_OBJECT_POOL,
                                           SIZE_OBJECT_POOL);
@@ -208,7 +208,7 @@ bool SaveState_Save(int frame) {
             }
         }
 
-        // ObjectPool byte scan — pinpoints first divergent object + field.
+        // ObjectPool byte scan -- pinpoints first divergent object + field.
         if (fwd_crcs.object_pool != cur_obj_crc) {
             const uint8_t* fwd = state->object_pool;
             const uint8_t* cur = (const uint8_t*)ADDR_OBJECT_POOL;
@@ -217,7 +217,7 @@ bool SaveState_Save(int frame) {
                     int obj_idx = (int)(i / OBJECT_POOL_STRIDE);
                     int field_off = (int)(i % OBJECT_POOL_STRIDE);
                     uintptr_t obj_base = ADDR_OBJECT_POOL + obj_idx * OBJECT_POOL_STRIDE;
-                    // SDL console log disabled — file output (REPLAY_DIFF_LOG)
+                    // SDL console log disabled -- file output (REPLAY_DIFF_LOG)
                     // captures the same data for post-mortem. Keep the flag
                     // variable alive for grep-based re-enable.
                     if (false && should_sdl_log) SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
@@ -256,14 +256,14 @@ bool SaveState_Save(int frame) {
         }
         // AfterimagePool byte scan. Compare against s_ai_cmp_buf (live memory
         // with g_last_frame_time already zeroed to match the save buffer),
-        // NOT raw live memory — otherwise every entry reports a phantom
+        // NOT raw live memory -- otherwise every entry reports a phantom
         // diff at +0x4A4 from our deliberate save-time exclusion.
         if (fwd_crcs.afterimage_pool != cur_ai_crc) {
             const uint8_t* fwd = state->afterimage_pool;
             const uint8_t* cur = s_ai_cmp_buf;
             for (size_t i = 0; i < WaveCAddrs::AFTERIMAGE_POOL_SZ; i++) {
                 if (fwd[i] != cur[i]) {
-                    // SDL console log disabled — file output (REPLAY_DIFF_LOG)
+                    // SDL console log disabled -- file output (REPLAY_DIFF_LOG)
                     // captures the same data for post-mortem. Keep the flag
                     // variable alive for grep-based re-enable.
                     if (false && should_sdl_log) SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
@@ -294,7 +294,7 @@ bool SaveState_Save(int frame) {
                 bool found = false;
                 for (size_t i = 0; i < CHAR_SLOT_DYNAMIC_SIZE; i++) {
                     if (fwd[i] != cur[i]) {
-                        // SDL console log disabled — file output (REPLAY_DIFF_LOG)
+                        // SDL console log disabled -- file output (REPLAY_DIFF_LOG)
                     // captures the same data for post-mortem. Keep the flag
                     // variable alive for grep-based re-enable.
                     if (false && should_sdl_log) SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
@@ -314,7 +314,7 @@ bool SaveState_Save(int frame) {
             }
         }
 
-        if (df) fclose(df);  // explicit flush — survives TerminateProcess
+        if (df) fclose(df);  // explicit flush -- survives TerminateProcess
     }
 
     state->frame_number = frame;
@@ -329,12 +329,12 @@ bool SaveState_Save(int frame) {
 
     // Render frame counter: ZERO the saved copy (deterministic CRC), DO NOT
     // capture live state. Rationale identical to the shake_effects carve-out
-    // — render_frame_counter is incremented at the end of every render_game
+    // -- render_frame_counter is incremented at the end of every render_game
     // call and is the basis for ProcessShakeEffect's per-frame parity-flip
     // (negate offset on odd renders). If we save+restore the live counter,
     // GekkoNet's per-frame Save+Load cycle freezes it at whatever value Save
     // captured, the parity stops alternating, and screen shake only shifts
-    // one direction — making the stage look permanently offset. See the
+    // one direction -- making the stage look permanently offset. See the
     // matching carve-outs for shake_effects below.
     state->render_frame_counter = 0;
 
@@ -369,7 +369,7 @@ bool SaveState_Save(int frame) {
     // Object pool: active-slot-only save. First byte of each 382 B slot is
     // the "active" flag (0 = slot empty). In 1v1 typically <20 of 1023 slots
     // are live; saving 391 KB every frame was dominating memcpy cost. Skip
-    // inactive slots entirely — only their first byte is written (=0), which
+    // inactive slots entirely -- only their first byte is written (=0), which
     // tells the Load path "clear this slot".
     //
     //   Typical cost before: 391 KB memcpy per save.
@@ -404,18 +404,18 @@ bool SaveState_Save(int frame) {
     memcpy(state->effect_sys2, (void*)EffectAddrs::EFFECT_SYS2, EffectAddrs::EFFECT_SYS2_SZ);
     // EFFECT_SYS1 (palette-flash-1, 42 B): zero the saved buffer + skip
     // restore on Load. ProcessColorInterpolation (render-side) reads this
-    // every frame and may call game_rand based on its state — and the
+    // every frame and may call game_rand based on its state -- and the
     // timer in update_game_state decrements each frame. For host+replay
     // determinism, BOTH engines need to see the SAME palette state at
     // each render. That happens iff palette evolves continuously through
     // forward sims on both sides (1 decrement per main-loop tick). If we
     // save/restore, host's rollback Load resets palette to pre-render-mod
-    // state while replay keeps accumulating — divergent palette → divergent
+    // state while replay keeps accumulating -- divergent palette → divergent
     // render rng calls → drift. The "skip restore" pattern is the only one
     // that keeps host's many rollbacks aligned with replay's straight
     // forward-only sim. Same logic for shake_effects + pflash2 below.
     std::memset(state->effect_sys1, 0, EffectAddrs::EFFECT_SYS1_SZ);
-    // EFFECT_SYS2 carve-outs (REVERTED back to original — same reasoning
+    // EFFECT_SYS2 carve-outs (REVERTED back to original -- same reasoning
     // as effect_sys1 above):
     //   - 0x00..0x20 (sysvars): KEEP saved
     //   - 0x20..0x4C (palette-flash-2 struct, 44 B at 0x4456D0): ZERO + skip
@@ -439,7 +439,7 @@ bool SaveState_Save(int frame) {
     // ProcessShakeEffect decrements g_shake_effect_*.timer in render. For
     // host (with rollback) and replay (no rollback) to consume the same
     // game_rand calls during render, shake state must evolve naturally
-    // through forward render passes on BOTH sides — saving/restoring on
+    // through forward render passes on BOTH sides -- saving/restoring on
     // rollback would reset host's shake state to a pre-render-mod value
     // each Load, while replay (no rollback) keeps the natural evolution.
     // Divergent shake → divergent render rng → drift.
@@ -450,10 +450,10 @@ bool SaveState_Save(int frame) {
     // IMPORTANT: the "afterimage pool" range 0x447930..0x46F6C0 is a big slice
     // of the data segment that happens to CONTAIN the afterimage buffers but
     // also contains unrelated globals. The only one we've proven harmful for
-    // determinism is `g_last_frame_time @ 0x447DD4` (offset 0x4A4) — written
+    // determinism is `g_last_frame_time @ 0x447DD4` (offset 0x4A4) -- written
     // by main_game_loop's pacing arithmetic (0x405AE9/AFD/BA8/BBB) and by
     // main_window_proc on alt-tab/F4/Alt+Enter (0x40610F/0x4062A5) and by
-    // the menu handler (0x4177BF). None of those writers are sim code —
+    // the menu handler (0x4177BF). None of those writers are sim code --
     // nothing gameplay-visible reads from `g_last_frame_time`. We zero the
     // saved copy at that offset so forward- and replay-sim both produce the
     // same saved bytes there, killing the f=9 AfterimagePool +0x4A4 diff.
@@ -464,7 +464,7 @@ bool SaveState_Save(int frame) {
     constexpr size_t G_LAST_FRAME_TIME_OFFSET = 0x447DD4 - WaveCAddrs::AFTERIMAGE_POOL;  // 0x4A4
     *(uint32_t*)(state->afterimage_pool + G_LAST_FRAME_TIME_OFFSET) = 0;
     // Shake region overlap: g_shake_effect_1/_2 (40 bytes at 0x447DA9) live
-    // INSIDE the afterimage_pool slice. Zero them in the saved copy too —
+    // INSIDE the afterimage_pool slice. Zero them in the saved copy too --
     // mirror of the dedicated state->shake_effects treatment above. Without
     // this, the next Restore would re-inject the post-[EB] timer values via
     // the afterimage_pool path (defeating the dedicated-slot fix).
@@ -485,11 +485,11 @@ bool SaveState_Save(int frame) {
     memcpy(state->object_node_pool,        (void*)WaveCAddrs::OBJECT_NODE_POOL,     WaveCAddrs::OBJECT_NODE_POOL_SZ);
 
     // Mike Z sound-rollback: capture per-channel "desired" state. This is NOT
-    // DSound hardware state — it's the sim's record of what each channel
+    // DSound hardware state -- it's the sim's record of what each channel
     // should be playing. Actual DSound plays are driven post-advance by the
     // sync step; hardware state is deliberately not rolled back.
     { SScope _s(&g_ss_sound); SoundRollback::CaptureDesired(state->sound_desired); }
-    // BGM (MIDI/CD/stop) desired — single global stream, same rationale.
+    // BGM (MIDI/CD/stop) desired -- single global stream, same rationale.
     SoundRollback::CaptureBgm(&state->bgm_desired);
 
     // Checksum path split for perf:
@@ -507,7 +507,7 @@ bool SaveState_Save(int frame) {
     DWORD full_crc_now = GetTickCount();
     // FM2K_FULL_CRCS=1 forces the expensive per-region CRC on EVERY save
     // event (vs the default 1/sec throttle). For autonomous Phase F
-    // determinism diagnostics — without this, the desync dump's
+    // determinism diagnostics -- without this, the desync dump's
     // forward-vs-replay per-region diff shows "0x00000000 MATCH" for
     // most regions (because they weren't computed on that save event)
     // and we can't attribute the divergence to a specific region.
@@ -531,8 +531,8 @@ bool SaveState_Save(int frame) {
     //
     // PERF: The cheap fingerprint fields (rng/game_state/object_pool/etc) are
     // populated by SaveState_CalculateFingerprint above and just copied here.
-    // The EXPENSIVE Fletcher32 calls — afterimage_pool (~159 KB), list_heads
-    // (1 KB), node_pool (8 KB) — are gated on full_crcs_due so they only fire
+    // The EXPENSIVE Fletcher32 calls -- afterimage_pool (~159 KB), list_heads
+    // (1 KB), node_pool (8 KB) -- are gated on full_crcs_due so they only fire
     // once per second instead of every save. During an 8-frame rollback the
     // host fires up to 16 saves in a single outer iteration; without this gate
     // those three hashes alone burned ~5.4ms of the 10ms frame budget,
@@ -556,7 +556,7 @@ bool SaveState_Save(int frame) {
             this_save_crcs.shake_effects          = rc.shake_effects;
             this_save_crcs.combined               = rc.combined;
             // Hash the SAVED copy of afterimage_pool (with g_last_frame_time zeroed
-            // above), NOT live memory — this is what makes the exclusion work
+            // above), NOT live memory -- this is what makes the exclusion work
             // across forward- and replay-sim.
             this_save_crcs.afterimage_pool        = Fletcher32(state->afterimage_pool,                     WaveCAddrs::AFTERIMAGE_POOL_SZ);
             this_save_crcs.list_heads_tails       = Fletcher32((uint8_t*)WaveCAddrs::OBJECT_LIST_HEADS,    WaveCAddrs::OBJECT_LIST_HEADS_SZ);
@@ -599,7 +599,7 @@ bool SaveState_Save(int frame) {
     //   line every save at 100 fps tanks framerate and is user-visible.
     //   The ring is flushed to FM2K_P<N>_rngtrace.csv when SaveState_FlushRngTrace
     //   is called (on desync detection or session end). Non-rollback saves
-    //   only — replay ticks are not part of the authoritative per-frame trace.
+    //   only -- replay ticks are not part of the authoritative per-frame trace.
     static int save_log_count = 0;
     if (save_log_count++ < 10) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,

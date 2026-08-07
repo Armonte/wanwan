@@ -1,4 +1,4 @@
-// reliable_channel_net.h — control-channel integration for the ReliableChannel
+// reliable_channel_net.h -- control-channel integration for the ReliableChannel
 // layer. Address-keyed endpoint registry: one reliable.io endpoint PER peer
 // address, so it serves both the 1:1 player channel and the 1:N host->spectator
 // stream over the single shared UDP socket. See reliable_channel_net.cpp.
@@ -26,7 +26,7 @@ enum {
 enum {
     RC_CHAN_SPEC           = 1,  // host->spectator LIVE EVENT_BATCH stream (latency-critical, ordered)
     RC_CHAN_SPEC_SNAPSHOT  = 2,  // host->spectator backfill EVENT_BATCH + OP_BASELINE (ordered bulk)
-    RC_CHAN_SPEC_BLOB      = 3,  // host->spectator SNAPSHOT_BEGIN/CHUNK/END — UNORDERED, offset-reassembled
+    RC_CHAN_SPEC_BLOB      = 3,  // host->spectator SNAPSHOT_BEGIN/CHUNK/END -- UNORDERED, offset-reassembled
                                  // (a lost chunk must not head-of-line-block the other 65 chunks)
 };
 

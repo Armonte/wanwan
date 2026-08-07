@@ -18,6 +18,7 @@ add_executable(fm2k_tests
     test_spectator_protocol.cpp
     test_spectator_protocol_sessionfile.cpp
     test_spectator_queue.cpp
+    test_snapshot_coverage.cpp
 )
 
 target_include_directories(fm2k_tests PRIVATE
@@ -44,6 +45,7 @@ target_compile_options(delay_math_test PRIVATE -Wall -Wextra -Wpedantic)
 add_executable(reliable_channel_test
     ../FM2KHook/src/netplay/reliable_channel_test.cpp
     ../FM2KHook/src/netplay/reliable_channel.cpp
+    ../FM2KHook/src/netplay/reliable_channel_fec.cpp
     ../vendored/reliable/reliable.c
 )
 target_compile_definitions(reliable_channel_test PRIVATE RC_STANDALONE_TEST)

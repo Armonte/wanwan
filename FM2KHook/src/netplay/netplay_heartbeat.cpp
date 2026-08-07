@@ -22,7 +22,7 @@
 #include <string>
 
 // ============================================================================
-// HEARTBEAT — [BEAT] line every ~10s
+// HEARTBEAT -- [BEAT] line every ~10s
 // ============================================================================
 // Single INFO line per ~10s of battle wall-clock. Echoes the values support
 // staff would otherwise have to dig the entire log for: version, game id,

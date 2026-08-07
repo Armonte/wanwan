@@ -54,7 +54,7 @@ uint32_t Netplay_TestBattleSeed() {
 
 bool Netplay_StartBattle() {
     // Tear down the CSS lockstep session before standing up the battle
-    // session. Sequenced so g_session is null between the two — the
+    // session. Sequenced so g_session is null between the two -- the
     // multiplex adapter is shared (session_magic demuxes), but only one
     // session is alive at a time.
     if (g_session && g_session_kind == SessionKind::CSS) {
@@ -70,7 +70,7 @@ bool Netplay_StartBattle() {
     // while the CSS-side state is still live. Held in shared mem so
     // the launcher can include them in the hub `match_result` payload
     // after Netplay_EndBattle wipes CSS. Addresses come from
-    // FM2K_Integration.h (launcher-side header) — inlined here because
+    // FM2K_Integration.h (launcher-side header) -- inlined here because
     // the hook DLL has its own minimal FM2K:: namespace in globals.h
     // that doesn't pull in the full Integration header.
     //
@@ -225,7 +225,7 @@ bool Netplay_StartBattle() {
     // prediction_window: how far GekkoNet will speculatively rewind
     // before stalling. Default 16 at 100 FPS gives ~160 ms wall-clock
     // budget (matches the GekkoNet OnlineSession reference's 10-frame
-    // budget at 60 FPS). Free CPU at steady state — only costs work
+    // budget at 60 FPS). Free CPU at steady state -- only costs work
     // *during* a recovery from a deep rollback, which is rare.
     //
     // FM2K_PREDICTION_WINDOW env override accepts 0..64. Set 8 to
@@ -256,13 +256,13 @@ bool Netplay_StartBattle() {
     // GekkoNet's spectator pause-buffer (spectator_session.cpp:216-218
     // short-circuits ShouldDelaySpectator). With > 0 the spectator's
     // local sim stays paused until min_received - current >= delay, but
-    // current also advances each tick post-unpause — for low-latency
+    // current also advances each tick post-unpause -- for low-latency
     // LAN/localhost setups the buffer never converges and spectator stays
     // paused forever. Re-enable jitter buffering once we have measured
     // cross-internet ping data.
     config.max_spectators           = 4;
     config.spectator_delay          = 0;
-    // Late-joiner backfill — see CSS-session comment + README.md:36.
+    // Late-joiner backfill -- see CSS-session comment + README.md:36.
     config.input_history_size       = 60000;
     config.input_prediction_window  = prediction_window;
     config.input_size = sizeof(uint16_t);
@@ -317,12 +317,12 @@ bool Netplay_StartBattle() {
     // delay. The catch: that's `1 + runahead` full sim passes per wall-clock
     // frame, ALWAYS (not just on rollback). At 100 FPS the per-frame budget
     // is only 10 ms, and a lot of 2DFM players are on weak hardware where
-    // even plain rollback strains — runahead on top routinely blows the
+    // even plain rollback strains -- runahead on top routinely blows the
     // budget and drops frames. So:
     //
     //   DEFAULT OFF. Runahead is opt-in, not automatic.
     //
-    // It's a latency-feel nicety, not a correctness feature — turning it off
+    // It's a latency-feel nicety, not a correctness feature -- turning it off
     // costs only visible input lag (which the input delay already covers),
     // never desync. F8 toggles it on to `runahead_pref` (= local_delay, the
     // value that exactly cancels the delay's visual lag) for anyone who wants
@@ -356,14 +356,14 @@ bool Netplay_StartBattle() {
     // op corresponds to SaveState_Save's first-call buf_idx + edge state +
     // history-rings reset (savestate.cpp:223-237) which fires when the first
     // GekkoNet AdvanceEvent triggers a Save, not here. We append it now so
-    // it lands BEFORE the first INPUT batch of the match — the spectator
+    // it lands BEFORE the first INPUT batch of the match -- the spectator
     // applies it at the same logical-frame boundary the host clears state at.
     SpectatorNode_AppendResetInputState();
     SpectatorNode_AppendSoundInit();
 
     // Per-battle replay capture is owned by SpectatorNode (v2 .fm2krep
     // file format). The legacy Replay::Replay_BeginRecording call here was
-    // retired in v0.2.27 — its 96-byte ReplayHeader + raw ReplayFrame[]
+    // retired in v0.2.27 -- its 96-byte ReplayHeader + raw ReplayFrame[]
     // body has been a strict subset of the v2 SessionEvent stream since
     // C6 landed. Initial RNG seed + state hash are captured below for
     // SpectatorNode_OnMatchStart, which inlines them into the
@@ -373,7 +373,7 @@ bool Netplay_StartBattle() {
     const uint32_t initial_state_hash =
         SaveState_GetRegionChecksums().gameplay_fingerprint;
 
-    // C7 — emit the host's session_id once at the very first match of the
+    // C7 -- emit the host's session_id once at the very first match of the
     // connection. Generated lazily on first call: high 32 bits = unix epoch
     // seconds (so files sort chronologically + collisions are bounded to
     // intra-second), low 32 bits = a random nonce for uniqueness even within
@@ -390,14 +390,14 @@ bool Netplay_StartBattle() {
     // Notify the spectator tree: start of a new match, push INITIAL_MATCH to
     // any currently-subscribed viewers so they reset and follow this match.
     // C6: chars/stage read from the same addresses SharedMem_PublishMatchChars
-    // / PublishMatchStage above use. Cast to uint8 — char/stage IDs are well
+    // / PublishMatchStage above use. Cast to uint8 -- char/stage IDs are well
     // under 256 (FM2K rosters cap at 50, stages at ~50).
     //
     // Color pick: read from each player's char-slot record at slot+0xE00B
     // (ADDR_CHARSLOT0_COLOR_PICK + CHARSLOT_STRIDE * slot). 1v1 VS mode
     // pins slot[0]=P1, slot[1]=P2 (set by AssignPlayerColor's call site
     // in game_state_manager). v0.2.33 and earlier hardcoded 0 here based
-    // on a misread that FM2K had no palette select — but the bit-mask
+    // on a misread that FM2K had no palette select -- but the bit-mask
     // ladder in AssignPlayerColor maps attack buttons 1..5 to colors
     // 1..5. With 0 in MATCH_START, css_autoconfirm's per-player target
     // bit always fell back to bit 4 (color 0) on replay/spec, so every
@@ -423,7 +423,7 @@ bool Netplay_StartBattle() {
         /*p2_char*/mp2_char, /*p2_color*/mp2_color,
         /*stage_id*/mstage_id);
 
-    // C3.5 — reset the intra-match round counter so the first ROUND_START
+    // C3.5 -- reset the intra-match round counter so the first ROUND_START
     // emitted from vs_round_function lands as round_idx=1.
     extern void RoundEvents_OnMatchStart();
     RoundEvents_OnMatchStart();
@@ -432,7 +432,7 @@ bool Netplay_StartBattle() {
     // CURRENT_MATCH-mode spectator joining mid-set can SaveState_Load
     // directly to this match's start instead of replaying every previous
     // battle. Order matters: must run AFTER OnMatchStart (which appends
-    // the MATCH_START SessionEvent — we want our snapshot's input_frame
+    // the MATCH_START SessionEvent -- we want our snapshot's input_frame
     // anchor to count from after that op) and AFTER the pin/init sites
     // above (snapshot reflects the canonical pristine match-start state).
     SpectatorNode_StashSnapshot();
@@ -456,7 +456,7 @@ bool Netplay_StartBattle() {
     g_last_desync_log_tick = 0;
 
     // Battle session is up. Disarm BATTLE_ENTERING (we're past the signaling
-    // window — any further arrivals are duplicates / late echoes and should
+    // window -- any further arrivals are duplicates / late echoes and should
     // be dropped, otherwise the rate-limited echo path keeps both peers in
     // a forever-ping-pong that competes with GekkoNet's own sync handshake).
     // Arm BATTLE_END for the eventual return-to-CSS swap.
@@ -499,7 +499,7 @@ bool Netplay_StartStressBattle() {
     // through the engine without rollback, diverge from the host's own
     // recorded parity stream. With check_distance=0 the same 1500-frame
     // test passes 100% (all aligned frames identical). Means: SaveState
-    // is missing some piece of state that PGI+UG mutates — after rollback
+    // is missing some piece of state that PGI+UG mutates -- after rollback
     // Load + re-PGI+UG, the post-re-sim state differs from the original
     // forward state, and subsequent forward advances drift from then on.
     //
@@ -531,20 +531,20 @@ bool Netplay_StartStressBattle() {
     // Both actors local. No adapter set -> no network calls.
     //
     // local_delay=0 in stress mode. Real netplay sets delay>=1 to hide
-    // network latency, but stress mode has no peer — there's nothing to
+    // network latency, but stress mode has no peer -- there's nothing to
     // hide. With delay=1, gekko buffers each tick's added input and
     // delivers it on the FOLLOWING confirmed advance, so host's frame K
     // sim consumes autoplay(K-1). The .fm2krep recorder writes INPUT[K] =
     // the autoplay value added on tick K (one-shot per AdvanceEvent
     // capture, not delay-corrected). Replay reads INPUT[K] sequentially
-    // and feeds it to frame K's PGI — so replay's frame K consumes
+    // and feeds it to frame K's PGI -- so replay's frame K consumes
     // autoplay(K) while host's consumed autoplay(K-1). Same value at the
     // INPUT[K] slot, but the engine sim aligns INPUT[K-1] (host) vs
     // INPUT[K] (replay) into "frame K", producing an off-by-one engine
     // input divergence that surfaces around frame 65 (the first frame
     // where the autoplay pattern emits a non-zero p1 value that the
     // motion-check engine cares about). With delay=0, host's frame K
-    // consumes autoplay(K) too — symmetric with replay.
+    // consumes autoplay(K) too -- symmetric with replay.
     for (int i = 0; i < 2; i++) {
         gekko_add_actor(g_session, GekkoLocalPlayer, nullptr);
         gekko_set_local_delay(g_session, i, 0);
@@ -564,8 +564,8 @@ bool Netplay_StartStressBattle() {
     // Emit the same pre-MATCH_START init sequence as real netplay
     // (Netplay_StartBattle): PIN_RNG → RESET_INPUT_STATE → SOUND_INIT.
     // Without these in the recorded slice, the replay-side engine never
-    // gets its rng reset to 0x12345678 — it stays at whatever the C
-    // runtime / boot sequence left there — and the post-sim rng on
+    // gets its rng reset to 0x12345678 -- it stays at whatever the C
+    // runtime / boot sequence left there -- and the post-sim rng on
     // frame 0 diverges from the record (~ that's the literal record vs
     // replay rng split the harness diff caught at frame 0).
     SpectatorNode_AppendPinRng(Netplay_TestBattleSeed());

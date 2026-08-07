@@ -1,4 +1,4 @@
-// upload_queue.cpp — manifest writer used by the hook to flag a session
+// upload_queue.cpp -- manifest writer used by the hook to flag a session
 // for the launcher's upload pipeline. See upload_queue.h for design.
 
 #include "upload_queue.h"
@@ -20,7 +20,7 @@ namespace fm2k::upload_queue {
 
 namespace {
 
-// Resolve <game_dir>/upload_queue/ — sibling of the .exe we're injected
+// Resolve <game_dir>/upload_queue/ -- sibling of the .exe we're injected
 // into. Created lazily on first enqueue. Returns false if the game's
 // directory can't be derived (extremely unlikely outside a unit test).
 bool BuildQueueDir(char* out, size_t out_size) {
@@ -48,7 +48,7 @@ bool BuildQueueDir(char* out, size_t out_size) {
 // .exe / hook DLL identity into the manifest so the receiver can pair
 // crashes with a specific build artifact.
 //
-// We use Windows' bcrypt for SHA1 — no extra dependency, present on all
+// We use Windows' bcrypt for SHA1 -- no extra dependency, present on all
 // supported Windows versions. Read in 64 KB chunks so a multi-MB exe
 // doesn't balloon memory.
 //
@@ -183,7 +183,7 @@ bool Enqueue(const Manifest& m) {
     // Bundle every referenced log file into a single ZIP. The launcher
     // only has to upload one file; server only has to store one
     // artifact. Pattern lifted from /mnt/c/dev/bbbr/revolve_input_sdl3
-    // — inline STORED-method writer, no compression deps, finishes
+    // -- inline STORED-method writer, no compression deps, finishes
     // in tens of ms.
     char zip_path[MAX_PATH] = {};
     int zip_n = std::snprintf(zip_path, sizeof(zip_path),
@@ -214,7 +214,7 @@ bool Enqueue(const Manifest& m) {
     char iso[32];
     IsoUtcNow(iso, sizeof(iso));
 
-    // SHA1 stamp of the hook DLL — pairs the upload with the exact
+    // SHA1 stamp of the hook DLL -- pairs the upload with the exact
     // build artifact for symbolication. Skipped on crash path (caller
     // controls via leaving the field empty; this function always tries
     // to compute it, which is safe in normal threads; CrashHandler

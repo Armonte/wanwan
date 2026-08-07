@@ -33,12 +33,12 @@
 
 // Common handler for both real (GekkoDesyncDetected) and synthetic
 // (FM2K_FORCE_DESYNC_AT_FRAME) desync events. Same diagnostic dump,
-// same upload manifest, same TerminateProcess — the synthetic path
+// same upload manifest, same TerminateProcess -- the synthetic path
 // exercises the full end-to-end pipeline (Dump → RNG flush → ZIP
 // bundle → manifest → launcher upload → server pairing) so we can
 // validate fixes without waiting for a real-world determinism leak.
 //
-// `synthetic` only affects log wording — the file-write + terminate
+// `synthetic` only affects log wording -- the file-write + terminate
 // path is identical.
 void HandleDesyncDetected(int frame, uint32_t local_chk,
                                  uint32_t remote_chk, bool synthetic) {
@@ -80,7 +80,7 @@ void HandleDesyncDetected(int frame, uint32_t local_chk,
             "  UNSAVED: eff1=0x%08X eff2=0x%08X shake=0x%08X",
             rc.effect_sys1, rc.effect_sys2, rc.shake_effects);
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-            "  FINGERPRINT: gameplay=0x%08X (HP/pos/rng/timer only — "
+            "  FINGERPRINT: gameplay=0x%08X (HP/pos/rng/timer only -- "
             "if this MATCHES across peers the desync is a memory-residue "
             "false positive)",
             rc.gameplay_fingerprint);
@@ -105,7 +105,7 @@ void HandleDesyncDetected(int frame, uint32_t local_chk,
 
     if (!kill_on_desync) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "DESYNC: FM2K_NO_DESYNC_KILL=1 — staying alive for diagnostic "
+            "DESYNC: FM2K_NO_DESYNC_KILL=1 -- staying alive for diagnostic "
             "observation. Game state will corrupt further; expect a crash "
             "within a few thousand frames.");
         return;
@@ -120,7 +120,7 @@ void HandleDesyncDetected(int frame, uint32_t local_chk,
 
     // Drop an upload manifest for the launcher to pick up.
     //
-    // Paths and game_id go through the UTF-8 helpers — GetCurrent-
+    // Paths and game_id go through the UTF-8 helpers -- GetCurrent-
     // DirectoryA / GetModuleFileNameA return Shift-JIS bytes on
     // Japanese-locale Windows with Japanese-named game folders, which
     // produces non-UTF-8 JSON. Pre-v0.2.44 launchers crashed on those

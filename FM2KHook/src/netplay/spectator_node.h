@@ -1,4 +1,4 @@
-// SpectatorNode — daisy-chain replay streaming (see docs/FM2K_Spectator_Design.md).
+// SpectatorNode -- daisy-chain replay streaming (see docs/FM2K_Spectator_Design.md).
 //
 // Every node (host, gameplay peer, accepted spectator) can run a SpectatorNode
 // that accepts downstream subscribers, holds the input-history window needed to
@@ -16,7 +16,7 @@
 #include <cstddef>
 #include <winsock2.h>
 
-// Spectator-stream datagram magic — distinct from 0xCC control and GekkoNet
+// Spectator-stream datagram magic -- distinct from 0xCC control and GekkoNet
 // traffic on the multiplexed UDP socket.
 constexpr uint8_t SPEC_DATA_MAGIC = 0xCE;
 
@@ -43,7 +43,7 @@ enum class SpecDataType : uint8_t {
                         // flags = total payload byte count (variable-length
                         // since SessionEvents are 1-, 5-, or 97-byte each).
 
-    // ----- Snapshot join (task #18) — Phase 1 ABI -----
+    // ----- Snapshot join (task #18) -- Phase 1 ABI -----
     //
     // The CCCaster-style "jump to current match" flow uses a SaveState_Save
     // blob shipped to the spectator on JOIN. Three packet types frame the
@@ -53,7 +53,7 @@ enum class SpecDataType : uint8_t {
     //     start_frame = INPUT-frame index the snapshot was captured at
     //                   (spectator anchors next_expected_frame here)
     //     frame_count = unused (0)
-    //     flags       = sizeof(SnapshotMetadata) = 16 — payload byte count
+    //     flags       = sizeof(SnapshotMetadata) = 16 -- payload byte count
     //     payload     = SnapshotMetadata{version, total_bytes, match_index}
     //
     //   SNAPSHOT_CHUNK (sent N times to cover total_bytes):
@@ -69,7 +69,7 @@ enum class SpecDataType : uint8_t {
     //     payload     = uint32_t fletcher32 over assembled blob (sanity check)
     //
     // Followed by EVENT_BATCH packets streaming events from the snapshot's
-    // INPUT-frame onward — the spectator's pb_queue starts there instead
+    // INPUT-frame onward -- the spectator's pb_queue starts there instead
     // of session frame 0.
     //
     // Phase 1 (this commit): wire types reserved, framer recognises them
@@ -126,7 +126,7 @@ enum class SpecDataType : uint8_t {
                           // the session-global op index of the batch's FIRST
                           // non-INPUT event (append order, ~10 ops/match so
                           // u16 is ample). Receiver dedups ops on
-                          // op_base + in-batch position — idempotent under
+                          // op_base + in-batch position -- idempotent under
                           // any re-delivery (health-watchdog re-backfill,
                           // RC retransmit, overlapping chunks), unlike the
                           // EVENT_BATCH positional connection counter.
@@ -158,6 +158,43 @@ constexpr uint8_t SPEC_JOIN_RESUME = 0x02;  // viewer accepts UDP_INPUT_BATCH + 
 // version bytes are absent or differ from its own.
 constexpr uint8_t SPEC_JOIN_VERSIONED = 0x04;
 
+// SPEC_JOIN_ACK host_session_kind encoding. Low 2 bits are the session kind
+// (NONE / CSS / BATTLE, mirroring NetplaySessionKind). Bit 2 flags the packet
+// as a LIVE REFRESH rather than a per-subscriber GRANT.
+//
+// GRANT (bit clear) -- "this is the shape of the stream I have pinned for YOU;
+// boot accordingly". Emitted only where the host pins or re-states a specific
+// subscriber's join_mode, and always from that subscriber's pinned_ack_kind.
+//
+// LIVE REFRESH (bit set) -- "here is where the host is right now". Emitted by
+// the battle-entry re-broadcast (one packet to every subscriber at once, so it
+// cannot be per-subscriber) and by the re-ACKs that intentionally change
+// nothing. It is authoritative about the host's CURRENT phase and nothing else.
+//
+// The split is load-bearing in both directions:
+//  * A refresh must never complete a FIRST-TIME handshake. The battle-entry
+//    broadcast reads live state and knows nothing about what any individual
+//    subscriber was pinned to, so if it is the first ACK a viewer manages to
+//    process (accept ACK lost, or the two datagrams reordered -- both plain
+//    unreliable UDP), a FULL_SESSION-granted viewer would read BATTLE, /F-boot
+//    into battle, and then replay the from-frame-0 CSS stream it was actually
+//    assigned as battle input from uninitialised state. Deterministic desync,
+//    observed at 2/16 under 20% loss.
+//  * A grant must never drive a PHASE SWAP on an already-mirroring viewer. A
+//    CSS-era grant re-stated while the host is now in battle would otherwise
+//    swap a battle mirror back out to CSS.
+//
+// Safe without a wire version bump: the version gate in
+// SpectatorNode_HandleJoinReq rejects any joiner whose minor.patch differs from
+// the host's, so both ends of a spectate session are always the same build.
+// netplay_control.cpp forwards this field verbatim, so no dispatch change is
+// needed either.
+constexpr uint8_t SPEC_ACK_KIND_NONE    = 0;
+constexpr uint8_t SPEC_ACK_KIND_CSS     = 1;
+constexpr uint8_t SPEC_ACK_KIND_BATTLE  = 2;
+constexpr uint8_t SPEC_ACK_KIND_MASK    = 0x03;
+constexpr uint8_t SPEC_ACK_LIVE_REFRESH = 0x04;
+
 // Spectator's preferred backfill mode, declared in SPEC_JOIN_REQ payload.
 // Default at the wire level (zero-init) is FULL_SESSION so an older host
 // or one that hasn't taken a snapshot yet falls through to the existing
@@ -170,13 +207,26 @@ enum class SpecJoinMode : uint8_t {
                        // current SaveState blob + tail events, spectator
                        // does SaveState_Load and skips all previous
                        // matches. Default for live "browsing matches in
-                       // progress" — most spectators just want to watch
+                       // progress" -- most spectators just want to watch
                        // what's happening right now.
 };
 
 // Snapshot-wire constants.
 constexpr uint16_t SPECTATOR_SNAPSHOT_VERSION     = 2;
-constexpr size_t   SPECTATOR_SNAPSHOT_CHUNK_BYTES = 16384;  // ~16KB / chunk
+// ONE CHUNK == ONE UDP DATAGRAM. This is the single most load-bearing number in
+// the snapshot transport. It used to be 16384, which made every chunk a
+// 17-fragment ALL-OR-NOTHING unit on the wire:
+//   RC frames the chunk as [12B RC hdr][10B SpecDataHeader][chunk][4B CRC], then
+//   reliable.io fragments anything over fragment_above=1024 into 1024B pieces
+//   (reliable.c:784) and has NO per-fragment retransmit -- losing 1 of 17
+//   fragments discards the whole 16KB reassembly. At 20% loss a chunk's
+//   per-attempt success was 0.8^17 = 2.2%, so chunks routinely burned their 7s
+//   RC TTL and were retired: a permanent hole, and the snapshot never finalized.
+// 960 keeps the framed message at 960+26 = 986 B, i.e. under fragment_above, so
+// a chunk is one datagram: per-attempt success is 0.8 = 80%, FEC parity can
+// reconstruct it without a round trip, and the RC token bucket (which charges
+// per emitted datagram) finally paces the transfer honestly.
+constexpr size_t   SPECTATOR_SNAPSHOT_CHUNK_BYTES = 960;
 
 #pragma pack(push, 1)
 // Snapshot meta flags (v2+).
@@ -222,15 +272,15 @@ static_assert(sizeof(SpecDataHeader) == 10, "SpecDataHeader must be 10 bytes");
 // =============================================================================
 //
 // One ordered event stream replaces the old "INPUT_BATCH only" wire format.
-// Every state mutation the host applies — RNG pin, input-state reset, sound
-// dedup re-init, match boundaries, per-frame inputs — is appended as a typed
+// Every state mutation the host applies -- RNG pin, input-state reset, sound
+// dedup re-init, match boundaries, per-frame inputs -- is appended as a typed
 // event in the same vector. The spectator drains the stream in order: non-
 // INPUT events at the head are applied immediately; INPUT events are popped
 // one per sim tick.
 //
 // "Frame number" is implicit: it's the index of the next INPUT event in the
 // stream. Non-INPUT events execute *before* the input that follows them.
-// This collapses ordering — there's no separate "ops timeline" to schedule
+// This collapses ordering -- there's no separate "ops timeline" to schedule
 // against the input timeline, which is exactly the race that caused the
 // game_mode-driven CheckGameModeTransition spectator branch to desync.
 //
@@ -253,12 +303,12 @@ enum class SessionEventType : uint8_t {
     RESET_INPUT_STATE = 3,
     SOUND_INIT        = 4,
     MATCH_START       = 5,
-    MATCH_END         = 6,   // C7 — payload extended to MatchEndPayload (7 B)
+    MATCH_END         = 6,   // C7 -- payload extended to MatchEndPayload (7 B)
     FINGERPRINT       = 7,
-    ROUND_START       = 8,   // C3.5 — emitted at vs_round_function 100→101 edge
-    ROUND_END         = 9,   // C3.5 — emitted at vs_round_function *→900 edge
-    SESSION_ID        = 10,  // C7 — once per session (host-generated u64)
-    CSS_ENTERED       = 11,  // Phase F seam mirror — host's game_mode hit
+    ROUND_START       = 8,   // C3.5 -- emitted at vs_round_function 100→101 edge
+    ROUND_END         = 9,   // C3.5 -- emitted at vs_round_function *→900 edge
+    SESSION_ID        = 10,  // C7 -- once per session (host-generated u64)
+    CSS_ENTERED       = 11,  // Phase F seam mirror -- host's game_mode hit
                              // 2000 (CSS opened). Lets the viewer split the
                              // seam stream into [results inputs | CSS
                              // inputs] so the CSS dance mirrors from its
@@ -288,7 +338,7 @@ static_assert(sizeof(RoundEndPayload) == 9, "RoundEndPayload must be 9 bytes pac
 
 // C7 MATCH_END enrichment. Captured at Netplay_EndBattle from the same
 // HP / round-win counters the launcher reads for SharedMem outcome publish.
-// Makes .fm2krep self-describing — the writer can populate winner / per-side
+// Makes .fm2krep self-describing -- the writer can populate winner / per-side
 // rounds without having to scan the body bytes for the latest ROUND_END.
 struct MatchEndPayload {
     uint8_t  winner_idx;        // 0=P1, 1=P2, 2=draw
@@ -305,7 +355,7 @@ static_assert(sizeof(MatchEndPayload) == 7, "MatchEndPayload must be 7 bytes pac
 #pragma pack(push, 1)
 struct SessionEvent {
     SessionEventType type;          // 1 byte
-    union {                         // 9 bytes — sized to fit RoundEndPayload
+    union {                         // 9 bytes -- sized to fit RoundEndPayload
         struct { uint16_t p1; uint16_t p2; } input;
         uint32_t                             pin_rng_seed;
         uint32_t                             fingerprint_hash;
@@ -327,7 +377,7 @@ static_assert(sizeof(SessionEvent) == 10, "SessionEvent must be 10 bytes packed"
 
 // ---- Wire-format encoders ---------------------------------------------------
 // Each Encode* writes one event into `out`. Returns bytes written, or 0 if
-// `cap` is insufficient. No partial writes — the buffer is left untouched on
+// `cap` is insufficient. No partial writes -- the buffer is left untouched on
 // overflow.
 
 size_t SessionEvent_EncodeInput            (uint8_t* out, size_t cap, uint16_t p1, uint16_t p2);
@@ -351,7 +401,7 @@ size_t SessionEvent_EncodeSessionId        (uint8_t* out, size_t cap, uint64_t s
 // 97), or 0 if the buffer is truncated or the type byte isn't a valid
 // SessionEventType.
 //
-// `out_event->u.match_start_idx` is left at 0 on MATCH_START — caller
+// `out_event->u.match_start_idx` is left at 0 on MATCH_START -- caller
 // (HandleSpecData) populates it after appending the parsed header to the
 // match_headers side table. The 96-byte header is copied into
 // `out_match_header` if non-null; pass nullptr to skip the copy.
@@ -367,7 +417,7 @@ size_t SessionEvent_Decode(const uint8_t* in, size_t in_len,
 // Pulls the shared UDP socket from control_channel (no separate socket).
 void SpectatorNode_Init();
 
-// Shutdown — disconnects all subscribers, clears state.
+// Shutdown -- disconnects all subscribers, clears state.
 void SpectatorNode_Shutdown();
 
 // =============================================================================
@@ -389,7 +439,7 @@ void SpectatorNode_OnMatchStart(
 // subscribers.
 void SpectatorNode_OnFrameConfirmed(uint16_t p1_input, uint16_t p2_input);
 
-// Called at battle end — broadcasts MATCH_END to subscribers, carrying the
+// Called at battle end -- broadcasts MATCH_END to subscribers, carrying the
 // C7 enriched payload (winner / per-side rounds / total frames). Netplay_
 // EndBattle gathers the payload values from FM2K HP / FM95 round-win
 // counters before this fires.
@@ -401,13 +451,13 @@ void SpectatorNode_OnMatchEnd(const MatchEndPayload& p);
 // playback queue and dispatches on type, applying the same memory writes
 // the host just did. Late joiners see ops as part of their session backfill.
 //
-// Call sites (host only — no-op on spectator nodes):
-//   PIN_RNG           — every site that writes 0x12345678 to ADDR_RANDOM_SEED
+// Call sites (host only -- no-op on spectator nodes):
+//   PIN_RNG           -- every site that writes 0x12345678 to ADDR_RANDOM_SEED
 //                       (handshake, CSS rendezvous, battle start)
-//   RESET_INPUT_STATE — paired with battle-start SaveState_Save's first-call
+//   RESET_INPUT_STATE -- paired with battle-start SaveState_Save's first-call
 //                       buf_idx + edge-state + history-rings reset
-//   SOUND_INIT        — every SoundRollback::Init() call site
-//   FINGERPRINT       — diagnostic only; gated on FM2K_SPEC_FINGERPRINT
+//   SOUND_INIT        -- every SoundRollback::Init() call site
+//   FINGERPRINT       -- diagnostic only; gated on FM2K_SPEC_FINGERPRINT
 void SpectatorNode_AppendPinRng(uint32_t seed);
 void SpectatorNode_AppendResetInputState();
 void SpectatorNode_AppendSoundInit();
@@ -415,7 +465,7 @@ void SpectatorNode_AppendSoundInit();
 void SpectatorNode_AppendCssEntered();
 void SpectatorNode_AppendFingerprint(uint32_t hash);
 
-// C3.5 — round boundary events. Hook-side (vs_round_function detour) calls
+// C3.5 -- round boundary events. Hook-side (vs_round_function detour) calls
 // AppendRoundStart at the 100→101 substate edge and AppendRoundEnd at the
 // *→900 edge. round_idx is a 1-based intra-match counter the hook owns;
 // frames_elapsed is computed inside AppendRoundEnd from total_input_count
@@ -447,7 +497,7 @@ void SpectatorNode_AppendMatchEnd(const MatchEndPayload& p);
 // match-over). Netplay_EndBattle merges this into its outcome decision.
 void SpectatorNode_GetCachedRoundsWon(uint8_t* p1, uint8_t* p2);
 
-// C7 — emit the host's session_id as a SESSION_ID op. Called once per
+// C7 -- emit the host's session_id as a SESSION_ID op. Called once per
 // game-vs-game session (typically at the first Netplay_StartBattle on a
 // peer connection). Subsequent battles in the same session reuse the
 // already-appended id; the writer reads it back from g_state when
@@ -473,7 +523,7 @@ uint64_t SpectatorNode_GetSessionId();
 //
 // Phase 2 (this commit): captures the snapshot per match, exposes status
 // via SpectatorNode_HasSnapshot() / SpectatorNode_GetSnapshotInfo(), but
-// no transmission yet — phase 3 wires the host send path.
+// no transmission yet -- phase 3 wires the host send path.
 void SpectatorNode_StashSnapshot();
 
 // Status: is a valid snapshot cached on this node right now? False
@@ -509,15 +559,15 @@ void SpectatorNode_ApplyPendingPinRng();
 // SESSION REPLAY FILE WRITERS (C7)
 // =============================================================================
 //
-// Both write the same on-disk format — packed SessionEvent bytes (1-byte
+// Both write the same on-disk format -- packed SessionEvent bytes (1-byte
 // tag + variant payload, MATCH_START's 96-byte header inline) preceded by
 // a 32-byte file header. Distinguished by the `is_battle_slice` flag in
 // the header. Loaders (Replay_LoadSessionFile, C8) feed events into the
 // playback driver pb_queue same as live wire ingest.
 //
 // Path format:
-//   replays/<timestamp>.fm2krep   — per-battle slice
-//   sessions/<timestamp>.fm2kset  — full session
+//   replays/<timestamp>.fm2krep   -- per-battle slice
+//   sessions/<timestamp>.fm2kset  -- full session
 // (Relative to the game's working directory.)
 //
 // Returns true on successful write. False if there's no usable data
@@ -526,7 +576,7 @@ void SpectatorNode_ApplyPendingPinRng();
 // Write everything in session_events to a .fm2kset.
 bool SpectatorNode_WriteSessionFile(const char* path);
 
-// Write the slice [last_match_start_idx ... session_events.size()) — i.e.
+// Write the slice [last_match_start_idx ... session_events.size()) -- i.e.
 // the per-battle segment closing on the most-recent MATCH_END. Call
 // AFTER OnMatchEnd has appended its MATCH_END so the slice includes it.
 bool SpectatorNode_WriteCurrentBattleFile(const char* path);
@@ -537,22 +587,22 @@ bool SpectatorNode_WriteCurrentBattleFile(const char* path);
 //
 // Read a .fm2kset / .fm2krep file written by SpectatorNode_WriteSessionFile
 // or WriteCurrentBattleFile and push every event into pb_queue. Same
-// playback driver as the live wire path (HandleSpecData::EVENT_BATCH) —
+// playback driver as the live wire path (HandleSpecData::EVENT_BATCH) --
 // the trampoline's RunSpectatorTick drains them identically.
 //
 // Resets receiver-side state on entry: pb_queue cleared, pb_match_headers
 // cleared, dedup baseline cleared, playing_back flipped on. Caller is
-// responsible for ensuring g_spectator_mode is true before calling — the
+// responsible for ensuring g_spectator_mode is true before calling -- the
 // trampoline only routes through RunSpectatorTick when it is.
 //
 // Returns true on successful parse + queue. False on file open failure,
 // magic/version mismatch, or truncated body.
 
-// C8 — seek-target struct for round-level "jump into a replay at round N"
+// C8 -- seek-target struct for round-level "jump into a replay at round N"
 // playback. Reads the v2 header's round_offsets[] to locate the body byte
 // position of the requested ROUND_START event, then does a two-pass body
 // walk: Pass 1 emits ONLY state-init events (PIN_RNG, RESET_INPUT_STATE,
-// SOUND_INIT, MATCH_START, SESSION_ID) up to that offset — rebuilds engine
+// SOUND_INIT, MATCH_START, SESSION_ID) up to that offset -- rebuilds engine
 // state without sim work. Pass 2 streams normally from the offset onward.
 // The existing C5.5 catchup drain in RunSpectatorTick fast-forwards the
 // pre-anchor INPUT events (skipped in Pass 1) at unbounded sim rate.
@@ -597,7 +647,7 @@ uint32_t SpectatorFingerprint_Compute();
 // JOIN / REDIRECT (runs on any accepting node)
 // =============================================================================
 
-// Capacity: the default direct-subscriber cap. Star topology — host serves
+// Capacity: the default direct-subscriber cap. Star topology -- host serves
 // everyone directly up to this many. Beyond capacity, new joiners get
 // redirected to an existing subscriber (1-hop relay), à la CCCaster's
 // random-redirect. We rarely expect to hit this in practice: at ~500 B/s
@@ -631,6 +681,34 @@ constexpr uint64_t SPECTATOR_RECONNECT_MAX_BACKOFF_MS = 4000;
 // re-ship. > the 7s RC retirement (don't reset an in-flight transfer) and > the
 // host's 3s reset-suppression (so the re-JOIN actually re-ships).
 constexpr uint64_t SPECTATOR_NOADMIT_REJOIN_MS = 8000;
+// FIRST no-admit recovery attempt. 8s is most of the 30s connect deadline and
+// a viewer stares at nothing for the whole interval, so the first retry fires
+// fast; only REPEATS fall back to the 8s cadence above (by then we know one
+// fast retry did not fix it, and the RC-retransmit-window rationale applies).
+// 3500ms is picked to clear the host's 3s destructive-reset floor
+// (spec_join.cpp HandleJoinReq) with margin, so the re-JOIN always provokes a
+// real re-ship instead of a bare re-ACK -- same reason SPECTATOR_KICK_JOIN_
+// INTERVAL_MS below uses it. Each fast retry stays cheap because the host-side
+// snapshot re-ship floor turns it into a backfill-only burst.
+constexpr uint64_t SPECTATOR_NOADMIT_FIRST_REJOIN_MS = 3500;
+// /F-dispatch-hold join kick cadence (SpectatorNode_KickJoin). MUST stay above
+// the host's 3s destructive-reset floor: at the old 1Hz the viewer re-JOINed
+// three times per host re-ship window, so a JOIN_ACK that finally landed could
+// arrive on a SUPPRESSED re-ship (re-ACK only, no data) -- half of the
+// stash-destruction race that produced the total=0 freeze. The other half is
+// the address-gated pre_sub_stash clear in SpectatorNode_RequestJoin; either
+// fix alone leaves the race open.
+constexpr uint64_t SPECTATOR_KICK_JOIN_INTERVAL_MS = 3500;
+// Host-side snapshot re-ship floor. A destructive reset re-runs the bind path,
+// which used to re-ship the FULL snapshot (tens of KB when the zero-RLE wins,
+// ~1MB when it does not) on every single re-JOIN -- congestion on the link
+// whose loss caused the
+// re-JOIN, and the viewer discards a re-join snapshot anyway once it has
+// started. The backfill (the ONLY thing besides an applied snapshot that can
+// set have_frame_baseline) still ships on every rebind. Above the 3500ms
+// re-JOIN cadences so the fast retry is cheap, below the 8s repeat cadence so
+// a genuinely-lost snapshot is always re-shipped on the second attempt.
+constexpr uint64_t SPECTATOR_SNAPSHOT_RESHIP_MS = 6000;
 // Surgical gap-fill (mid-match snapshot join under loss). When the
 // admission cursor stalls behind buffered future batches for this long,
 // pull the missing range over the reliable conn. Kept small so the gap
@@ -663,7 +741,7 @@ void SpectatorNode_ClearGekkoSpectatorTracking();
 // Called from the control-channel message handler. `mode` is the
 // SpecJoinMode value the joining peer declared in its SPEC_JOIN_REQ
 // payload (zero / FULL_SESSION when sent by older builds that don't
-// know about the field — the back-compat path).
+// know about the field -- the back-compat path).
 // `caps` is the JOIN_REQ's reserved[0] capability byte (SPEC_JOIN_* bits;
 // zeros from older builds).
 void SpectatorNode_HandleJoinReq(const sockaddr_in& from,
@@ -673,17 +751,17 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from,
                                  uint8_t ver_minor = 0,
                                  uint8_t ver_patch = 0);
 
-// Handle SPEC_LEAVE — remove subscriber from list.
+// Handle SPEC_LEAVE -- remove subscriber from list.
 void SpectatorNode_HandleLeave(const sockaddr_in& from);
 
 // Host side: broadcast SPEC_SESSION_END to all subscribers on clean exit so
 // they stop instead of storm-reconnecting to a dead host. Call in Netplay_Shutdown.
 void SpectatorNode_BroadcastSessionEnd();
 
-// Viewer side: handle SPEC_SESSION_END from upstream — park the reconnect path.
+// Viewer side: handle SPEC_SESSION_END from upstream -- park the reconnect path.
 void SpectatorNode_HandleSessionEnd(const sockaddr_in& from);
 
-// Handle SPEC_HEARTBEAT — refresh last-seen timestamp for this subscriber.
+// Handle SPEC_HEARTBEAT -- refresh last-seen timestamp for this subscriber.
 void SpectatorNode_HandleHeartbeat(const sockaddr_in& from);
 
 // =============================================================================
@@ -714,7 +792,7 @@ std::vector<sockaddr_in> SpectatorNode_GetSubscriberAddrs();
 // from session frame 0 (existing default); CURRENT_MATCH asks the host to
 // send its most recent SaveState snapshot so the spectator skips earlier
 // matches. Older hosts ignore the field and always respond with full-
-// session data — back-compat is automatic.
+// session data -- back-compat is automatic.
 bool SpectatorNode_RequestJoin(const sockaddr_in& upstream,
                                SpecJoinMode mode = SpecJoinMode::FULL_SESSION);
 
@@ -731,7 +809,7 @@ void SpectatorNode_RequestGapFill();
 // from Netplay_InitAsSpectator.
 void SpectatorNode_SetRootAddr(const sockaddr_in& root);
 
-// Handle inbound SPEC_JOIN_ACK — upstream accepted us. host_session_kind
+// Handle inbound SPEC_JOIN_ACK -- upstream accepted us. host_session_kind
 // from the ACK payload (1=CSS, 2=BATTLE, 0=unknown/between-matches) is
 // used to create a matching GekkoSpectateSession. host_p1_char /
 // host_p2_char / host_stage carry the host's current battle chars when
@@ -747,7 +825,7 @@ void SpectatorNode_HandleJoinAck(const sockaddr_in& from,
                                  uint8_t host_p1_color = 0xFF,
                                  uint8_t host_p2_color = 0xFF);
 
-// Handle inbound SPEC_JOIN_REDIRECT — retry against redirect target.
+// Handle inbound SPEC_JOIN_REDIRECT -- retry against redirect target.
 void SpectatorNode_HandleJoinRedirect(const sockaddr_in& from,
                                       uint32_t redirect_ip,
                                       uint16_t redirect_port);
@@ -762,7 +840,7 @@ void SpectatorNode_HandleJoinRedirect(const sockaddr_in& from,
 // HandleSpecData) for the FM2K_SPEC_RC A/B path. Called from SpectatorNode_Init.
 void SpectatorNode_RegisterRcDeliver();
 
-// `rc_channel`: 0 = single ordered stream (TCP / unified — no cross-channel
+// `rc_channel`: 0 = single ordered stream (TCP / unified -- no cross-channel
 // reorder). RC_CHAN_SPEC (live) / RC_CHAN_SPEC_SNAPSHOT (bulk) enable the
 // cross-channel EVENT_BATCH reorder + bulk-only baseline (see spec_recv.cpp).
 void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
@@ -835,13 +913,13 @@ bool SpectatorNode_IsSubscribedUpstream();
 bool SpectatorNode_IsTcpRejoinPending();
 
 // Periodic health tick. Called from the trampoline once per iteration
-// (cheap — internally rate-limited). Drives:
+// (cheap -- internally rate-limited). Drives:
 //   * heartbeat send to upstream every HEARTBEAT_INTERVAL_MS
 //   * silence detection → failover to root after SILENCE_FAILOVER_MS
 //   * upstream-side subscriber sweep (expire silent subscribers)
 void SpectatorNode_TickHealth();
 
-// Host-side maintenance only — bind newly-accepted TCP clients to subscriber
+// Host-side maintenance only -- bind newly-accepted TCP clients to subscriber
 // slots, ship deferred INITIAL_MATCH/backfill on first bind, and expire silent
 // subscribers. Driven from ControlChannel_Poll so it runs on the host path
 // (which doesn't go through SpectatorNode_TickHealth) every poll iteration.

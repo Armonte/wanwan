@@ -41,7 +41,7 @@
 
 // Build the GekkoConfig for a spectator session, mirroring the host's config
 // for the given phase. Spectators only need session_type, input_size,
-// state_size, and spectator_delay — num_players + prediction_window are
+// state_size, and spectator_delay -- num_players + prediction_window are
 // informational but kept consistent with host for clarity.
 static GekkoConfig MakeSpectateConfig(SessionKind host_kind) {
     GekkoConfig config = {};
@@ -96,13 +96,13 @@ bool Netplay_StartSpectateSession(NetplaySessionKind host_kind, const char* host
     if (g_session && g_session_kind == SessionKind::SPECTATE &&
         host_addr && host_addr[0] && std::strcmp(g_remote_addr, host_addr) == 0) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "Netplay_StartSpectateSession: session already alive for %s — keeping",
+            "Netplay_StartSpectateSession: session already alive for %s -- keeping",
             host_addr);
         return true;
     }
     if (g_session) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "Netplay_StartSpectateSession: session already exists (kind=%d) — destroying first",
+            "Netplay_StartSpectateSession: session already exists (kind=%d) -- destroying first",
             (int)g_session_kind);
         gekko_destroy(&g_session);
         g_session = nullptr;
@@ -159,7 +159,7 @@ void Netplay_EndSpectateSession() {
 // The spectator is passive: it observes the host's announced swap_frame
 // and executes destroy/create at that frame.
 //
-// NOTE: For now we don't gate on swap_frame on the spectator side — the host's
+// NOTE: For now we don't gate on swap_frame on the spectator side -- the host's
 // session destroy at swap_frame causes magic-mismatch silence to land at the
 // same logical point on the wire, and the spectator's session sync re-handshake
 // with the new session naturally aligns. swap_frame gating on the spectator
@@ -168,7 +168,7 @@ void Netplay_EndSpectateSession() {
 // the spectator may still be FFing through backfilled inputs to catch up
 // to live. Recording the target swap_frame lets ProcessSpectatorPhase
 // finish draining AdvanceEvents up to that frame BEFORE tearing the
-// session down — otherwise we'd lose the tail of CSS / battle inputs.
+// session down -- otherwise we'd lose the tail of CSS / battle inputs.
 // Drained per-tick from Netplay_ProcessSpectatorPhase.
 //
 // pending_kind == NONE means no swap pending. Set by On* handlers, cleared
@@ -179,7 +179,7 @@ uint32_t           g_pending_swap_frame = 0;
 void Netplay_OnHostBattleEntering(uint32_t swap_frame) {
     if (g_session_kind != SessionKind::SPECTATE) return;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "Spectator: host entering battle (swap_frame=%u) — pending CSS->battle swap",
+        "Spectator: host entering battle (swap_frame=%u) -- pending CSS->battle swap",
         swap_frame);
     g_pending_swap_kind  = SessionKind::BATTLE;
     g_pending_swap_frame = swap_frame;
@@ -188,7 +188,7 @@ void Netplay_OnHostBattleEntering(uint32_t swap_frame) {
 void Netplay_OnHostBattleEnd(uint32_t swap_frame) {
     if (g_session_kind != SessionKind::SPECTATE) return;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "Spectator: host ending battle (swap_frame=%u) — pending battle->CSS swap",
+        "Spectator: host ending battle (swap_frame=%u) -- pending battle->CSS swap",
         swap_frame);
     g_pending_swap_kind  = SessionKind::CSS;
     g_pending_swap_frame = swap_frame;
@@ -204,7 +204,7 @@ bool MaybeSwapPendingSpectator(uint32_t advanced_frame) {
 
     const NetplaySessionKind next_kind = g_pending_swap_kind;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "Spectator: caught up to swap_frame=%u — swapping to %s SpectateSession",
+        "Spectator: caught up to swap_frame=%u -- swapping to %s SpectateSession",
         g_pending_swap_frame,
         next_kind == SessionKind::BATTLE ? "battle" : "CSS");
 

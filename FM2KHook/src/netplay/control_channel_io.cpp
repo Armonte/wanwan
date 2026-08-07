@@ -149,7 +149,7 @@ void RawReceive() {
         // Relay-envelope unwrap. If this is a 0xCF packet for our
         // configured relay session, strip the 18-byte header and treat
         // the inner bytes as if they arrived directly from the peer.
-        // Skip peer-address learning for the inner packet — the actual
+        // Skip peer-address learning for the inner packet -- the actual
         // sockaddr is the relay, which we don't want latched as peer.
         bool from_relay = false;
         const uint8_t* eff_data = reinterpret_cast<const uint8_t*>(g_recv_buffer);
@@ -162,7 +162,7 @@ void RawReceive() {
                 eff_len  = inner_len;
                 from_relay = true;
             } else {
-                continue;  // bad envelope or wrong session — drop
+                continue;  // bad envelope or wrong session -- drop
             }
         }
         const uint8_t first = eff_len ? eff_data[0] : 0;
@@ -170,7 +170,7 @@ void RawReceive() {
         // Check if this is a control packet (magic byte 0xCC)
         if (eff_len >= 1 && first == CTRL_MAGIC) {
             // Peer-address learning. Skip when the packet came in via
-            // the relay envelope — the actual sockaddr is the relay,
+            // the relay envelope -- the actual sockaddr is the relay,
             // and latching the relay as g_remote_sockaddr would later
             // cause RawSend (in non-relay mode) to send to the relay
             // instead of the peer. In relay mode we don't need a
@@ -308,12 +308,12 @@ void RawReceive() {
                 }
             }
         } else if (eff_len >= 1 && first == 0xCD) {
-            // NAT-layer datagram (0xCD) — STUN ack or peer punch probe.
+            // NAT-layer datagram (0xCD) -- STUN ack or peer punch probe.
             // Defined in nat_traversal.h. Returning here keeps the byte
             // out of GekkoNet's queue and the spectator path.
             ::fm2k::nat::HandleDatagram(eff_data, eff_len, from_addr);
         } else if (eff_len >= 1 && first == 0xCB) {
-            // ReliableChannel datagram (0xCB) — reliable-ordered + FEC message
+            // ReliableChannel datagram (0xCB) -- reliable-ordered + FEC message
             // layer over UDP (reliable.io endpoint). Body after the tag goes to
             // the RC endpoint; delivery is dispatched by channel. Runs under
             // g_poll_mutex (this loop's contract), which RC requires.

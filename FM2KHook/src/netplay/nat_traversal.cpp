@@ -1,14 +1,14 @@
-// FM2K NAT traversal — 0xCD STUN probe + 0xCD demux + burst hole-punch +
+// FM2K NAT traversal -- 0xCD STUN probe + 0xCD demux + burst hole-punch +
 // relay fallback + dual-stack IPv6 (global-v6 discover/advertise).
 //
 // Reads:
-//   FM2K_HUB_UDP_ADDR    — "ip:port" of the hub's UDP STUN responder.
+//   FM2K_HUB_UDP_ADDR    -- "ip:port" of the hub's UDP STUN responder.
 //                           Same address as the WebSocket lobby in
 //                           Phase 1; can split later if needed.
-//   FM2K_HUB_USER_ID     — 12-char hex id assigned by the lobby on
+//   FM2K_HUB_USER_ID     -- 12-char hex id assigned by the lobby on
 //                           hello_ack. Identifies this client to the
 //                           hub when its STUN probe arrives.
-//   FM2K_HUB_MATCH_TOKEN — 16 hex chars (8 bytes) — shared with peer
+//   FM2K_HUB_MATCH_TOKEN -- 16 hex chars (8 bytes) -- shared with peer
 //                           via match_start. Used to authenticate
 //                           inbound CTRL_PUNCH packets.
 //
@@ -108,7 +108,7 @@ bool ParseHostPort(const std::string& s, std::string& host, uint16_t& port) {
 
 // Resolve a hostname (or literal IPv4 string) to in_addr. Returns
 // false on failure. Used so the launcher / dllmain can pass either
-// "127.0.0.1" or "hub.2dfm.org" as the hub address — getaddrinfo
+// "127.0.0.1" or "hub.2dfm.org" as the hub address -- getaddrinfo
 // handles both cases. Only the FIRST A record is taken; sufficient
 // for our small hub deployments.
 bool ResolveHostA(const std::string& host, in_addr& out) {
@@ -154,7 +154,7 @@ bool SendStunProbe() {
     size_t n = std::strlen(user_id);
     if (n > USER_ID_LEN) n = USER_ID_LEN;
     std::memcpy(pkt + 2, user_id, n);
-    // Pad with NUL is implicit — pkt was zero-initialized by the brace init.
+    // Pad with NUL is implicit -- pkt was zero-initialized by the brace init.
 
     SOCKET sock = ControlChannel_GetSocket();
     if (sock == INVALID_SOCKET) return false;
@@ -215,7 +215,7 @@ void DiscoverAndPublishLocalV6() {
     if (!DiscoverGlobalV6(v6)) {
         g_have_local_v6 = false;
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "NAT: no global IPv6 on this host — v4/relay only (no direct v6 path)");
+            "NAT: no global IPv6 on this host -- v4/relay only (no direct v6 path)");
         // Publish an all-zero addr so the launcher can clear any stale value.
         uint8_t zero[16] = {};
         SharedMem_PublishLocalV6(zero, 0);
@@ -232,7 +232,7 @@ void DiscoverAndPublishLocalV6() {
     char v6s[INET6_ADDRSTRLEN] = {};
     inet_ntop(AF_INET6, &v6.sin6_addr, v6s, sizeof(v6s));
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "NAT: global IPv6 [%s]:%u — advertising as a DIRECT v6 punch candidate "
+        "NAT: global IPv6 [%s]:%u -- advertising as a DIRECT v6 punch candidate "
         "(no NAT); publishing to launcher for the peer",
         v6s, (unsigned)NetSocket_GetLocalPort());
 
@@ -259,7 +259,7 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
     }
 
     // Stop any prior burst (e.g. user reconnecting / new match) before
-    // launching a fresh one. join() is bounded — the loop checks
+    // launching a fresh one. join() is bounded -- the loop checks
     // g_punching every iteration.
     if (g_punching.exchange(false) && g_punch_thread.joinable()) {
         g_punch_thread.join();
@@ -285,7 +285,7 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
         la.s_addr = lan_ip_be;
         inet_ntop(AF_INET, &la, lan_str, sizeof(lan_str));
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "NAT: same-LAN candidate %s:%u — burst will also punch direct over LAN",
+            "NAT: same-LAN candidate %s:%u -- burst will also punch direct over LAN",
             lan_str, (unsigned)ntohs(g_punch_peer_lan.sin_port));
     }
 
@@ -300,7 +300,7 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
         char v6s[INET6_ADDRSTRLEN] = {};
         inet_ntop(AF_INET6, &g_punch_peer_v6.sin6_addr, v6s, sizeof(v6s));
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "NAT: IPv6 candidate [%s]:%u — burst will also punch direct over v6 "
+            "NAT: IPv6 candidate [%s]:%u -- burst will also punch direct over v6 "
             "(CGNAT bypass)", v6s, (unsigned)v6_port);
     }
 
@@ -311,7 +311,7 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
     //
     // BUT: only safe when relay is NOT configured. If the hub gave us
     // a relay endpoint (hub.2dfm.org:7712 + session), it means the hub
-    // expected a real cross-NAT match — and the launcher's preflight
+    // expected a real cross-NAT match -- and the launcher's preflight
     // code has historically misset peer_ip=127.0.0.1 when the public
     // probe failed even on different machines. Skipping the relay in
     // that case left both peers sending HELLO into their own loopback
@@ -329,13 +329,13 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
             }
         }
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "NAT: loopback peer %s:%u — same-box, skipping NAT punch / relay wait",
+            "NAT: loopback peer %s:%u -- same-box, skipping NAT punch / relay wait",
             ip_str, (unsigned)peer_port);
         return;
     }
     if (peer_ip_be == htonl(INADDR_LOOPBACK)) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "NAT: peer claimed loopback %s:%u BUT relay configured — "
+            "NAT: peer claimed loopback %s:%u BUT relay configured -- "
             "running normal punch + relay path (launcher likely set "
             "127.0.0.1 by mistake during preflight)",
             ip_str, (unsigned)peer_port);
@@ -344,7 +344,7 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
     g_punching.store(true);
     g_punch_thread = std::thread([ip_str_copy = std::string(ip_str), peer_port,
                                   punch_reflexive]() {
-        // Boost only this thread's priority — process-wide boost would
+        // Boost only this thread's priority -- process-wide boost would
         // starve the game's main loop. timeBeginPeriod(1) tightens
         // Sleep granularity so 10 ms means ~10 ms instead of ~16 ms
         // (Windows default scheduler tick).
@@ -356,7 +356,7 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
         SOCKET sock = ControlChannel_GetSocket();
         if (sock == INVALID_SOCKET) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "NAT: punch aborted — control socket unavailable");
+                "NAT: punch aborted -- control socket unavailable");
             timeEndPeriod(1);
             SetThreadPriority(th, prev_pri);
             g_punching.store(false);
@@ -405,7 +405,7 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
         }
 
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "NAT: burst complete — %d/%d sent (%s)",
+            "NAT: burst complete -- %d/%d sent (%s)",
             sent_ok, PUNCH_PACKETS,
             g_punching.load() ? "no peer ack yet" : "peer-latch fired");
 
@@ -415,19 +415,19 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
 
         // Final fallback gate: give the peer a much longer window to
         // hit us back via direct UDP. The 200 ms we used originally
-        // was too short — Netplay_Init runs early in DllMain, before
+        // was too short -- Netplay_Init runs early in DllMain, before
         // the game's main loop and ControlChannel_Poll start, so
         // inbound CTRL_PUNCH packets can sit in the kernel buffer
         // for several hundred ms before we ever drain them. Use 2 s
         // to cover that startup latency. The user said "we never
-        // want burst punch to fail" — relay is the safety net but
+        // want burst punch to fail" -- relay is the safety net but
         // direct should always get the chance to win first.
         if (g_relay_configured) {
             for (int i = 0; i < 200 && !g_peer_authenticated.load(); ++i) {
                 Sleep(10);
                 // If the gameplay handshake already completed via direct
                 // UDP, drop the relay-engage idea entirely. CTRL_PUNCH
-                // (0xCD) didn't ack but 0xCC HELLO/HELLO_ACK did — the
+                // (0xCD) didn't ack but 0xCC HELLO/HELLO_ACK did -- the
                 // path between peers is fine for our actual gameplay
                 // packets. Engaging relay anyway would route every
                 // subsequent packet through the hub for no reason and
@@ -435,7 +435,7 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
                 // is worse than direct.
                 if (ControlChannel_IsConnected()) {
                     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                        "NAT: relay-engage skipped — direct UDP already "
+                        "NAT: relay-engage skipped -- direct UDP already "
                         "carrying gameplay traffic (handshake completed "
                         "via 0xCC); CTRL_PUNCH ack lost but path works");
                     return;
@@ -444,12 +444,12 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
             if (!g_peer_authenticated.load() && !ControlChannel_IsConnected()) {
                 g_relay_mode.store(true);
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "NAT: direct punch did not authenticate after 2s — "
+                    "NAT: direct punch did not authenticate after 2s -- "
                     "relay mode ENGAGED");
             }
         } else if (!g_peer_authenticated.load() && !ControlChannel_IsConnected()) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "NAT: direct punch failed and no relay configured — peer "
+                "NAT: direct punch failed and no relay configured -- peer "
                 "may stay unreachable");
         }
     });
@@ -475,7 +475,7 @@ void HandleDatagram(const uint8_t* data, size_t len, const sockaddr_storage& fro
             char ip_str[INET_ADDRSTRLEN] = {};
             inet_ntop(AF_INET, &ia, ip_str, sizeof(ip_str));
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "NAT: STUN ack — reflexive %s:%u",
+                "NAT: STUN ack -- reflexive %s:%u",
                 ip_str, (unsigned)ntohs(port_be));
             g_reflexive = {};
             g_reflexive.sin_family = AF_INET;
@@ -489,13 +489,13 @@ void HandleDatagram(const uint8_t* data, size_t len, const sockaddr_storage& fro
             if (len < 2 + MATCH_TOKEN_LEN) return;
             if (!g_match_token_set) {
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "NAT: CTRL_PUNCH from %s dropped — no local token set",
+                    "NAT: CTRL_PUNCH from %s dropped -- no local token set",
                     from_s.c_str());
                 return;
             }
             if (std::memcmp(data + 2, g_match_token, MATCH_TOKEN_LEN) != 0) {
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "NAT: CTRL_PUNCH from %s dropped — token mismatch",
+                    "NAT: CTRL_PUNCH from %s dropped -- token mismatch",
                     from_s.c_str());
                 return;
             }
@@ -507,7 +507,7 @@ void HandleDatagram(const uint8_t* data, size_t len, const sockaddr_storage& fro
             // branch will keep tracking it across NAT remapping.
             //
             // Subsequent valid CTRL_PUNCH packets are common (peer's
-            // burst sends 30) — log only the first to avoid spamming
+            // burst sends 30) -- log only the first to avoid spamming
             // the debug log; remaining drops are benign.
             const bool first_auth = !g_peer_authenticated.exchange(true);
             if (first_auth) {
@@ -516,14 +516,14 @@ void HandleDatagram(const uint8_t* data, size_t len, const sockaddr_storage& fro
                 // If relay engaged before this auth landed (CTRL_PUNCH
                 // can arrive after the burst grace expires because the
                 // game's ControlChannel_Poll loop hadn't started yet),
-                // turn relay back off — direct path now works and is
+                // turn relay back off -- direct path now works and is
                 // strictly cheaper.
                 if (g_relay_mode.exchange(false)) {
                     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                        "NAT: relay disengaged — direct punch landed late");
+                        "NAT: relay disengaged -- direct punch landed late");
                 }
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "NAT: CTRL_PUNCH from %s authenticated — peer latched",
+                    "NAT: CTRL_PUNCH from %s authenticated -- peer latched",
                     from_s.c_str());
             }
             return;
@@ -597,7 +597,7 @@ bool IsRelayMode() {
 void ForceRelayMode() {
     if (!g_relay_configured) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "NAT: ForceRelayMode ignored — relay not configured");
+            "NAT: ForceRelayMode ignored -- relay not configured");
         return;
     }
     g_relay_mode.store(true);

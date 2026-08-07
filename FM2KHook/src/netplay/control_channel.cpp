@@ -39,7 +39,7 @@ uint16_t g_recv_ack = 0;
 bool g_connected = false;
 uint32_t g_last_recv_time = 0;
 // When did g_connected go true? Used by ControlChannel_Poll's timeout
-// check to apply a startup grace window — the first ~15s after
+// check to apply a startup grace window -- the first ~15s after
 // connect we use a much wider timeout so cnc-ddraw / other slow boot
 // paths don't false-DC on the second peer's late init. Reset to 0
 // when g_connected drops back to false.
@@ -61,8 +61,8 @@ UINT g_keepalive_timer_id = 0;
 // MM-timer worker. The MM-timer drives Poll itself when the main
 // thread is blocked (modal window drag / Alt-Tab inactivity / boot
 // stalls), so the handshake + receive path keeps making progress.
-// The lock is fine-grained — RawReceive + dispatch is non-blocking
-// and finishes in microseconds — so contention between threads is a
+// The lock is fine-grained -- RawReceive + dispatch is non-blocking
+// and finishes in microseconds -- so contention between threads is a
 // non-issue in practice.
 std::mutex g_poll_mutex;
 // Tracks the last time the MAIN thread (not the MM timer) ran
@@ -126,7 +126,7 @@ std::vector<GekkoNetResult*> g_gekko_result_ptrs;
 // MM-timer callback: fires on a worker thread every PING_INTERVAL_MS
 // regardless of the message pump state. Two responsibilities:
 //   1. Send a ping if we're connected and the main thread hasn't
-//      pinged recently — keeps us alive across modal drags.
+//      pinged recently -- keeps us alive across modal drags.
 //   2. Drive ControlChannel_Poll itself when the main thread is
 //      stuck (modal drag during HANDSHAKE, alt-tab during boot, slow
 //      ddraw init). Without this, a window drag during the
@@ -136,7 +136,7 @@ std::vector<GekkoNetResult*> g_gekko_result_ptrs;
 //      the main thread is mid-Poll already; concurrency is serialised
 //      by g_poll_mutex.
 //
-// Forward decl — body is lower in this TU.
+// Forward decl -- body is lower in this TU.
 static void PollImplLocked();
 static void CALLBACK KeepaliveTimerProc(UINT, UINT, DWORD_PTR, DWORD_PTR, DWORD_PTR) {
     if (!g_socket_initialized) return;
@@ -161,7 +161,7 @@ static void CALLBACK KeepaliveTimerProc(UINT, UINT, DWORD_PTR, DWORD_PTR, DWORD_
             ControlChannel_SendDelayProposal();
         }
     }
-    // Inbound poll — runs whether connected or not so the handshake
+    // Inbound poll -- runs whether connected or not so the handshake
     // makes forward progress even when the main thread is parked.
     std::unique_lock<std::mutex> lock(g_poll_mutex, std::try_to_lock);
     if (lock.owns_lock()) {
@@ -255,7 +255,7 @@ bool NetSocket_Init(uint16_t local_port, const char* remote_addr) {
         return false;
     }
 
-    // SO_REUSEADDR — allows rebinding to a port still in TIME_WAIT
+    // SO_REUSEADDR -- allows rebinding to a port still in TIME_WAIT
     // from a previous run. Without this, restarting the launcher
     // within ~30s of a previous session hits WSAEADDRINUSE (10048).
     BOOL reuse = TRUE;
@@ -316,7 +316,7 @@ bool NetSocket_Init(uint16_t local_port, const char* remote_addr) {
                 "NetSocket: bind() failed on port %d (err=%d, %d attempts). %s",
                 (int)local_port, err, bind_attempts,
                 err == WSAEADDRINUSE || err == WSAEACCES
-                    ? "Port already in use — another launcher instance is on this port. "
+                    ? "Port already in use -- another launcher instance is on this port. "
                       "If running two launchers on the same machine, configure each "
                       "with a different FM2K_LOCAL_PORT (e.g. 7000 and 7001)."
                     : "");
@@ -362,7 +362,7 @@ bool NetSocket_Init(uint16_t local_port, const char* remote_addr) {
     ReliableChannel_NetInit();
     g_local_player_id = static_cast<uint8_t>(g_player_index);
     g_last_recv_time = GetTimeMs();
-    // 0 sentinel — the first ControlChannel_Poll call sees this and
+    // 0 sentinel -- the first ControlChannel_Poll call sees this and
     // skips its pump-stall ride-through. Otherwise the natural gap
     // between NetSocket_Init and the first main-loop tick (sometimes
     // hundreds of ms) gets mis-classified as a stall and resets the
@@ -510,7 +510,7 @@ static void PollImplLocked() {
     // title-drag, scheduler hiccup, init->first-frame gap), the
     // peer's pings probably arrived but went unread. Reset
     // g_last_recv_time to `now` so the timeout countdown effectively
-    // restarts — the MM-timer kept OUR pings flowing, so this is
+    // restarts -- the MM-timer kept OUR pings flowing, so this is
     // symmetric: neither side false-DCs the other across a stall.
     //
     // The first-call sentinel (g_last_main_pump_ms == 0) prevents a
@@ -523,7 +523,7 @@ static void PollImplLocked() {
         const uint32_t main_pause = now - g_last_main_pump_ms;
         if (main_pause > PING_TIMEOUT_MS / 2) {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "ControlChannel: main pump stalled %ums — resetting recv deadline",
+                "ControlChannel: main pump stalled %ums -- resetting recv deadline",
                 (unsigned)main_pause);
             g_last_recv_time = now;
         }
@@ -547,7 +547,7 @@ static void PollImplLocked() {
         g_connected = false;
         g_connected_at_ms = 0;
         // Surface the disconnect to the launcher even when the failure
-        // happens BEFORE we reach the BATTLE GekkoNet session — the user
+        // happens BEFORE we reach the BATTLE GekkoNet session -- the user
         // bug report ("closed client during CSS, host stayed frozen with
         // music playing") was the CSS phase + GekkoPlayerDisconnected
         // never firing because we hadn't created the battle session yet.

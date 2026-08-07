@@ -164,7 +164,7 @@ void Netplay_HandleLoadEvent(GekkoGameEvent* update, int& load_events_in_batch) 
         uint32_t rewind = g_netplay_frame - (uint32_t)frame;
         s_rb_window_rewind_sum += rewind;
         if (rewind > s_rb_window_rewind_max) s_rb_window_rewind_max = rewind;
-        // [BEAT] window — same numbers but reset on each
+        // [BEAT] window -- same numbers but reset on each
         // heartbeat emit (every ~10s) so the BEAT line
         // describes the most recent window, not session totals.
         g_beat_window_rb_sum += rewind;
@@ -196,7 +196,7 @@ void Netplay_HandleLoadEvent(GekkoGameEvent* update, int& load_events_in_batch) 
     // values AHEAD of where forward was at the same frame, and the
     // self-referential arithmetic at main_game_loop 0x405BA8/0x405BBB
     // (g_last_frame_time += N*10) writes a different byte pattern
-    // into g_last_frame_time @ 0x447DD4 — which is what produced
+    // into g_last_frame_time @ 0x447DD4 -- which is what produced
     // the "AfterimagePool +0x4A4" divergence at f=9.
     extern uint32_t g_virtual_time_ms;
     g_virtual_time_ms = (uint32_t)frame * 10;
@@ -317,7 +317,7 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
     // main_game_loop's prologue writes these every iteration,
     // but IDA xref of g_p1_input_buffer_index_field (0x4DFD0D)
     // shows the only reader is check_game_continue, which is
-    // a no-op when g_directplay_interface == NULL — and we
+    // a no-op when g_directplay_interface == NULL -- and we
     // never initialize DirectPlay. KGT scripts and
     // update_game/process_game_inputs do not read these
     // fields. The writes were just trampling adjacent slot
@@ -325,14 +325,14 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
     // their scripts.
 
     // Snapshot RNG BEFORE PGI/UG run. Used by the [HOST-TRACE] log
-    // below — distinguishes "per-frame leak inside PGI/UG" from
+    // below -- distinguishes "per-frame leak inside PGI/UG" from
     // "inter-frame leak between confirmed advances." [FM2K-DIAG addr]
     const uint32_t rng_pre_advance = *(uint32_t*)0x41FB1C;
 
     // Speculative-advance carve-out for palette flash state.
     //
     // Why: original_update_game is the game's update_game_state @
-    // 0x404CD0 — a 7-instruction stub that does nothing but
+    // 0x404CD0 -- a 7-instruction stub that does nothing but
     // decrement two palette flash timers (g_timer_countdown1 @
     // 0x4456E4 and g_timer_countdown2 @ 0x447D91). PGI also runs
     // character_state_machine which may re-fire [EB] and write
@@ -341,7 +341,7 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
     // Under runahead = 4, every wall-clock frame fires 1 confirmed
     // + 4 speculative AdvanceEvents. Each speculative advance also
     // hits update_game_state, decrementing palette timers. Net:
-    // palette drains 5x per wall-clock frame instead of 1x — a
+    // palette drains 5x per wall-clock frame instead of 1x -- a
     // 43-frame palette flash plays for ~9 wall-clock frames and
     // then "cuts out", which is the bug user reported.
     //
@@ -355,7 +355,7 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
     // Why not the same fix for shake? Shake is decremented in
     // RENDER (ProcessShakeEffect), not sim. Render runs at most
     // once per wall-clock frame regardless of advance count, so
-    // shake already drains correctly. Verified empirically — the
+    // shake already drains correctly. Verified empirically -- the
     // same diag log shows shake decrementing 1/frame while
     // palette decremented 5/frame.
     constexpr uintptr_t kEffectSys1Addr = 0x447D7D;
@@ -371,12 +371,12 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
     [[maybe_unused]] const bool running_ahead = update->data.adv.running_ahead;
     // Run-ahead-only palette snapshot. Rolling-back re-sim
     // INTENTIONALLY lets palette decrement naturally so it
-    // reaches the same final state as forward sim — paired
+    // reaches the same final state as forward sim -- paired
     // with the savestate.cpp change that now saves/restores
     // real palette bytes (was zeroed). Initial attempt
     // extended the snapshot to rolling_back too, but that
     // froze palette at the Load-time value instead of letting
-    // re-sim drain it, which is worse — replay's palette
+    // re-sim drain it, which is worse -- replay's palette
     // drains naturally over forward sim so host needs to
     // match by also draining during re-sim.
     //
@@ -409,11 +409,11 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
     // So v0.2.48's fix itself is bugged in real-netplay rollback,
     // not just my missing-skip from earlier today. Keeping
     // the SaveState_GetPostRenderRng helper compiled in but
-    // not calling it — replay determinism will need a
+    // not calling it -- replay determinism will need a
     // different approach.
     //
     // Diagnostic note: every desync we've seen has buf_idx
-    // forward=K replay=K+1 — that's gekko's RunaheadSave
+    // forward=K replay=K+1 -- that's gekko's RunaheadSave
     // (saves frame K state at end-of-K-1) vs ConfirmedSave
     // (saves frame K state at end-of-K) artifact, NOT a real
     // engine divergence. But the CROSS-PEER Local≠Remote CRC
@@ -460,7 +460,7 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
     }
     PerfMaybeReport();
 
-    // [FM2K-SPECIFIC, LOAD-BEARING] restore — see snapshot guard above.
+    // [FM2K-SPECIFIC, LOAD-BEARING] restore -- see snapshot guard above.
     if constexpr (!FM2K::kIsFM95) {
         if (running_ahead) {
             // Restore palette-flash TIMER only (see snapshot above).
@@ -529,7 +529,7 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
     // calls (those fire from CSS / spec-playback paths), so
     // without this the .pty captures only the header and
     // record-side stays at 0 snapshots. Skip rolling_back
-    // and running_ahead re-advances — they'd produce
+    // and running_ahead re-advances -- they'd produce
     // duplicate frame entries.
     if (!update->data.adv.rolling_back &&
         !update->data.adv.running_ahead) {
@@ -549,7 +549,7 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
         }
     }
 
-    // Synthetic desync trigger — runs after the frame
+    // Synthetic desync trigger -- runs after the frame
     // counter advances so we can match on a specific frame.
     // One-shot per match; arms only when the env var is
     // set. Skip on rollback re-sims (g_is_rolling_back is
@@ -557,7 +557,7 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
     // for safety against future refactors).
     MaybeFireSyntheticDesync();
 
-    // Harness terminator — clean exit at a configured battle
+    // Harness terminator -- clean exit at a configured battle
     // frame so the replay-self-test driver can pair record
     // and playback runs of identical length. Env-driven,
     // one-shot, fires on confirmed advances only (skip
@@ -610,7 +610,7 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
             !update->data.adv.rolling_back &&
             !update->data.adv.running_ahead) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "Harness: reached battle frame %u (total %u) — "
+                "Harness: reached battle frame %u (total %u) -- "
                 "flushing logs, writing .fm2krep, terminating cleanly.",
                 g_netplay_frame, s_total_confirmed);
             // Append a synthetic MATCH_END so the slice writer
@@ -646,7 +646,7 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
                 wrote ? ts : "(no MATCH_START in session_events?)");
             SaveState_FlushRngTrace(g_player_index,
                 "harness auto-terminate");
-            // Flush parity recorder — fopen("wb") is fully
+            // Flush parity recorder -- fopen("wb") is fully
             // buffered and TerminateProcess kills the stdio
             // buffer without writing. Without this the
             // record.pty hits disk as 0 bytes.
@@ -669,7 +669,7 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
     // confirmed advances only:
     //
     //   running_ahead=true → speculative runahead with
-    //     PREDICTED inputs. We must NOT record these — when
+    //     PREDICTED inputs. We must NOT record these -- when
     //     the prediction turns out wrong, GekkoNet rolls back
     //     and replays with the real input, but our recorded
     //     session_history would already contain the wrong
@@ -714,7 +714,7 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
         // backtrace ring (in-memory; flushed to disk on any
         // LOG_ERROR). FM2K_SPECTATOR_DEBUG=1 routes to disk.
         //
-        // Off by default since 2026-05-18 — set FM2K_HOST_TRACE=1
+        // Off by default since 2026-05-18 -- set FM2K_HOST_TRACE=1
         // to opt in. Previous default added ~25K lines per
         // session (36% of log volume) just for diagnosis runs.
         // [FM2K-DIAG] pool/HP addresses below are FM2K-only + env-gated.
@@ -745,23 +745,23 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
         }
 
         // (Legacy Replay::Replay_RecordFrame call retired in
-        // v0.2.27 — SpectatorNode_OnFrameConfirmed below pushes
+        // v0.2.27 -- SpectatorNode_OnFrameConfirmed below pushes
         // the same frame data into the v2 .fm2krep event stream
         // via the SessionEvent log.)
         // Spectator input forwarding: gate is here because this
         // site is already !rolling_back && !running_ahead &&
-        // new_frame — the dedup we need to avoid runahead /
+        // new_frame -- the dedup we need to avoid runahead /
         // rollback re-recording the same frame. Pre-battle
         // frames (title screen, CSS) are captured by
         // Hook_GetPlayerInput's capture_and_return, which is
         // correct for those phases (no rollback there).
         //
         // Phase F (#23, para's replay desync bug): the values
-        // gekko delivers in g_p1_input / g_p2_input are RAW —
+        // gekko delivers in g_p1_input / g_p2_input are RAW --
         // pre-SOCD, pre-facing-flip. The HOST engine then
         // applies Hook_ApplySOCD before feeding them into the
         // game. A spectator (live or .fm2krep replay) reads
-        // these stored values and ALSO applies SOCD — but
+        // these stored values and ALSO applies SOCD -- but
         // using ITS OWN env-var-derived SOCD mode, which can
         // differ from the host's. Result: divergent input on
         // any frame where the user held L+R or U+D and the
@@ -776,7 +776,7 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
         // inputs don't trigger SOCD branches), so it doesn't
         // matter what mode the spec is in. Facing flip still
         // happens on the spec side, driven by deterministic
-        // sim state — correct as long as sim hasn't diverged
+        // sim state -- correct as long as sim hasn't diverged
         // upstream (it hasn't, since we now feed identical
         // post-SOCD inputs to both engines).
         const uint16_t p1_for_spec = Hook_ApplySOCD_Public(g_p1_input);
@@ -800,12 +800,12 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
         }
 
         // Per-frame state fingerprint for spectator-desync
-        // diagnosis — pairs with [SPEC-FP] log in
+        // diagnosis -- pairs with [SPEC-FP] log in
         // RunSpectatorTick. Same sample addresses; spectator's
         // bf counter is its own pop count post-battle-entry,
         // host's bf is g_netplay_frame. Match by bf to find
         // first divergent frame.
-        // [HOST-FP] every 30 frames — same diagnostic-ring
+        // [HOST-FP] every 30 frames -- same diagnostic-ring
         // routing as [HOST-TRACE] above (CUSTOM category).
         // Same FM2K_HOST_TRACE=1 env gate so the pair stays
         // together when investigating a desync.
@@ -823,7 +823,7 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
             const uint32_t timer   = *(uint32_t*)0x470044;
             // World positions live in the object pool: slot 0 +0x08
             // = pos_x, slot 1 = slot 0 + 382. (0x470020 was the
-            // CSS character-slot index, not the in-battle x —
+            // CSS character-slot index, not the in-battle x --
             // earlier logs were comparing useless data.)
             constexpr uintptr_t POOL = 0x4701E0;
             constexpr size_t    SLOT = 382;
@@ -857,7 +857,7 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
         }
     }
 
-    // Shake safety cap removed — the real fix is letting the
+    // Shake safety cap removed -- the real fix is letting the
     // render-path timer decrement persist (see carve-out in
     // main_loop_trampoline.cpp:RenderFrameWithSnapshot). With
     // that in place, the KGT-scripted `Duration` value the
@@ -885,7 +885,7 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
     // Tell Hook_RenderGame there is an unrendered authoritative
     // tick. The render hook is allowed to draw exactly this one
     // sim state, then clears the flag. Rolled-back replay ticks
-    // do not set the flag — we only render the final resolved
+    // do not set the flag -- we only render the final resolved
     // state of an advance, never the intermediate replay frames.
     extern bool g_frame_pending_render;
     if (!update->data.adv.rolling_back) {
@@ -893,7 +893,7 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
     }
 
     // Periodic status every 500 frames (~5 sec). Gate on
-    // NON-rolling_back advances only — in stress mode g_netplay_frame
+    // NON-rolling_back advances only -- in stress mode g_netplay_frame
     // hits any given value N times (once forward, N-1 times on
     // replay) so a naive `% 500 == 0` fires on every replay
     // pass and floods the log. Also dedupe by last-logged frame

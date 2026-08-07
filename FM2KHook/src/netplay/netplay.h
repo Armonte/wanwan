@@ -18,7 +18,7 @@
 // Returns true on success
 bool Netplay_Init(int player_index, uint16_t local_port, const char* remote_addr);
 
-// Spectator-mode init. No HELLO/HELLO_ACK handshake — we're a viewer, not a
+// Spectator-mode init. No HELLO/HELLO_ACK handshake -- we're a viewer, not a
 // player. Sets up the multiplexed UDP socket bound to local_port with
 // host_addr ("ip:port") as the latched remote, registers OnControlMessage
 // for SPEC_JOIN_ACK / SPEC_JOIN_REDIRECT dispatch, and sends SPEC_JOIN_REQ
@@ -168,7 +168,7 @@ bool Netplay_StartBattle();
 // Used when FM2K_STRESS_MODE=1 / g_stress_mode=true. GekkoNet artificially
 // rolls back every `check_distance` frames and verifies state determinism
 // via checksum. Any desync fired here is a local-determinism bug in our
-// save/load or sim path — not a network issue.
+// save/load or sim path -- not a network issue.
 // Returns true if session started successfully.
 bool Netplay_StartStressBattle();
 
@@ -211,12 +211,12 @@ bool Netplay_IsSpectatorSession();
 // Drive the spectator's GekkoSpectateSession for one tick: poll network,
 // drain session events, drain Save/Load/Advance events. On AdvanceEvent
 // the input cache (g_p1_input / g_p2_input) is updated and the game's
-// process_game_inputs + update_game functions run — same as the host's
+// process_game_inputs + update_game functions run -- same as the host's
 // path. Returns true if the sim advanced this tick (caller renders);
 // false if the session is stalled waiting for confirmed inputs.
 bool Netplay_ProcessSpectatorPhase();
 
-// (SpectatorSaveLoadMirror was tried + removed — GekkoNet's SpectatorSession
+// (SpectatorSaveLoadMirror was tried + removed -- GekkoNet's SpectatorSession
 // emits only AdvanceEvent, never Save/Load. See spectator_session.cpp
 // UpdateSession. The desync fix moved to INPUT_BATCH redundancy +
 // gap-detection on the spectator-node side instead.)
@@ -321,6 +321,6 @@ void Netplay_PollRunaheadToggle();
 
 // [BEAT] heartbeat. Emits at most one INFO line per ~10s of battle
 // wall-clock with role/ping/jitter/FA/delay/ra/pred/rollback stats.
-// Safe to call every tick — internally rate-limited. No-op outside an
+// Safe to call every tick -- internally rate-limited. No-op outside an
 // active battle session.
 void Netplay_TickHeartbeat();

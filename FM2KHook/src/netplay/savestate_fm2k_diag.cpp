@@ -78,7 +78,7 @@ const RegionChecksums& SaveState_GetRegionChecksums() {
 
 
 
-// Cheap path: gameplay fingerprint only — what GekkoNet actually compares
+// Cheap path: gameplay fingerprint only -- what GekkoNet actually compares
 // for desync detection. Called on every save. ~44 B of hashing.
 uint32_t SaveState_CalculateFingerprint() {
     g_region_checksums.rng = *(uint32_t*)ADDR_RNG_SEED;
@@ -139,7 +139,7 @@ uint32_t SaveState_CalculateFullChecksum() {
     // so ANY object mutation shows up in the combined checksum immediately.
     g_region_checksums.object_pool = Fletcher32((uint8_t*)ADDR_OBJECT_POOL, SIZE_OBJECT_POOL);
 
-    // Character dynamic state — only hash loaded slots (first byte != 0
+    // Character dynamic state -- only hash loaded slots (first byte != 0
     // indicates .kgt magic "2DKG"). In 1v1 that's 2 of 8, trimming this
     // cost from 460 KB to ~115 KB.
     uint32_t char_ck = 0;
@@ -157,7 +157,7 @@ uint32_t SaveState_CalculateFullChecksum() {
     uint32_t it2 = Fletcher32((uint8_t*)0x447F00, 0x447F20 - 0x447F00);   // g_prev_input_state
     uint32_t it3 = Fletcher32((uint8_t*)0x447F40, 0x447F80 - 0x447F40);   // g_processed_input + g_input_changes
     // History ring buffers: 1024 frames × 2 bytes per player. Must match across
-    // peers byte-for-byte — if a facing/slot swap mutates the stored input on
+    // peers byte-for-byte -- if a facing/slot swap mutates the stored input on
     // one side and not the other, these CRCs diverge on frame 1 and give us
     // an early desync signal instead of waiting for the cascade into game_state.
     uint32_t it4 = Fletcher32((uint8_t*)0x4280E0, 0x800);                 // g_p1_input_history (uint16[1024])
@@ -169,7 +169,7 @@ uint32_t SaveState_CalculateFullChecksum() {
     g_region_checksums.effect_sys2 = Fletcher32((uint8_t*)EffectAddrs::EFFECT_SYS2, EffectAddrs::EFFECT_SYS2_SZ);
     g_region_checksums.shake_effects = Fletcher32((uint8_t*)EffectAddrs::SHAKE_EFFECTS, EffectAddrs::SHAKE_EFFECTS_SZ);
 
-    // Wave C regions — PREVIOUSLY SAVED BUT NOT HASHED.
+    // Wave C regions -- PREVIOUSLY SAVED BUT NOT HASHED.
     // These silently diverged until their effects leaked into the object pool
     // or slot state. Hashing them now means any divergence trips the combined
     // checksum at its source frame instead of cascading.
@@ -203,7 +203,7 @@ uint32_t SaveState_CalculateFullChecksum() {
         mix(g_region_checksums.effect_sys1);
         mix(g_region_checksums.effect_sys2);
         mix(g_region_checksums.shake_effects);
-        // Wave C regions — now properly included
+        // Wave C regions -- now properly included
         mix(afterimage_ck);
         mix(list_heads_ck);
         mix(node_pool_ck);
@@ -292,19 +292,19 @@ static const DiagRegion g_diag_regions[] = {
     { 0x4701C0,   0x4, "ReplayMode",                   false },
     { 0x4701C4,   0x8, "HitEffectState",               false },
     { 0x4701CC,   0x4, "hInstance",                     true  },  // ALWAYS different per process
-    // Object pool windows — hex dumps for small ones (<=256B), CRCs for large.
+    // Object pool windows -- hex dumps for small ones (<=256B), CRCs for large.
     // Combined CRC now covers the FULL 391 KB pool; these windows localize any
     // divergence to specific object-index ranges in the diagnostic log.
     { 0x4701E0, 0x100, "ObjectPool_First256",          false },  // Obj[0] first 256 B
     { 0x4702E0, 0x100, "ObjectPool_Second256",         false },  // Obj[0] tail + Obj[1] first 130 B
-    { 0x470C52, 0x100, "ObjectPool_Obj7_first256",     false },  // Obj[7] — was changing invisibly pre-fix
+    { 0x470C52, 0x100, "ObjectPool_Obj7_first256",     false },  // Obj[7] -- was changing invisibly pre-fix
     { 0x4703E0, 0x800, "ObjectPool_Obj_2_10_CRC",      false },  // Obj[2..10] aggregate CRC (no hex)
     { 0x471000, 0x800, "ObjectPool_Obj_11_20_CRC",     false },  // Obj[11..20] aggregate CRC
     { 0x4720C2, 0x2000,"ObjectPool_Obj_21_42_CRC",     false },  // Obj[21..42] aggregate CRC (approx)
     { 0x447D7D,  0x2A, "EffectSystem1",                false },  // saved + hashed
     { 0x4456D0,  0x2C, "EffectSystem2",                false },  // saved + hashed
     { 0x447DA9,  0x28, "ShakeEffects",                 false },  // saved + hashed
-    // Wave C regions — now saved AND hashed in combined CRC. Showing their
+    // Wave C regions -- now saved AND hashed in combined CRC. Showing their
     // per-region CRCs here lets us pinpoint which of these 4 newly-hashed
     // regions is the divergent one when the next stress desync fires.
     { 0x4259A8,   0x4, "CurrentObjectPtr",             false },  // g_current_object_ptr
@@ -317,7 +317,7 @@ static constexpr int NUM_DIAG_REGIONS = sizeof(g_diag_regions) / sizeof(g_diag_r
 void SaveState_DumpDesyncDiagnostic(int frame, uint32_t local_crc, uint32_t remote_crc, int player_index) {
     char filename[256];
     if (g_stress_mode) {
-        // Stress-mode desyncs are single-instance determinism failures —
+        // Stress-mode desyncs are single-instance determinism failures --
         // tag the file so they're distinguishable from online desyncs.
         snprintf(filename, sizeof(filename), "FM2K_stress_desync_f%d.log", frame);
     } else {
@@ -356,7 +356,7 @@ void SaveState_DumpDesyncDiagnostic(int frame, uint32_t local_crc, uint32_t remo
     fprintf(f, "  p2_hp      = %d  (g_p2_hp @ 0x4EDCC4, = g_p1_hp + 57407)\n", *(int32_t*)0x4EDCC4);
     fprintf(f, "  game_timer = %u  (g_game_timer @ 0x470044)\n", *(uint32_t*)0x470044);
     fprintf(f, "  round_timer= %u  (g_round_timer @ 0x470060)\n\n", *(uint32_t*)0x470060);
-    // Legacy demo-mode fields — retain for backward diff compatibility. These
+    // Legacy demo-mode fields -- retain for backward diff compatibility. These
     // used to be (mis-)labeled as p1_hp / p1_max_hp / p2_hp / p2_max_hp in
     // pre-audit dumps; they are actually g_demo_mode_player_id / g_demo_mode_hp
     // etc. Keep them visible so pre-existing log comparison scripts don't
@@ -372,8 +372,8 @@ void SaveState_DumpDesyncDiagnostic(int frame, uint32_t local_crc, uint32_t remo
     // frame: the forward-sim save (first time we reached this frame) and the
     // replay save (after Load+Advance re-simulated this frame). Any region
     // whose CRC differs between these two snapshots is a region whose state
-    // was NOT deterministically reproduced from the saved state — that IS
-    // the bug source. Same logical moment on both sides — no timing artifacts.
+    // was NOT deterministically reproduced from the saved state -- that IS
+    // the bug source. Same logical moment on both sides -- no timing artifacts.
     // ============================================================================
     {
         int saved_frame = frame < 0 ? 0 : frame;
@@ -385,9 +385,9 @@ void SaveState_DumpDesyncDiagnostic(int frame, uint32_t local_crc, uint32_t remo
 
         fprintf(f, "\n=== FORWARD-vs-REPLAY Per-Region Diff ===\n");
         if (!fwd.valid) {
-            fprintf(f, "  (no forward snapshot for frame %d — rollback buffer stale)\n", saved_frame);
+            fprintf(f, "  (no forward snapshot for frame %d -- rollback buffer stale)\n", saved_frame);
         } else if (!have_replay) {
-            fprintf(f, "  (no replay snapshot for frame %d — desync may have fired before\n"
+            fprintf(f, "  (no replay snapshot for frame %d -- desync may have fired before\n"
                        "   GekkoNet executed a Load+Advance for this frame; only forward shown)\n", saved_frame);
             auto fwd_row = [&](const char* n, uint32_t v) {
                 fprintf(f, "  %-24s  0x%08X (forward only)\n", n, v);
@@ -427,7 +427,7 @@ void SaveState_DumpDesyncDiagnostic(int frame, uint32_t local_crc, uint32_t remo
             fprintf(f,
                 "\n  NOTE: forward = CRCs at the FIRST save for frame %d (forward-sim).\n"
                 "        replay  = CRCs at the SECOND save for frame %d (after Load+Advance).\n"
-                "        Both captured at save time — no timing artifacts from later mutation.\n"
+                "        Both captured at save time -- no timing artifacts from later mutation.\n"
                 "        Any *** DIFF *** row is the bug: that region replayed nondeterministically.\n",
                 saved_frame, saved_frame);
 
@@ -458,7 +458,7 @@ void SaveState_DumpDesyncDiagnostic(int frame, uint32_t local_crc, uint32_t remo
                 fp_row16("p2_input",    a.p2_input,    b.p2_input);
                 fprintf(f,
                     "  NOTE: p1_hp/p2_hp are read as uint32 from unaligned u16 HP\n"
-                    "        addresses (0x4DFC85 / 0x4EDCC4) — upper 16 bits include\n"
+                    "        addresses (0x4DFC85 / 0x4EDCC4) -- upper 16 bits include\n"
                     "        adjacent CharDynamic bytes. A DIFF in only those upper\n"
                     "        bits points at a neighboring field, not HP itself.\n"
                     "        p?_input is read from input_history[buf_idx & 0x3FF].\n");
@@ -466,11 +466,11 @@ void SaveState_DumpDesyncDiagnostic(int frame, uint32_t local_crc, uint32_t remo
 
             // Per-object-slot breakdown. If ObjectPool(full) differed, this
             // pinpoints the exact slot indices. The per-slot CRCs aren't
-            // computed at save time any more (too expensive — see
+            // computed at save time any more (too expensive -- see
             // SaveState_Save) so we derive them here from the FORWARD save
             // buffer (state->object_pool, which is still live in the rollback
             // ring). Replay bytes aren't retained, so we compute replay-side
-            // per-slot CRCs from live memory — valid as long as we're dumping
+            // per-slot CRCs from live memory -- valid as long as we're dumping
             // shortly after the desync before many more frames have run.
             if (fwd.object_pool != replay.object_pool) {
                 fprintf(f, "\n=== Object Slot Divergence ===\n");
@@ -495,7 +495,7 @@ void SaveState_DumpDesyncDiagnostic(int frame, uint32_t local_crc, uint32_t remo
                     }
                 }
                 if (printed == 0) {
-                    fprintf(f, "  (aggregate ObjectPool CRC differed but no slot matched on-demand —\n"
+                    fprintf(f, "  (aggregate ObjectPool CRC differed but no slot matched on-demand --\n"
                                "   either the live-memory state shifted between save and dump, or\n"
                                "   the divergence is in inter-slot padding)\n");
                 }
@@ -527,7 +527,7 @@ void SaveState_DumpDesyncDiagnostic(int frame, uint32_t local_crc, uint32_t remo
     // Input history per-frame table. The histories are 1024-frame rings
     // indexed by g_input_buffer_index at 0x447EE0. We print `window` slots
     // ending at the current buf_idx so both peers dump the same logical
-    // range — diff the two files side-by-side and the first differing
+    // range -- diff the two files side-by-side and the first differing
     // frame line points directly at the asymmetric input write.
     {
         const uint32_t buf_idx = *(uint32_t*)0x447EE0;
@@ -550,7 +550,7 @@ void SaveState_DumpDesyncDiagnostic(int frame, uint32_t local_crc, uint32_t remo
     // Static region (bytes 0..CHAR_SLOT_DYNAMIC_OFFSET) is the character
     // template loaded from .kgt during CSS. If this region's CRC differs
     // peer-to-peer for the same slot index, the two peers put DIFFERENT
-    // characters in the SAME logical slot — CSS character assignment is
+    // characters in the SAME logical slot -- CSS character assignment is
     // perspective-based (local vs remote) rather than left vs right.
     // That's the root cause of post-residue-wipe desyncs, because the
     // game's first advance tick reads the template and writes dynamic
@@ -567,7 +567,7 @@ void SaveState_DumpDesyncDiagnostic(int frame, uint32_t local_crc, uint32_t remo
         fprintf(f, "  Slot[%zu] base=0x%08X  static_crc=0x%08X  dynamic_crc=0x%08X\n",
                 i, (unsigned)slot_base, static_crc, dynamic_crc);
 
-        // First 32 bytes of the static region — character ID / name lives at
+        // First 32 bytes of the static region -- character ID / name lives at
         // the start of the template for most FM2K games, so a visual diff
         // here immediately says "same char in this slot?".
         const uint8_t* p = (const uint8_t*)slot_base;

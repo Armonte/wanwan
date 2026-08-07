@@ -45,7 +45,7 @@ void SpectatorNode_OnMatchStart(
 {
     g_state.broadcasting = true;
     // Flush any unbatched CSS events before the match-start MATCH_START
-    // event hits the wire — keeps the per-INPUT-frame numbering monotonic
+    // event hits the wire -- keeps the per-INPUT-frame numbering monotonic
     // across the CSS→battle seam. Without this, trailing CSS frames sit
     // unbatched in session_events past last_flushed_event_idx; their
     // session-relative INPUT-frame indices are below the next live battle
@@ -55,7 +55,7 @@ void SpectatorNode_OnMatchStart(
 
     // Stash the initial-match metadata as a 96-byte payload that's the
     // canonical MATCH_START event body (layout pinned by Replay::ReplayHeader
-    // in replay.h — kept stable so the wire schema doesn't churn).
+    // in replay.h -- kept stable so the wire schema doesn't churn).
     uint8_t* h = g_state.initial_match.header_bytes;
     std::memset(h, 0, 96);
     uint32_t magic   = 0x52504D46;  // Replay::REPLAY_MAGIC
@@ -80,7 +80,7 @@ void SpectatorNode_OnMatchStart(
         std::memcpy(h + 81, &round_time_sec, 4);
         std::memcpy(h + 85, &round_count,    4);
     }
-    // frame_count at h+92 stays 0 — subscribers get INPUT_BATCH frames live.
+    // frame_count at h+92 stays 0 -- subscribers get INPUT_BATCH frames live.
     g_state.initial_match.valid = true;
 
     // C6: append MATCH_START as a SessionEvent op so the metadata flows in
@@ -111,7 +111,7 @@ void SpectatorNode_OnFrameConfirmed(uint16_t p1_input, uint16_t p2_input) {
     g_state.udp_ring_p2[g_state.total_input_count % SPEC_UDP_WINDOW] = p2_input;
     ++g_state.total_input_count;
 
-    // Live broadcast batching window — only fan out to existing subscribers.
+    // Live broadcast batching window -- only fan out to existing subscribers.
     // Cadence trigger: every BROADCAST_BATCH_FRAMES new INPUT events.
     const uint32_t pending_inputs =
         g_state.total_input_count - g_state.flushed_input_count;
@@ -149,7 +149,7 @@ void SpectatorNode_OnMatchEnd(const MatchEndPayload& p) {
 // Append-and-flush helpers. Called by host pin sites in netplay.cpp /
 // savestate.cpp immediately after the local memory write. The append+flush
 // pair guarantees the op reaches subscribed spectators before the next
-// INPUT event in the stream — drain-at-head semantics on the receiver
+// INPUT event in the stream -- drain-at-head semantics on the receiver
 // then apply the op exactly when the spectator's local sim is about to
 // consume the same logical frame the host did.
 
@@ -172,11 +172,24 @@ void AppendOpAndFlush(const SessionEvent& ev) {
         }
     }
     ++g_state.total_op_count;
+    // Deep-join anchor (Design 2): remember where the CURRENT char-select
+    // starts so a between-matches joiner can be backfilled from here instead
+    // of from frame 0. Recorded BEFORE the push_back, so the index is the
+    // CSS_ENTERED op itself and the frame is the one the next INPUT will
+    // carry (AppendInput uses total_input_count pre-increment). O(1); done at
+    // this single choke point so no future CSS_ENTERED caller can miss it.
+    if (ev.type == SessionEventType::CSS_ENTERED) {
+        g_state.have_css_anchor        = true;
+        g_state.css_anchor_event_idx   = g_state.session_events.size();
+        g_state.css_anchor_input_frame = g_state.total_input_count;
+    } else if (ev.type == SessionEventType::MATCH_END) {
+        g_state.have_prior_match = true;   // a set is now in progress
+    }
     g_state.session_events.push_back(ev);
     // Flush eagerly when subscribers exist (host with live spectators OR
     // relay node with sub-spectators). When the subscriber list is empty,
     // there's nothing to send; late joiners get the full backlog via
-    // SendSessionBackfillTo. Note: we don't gate on `broadcasting` —
+    // SendSessionBackfillTo. Note: we don't gate on `broadcasting` --
     // that flag is host-side match state and doesn't apply to the relay
     // path where a spectator's HandleSpecData re-Appends incoming ops
     // to its own session_events for sub-spectator forwarding.
@@ -231,7 +244,7 @@ void SpectatorNode_AppendFingerprint(uint32_t hash) {
     AppendOpAndFlush(ev);
 }
 
-// C3.5 — round events. Snapshot input-frame at ROUND_START so AppendRoundEnd
+// C3.5 -- round events. Snapshot input-frame at ROUND_START so AppendRoundEnd
 // can compute frames_elapsed without the hook needing access to the private
 // total_input_count counter.
 static uint32_t s_round_start_input_frame = 0;
@@ -246,7 +259,7 @@ static uint32_t s_round_start_input_frame = 0;
 static uint8_t s_last_seen_rounds_won_p1 = 0;
 static uint8_t s_last_seen_rounds_won_p2 = 0;
 
-// C10 — 1-based per-session match counter. Bumped at every
+// C10 -- 1-based per-session match counter. Bumped at every
 // AppendMatchStart. Reset to 0 in SpectatorNode_AppendSessionId so a
 // new session restarts numbering at 1 for its first match.
 static uint8_t s_match_index_in_session = 0;
@@ -256,7 +269,7 @@ void SpectatorNode_AppendRoundStart(uint8_t  round_idx,
                                     uint16_t p2_hp_max,
                                     uint16_t timer_seconds) {
     s_round_start_input_frame = g_state.total_input_count;
-    // New round starting — clear stale rounds_won cache from a possibly
+    // New round starting -- clear stale rounds_won cache from a possibly
     // earlier match. AppendRoundEnd repopulates it as rounds tick by.
     if (round_idx == 1) {
         s_last_seen_rounds_won_p1 = 0;
@@ -286,20 +299,20 @@ void SpectatorNode_AppendRoundEnd(uint8_t  winner_idx,
     ev.u.round_end.frames_elapsed   = frames;
     AppendOpAndFlush(ev);
 
-    // Cache live rounds_won AT THIS MOMENT — accurate snapshot for
+    // Cache live rounds_won AT THIS MOMENT -- accurate snapshot for
     // AppendMatchEnd to use later. The match-over path resets these
     // counters before Netplay_EndBattle's read fires.
     s_last_seen_rounds_won_p1 = (uint8_t)*(uint32_t*)0x4DFC6D;
     s_last_seen_rounds_won_p2 = (uint8_t)*(uint32_t*)0x4EDCAC;
 
-    // C10 — also push this round's result into SharedMem so the launcher
+    // C10 -- also push this round's result into SharedMem so the launcher
     // can include it in the hub match_result JSON's "rounds[]" array.
     SharedMem_PublishRoundResult(winner_idx, p1_hp_remaining,
                                  p2_hp_remaining, frames);
 }
 
 // =============================================================================
-// FINGERPRINT (C9) — diagnostic state hash for desync detection
+// FINGERPRINT (C9) -- diagnostic state hash for desync detection
 // =============================================================================
 //
 // Both host and spectator sample the same set of FM2K state fields, hash
@@ -310,7 +323,7 @@ void SpectatorNode_AppendRoundEnd(uint8_t  winner_idx,
 // and logs WARN on mismatch, including both values. Replaces the manual
 // [HOST-FP] / [SPEC-FP] log-grep diagnostic once enabled.
 //
-// Gated on FM2K_SPEC_FINGERPRINT=1 — off by default so the wire stays
+// Gated on FM2K_SPEC_FINGERPRINT=1 -- off by default so the wire stays
 // quiet for normal play.
 
 bool SpectatorFingerprint_Enabled() {
@@ -324,7 +337,7 @@ bool SpectatorFingerprint_Enabled() {
 
 uint32_t SpectatorFingerprint_Compute() {
     // Same fields the [HOST-FP]/[SPEC-FP] logs already pin. If we ever add
-    // fields, both sides update together — divergent samples would yield
+    // fields, both sides update together -- divergent samples would yield
     // a hash mismatch that the spectator catches at runtime.
     constexpr uintptr_t POOL = 0x4701E0;
     constexpr size_t    SLOT = 382;
@@ -391,7 +404,7 @@ void SpectatorNode_AppendMatchStart(const uint8_t header[96]) {
     }
     g_state.last_pre_match_init_idx = static_cast<int64_t>(pre_init_idx);
 
-    // C10 — bump the per-session match index and publish to SharedMem
+    // C10 -- bump the per-session match index and publish to SharedMem
     // so the launcher can include {session_id, match_index_in_session}
     // in its match_result JSON to the hub.
     if (s_match_index_in_session < 255) ++s_match_index_in_session;
@@ -417,7 +430,7 @@ void SpectatorNode_AppendMatchEnd(const MatchEndPayload& p) {
     // Override caller's rounds_won with the cached values from the most
     // recent ROUND_END. Netplay_EndBattle reads from the live FM2K
     // counters but those get reset by the match-over object's update
-    // before the read. Take the max of (cache, passed) — the cache is
+    // before the read. Take the max of (cache, passed) -- the cache is
     // reliable, but if for any reason the cache is stale (no
     // AppendRoundEnd fired yet) we fall back to whatever Netplay
     // passed.
@@ -448,7 +461,7 @@ void SpectatorNode_AppendMatchEnd(const MatchEndPayload& p) {
 
 void SpectatorNode_AppendSessionId(uint64_t session_id) {
     g_state.session_id = session_id;
-    // C10 — new session, restart match numbering. The first
+    // C10 -- new session, restart match numbering. The first
     // AppendMatchStart for this session bumps to 1.
     s_match_index_in_session = 0;
     SessionEvent ev{};

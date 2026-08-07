@@ -1,18 +1,18 @@
 #pragma once
 
-// FM2K NAT traversal — STUN probe + UDP hole-punch driver.
+// FM2K NAT traversal -- STUN probe + UDP hole-punch driver.
 //
 // Wire protocol (matches docs/FM2K_Matchmaking_Design.md §15.4):
 //
 //   0xCD 0x01 [24-byte user_id] [padded NULs]
-//        STUN probe — client -> hub. Hub replies and stores reflexive
+//        STUN probe -- client -> hub. Hub replies and stores reflexive
 //        (ip, port) on the user. Used to learn our public mapping.
 //
 //   0xCD 0x02 [4-byte ip_be] [2-byte port_be]
-//        STUN ack — hub -> client. Confirms reflexive address.
+//        STUN ack -- hub -> client. Confirms reflexive address.
 //
 //   0xCD 0x10 [16-byte match_token]
-//        CTRL_PUNCH — peer-to-peer punch packet. Burst-sent on
+//        CTRL_PUNCH -- peer-to-peer punch packet. Burst-sent on
 //        match_start; first authentic inbound from peer latches the
 //        connectivity (existing peer-learning slot in
 //        control_channel.cpp picks up from there).
@@ -38,7 +38,7 @@ bool SendStunProbe();
 
 // Discover the client's own GLOBAL IPv6 endpoint (2000::/3) via the
 // connected-UDP source-address trick: connect() a scratch v6 socket to a
-// global v6 destination (sends nothing) and read getsockname() — that is the
+// global v6 destination (sends nothing) and read getsockname() -- that is the
 // source address the OS uses outbound, i.e. the address a peer should send to
 // so v6 firewall pinholes line up. Fills `out` (addr + our bound UDP port) and
 // returns true on a global v6; false on a v4-only host. Idempotent, no wire I/O.
@@ -55,7 +55,7 @@ void DiscoverAndPublishLocalV6();
 const sockaddr_in6* GetLocalGlobalV6();
 
 // Burst-punch toward (peer_ip, peer_port). Sends ~30 packets over
-// ~300 ms with priority boost. Idempotent — if Punch_Tick has
+// ~300 ms with priority boost. Idempotent -- if Punch_Tick has
 // already latched the peer for this match_token, returns immediately.
 //
 // lan_ip_be/lan_port (optional, 0 = none): the peer's PRIVATE same-LAN
@@ -78,13 +78,13 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
 
 // Called once per call to control_channel.cpp::RawReceive when the
 // first byte of an inbound packet is 0xCD. `data`/`len` is the full
-// datagram. `from` is the source sockaddr — used as the candidate
+// datagram. `from` is the source sockaddr -- used as the candidate
 // peer address when the packet authenticates via match_token.
 void HandleDatagram(const uint8_t* data, size_t len, const sockaddr_storage& from);
 
 // Hex-encode the 16-byte match_token (32 chars) into `out` if it has
 // been latched (StartPunch was called). Returns true on success, false
-// if the token isn't set yet — in which case `out` is left as an empty
+// if the token isn't set yet -- in which case `out` is left as an empty
 // string. `out_size` must be >= 33 (32 hex chars + NUL).
 //
 // Same token on both peers post-NAT-punch; usable as a cross-peer
@@ -95,12 +95,12 @@ bool GetMatchTokenHex(char* out, size_t out_size);
 // Relay fallback
 // =============================================================================
 // Read FM2K_HUB_RELAY_ADDR + FM2K_HUB_RELAY_SESSION env vars; configures
-// the relay envelope used when direct punch fails. Idempotent — safe to
+// the relay envelope used when direct punch fails. Idempotent -- safe to
 // call from Netplay_Init regardless of whether relay info is present.
 // Returns true if both env vars are set and parsed cleanly.
 bool ConfigureRelay();
 
-// True once we've decided to fall back to relaying — set after
+// True once we've decided to fall back to relaying -- set after
 // StartPunch's burst completes without a peer-latch, OR explicitly
 // via ForceRelayMode() (test hook). Once true, RawSend wraps every
 // gameplay packet in a 0xCF envelope and sends to the relay; RawReceive
@@ -108,7 +108,7 @@ bool ConfigureRelay();
 bool IsRelayMode();
 void ForceRelayMode();   // test/diagnostic only
 
-// Borrowed pointers — caller must not free or modify. Valid for the
+// Borrowed pointers -- caller must not free or modify. Valid for the
 // lifetime of the process once ConfigureRelay() returned true.
 const sockaddr_in* GetRelayAddr();
 const uint8_t*     GetRelaySessionId();   // 16 bytes

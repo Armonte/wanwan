@@ -1,4 +1,4 @@
-// host_clock.cpp — host-clock sync + "rift" frame pacing. See host_clock.h.
+// host_clock.cpp -- host-clock sync + "rift" frame pacing. See host_clock.h.
 #include "host_clock.h"
 #include "control_channel_internal.h"   // g_rtt_ms, g_local_player_id
 #include <SDL3/SDL_log.h>
@@ -166,7 +166,7 @@ void OnInboundTimestamp(uint64_t peer_host_clock_send_us, uint32_t peer_frame,
 
 float OneWayLatencyFrames(uint32_t rtt_ms) {
     // Honest baseline (see header): RTT/2 in frames (ms/2 / 10ms-per-frame). We do
-    // NOT use the host-clock excess here — it's biased ~one transit and would push
+    // NOT use the host-clock excess here -- it's biased ~one transit and would push
     // the rift toward "behind", hurting exactly the cross-region case we care about.
     return ((float)rtt_ms * 0.5f) / 10.0f;
 }

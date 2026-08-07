@@ -1,4 +1,4 @@
-// reliable_channel.h — reliable-ordered (+ future FEC) message layer over UDP.
+// reliable_channel.h -- reliable-ordered (+ future FEC) message layer over UDP.
 //
 // Sits on top of vendored reliable.io (per-packet seq/ack + fragmentation) and
 // adds: logical channels, delivery classes, in-order delivery, and ack-driven

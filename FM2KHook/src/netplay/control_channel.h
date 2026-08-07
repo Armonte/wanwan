@@ -58,12 +58,12 @@ void ControlChannel_Poll();
 
 // Borrow the underlying UDP SOCKET for nat_traversal/STUN. Returns
 // INVALID_SOCKET if the channel hasn't been initialized. Caller must
-// not closesocket() — the socket is owned by control_channel.
+// not closesocket() -- the socket is owned by control_channel.
 SOCKET ControlChannel_GetSocket();
 
 // Latch a verified peer address into the slot used by ControlChannel_Send.
 // Called from nat_traversal when the first authenticated CTRL_PUNCH packet
-// lands — the existing 0xCC HELLO/HELLO_ACK loop then sends to the right
+// lands -- the existing 0xCC HELLO/HELLO_ACK loop then sends to the right
 // place. Idempotent; subsequent calls overwrite (which is fine, the peer
 // addr should only update on legitimate authentication).
 void ControlChannel_LatchPeerAddr(const sockaddr_storage& peer);
@@ -161,7 +161,7 @@ void ControlChannel_SendCharUnlock();
 // Send CSS start signal (both players synced, start counting frames NOW)
 void ControlChannel_SendCSSStart();
 
-// Send battle ready signal (for CSS sync). No payload — just a CSS-sync
+// Send battle ready signal (for CSS sync). No payload -- just a CSS-sync
 // rendezvous signal. Input delay is negotiated separately over
 // DELAY_PROPOSAL (see ControlChannel_SendDelayProposal) so both peers
 // run an identical value rather than each picking its own.
@@ -204,7 +204,7 @@ void ControlChannel_SendHostConfig(uint32_t selected_stage,
 void ControlChannel_SendDisconnect();
 
 // Send a short chat message to the remote peer (truncated to 23 chars + NUL).
-// Peer-to-peer, low-latency — intended for in-match quick chat only.
+// Peer-to-peer, low-latency -- intended for in-match quick chat only.
 // Full chat (history, lobby-scoped) goes over the lobby TCP channel when
 // the matchmaking server lands.
 void ControlChannel_SendChat(const char* text);

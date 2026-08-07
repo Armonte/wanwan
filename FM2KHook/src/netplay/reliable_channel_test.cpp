@@ -1,4 +1,4 @@
-// reliable_channel_test.cpp — host-native unit test for the ReliableChannel layer.
+// reliable_channel_test.cpp -- host-native unit test for the ReliableChannel layer.
 //
 // Proves, WITHOUT the game or Windows, that:
 //   1. reliable-ordered messages are delivered in order,
@@ -54,7 +54,7 @@ static void OnDeliver(void* ctx, uint8_t chan, const uint8_t* data, int len) {
     R->msgs.emplace_back(chan, std::string(reinterpret_cast<const char*>(data), len));
 }
 
-// Pump a link's queued datagrams into its destination endpoint (strip nothing —
+// Pump a link's queued datagrams into its destination endpoint (strip nothing --
 // the RC OnDatagram expects the payload after the 0xCB tag, and our LinkSend
 // captured exactly what TransmitCb produced INCLUDING the 0xCB tag, so strip it).
 static void PumpLink(Link& L) {
@@ -138,7 +138,7 @@ int main() {
     }
     CHECK(ordered2, "still strictly ordered under loss");
 
-    // ---- Test 3: one-way stream — acks must flow back via the carrier so the
+    // ---- Test 3: one-way stream -- acks must flow back via the carrier so the
     // sender's unacked map drains (not resend-forever). B never app-sends. ----
     printf("[3] one-way stream, ack-carrier drains sender unacked\n");
     Recv rb3; Link a2b3, b2a3;
@@ -167,7 +167,7 @@ int main() {
            a2b3_count_before, a2b3_count_after, tail_growth);
     CHECK(tail_growth < M3 * 3, "one-way: sender stopped resending after acks (no resend-forever)");
 
-    // ---- Test 4: CRC integrity — a corrupted datagram must be DROPPED, never
+    // ---- Test 4: CRC integrity -- a corrupted datagram must be DROPPED, never
     // delivered as valid (this is what makes FEC safe against silent desync). ----
     printf("[4] corruption integrity: bit-flipped datagram dropped, not delivered\n");
     Recv rb4; Link a2b4, b2a4;
@@ -207,7 +207,7 @@ int main() {
     (void)no_garbage;
     CHECK(ordered4, "delivered set is exactly the correct messages, in order (no corruption leaked)");
 
-    // ---- Test 5: reliable-UNORDERED under loss — every msg delivered exactly
+    // ---- Test 5: reliable-UNORDERED under loss -- every msg delivered exactly
     // once (dedup), all eventually delivered (SACK ack doesn't falsely clear a
     // gap so lost msgs retransmit). Order NOT required. ----
     printf("[5] reliable-unordered under loss: exactly-once, all delivered\n");
@@ -238,8 +238,142 @@ int main() {
     for (int i = 0; i < M5; i++) if (seen[i] != 1) exactly_once = false;
     CHECK(exactly_once, "unordered: each message delivered EXACTLY once (dedup + no false-ack loss)");
 
+    // ---- Test 6: HEAD-OF-BURST loss on an ordered channel. This is the
+    // regression test for the anchor defect: DeliverOrdered used to set
+    // next_deliver to the FIRST seq it saw ("mid-join: start here"), so losing
+    // msg 0 made msg 1 anchor the channel at 1 -- and the ack carrier then
+    // advertised next_deliver=1 as "cumulatively delivered", which told the
+    // SENDER to erase msg 0. Silent, permanent, no log. Messages are ~900 B so
+    // each rides its own datagram (Nagle would otherwise coalesce all six into
+    // one packet and "drop the first datagram" would drop the whole burst). ----
+    printf("[6] head-of-burst loss: msg 0 lost, must NOT anchor at 1\n");
+    Recv rb6; Link a2b6, b2a6;
+    double t6 = 0.0;
+    Endpoint* A6 = Create(11, &LinkSend, &a2b6, &OnDeliver, &ra, t6);
+    Endpoint* B6 = Create(12, &LinkSend, &b2a6, &OnDeliver, &rb6, t6);
+    a2b6.dst = B6; b2a6.dst = A6;
+    a2b6.extra_drop_at = 0;   // drop the very first datagram = msg 0's packet
+    const int M6 = 6;
+    for (int i = 0; i < M6; i++) {
+        char buf[960];
+        int n = snprintf(buf, sizeof(buf), "h-%02d", i);
+        memset(buf + n, 'x', 900 - n);   // ~900 B so it never Nagles with a sibling
+        Send(A6, 0, Class::ReliableOrdered, reinterpret_cast<uint8_t*>(buf), 900);
+    }
+    Update(A6, t6); PumpLink(a2b6);
+    CHECK(a2b6.dropped == 1, "head-loss: exactly the first datagram was dropped");
+    CHECK(rb6.msgs.empty(),
+          "head-loss: nothing delivered yet -- the channel did NOT anchor at the "
+          "first seq it saw");
+    for (int tick = 0; tick < 60; tick++) {
+        t6 += 0.02;
+        Update(A6, t6); Update(B6, t6);
+        PumpLink(a2b6); PumpLink(b2a6);
+    }
+    CHECK(rb6.msgs.size() == (size_t)M6,
+          "head-loss: all 6 delivered -- the lost HEAD was retransmitted, not erased");
+    bool ordered6 = (rb6.msgs.size() == (size_t)M6);
+    for (int i = 0; i < (int)rb6.msgs.size(); i++) {
+        char want[16]; snprintf(want, sizeof(want), "h-%02d", i);
+        if (rb6.msgs[i].second.compare(0, strlen(want), want) != 0) ordered6 = false;
+    }
+    CHECK(ordered6, "head-loss: delivered strictly in order starting at msg 0");
+
+    // ---- Test 7: duplicate suppression on the ordered channel. The gap in
+    // test 6 pinned the cumulative ack at 0, so the sender re-blasted msgs 1..5
+    // repeatedly while msg 0 was still missing. Every one of those is a
+    // duplicate the receiver must NOT hand up a second time. (Same property the
+    // snapshot inbox now relies on at the app layer: repeat delivery must be a
+    // no-op, never a double-count.) ----
+    printf("[7] duplicate suppression: retransmits must not double-deliver\n");
+    {
+        int dup = 0;
+        for (int i = 0; i < M6; i++) {
+            char want[16]; snprintf(want, sizeof(want), "h-%02d", i);
+            int seen = 0;
+            for (auto& m : rb6.msgs)
+                if (m.second.compare(0, strlen(want), want) == 0) seen++;
+            if (seen != 1) dup++;
+        }
+        printf("  A6 datagrams sent=%d (retransmits included), delivered=%zu\n",
+               a2b6.counter, rb6.msgs.size());
+        CHECK(dup == 0, "each message delivered EXACTLY once despite retransmits");
+    }
+
+    // ---- Test 8: sender restart. Endpoint eviction is per-side
+    // (reliable_channel_net.cpp RC_PEER_IDLE_SEC), so a peer can destroy and
+    // recreate its endpoint -- restarting msg_seq at 0 -- while our rx cursor
+    // stays high. Every message of the new stream would then read as a
+    // "duplicate" forever and the channel would go permanently deaf. ----
+    printf("[8] sender restart: peer msg_seq drops back to 0, must not go deaf\n");
+    Recv rb8; Link a2b8, b2a8;
+    double t8 = 0.0;
+    Endpoint* A8 = Create(13, &LinkSend, &a2b8, &OnDeliver, &ra, t8);
+    Endpoint* B8 = Create(14, &LinkSend, &b2a8, &OnDeliver, &rb8, t8);
+    a2b8.dst = B8; b2a8.dst = A8;
+    const int M8 = 300;   // must exceed RC_RESTART_BACKJUMP (256)
+    for (int i = 0; i < M8; i++) {
+        char buf[32]; int n = snprintf(buf, sizeof(buf), "r-%03d", i);
+        Send(A8, 0, Class::ReliableOrdered, reinterpret_cast<uint8_t*>(buf), n);
+    }
+    for (int tick = 0; tick < 200; tick++) {
+        t8 += 0.02;
+        Update(A8, t8); Update(B8, t8);
+        PumpLink(a2b8); PumpLink(b2a8);
+    }
+    CHECK(rb8.msgs.size() == (size_t)M8, "restart: baseline 300 delivered first");
+    // The peer's endpoint dies and comes back -- fresh tx state, msg_seq 0.
+    Destroy(A8);
+    Endpoint* A8b = Create(15, &LinkSend, &a2b8, &OnDeliver, &ra, t8);
+    b2a8.dst = A8b;
+    const size_t before_restart = rb8.msgs.size();
+    for (int i = 0; i < 5; i++) {
+        char buf[32]; int n = snprintf(buf, sizeof(buf), "n-%02d", i);
+        Send(A8b, 0, Class::ReliableOrdered, reinterpret_cast<uint8_t*>(buf), n);
+    }
+    for (int tick = 0; tick < 40; tick++) {
+        t8 += 0.02;
+        Update(A8b, t8); Update(B8, t8);
+        PumpLink(a2b8); PumpLink(b2a8);
+    }
+    CHECK(rb8.msgs.size() == before_restart + 5,
+          "restart: the restarted sender's 5 new messages were delivered");
+
+    // ---- Test 9: the pacer charges by DATAGRAMS, not by messages. A message
+    // larger than fragment_above becomes ceil(bytes/fragment_size) datagrams
+    // downstream; charging one token for all of them made the token bucket a
+    // no-op for exactly the bulk burst it exists to pace (a 16 KB snapshot
+    // chunk cost 1 token and emitted 17 datagrams -> ~17x over the configured
+    // rate). With honest accounting a single 8 KB message must exhaust a
+    // 4-token burst on its own. ----
+    printf("[9] pacer charges per emitted datagram, not per message\n");
+    Recv rb9; Link a2b9, b2a9;
+    double t9 = 0.0;
+    Endpoint* A9 = Create(16, &LinkSend, &a2b9, &OnDeliver, &ra, t9);
+    Endpoint* B9 = Create(17, &LinkSend, &b2a9, &OnDeliver, &rb9, t9);
+    a2b9.dst = B9; b2a9.dst = A9;
+    SetPacing(A9, /*rate_pps*/100.0, /*burst_max*/4.0, /*cwnd*/1000);
+    std::vector<uint8_t> big(8000, 0xA5);
+    for (int i = 0; i < 4; i++) {
+        big[0] = (uint8_t)('0' + i);
+        Send(A9, 0, Class::ReliableOrdered, big.data(), (int)big.size());
+    }
+    Update(A9, t9);   // one pump with a 4-token burst
+    printf("  datagrams after one pump with burst=4: %d (8KB msg = 8 fragments)\n",
+           a2b9.counter);
+    CHECK(a2b9.counter > 0 && a2b9.counter <= 16,
+          "one 8KB message (>=8 datagrams) consumed the whole burst -- not all 4");
+    for (int tick = 0; tick < 120; tick++) {
+        t9 += 0.02;
+        Update(A9, t9); Update(B9, t9);
+        PumpLink(a2b9); PumpLink(b2a9);
+    }
+    CHECK(rb9.msgs.size() == 4, "paced bulk still delivers all 4 messages");
+
     Destroy(A); Destroy(B); Destroy(A2); Destroy(B2); Destroy(A3); Destroy(B3);
     Destroy(A4); Destroy(B4); Destroy(A5); Destroy(B5);
+    Destroy(A6); Destroy(B6); Destroy(A8b); Destroy(B8);
+    Destroy(A9); Destroy(B9);
     printf("%s\n", g_fail == 0 ? "ALL PASS" : "SOME FAILED");
     return g_fail == 0 ? 0 : 1;
 }

@@ -45,7 +45,7 @@ CtrlPacket BuildHostConfigPacket() {
     pkt.data.host_config.selected_stage  = *(uint32_t*)FM2K::ADDR_SELECTED_STAGE;
     pkt.data.host_config.socd_mode       = (uint8_t)Hook_GetSOCDModePublic();
     // Loaded-from-game.ini engine globals. hit_judge_set_function reads
-    // game.ini at boot into these — spec's local game.ini gives spec's
+    // game.ini at boot into these -- spec's local game.ini gives spec's
     // defaults, but host's authoritative values must override or specs
     // get wrong timer / round count (pkmncc default time=60, host had
     // time=0 / infinite, spec ended up running with 60s rounds).
@@ -151,14 +151,14 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
                 packet->data.hello.player_id,
                 peer_hash, local_hash);
             // Game-data hash check (#57). 0 on either side means the
-            // peer is older / we couldn't enumerate — fall through to
+            // peer is older / we couldn't enumerate -- fall through to
             // the existing handshake flow so we don't break legacy
             // clients during rollout. Both sides nonzero + different
             // = abort: write a DISCONNECT outcome so the launcher's
             // PollMatchOutcome surfaces a toast and closes the game.
             if (local_hash != 0 && peer_hash != 0 && local_hash != peer_hash) {
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                    "Netplay: GAME DATA MISMATCH — peer=0x%08X us=0x%08X (%s). "
+                    "Netplay: GAME DATA MISMATCH -- peer=0x%08X us=0x%08X (%s). "
                     "Aborting handshake; have both peers send each other their "
                     "FM2K_*_Debug.log file and diff the 'GameHash: manifest' "
                     "section to find which file differs.",
@@ -212,7 +212,7 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
             break;
 
         case CtrlMsg::CSS_INPUT:
-            // CSS_INPUT is dead code post-redesign — CSS lockstep now lives
+            // CSS_INPUT is dead code post-redesign -- CSS lockstep now lives
             // inside a GekkoGameSession with prediction_window=0, so inputs
             // flow through GekkoNet's transport. The enum value + this case
             // are kept as a no-op for backward compatibility with peers that
@@ -221,7 +221,7 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
 
         case CtrlMsg::BATTLE_READY: {
             // After CSS GekkoSession is fully up (g_css_synced=true) the
-            // BATTLE_READY rendezvous is over — any leftover packets are
+            // BATTLE_READY rendezvous is over -- any leftover packets are
             // network-buffered echoes from the rendezvous window and can
             // be silently dropped. Without this gate the unconditional
             // echo below would ping-pong forever between both peers,
@@ -234,7 +234,7 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
                 "Netplay: Received BATTLE_READY from remote");
             g_remote_css_ready = true;
 
-            // Loss-tolerant echo — same pattern as BATTLE_ENTERING /
+            // Loss-tolerant echo -- same pattern as BATTLE_ENTERING /
             // BATTLE_END. When peers return to CSS at slightly
             // different wall-clock times (one finishes battle-end-sync
             // ~300 ms before the other), the ahead peer creates its CSS
@@ -243,7 +243,7 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
             // BATTLE_READYs after that point arrive here and need an
             // echo back, otherwise the lagging peer never sees our
             // signal and stays stuck resending forever. Bounded by the
-            // !g_css_synced gate above — echo only happens during the
+            // !g_css_synced gate above -- echo only happens during the
             // rendezvous window, terminates when sync completes.
             if (g_local_css_ready) {
                 ControlChannel_SendBattleReady();
@@ -257,7 +257,7 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
             const bool     remote_done     = (packet->data.sync.flags & 0x1) != 0;
             // Spectator-side handling: this is host telling us about the
             // upcoming CSS->battle swap. Flip our SpectateSession to battle
-            // config. (Spectators don't participate in proposal convergence —
+            // config. (Spectators don't participate in proposal convergence --
             // they passively follow whatever the host announces.)
             if (g_session_kind == SessionKind::SPECTATE) {
                 Netplay_OnHostBattleEntering(remote_proposal);
@@ -274,7 +274,7 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
                 // Answer-after-complete: the peer is still retrying a
                 // barrier WE already passed (its copies of our signal were
                 // lost). Answer with a completed-flag signal so it can
-                // finish too — without this the lagging peer wedges
+                // finish too -- without this the lagging peer wedges
                 // forever resending into a disarmed gate. Never answer a
                 // sender that is itself completed (storm termination), and
                 // for legacy epoch-0 peers bound the answers to a 10s TTL
@@ -300,7 +300,7 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
                     if (s_drop_count++ < 8 || (s_drop_count & 0x3F) == 0) {
                         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                             "Netplay: ignoring out-of-window BATTLE_ENTERING "
-                            "(swap=%u epoch=%u done=%d, drop#%u) — armed=%d our_epoch=%u",
+                            "(swap=%u epoch=%u done=%d, drop#%u) -- armed=%d our_epoch=%u",
                             remote_proposal, remote_epoch, (int)remote_done,
                             (unsigned)s_drop_count, (int)g_battle_entry_armed,
                             g_entry_epoch);
@@ -321,7 +321,7 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
                 remote_epoch, (int)remote_done);
 
             // Echo our own BATTLE_ENTERING back if we've already signaled
-            // locally — needed for the lossy-network case where remote
+            // locally -- needed for the lossy-network case where remote
             // received our signal but their echo to us was dropped.
             // Skipped when the sender is already completed (it has our
             // signal by definition). Without rate-limiting, both peers
@@ -379,7 +379,7 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
                     if (s_drop_count++ < 8 || (s_drop_count & 0x3F) == 0) {
                         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                             "Netplay: ignoring out-of-window BATTLE_END "
-                            "(swap=%u epoch=%u done=%d, drop#%u) — armed=%d our_epoch=%u",
+                            "(swap=%u epoch=%u done=%d, drop#%u) -- armed=%d our_epoch=%u",
                             remote_proposal, remote_epoch, (int)remote_done,
                             (unsigned)s_drop_count, (int)g_battle_end_armed,
                             g_end_epoch);
@@ -424,7 +424,7 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
             break;
 
         case CtrlMsg::HOST_CONFIG: {
-            // Host's authoritative match settings — adopt locally so this
+            // Host's authoritative match settings -- adopt locally so this
             // peer (client OR spectator) runs with identical rules.
             // Per-field "unset" sentinels: 0xFFFFFFFF for selected_stage,
             // 0 for the count/time/speed fields, 0xFF for socd_mode.
@@ -434,7 +434,7 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
                 hc.selected_stage, hc.round_count, hc.round_time_sec,
                 hc.game_speed_pct, (unsigned)hc.socd_mode);
 
-            // Stage selection — direct memcpy to FM2K's selected-stage
+            // Stage selection -- direct memcpy to FM2K's selected-stage
             // global (FM2K::ADDR_SELECTED_STAGE; IDA-verified in WW as
             // 0x43010c, the var that vs_round_function reads when
             // calling LoadStageFile(wParam)). The previous addr
@@ -443,14 +443,14 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
                 *(uint32_t*)FM2K::ADDR_SELECTED_STAGE = hc.selected_stage;
             }
 
-            // SOCD mode — wire through the runtime setter. Persists for
+            // SOCD mode -- wire through the runtime setter. Persists for
             // the rest of the session unless host changes it again.
             if (hc.socd_mode != 0xFF) {
                 Hook_SetSOCDMode((int)hc.socd_mode);
             }
 
             // Game-ini-derived settings. Engine's hit_judge_set_function
-            // (0x414930) loaded these from the LOCAL game.ini at boot —
+            // (0x414930) loaded these from the LOCAL game.ini at boot --
             // for spec mode that's spec's local .ini which doesn't know
             // about the host's per-match overrides. Host's authoritative
             // values must clobber here so timer / round count / speed
@@ -493,7 +493,7 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
 
         case CtrlMsg::SPEC_JOIN_REQ:
             // Older spectator builds send no payload (zero-init bytes), which
-            // resolves to mode=FULL_SESSION — the existing replay-from-frame-0
+            // resolves to mode=FULL_SESSION -- the existing replay-from-frame-0
             // path. New builds set mode explicitly. Range-clamp anything
             // beyond the highest known enum value back to FULL_SESSION so a
             // future-versioned spectator pointed at this older host stays on

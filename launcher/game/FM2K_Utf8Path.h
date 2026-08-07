@@ -4,7 +4,7 @@
 // the std::string ↔ std::filesystem::path boundary, since on MinGW with
 // libstdc++, `path::string()` and `path(std::string)` go through the
 // system ANSI codepage (CP1252 on most non-Japanese Windows installs).
-// That silently rewrites unrepresentable codepoints — full-width forms
+// That silently rewrites unrepresentable codepoints -- full-width forms
 // like ＣＰＷ (U+FF23/FF30/FF37) become '_' or '?' in the round-trip,
 // breaking:
 //   - Cross-peer #57 game-hash agreement (different bytes on different

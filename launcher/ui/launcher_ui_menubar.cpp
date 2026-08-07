@@ -91,7 +91,7 @@ void LauncherUI::RenderMenuBar() {
                 if (show_replay_browser_) replays_cache_dirty_ = true;
             }
             ImGui::Separator();
-            // Audio mutes — write to %APPDATA%\FM2K_Rollback\audio.ini.
+            // Audio mutes -- write to %APPDATA%\FM2K_Rollback\audio.ini.
             // The hook DLL re-reads it every ~1s from inside the audio
             // dispatcher, so the toggle takes effect within a second
             // without needing the game to restart.
@@ -138,12 +138,12 @@ void LauncherUI::RenderMenuBar() {
             ImGui::EndMenu();
         }
 
-        // Language menu — top-level so users don't have to dig into
+        // Language menu -- top-level so users don't have to dig into
         // Settings to switch. Each entry labels itself in its own native
         // script so anyone can recognize their language regardless of what
         // the launcher is currently set to. Toggling persists the choice to
         // %APPDATA%\FM2K_Rollback\settings.ini and applies on the next
-        // frame (no restart needed — the font atlas has every glyph range
+        // frame (no restart needed -- the font atlas has every glyph range
         // loaded once at boot).
         if (ImGui::BeginMenu(T("menu_language"))) {
             const fm2k::Lang current = fm2k::Locale::Current();
@@ -157,13 +157,13 @@ void LauncherUI::RenderMenuBar() {
             ImGui::EndMenu();
         }
 
-        // Release channel toggle — RIGHT in the menu bar, always visible.
+        // Release channel toggle -- RIGHT in the menu bar, always visible.
         // Persisted to dev_flags.ini under "update_channel" (0=stable,
         // 1=dev, 2=bleeding); fm2k::updater::ReadUpdateChannel reads the
         // same key. Switching auto-fires CheckForUpdates because that's the
         // only reason anyone would flip it. Each MenuItem label includes
         // the latest known version on that channel so the user can decide
-        // whether flipping is worth it without poking around — they see
+        // whether flipping is worth it without poking around -- they see
         // "Stable(0.2.53)  Dev(0.2.54)  Bleeding(0.2.58-bleeding)" inline.
         // Tiers nest: dev shows stable+dev, bleeding shows everything.
         {
@@ -202,7 +202,7 @@ void LauncherUI::RenderMenuBar() {
             const auto a = fm2k::discord_auth::LoadCached();
             discord_signed_in_ = a.valid;
             // Show the actual Discord display name in the top-bar pill,
-            // not the launcher's custom in-app nick — those can be
+            // not the launcher's custom in-app nick -- those can be
             // arbitrary strings and confuse users about which account
             // they're signed in to. Falls back to nick / "signed in" if
             // the cache is missing the new field (older auth.json).
@@ -348,7 +348,7 @@ void LauncherUI::RenderMenuBar() {
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (bar_w - total_w));
         }
 
-        // RELAY pill — informational; clicking does nothing (no
+        // RELAY pill -- informational; clicking does nothing (no
         // associated action). MenuItem is the cheapest readonly text
         // element that respects the menu-bar style.
         if (show_relay_pill) {
@@ -365,7 +365,7 @@ void LauncherUI::RenderMenuBar() {
             ImGui::PopStyleColor();
         }
 
-        // Update pill (left of the Discord one) — clickable, advances
+        // Update pill (left of the Discord one) -- clickable, advances
         // through the state machine: UpdateAvailable → start download
         // → Ready → spawn FM2KUpdater.exe and exit.
         if (show_update_pill) {
@@ -445,7 +445,7 @@ void LauncherUI::RenderMenuBar() {
     // Single tabbed Settings window (replaces the five separate
     // floating settings sub-windows).
     RenderSettingsWindow();
-    // Discord auth stays as its own window — OAuth pairing has its
+    // Discord auth stays as its own window -- OAuth pairing has its
     // own pending/error/success state machine that doesn't fit in
     // a tab next to the other static editors.
     if (show_discord_auth_) {
@@ -453,7 +453,7 @@ void LauncherUI::RenderMenuBar() {
     }
     // Legacy floating-window paths kept for any code that still
     // toggles the per-section flags (none after the menu cleanup,
-    // but defensive — opens nothing unless someone flips a flag).
+    // but defensive -- opens nothing unless someone flips a flag).
     if (show_host_config_)    RenderHostConfigWindow();
     if (show_hub_server_)     RenderHubServerWindow();
     if (show_games_folders_)  RenderGamesFoldersWindow();

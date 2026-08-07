@@ -82,7 +82,7 @@ namespace Utils {
     }
 
     // ── Binary cache I/O helpers ─────────────────────────────────────
-    // Native little-endian on Windows x86 — the cache is local to the user
+    // Native little-endian on Windows x86 -- the cache is local to the user
     // and never moves between machines, so endian conversion would be
     // overhead with no payoff.
 
@@ -102,7 +102,7 @@ namespace Utils {
     static bool ReadStr(std::ifstream& i, std::string& s, uint32_t cap = 16 * 1024 * 1024) {
         uint32_t n = 0;
         if (!ReadU32(i, n)) return false;
-        if (n > cap) return false;            // sanity cap — refuse > 16 MB strings
+        if (n > cap) return false;            // sanity cap -- refuse > 16 MB strings
         s.assign(n, '\0');
         if (n == 0) return true;
         return (bool)i.read(s.data(), (std::streamsize)n);
@@ -114,7 +114,7 @@ namespace Utils {
     void SaveGameCache(const std::vector<FM2K::FM2KGameInfo>& games) {
         // Atomic-ish: write to .tmp then rename, so a crash mid-write
         // doesn't leave a half-cooked cache that fails the magic check
-        // on the next launch (cosmetic — we'd just rebuild — but the
+        // on the next launch (cosmetic -- we'd just rebuild -- but the
         // rename is cheap insurance).
         std::string final_path = GetCacheFilePath();
         std::string tmp_path   = final_path + ".tmp";
@@ -197,16 +197,16 @@ namespace Utils {
             magic[0] != kCacheMagic[0] || magic[1] != kCacheMagic[1] ||
             magic[2] != kCacheMagic[2] || magic[3] != kCacheMagic[3]) {
             // Old text-format or unknown: treat as no cache. Silently
-            // ignored — next save overwrites with the new binary format.
+            // ignored -- next save overwrites with the new binary format.
             return map;
         }
         uint32_t version = 0;
         if (!ReadU32(in, version) || version != kCacheVersion) {
-            return map;  // future format — rebuild
+            return map;  // future format -- rebuild
         }
         uint32_t entry_count = 0;
         if (!ReadU32(in, entry_count) || entry_count > 100000) {
-            return map;  // sanity cap — refuse pathological counts
+            return map;  // sanity cap -- refuse pathological counts
         }
 
         for (uint32_t i = 0; i < entry_count; ++i) {
@@ -264,12 +264,12 @@ namespace Utils {
 
     // Cache-first UI seed. Loads every cached game's FULL identification
     // (xxh64, engine, clean/packer labels, parsed kgt summary) so the UI
-    // shows a populated games list — including character/stage dropdowns —
+    // shows a populated games list -- including character/stage dropdowns --
     // BEFORE the async directory walk runs. Net effect: the launcher feels
     // instant on warm starts; the background walk only matters when the
     // user has actually added or removed a game since the last run.
     //
-    // Cheap existence check per entry — skip games whose exe was deleted
+    // Cheap existence check per entry -- skip games whose exe was deleted
     // since the cache was written. Stat mismatches (rebuild, kgt edit)
     // aren't filtered here; the async pass picks those up and updates
     // them transparently.

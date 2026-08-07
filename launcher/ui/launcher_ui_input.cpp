@@ -62,7 +62,7 @@ void LauncherUI::LoadSocdState() {
     // it via CreateProcess. Online K::MatchStart re-applies the
     // role-resolved value on top. Pre-v0.2.45 only the online path
     // set this, so offline launches always used the compiled-in
-    // default — bug Froglet reported.
+    // default -- bug Froglet reported.
     char buf[8];
     std::snprintf(buf, sizeof(buf), "%d", socd_mode_[0]);
     ::SetEnvironmentVariableA("FM2K_SOCD_MODE", buf);
@@ -184,21 +184,21 @@ void LauncherUI::RenderInputBindingsTab(int player_slot) {
         LoadSocdState();
     }
 
-    // SOCD picker — purely local. Each P1/P2 slot keeps its own mode
+    // SOCD picker -- purely local. Each P1/P2 slot keeps its own mode
     // because dual-local dev mode runs both slots from one launcher
     // and wants each child process configured independently. Online
     // mode applies socd_mode_[g_player_index] to the spawned game's
     // FM2K_SOCD_MODE env var at launch.
     static const char* kSocdLabels[6] = {
-        "0 — Default        (R wins L+R, U wins U+D)",
-        "1 — Hitbox SOCD    (L+R neutral, U wins U+D)  [tournament default]",
-        "2 — U/D Cancel     (R wins L+R, U+D neutral)",
-        "3 — Both Cancel    (L+R neutral, U+D neutral)",
-        "4 — Up Bias        (R wins L+R, U wins U+D)",
-        "5 — Hitbox + UpBias",
+        "0 -- Default        (R wins L+R, U wins U+D)",
+        "1 -- Hitbox SOCD    (L+R neutral, U wins U+D)  [tournament default]",
+        "2 -- U/D Cancel     (R wins L+R, U+D neutral)",
+        "3 -- Both Cancel    (L+R neutral, U+D neutral)",
+        "4 -- Up Bias        (R wins L+R, U wins U+D)",
+        "5 -- Hitbox + UpBias",
     };
     ImGui::TextDisabled(
-        "SOCD is local — applied before inputs hit the wire, so peers "
+        "SOCD is local -- applied before inputs hit the wire, so peers "
         "running different modes do NOT desync.");
     ImGui::SetNextItemWidth(380);
     char combo_id[32];
@@ -207,7 +207,7 @@ void LauncherUI::RenderInputBindingsTab(int player_slot) {
         SaveSocdState();
         // Live-update the env so a freshly-spawned game picks up the
         // new mode; running games don't reload (hook caches on first
-        // GetSOCDMode call) — they get the new value next launch.
+        // GetSOCDMode call) -- they get the new value next launch.
         //
         // Bug Froglet reported: the previous code wrote
         // FM2K_SOCD_MODE_P1 / _P2 via _putenv_s, but
@@ -222,7 +222,7 @@ void LauncherUI::RenderInputBindingsTab(int player_slot) {
         // so the next offline / online launch inherits it. Online
         // play's K::MatchStart handler still re-applies the
         // role-resolved slot value on top, so host/guest each pick
-        // their own setting — slot 1's value only matters there (kept
+        // their own setting -- slot 1's value only matters there (kept
         // on disk via SaveSocdState).
         if (player_slot == 0) {
             char buf[8];
@@ -232,7 +232,7 @@ void LauncherUI::RenderInputBindingsTab(int player_slot) {
     }
     ImGui::Separator();
 
-    // Bindings body — inherits the existing per-player binding UI.
+    // Bindings body -- inherits the existing per-player binding UI.
     if (FM2KInputBinder::RenderBody(player_slot)) FM2KInputBinder::Save();
 }
 

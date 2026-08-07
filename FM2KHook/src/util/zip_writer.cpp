@@ -78,7 +78,7 @@ std::vector<uint8_t> SlurpFile(const std::string& path) {
     }
     LARGE_INTEGER size = {};
     if (!GetFileSizeEx(h, &size) || size.QuadPart > 256 * 1024 * 1024) {
-        // Sanity cap at 256 MB — desync bundles never approach this.
+        // Sanity cap at 256 MB -- desync bundles never approach this.
         CloseHandle(h);
         return {};
     }
@@ -99,7 +99,7 @@ std::vector<uint8_t> SlurpFile(const std::string& path) {
     return buf;
 }
 
-// Strip the directory part for the stored filename — keep just the
+// Strip the directory part for the stored filename -- keep just the
 // basename, normalize backslashes to forward.
 std::string EntryName(const std::string& path) {
     size_t last_slash = path.find_last_of("/\\");

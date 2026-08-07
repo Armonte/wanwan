@@ -57,14 +57,14 @@ using namespace lui;
 // being non-alpha). The non-letter gate avoids overmatching on
 // unrelated games whose stems happen to start with the same word
 // ("Strip" -> "StripFighter5CE" vs "StripFighter_Zero" both pass
-// when 'F' is non-alpha — but "Strip" wouldn't be a real room id).
+// when 'F' is non-alpha -- but "Strip" wouldn't be a real room id).
 //
 // Phase-2 master game list will replace this heuristic with a
 // canonical-id → exe-aliases table. Until then this gets us through
 // versioned exes without a manual selection step.
 // Launcher-side preflight: bidirectional 0xCD CTRL_PUNCH on the same
 // UDP port the spawned game's hook will bind. Confirms peer reachability
-// AND opens the NAT pinhole before launch — the hook's own punch is then
+// AND opens the NAT pinhole before launch -- the hook's own punch is then
 // redundant in the happy path but stays as a safety net. Closes the socket
 // on return so the game DLL can re-bind via SO_REUSEADDR.
 //
@@ -185,7 +185,7 @@ bool LauncherUI::Initialize(SDL_Window* window, SDL_Renderer* renderer) {
     // Why this matters: Japanese fonts follow JIS X 0201, which maps
     // codepoint 0x5C to the yen sign (¥) instead of backslash. If we load
     // a JP font first with `GetGlyphRangesJapanese()` (which includes
-    // ASCII), every backslash in the UI renders as ¥ — visible in file
+    // ASCII), every backslash in the UI renders as ¥ -- visible in file
     // paths, escape characters in tooltips, etc. By loading Segoe UI (or
     // any Latin font) first to claim ASCII slots, then merging the JP
     // font with MergeMode=true, ImGui keeps the Latin font's glyph for
@@ -212,7 +212,7 @@ bool LauncherUI::Initialize(SDL_Window* window, SDL_Renderer* renderer) {
         // the atlas without needing the MS Gothic merge to backfill.
         // Belt-and-suspenders: the JP merge below ALSO requests FF00-
         // FFEF, but ImGui's packed accumulator decompression has been
-        // observed to drop ranges silently — claiming the block from
+        // observed to drop ranges silently -- claiming the block from
         // the Latin font directly is the reliable path.
         static const ImWchar latin_range[] = {
             0x0020, 0x00FF,   // Basic Latin + Latin-1 Supplement
@@ -231,7 +231,7 @@ bool LauncherUI::Initialize(SDL_Window* window, SDL_Renderer* renderer) {
         }
         if (!latin_font) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                        "No Latin system font loaded — falling back to "
+                        "No Latin system font loaded -- falling back to "
                         "ImGui default. Backslash and accented characters "
                         "may render with the bundled bitmap font.");
             io.Fonts->AddFontDefault();
@@ -270,7 +270,7 @@ bool LauncherUI::Initialize(SDL_Window* window, SDL_Renderer* renderer) {
         // packed accumulator decompression has historically dropped it
         // on some ImGui revisions. Game directories commonly contain
         // full-width-titled exes (e.g. ＣＰＷ.exe), so missing glyphs
-        // here render as visible underscores in the Settings panel —
+        // here render as visible underscores in the Settings panel --
         // very specifically the bug we just hit. Adding the range
         // again with MergeMode=true is a no-op when it was already
         // included; otherwise it backfills the missing glyphs.
@@ -284,7 +284,7 @@ bool LauncherUI::Initialize(SDL_Window* window, SDL_Renderer* renderer) {
         }
         if (!jp_loaded) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                        "No Japanese-capable system font found — Japanese "
+                        "No Japanese-capable system font found -- Japanese "
                         "text will render as '?'. Install East Asian "
                         "language pack to fix.");
         }
@@ -415,7 +415,7 @@ void LauncherUI::Render() {
     // First-launch default layout. ImGui persists user-edited layout into
     // imgui.ini on quit, so this only fires on a fresh install (or after
     // the user deletes imgui.ini). DockBuilder gates on whether the node
-    // already has children — if any prior layout exists, we leave it
+    // already has children -- if any prior layout exists, we leave it
     // alone so users keep their customizations across versions.
     {
         static bool s_layout_built = false;
@@ -427,7 +427,7 @@ void LauncherUI::Render() {
                 ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
                 ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->WorkSize);
 
-                // Two-pane default — narrow left rail for Games &
+                // Two-pane default -- narrow left rail for Games &
                 // Configuration + Debug & Diagnostics (as tabs); wide
                 // right pane holds the Hub. Mirrors the operator's
                 // own working layout (~270 / ~1010 split at 1280×720).
@@ -447,7 +447,7 @@ void LauncherUI::Render() {
                 ImGui::DockBuilderDockWindow("Games & Configuration", left_id);
                 ImGui::DockBuilderDockWindow("Debug & Diagnostics",   left_id);
                 ImGui::DockBuilderDockWindow("Hub",                   right_id);
-                // Settings windows are popups (NoDocking) — they
+                // Settings windows are popups (NoDocking) -- they
                 // intentionally float above the dockspace and aren't
                 // listed here.
                 ImGui::DockBuilderFinish(dockspace_id);
@@ -460,7 +460,7 @@ void LauncherUI::Render() {
     if (ImGui::Begin("Games & Configuration", nullptr, panel_flags)) {
         RenderGameSelection();
         ImGui::Separator();
-        // Network-config panel is dev-mode only — end users use the Hub
+        // Network-config panel is dev-mode only -- end users use the Hub
         // panel for matchmaking and don't manually configure ports/IPs.
         if (developer_mode_) {
             RenderNetworkConfig();
@@ -514,7 +514,7 @@ void LauncherUI::Render() {
 // ---------------------------------------------------------------------------
 // Persists three independent toggles to the launcher's settings.ini next to
 // the Locale module's `language` key. Defaults are all-on so users never miss
-// a challenge while tabbed out — they can dial it back per-channel from
+// a challenge while tabbed out -- they can dial it back per-channel from
 // Settings → Notifications.
 
 

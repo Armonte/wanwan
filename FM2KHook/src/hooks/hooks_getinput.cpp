@@ -1,7 +1,7 @@
 // hooks_getinput.cpp -- get_player_input detour (FM2K) + FM95 split-input hooks + binder sample. Split from hooks.cpp.
 #include "hooks.h"
 #include "hooks_internal.h"
-#include "round_events.h"     // C3.5 — vs_round_function detour install
+#include "round_events.h"     // C3.5 -- vs_round_function detour install
 #include "css_autoconfirm.h"  // CSS lock-and-confirm for offline replay playback
 #include "css_fastsound.h"    // FM2K_FPK_CSS_FASTSOUND: lazy DSound buffers (CSS dip fix)
 #include "per_game_patches.h" // damage multiplier MinHook + team-size override
@@ -24,12 +24,12 @@
 #include "imgui_overlay.h"
 #include "shared_mem.h"
 #include "savestate.h"  // CHAR_SLOT_BASE, CHAR_SLOT_SIZE (corrected by Wave C audit)
-#include "../core/main_loop_trampoline.h"  // TrampolineMainLoop — owns the outer loop
+#include "../core/main_loop_trampoline.h"  // TrampolineMainLoop -- owns the outer loop
 #include "../audio/sound_rollback.h"        // Mike Z desired/actual sound layer
 #include "../netplay/spectator_node.h"      // spectator playback queue accessors
 #include "../ui/input_binder.h"             // FM2KInputBinder::Sample_Win32 + Bindings
 #include "../ui/screenshot.h"               // FM2KCapture::SaveScreenshot for the auto-banner pipeline
-#include "../ui/fc_hud.h"                   // IsChatInputActive — gate local input during typing
+#include "../ui/fc_hud.h"                   // IsChatInputActive -- gate local input during typing
 #include "../vfs/fpk_reader.h"              // FM2K_FPK_VFS: inflate a slim .fpk -> original asset bytes
 #include <MinHook.h>
 #include <SDL3/SDL_log.h>
@@ -71,9 +71,9 @@
 // path the FM2K Hook_GetPlayerInput offline branch does:
 //   1. Sample our binder (FM2KInputBinder::Sample_Win32) for the local
 //      player's slot. Picks up our remappable keyboard + XInput gamepad
-//      bindings — eventually the only input surface the user sees once
+//      bindings -- eventually the only input surface the user sees once
 //      we hide CPW's titlebar and wrap it in our UI.
-//   2. Apply facing flip via g_p_facing_snap[25*player_idx] — the SAME
+//   2. Apply facing flip via g_p_facing_snap[25*player_idx] -- the SAME
 //      logic CPW's native get_player_input_p1/p2 does, ported here so
 //      we can return the engine-relative bits the input ring expects.
 //   3. Mask START on CSS (matches FM2K's ~0x400 strip on game_mode 2000).
@@ -81,7 +81,7 @@
 // FM95 doesn't have CSS-magic-mode 2000, so the START mask uses the
 // engine-aware IsCSSMode (object pool walk) instead.
 //
-// Netplay rollback path: same as FM2K — the rollback driver overrides
+// Netplay rollback path: same as FM2K -- the rollback driver overrides
 // ProcessGameInputs (single-arg, FM95-compat) to write into the input
 // history rings post-poll. Hook_GetPlayerInput_FM95_P*'s job here is the
 // LOCAL input read for both offline and the local input queued into
@@ -97,7 +97,7 @@
 constexpr uintptr_t FM95_FACING_SNAP_BASE = 0x5E98A8;  // g_p_facing_snap
 
 // True when the binder has ANY binding (primary or alt) for this player
-// slot. The binder must only override players it has bindings FOR — an
+// slot. The binder must only override players it has bindings FOR -- an
 // all-NONE slot has to fall back to the engine's own input read, or that
 // player is silently fed a permanent 0 ("P2 controls & pause dead in
 // offline" report: a profile with P2 rows cleared).
@@ -148,7 +148,7 @@ static bool Fm95TryNetplayInput(int slot, int facing_idx, int* out) {
     // CSS lockstep: the control-channel-synced input pair. BOTH peers' sims
     // must consume the SAME Netplay_GetCSSInput or they confirm characters at
     // different frames and phase-diverge (one reaches battle, the other stalls
-    // in CSS — the 3b symptom). Mirror of FM2K Hook_GetPlayerInput's CSS
+    // in CSS -- the 3b symptom). Mirror of FM2K Hook_GetPlayerInput's CSS
     // branch: SOCD only, NO facing fold (CSS cursor nav is screen-relative).
     // The LOCAL input (autoplay-nav / binder) is captured separately in
     // Netplay_ProcessCSS and fed to the gekko CSS session; here we return what
@@ -165,7 +165,7 @@ static bool Fm95TryNetplayInput(int slot, int facing_idx, int* out) {
 // = pulse an attack bit into both players' rings. Title needs TWO confirms
 // (wake, then commit) each with a ~10-frame input-RELEASE gap (obj_title_demo_
 // loop result[120]/[30] waits), so this uses a slow 3-on / 21-off pattern
-// rather than FM2K's tight 4-tick edge — reliability over speed. CSS then
+// rather than FM2K's tight 4-tick edge -- reliability over speed. CSS then
 // confirms each player's cursor on char 0. Battle inputs come from
 // Hook_ComputeAutoplayBattleInput via the netplay consume path once the stress
 // session starts. Returns -1 when autoplay-nav is off / already in battle.
@@ -192,7 +192,7 @@ static uint16_t Fm95SampleBinderForPlayer(int binder_slot, int facing_idx) {
     //
     // Focus behavior: Sample_Win32 is focus-correct by construction
     // (queue-synced keyboard + gated gamepads), so an unfocused FM95
-    // game reads all-zero here — no caller-side gate.
+    // game reads all-zero here -- no caller-side gate.
     return Fm95FoldFacingSocd(FM2KInputBinder::Sample_Win32(binder_slot),
                               facing_idx);
 }
@@ -200,7 +200,7 @@ static uint16_t Fm95SampleBinderForPlayer(int binder_slot, int facing_idx) {
 int __cdecl Hook_GetPlayerInput_FM95_P1(int player_idx) {
     // Slice F: while the chat input box is open the local fighter
     // shouldn't react to typed keys. Suppressed here for offline /
-    // single-client testing — full netplay correctness needs the
+    // single-client testing -- full netplay correctness needs the
     // gate at the input-binder Sample call instead so the zero
     // makes it onto the wire (otherwise the peer sees real inputs).
     if (fc_hud::IsChatInputActive() && g_player_index == 0) return 0;
@@ -228,7 +228,7 @@ int __cdecl Hook_GetPlayerInput_FM95_P1(int player_idx) {
         FM2KInputBinder::Load();
         s_warmed = true;
     }
-    // Per-player takeover — mirror of the FM2K binder branch: an all-NONE
+    // Per-player takeover -- mirror of the FM2K binder branch: an all-NONE
     // binder slot falls back to CPW's native input read instead of a
     // permanent 0.
     if (!BinderSlotHasBindings(0)) {
@@ -241,15 +241,15 @@ int __cdecl Hook_GetPlayerInput_FM95_P1(int player_idx) {
 int __cdecl Hook_GetPlayerInput_FM95_P2(int player_idx) {
     if (fc_hud::IsChatInputActive() && g_player_index == 1) return 0;
     // Netplay/stress battle: gekko's synced input (slot 1) wins over the
-    // live binder — same consume path as P1.
+    // live binder -- same consume path as P1.
     if (int synced; Fm95TryNetplayInput(/*slot=*/1, player_idx, &synced)) {
         return synced;
     }
-    // Autoplay title/CSS walk — same pulse both players so title confirms
+    // Autoplay title/CSS walk -- same pulse both players so title confirms
     // (OR of both rings) and each CSS cursor locks.
     if (int nav = Fm95ComputeAutoplayNav(); nav >= 0) return nav;
-    // Reads the P2 binder slot (slot 1) so a second device — or fallback
-    // to keyboard P2 bindings — drives the second player on offline /
+    // Reads the P2 binder slot (slot 1) so a second device -- or fallback
+    // to keyboard P2 bindings -- drives the second player on offline /
     // dual-client tests where both players are local.
     if (!BinderSlotHasBindings(1)) {
         return original_get_player_input_p2
@@ -263,11 +263,11 @@ int __cdecl Hook_GetPlayerInput_FM95_P2(int player_idx) {
 // Battle: return synchronized input from GekkoNet with facing adjustment
 int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
     // Slice F: chat-mode input gate. Same caveat as the FM95 hooks
-    // above — works for offline single-client testing; netplay
+    // above -- works for offline single-client testing; netplay
     // correctness wants the gate at the input-binder Sample call.
     if (fc_hud::IsChatInputActive() && player_id == g_player_index) return 0;
     uint32_t game_mode = *(uint32_t*)FM2K::ADDR_GAME_MODE;
-    // (Removed FM2K_INPUT_DUMP block — calling original_get_player_input
+    // (Removed FM2K_INPUT_DUMP block -- calling original_get_player_input
     // for diagnostic purposes had a SIDE EFFECT: it ran FM2K's keyboard-
     // poll → .ini-binding pipeline, which leaked .ini-bound key presses
     // into FM2K's internal edge-detection state EVEN WHEN our binder was
@@ -279,13 +279,13 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
     // Single capture-and-return funnel. EVERY return path goes through
     // this lambda so we record the (p1, p2) input pair into the host's
     // session_history every time the input-buffer-index ticks (= one
-    // full FM2K frame). Recording starts at FM2K boot — captures title-
+    // full FM2K frame). Recording starts at FM2K boot -- captures title-
     // screen no-ops, auto-mash, pre-rendezvous CSS, post-rendezvous
-    // GekkoNet-merged inputs, battle frames — one canonical log spanning
+    // GekkoNet-merged inputs, battle frames -- one canonical log spanning
     // the entire connection. Late-joining spectators get this whole log
     // via SendSessionBackfillTo and replay deterministically from frame 0.
     //
-    // Spectators (g_spectator_mode) DO NOT record — they consume from
+    // Spectators (g_spectator_mode) DO NOT record -- they consume from
     // pb_queue, not produce. Stress / offline DO record but the log is
     // never sent (no subscribers).
     // capture_and_return: every returned input from this hook on the HOST
@@ -296,12 +296,12 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
     // local FM2K from that exact same input pair, popped one per sim
     // tick. Because every change to FM2K's state is input-driven from a
     // canonical default state at boot, replaying the input log in order
-    // produces a 1:1 sim — title-screen auto-mash, CSS cursor moves,
+    // produces a 1:1 sim -- title-screen auto-mash, CSS cursor moves,
     // battle commands all included.
     //
     // The pending pair lives at file scope (g_capture_*) instead of
     // lambda statics so Hook_FlushPendingCapture() can drain the trailing
-    // CSS frame at CSS→battle transition — without that flush, the LAST
+    // CSS frame at CSS→battle transition -- without that flush, the LAST
     // CSS frame's pair (the one whose confirm input flips game_mode) sits
     // in g_capture_p[] forever because the next frame's capture is gated
     // out by Netplay_IsActive once the battle session starts. Spectator
@@ -333,7 +333,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
         return result;
     };
 
-    // Title-screen menu-cursor write. Must fire on BOTH host AND spectator —
+    // Title-screen menu-cursor write. Must fire on BOTH host AND spectator --
     // it's a state side-effect of the auto-title-skip protocol, not an
     // input. session_history only records returned input values, so a
     // spectator replaying host's recorded auto-mash button-A pulses would
@@ -353,13 +353,13 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
         }
     }
 
-    // Spectator process — SINGLE source of truth: the popped input pair
+    // Spectator process -- SINGLE source of truth: the popped input pair
     // (host's recorded p1/p2 for the current sim frame). No keyboard read,
     // no auto-mash, no fall-through to anything else. The hook is only
     // ever called from inside RunSpectatorTick → original_process_game_inputs,
     // which we only invoke after popping a frame from the queue.
     //
-    // Battle-mode facing fix mirrors host's branch — same 11-bit input,
+    // Battle-mode facing fix mirrors host's branch -- same 11-bit input,
     // same left/right swap when char_active && !state_flag_8.
     if (g_spectator_mode) {
         uint16_t input = (player_id == 0)
@@ -394,10 +394,10 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
     // alternate frames until g_game_mode flips to 2000 (CSS reached).
     //
     // Critical: alternate per-FRAME, not per-CALL. get_player_input
-    // is called twice per frame (once for each player) — if we
+    // is called twice per frame (once for each player) -- if we
     // increment a counter on every call and use parity, P1 and P2
     // get opposite values and neither sees a rising edge after frame
-    // 1. Use g_input_buffer_index @ 0x447EE0 instead — it ticks once
+    // 1. Use g_input_buffer_index @ 0x447EE0 instead -- it ticks once
     // per frame from the game's own input pipeline, so both players'
     // calls in the same frame return the same value.
     {
@@ -431,7 +431,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
                 // edge detector. Holding the button for 2 frames lets
                 // the title menu's "any-button" check (& 0x3F0) sample
                 // a stable value before the release. ~25 Hz of
-                // confirms — fast enough to march title → menu → CSS
+                // confirms -- fast enough to march title → menu → CSS
                 // in ~16 frames, slow enough not to skip past states
                 // the menu hasn't latched yet.
                 uint32_t buf_idx = *(uint32_t*)0x447EE0;
@@ -443,7 +443,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
 
     // FM2K_PARITY_AUTOPLAY: drive title→CSS→battle via a deterministic
     // input sequence. Short-circuits the netplay/CSS/spectator branches
-    // — autoplay owns input completely. Phase-aware (uses live
+    // -- autoplay owns input completely. Phase-aware (uses live
     // game_mode to pick inputs per CSS section). The game's CSS state
     // machine (game_state_manager @ 0x406FC0) reads:
     //   g_processed_input[i] for direction (bits 0..3 = L/R/U/D)
@@ -528,11 +528,11 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
                     // forward and replay both. Different per-frame
                     // entropy than a fixed pattern, so the test
                     // exercises hit-stop, super-cancel, projectile
-                    // spawn, throw whiff, etc. — the RNG-consuming
+                    // spawn, throw whiff, etc. -- the RNG-consuming
                     // code paths a fixed cycle wouldn't reach.
                     //
                     // ABSOLUTELY do not pull from a static counter
-                    // (s_call_count etc.) — that counter advances
+                    // (s_call_count etc.) -- that counter advances
                     // EVERY Hook_GetPlayerInput call including replay
                     // re-invocations, so forward sim_N and replay
                     // sim_N would see different "random" outputs and
@@ -596,7 +596,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
             if (mode_changed || periodic) {
                 const uint32_t p1_action = *(uint32_t*)0x47019Cu;
                 const uint32_t p2_action = *(uint32_t*)0x4701A0u;
-                // Selected character indexes — IDA-renamed to
+                // Selected character indexes -- IDA-renamed to
                 // g_p1_selected_char_idx / g_p2_selected_char_idx
                 // (was misleadingly g_player_stage_positions[]).
                 const int32_t  p1_char   = *(int32_t*)FM2K::ADDR_P1_SELECTED_CHAR;
@@ -628,16 +628,16 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
             // consumes g_p?_input (the gekko-delivered value, which is the
             // SAME autoplay value via the netplay.cpp gekko_add_local_input
             // path). End result: engine input == spec-stream input == .fm2krep
-            // input — replay reproduces record deterministically.
+            // input -- replay reproduces record deterministically.
             //
             // Same rule for CSS netplay (2026-06-11 split-brain fix): the
             // engine must consume Netplay_GetCSSInput (the lockstep-
-            // delivered pair) — Netplay_ProcessCSS feeds our local
+            // delivered pair) -- Netplay_ProcessCSS feeds our local
             // autoplay value into the session via
             // Hook_ComputeAutoplayCssInput. Short-circuiting here ran each
             // peer's sim on locally-hashed inputs for BOTH players; local
             // counter skew under packet loss made P1's sim lock chars at
-            // css_frame=733 while P2's sim browsed to 3796 — different
+            // css_frame=733 while P2's sim browsed to 3796 -- different
             // chars, different colors, doomed rematch.
             if (game_mode >= 3000u && game_mode < 4000u && Netplay_IsActive()) {
                 // Skip return; let the netplay branch handle it.
@@ -649,7 +649,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
         }
     }
 
-    // (Spectator branch lifted to the top of the function — runs before
+    // (Spectator branch lifted to the top of the function -- runs before
     // auto-mash so spectator's local FM2K replays host's recorded inputs
     // instead of generating its own auto-mash sequence.)
 
@@ -679,7 +679,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
         //
         // CRITICAL: these are OFFSETS inside the character slot, NOT absolute
         // addresses. Hard-coding absolute addresses broke when we corrected
-        // CHAR_SLOT_BASE from 0x4D1D80 to 0x4D1D90 — the hook was reading
+        // CHAR_SLOT_BASE from 0x4D1D80 to 0x4D1D90 -- the hook was reading
         // from 16 bytes into the wrong memory, decisions were garbage, and
         // the two peers could pick different facing-swap values from
         // non-deterministic residue. This is almost certainly the "HP
@@ -687,7 +687,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
         //
         // Offsets are relative to the CORRECTED base CHAR_SLOT_BASE=0x4D1D90.
         // First attempt computed these against the old 0x4D1D80 base, which was
-        // 16 bytes too low for the new base — that made facing-swap read the
+        // 16 bytes too low for the new base -- that made facing-swap read the
         // wrong bytes and the symptom was "left/right flip when you switch
         // sides". Absolute addresses of the fields are unchanged:
         //   0x4DFCD1 - 0x4D1D90 = 0xDF41   (char_active)
@@ -716,7 +716,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
         input = Hook_ApplySOCD(input);
 
         // Log only the first 4 calls (initial handshake verification). After
-        // that stay silent — Hook_GetPlayerInput fires 2x per sim tick, and
+        // that stay silent -- Hook_GetPlayerInput fires 2x per sim tick, and
         // during stress-mode rollback replay that's thousands of calls per
         // second. Per-100 throttling was still showing up on screen.
         static uint32_t battle_log_count = 0;
@@ -739,7 +739,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
     }
 
     // Offline or menu: use the binder if active, else fall through to FM2K's
-    // own get_player_input. Same gating as Input_CaptureLocal — Init() is
+    // own get_player_input. Same gating as Input_CaptureLocal -- Init() is
     // idempotent and resolves to %APPDATA%\FM2K_Rollback\fm2k_inputs.ini
     // (matching the launcher's save path) so launcher-bound keys / pads
     // drive offline play here, GekkoNet-online play through Input_CaptureLocal.
@@ -750,7 +750,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
         const int now_tick = (int)GetTickCount();
         if ((now_tick - s_last_check_tick) > 1000 || s_last_check_tick == 0) {
             s_last_check_tick = now_tick;
-            // Per-game profile routing — v0.2.43 fix (Sheriel's bug
+            // Per-game profile routing -- v0.2.43 fix (Sheriel's bug
             // report) restored here after an intervening edit removed
             // it. Without this, Hook_GetPlayerInput's binder Init/Load
             // resolves to the DEFAULT fm2k_inputs.ini and the launcher's
@@ -794,7 +794,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
         // Per-player takeover: the binder only overrides players it has
         // bindings FOR (BinderSlotHasBindings). s_binder_active keys on
         // P1's rows alone, but this branch used to return for BOTH
-        // players — a profile whose P2 rows are all NONE (e.g. a per-game
+        // players -- a profile whose P2 rows are all NONE (e.g. a per-game
         // override saved with P2 cleared) fed that player a permanent 0
         // and never reached the vanilla fallback below. Vanilla FM2K
         // would have read the game's own configured P2 keys; now an
@@ -806,15 +806,15 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
             // spectator branches above use to compute slot_base for facing-fix).
             // 0 = P1 character → P1 bindings, 1 = P2 character → P2 bindings.
             // Without this distinction both players get the SAME input from
-            // P1's bindings — the bug we just fixed.
+            // P1's bindings -- the bug we just fixed.
             //
             // Focus behavior: Sample_Win32 is focus-correct BY CONSTRUCTION
             // (keyboard via thread-queue-synced GetKeyboardState, gamepads
-            // behind its own foreground gate) — an unfocused game samples
+            // behind its own foreground gate) -- an unfocused game samples
             // all-zero here, no caller-side gating needed.
             int slot = (input_type & 1);
             uint16_t bound = FM2KInputBinder::Sample_Win32(slot);
-            // OPTION title-screen submode cycle — fires on the binder path
+            // OPTION title-screen submode cycle -- fires on the binder path
             // too, before masking off meta-bits so PerGamePatches sees the
             // full 14-bit value (OPTION = 0x800).
             if (player_id == 0) {
@@ -844,7 +844,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
                 }
             }
 
-            // Solo-driver BATTLE override. Same reason — binder path
+            // Solo-driver BATTLE override. Same reason -- binder path
             // shortcircuits PerGamePatches_TryOverrideInput, so we have
             // to invoke the battle helper here too. Zeros P2 for VS CPU /
             // CPU vs CPU so the engine's script-driven AI takes over;
@@ -920,7 +920,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
         PerGamePatches_OnTitleInputTick(raw, game_mode);
     }
 
-    // Per-game mode overrides — VS CPU, CPU vs CPU, training. Returns -1
+    // Per-game mode overrides -- VS CPU, CPU vs CPU, training. Returns -1
     // when no toggle applies. Only fires on the offline path (netplay /
     // spectator branches return earlier above), so we don't accidentally
     // override authoritative input streams during a hub match. SOCD is
@@ -933,7 +933,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
         }
     }
 
-    // No binder config — vanilla FM2K input path.
+    // No binder config -- vanilla FM2K input path.
     int orig = original_get_player_input
         ? original_get_player_input(player_id, input_type)
         : 0;
@@ -943,21 +943,21 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
 }
 
 bool InstallInputHooks() {
-    // Hook GetPlayerInput — FM2K only.
+    // Hook GetPlayerInput -- FM2K only.
     //
     // FM2K's get_player_input is `int __cdecl(int player_id, int input_type)`,
     // a single function called for both players with input_type selecting
     // which control mode to use. Our Hook_GetPlayerInput matches that
     // signature.
     //
-    // FM95 splits this into two SEPARATE single-arg functions —
+    // FM95 splits this into two SEPARATE single-arg functions --
     // get_player_input_p1 (0x408AE0) and get_player_input_p2 (0x408D60),
     // each `int __cdecl(int player_idx)`. Hooking either with our 2-arg
     // shape would corrupt the stack on entry and inject the wrong
     // FM2K-style keybindings into CPW's native input read.
     //
     // The right surface for FM95 input injection is Hook_ProcessGameInputs
-    // (0x408FF0, single arg, hooked below) — it writes directly into
+    // (0x408FF0, single arg, hooked below) -- it writes directly into
     // g_p1/p2_input_history[buf_idx] AFTER the natural keyboard/joystick
     // poll, so we can override for netplay without disrupting the host's
     // ini-driven key bindings or joyGetPosEx gamepad path.
@@ -970,7 +970,7 @@ bool InstallInputHooks() {
         }
     } else {
         // FM95: hook BOTH split single-arg functions so our binder layer
-        // applies to both players. Same effect as FM2K's single hook —
+        // applies to both players. Same effect as FM2K's single hook --
         // user-rebindable keyboard + XInput gamepad, facing flip applied
         // engine-relative, START stripped on CSS.
         if (MH_CreateHook((void*)FM2K::ADDR_GET_PLAYER_INPUT,    // 0x408AE0 P1

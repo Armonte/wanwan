@@ -1,11 +1,11 @@
-// FM2K Hub client — WinHTTP WebSocket transport.
+// FM2K Hub client -- WinHTTP WebSocket transport.
 //
 // One I/O thread does the WS handshake then spawns a sender thread.
 // The I/O thread itself owns the receive loop. Both push events
 // onto a thread-safe inbox; the launcher's UI thread drains via
 // HubClient::Poll() once per frame.
 //
-// JSON encode/decode is deliberately minimal — the message catalog
+// JSON encode/decode is deliberately minimal -- the message catalog
 // in docs/FM2K_Matchmaking_Design.md §15.2 is small enough that
 // hand-rolled extractors are simpler than vendoring a JSON lib.
 // If that catalog grows, swap in nlohmann/json.
@@ -129,7 +129,7 @@ void HubClient::SendNatType(const std::string& nat_type) {
 void HubClient::SendTcpAddr(const std::string& ip, int port) {
     // External TCP addr learned via TCP-STUN against the hub. Hub stores
     // it on user.external_tcp_addr and forwards in spectator_incoming
-    // (preferred over local_tcp_port — accurate even on non-port-
+    // (preferred over local_tcp_port -- accurate even on non-port-
     // preserving NATs).
     std::string m = "{\"type\":\"tcp_addr\",\"ip\":\"" + EscapeJsonString(ip)
                   + "\",\"port\":" + std::to_string(port) + "}";
@@ -322,7 +322,7 @@ void HubClient::MatchResult(const std::string& match_id,
     }
     // session_id as a 16-char hex string for compactness + readability in
     // the matches.json log (the high 32 bits are unix epoch seconds, low
-    // 32 bits a random nonce — see SpectatorNode_AppendSessionId).
+    // 32 bits a random nonce -- see SpectatorNode_AppendSessionId).
     char sid_buf[32];
     std::snprintf(sid_buf, sizeof(sid_buf), "%016llx",
                   static_cast<unsigned long long>(session_id));

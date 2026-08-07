@@ -40,7 +40,7 @@ void RenderDebugOverlay() {
     if (!g_overlay_visible) return;
 
     // Clamp the debug window to the cnc-ddraw game rect so it floats
-    // strictly over the live game pixels — never over the black
+    // strictly over the live game pixels -- never over the black
     // letterbox/pillarbox margins. The rect comes from
     // pDevice->GetViewport() captured in Hook_EndScene right before
     // this call. Default to a 400x500 floating window if we haven't
@@ -67,7 +67,7 @@ void RenderDebugOverlay() {
     }
     ImGui::Begin("FM2K Debug [F9]", &g_overlay_visible);
 
-    // Game-rect debug toggle — at the top so it's easy to find while
+    // Game-rect debug toggle -- at the top so it's easy to find while
     // testing the rect detection across window sizes / fullscreen.
     ImGui::Checkbox("Show game-rect outline (debug)", &g_show_game_rect_debug);
     if (g_game_viewport.Width > 0) {
@@ -102,7 +102,7 @@ void RenderDebugOverlay() {
         if (ImGui::BeginTabItem("HUD")) {
             fc_hud::StyleControls& s = fc_hud::Style();
             ImGui::TextColored(ImVec4(0.7f, 0.85f, 1.0f, 1.0f),
-                "In-game HUD style — applies live each frame.");
+                "In-game HUD style -- applies live each frame.");
             ImGui::Spacing();
 
             ImGui::SliderFloat("Scale", &s.scale, 0.3f, 2.0f, "%.2f");
@@ -166,7 +166,7 @@ void RenderDebugOverlay() {
             // HP source differs by engine. FM2K has globals at fixed addresses;
             // FM95 stores HP per-object inside the pool slot (offset 72 = pos
             // field reused as HP for character objects). Pull from whichever
-            // applies — globals.h's FM95 ifdef sets ADDR_P*_HP to 0 sentinel
+            // applies -- globals.h's FM95 ifdef sets ADDR_P*_HP to 0 sentinel
             // so a direct deref would crash.
             uint32_t p1_hp_val = 0, p2_hp_val = 0;
             if constexpr (FM2K::kIsFM2K) {

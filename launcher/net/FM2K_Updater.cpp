@@ -1,4 +1,4 @@
-// FM2K_Updater — auto-updater glue. See FM2K_Updater.h.
+// FM2K_Updater -- auto-updater glue. See FM2K_Updater.h.
 
 #include "FM2K_Updater.h"
 #include "version_local.h"
@@ -136,7 +136,7 @@ int CompareVersions(const std::string& a, const std::string& b) {
 
 // ---------------------------------------------------------------------------
 // WinHTTP wrappers. We do GET (text) and GET (file-stream). Both follow
-// redirects automatically — important because GitHub's release-asset
+// redirects automatically -- important because GitHub's release-asset
 // download URLs 302 to a CDN.
 // ---------------------------------------------------------------------------
 
@@ -273,7 +273,7 @@ bool HttpDownloadFile(const std::string& url,
         WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
     if (!hReq) { WinHttpCloseHandle(hCon); WinHttpCloseHandle(hSes); return false; }
 
-    // Auto-redirect handling — release/download/... 302s to objects.githubusercontent.com.
+    // Auto-redirect handling -- release/download/... 302s to objects.githubusercontent.com.
     DWORD redirect_policy = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
     WinHttpSetOption(hReq, WINHTTP_OPTION_REDIRECT_POLICY,
                      &redirect_policy, sizeof(redirect_policy));
@@ -370,7 +370,7 @@ void CheckWorker() {
     // non-prerelease tag. Simple JSON, one tag_name field.
     // Dev channel: /releases returns the full list (most recent first)
     // including prereleases. We walk it and pick the first prerelease=true
-    // entry — that's the latest dev build. Note: if you switch from dev
+    // entry -- that's the latest dev build. Note: if you switch from dev
     // back to stable, the launcher's local version may already be NEWER
     // than what `/releases/latest` returns; CompareVersions handles that
     // (local > remote ⇒ UpToDate, no downgrade attempt).
@@ -500,7 +500,7 @@ void CheckWorker() {
     // current stable (0.2.54). Otherwise they sit on the dev binary
     // forever even though they explicitly asked for stable. Pill text
     // distinguishes upgrade ("Update X -> Y") from downgrade
-    // ("Switch X -> Y (stable)") — see RenderMenuBar.
+    // ("Switch X -> Y (stable)") -- see RenderMenuBar.
     const int cmp = CompareVersions(kAppVersion, remote);
     {
         std::lock_guard<std::mutex> lk(g_st.mtx);
@@ -597,7 +597,7 @@ bool ApplyUpdateAndExit() {
     const std::string updater = copy_ok ? tmp_updater : app_updater;
     if (!copy_ok) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "Updater: couldn't copy FM2KUpdater.exe to %TEMP% (err=%lu) — "
+            "Updater: couldn't copy FM2KUpdater.exe to %TEMP% (err=%lu) -- "
             "running from app dir; will fail to self-replace",
             (unsigned long)GetLastError());
     }
@@ -628,7 +628,7 @@ bool ApplyUpdateAndExit() {
     CloseHandle(pi.hProcess);
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "Updater: handed off to FM2KUpdater.exe — exiting launcher");
+        "Updater: handed off to FM2KUpdater.exe -- exiting launcher");
 
     // Give the updater a beat to come up before we tear down so the
     // first thing it does (waiting on our PID) sees a real handle.

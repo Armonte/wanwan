@@ -27,7 +27,7 @@
 
 // ─── ReadFile / SetFilePointer / CloseHandle hooks ──────────────────────
 // All four hot-path handle APIs get a fast lookup. Non-VFile handles fall
-// through to the original via a single map.find() — typically ~30 ns,
+// through to the original via a single map.find() -- typically ~30 ns,
 // invisible against the work the game is doing on the same call.
 
 using ReadFile_t          = BOOL (WINAPI*)(HANDLE, LPVOID, DWORD, LPDWORD, LPOVERLAPPED);

@@ -1,23 +1,23 @@
-// Main-loop trampoline — replaces the game's native main_game_loop @0x405AD0.
+// Main-loop trampoline -- replaces the game's native main_game_loop @0x405AD0.
 //
 // During battle under GekkoNet the trampoline IS the game loop. During CSS
 // and menus it emulates the native loop's structure so gameplay code that
 // relies on main_game_loop's prologue writes keeps working. This eliminates
 // the cadence mismatch between forward-sim and rollback-replay that was
-// causing object_pool divergence — main_game_loop's per-iteration state
+// causing object_pool divergence -- main_game_loop's per-iteration state
 // writes never happen on forward any more either, so there's nothing to
 // mismatch against.
 //
 // Hook chain: Hook_RunGameLoop @ FM2K::ADDR_RUN_GAME_LOOP (0x405AD0) detours
-// to TrampolineMainLoop(). No calls to original_run_game_loop — we own the
+// to TrampolineMainLoop(). No calls to original_run_game_loop -- we own the
 // outer loop.
 #pragma once
 #include <windows.h>
 #include <cstdint>
 
 enum class LoopPhase {
-    NATIVE,             // Menu / intro / results — full original flow reproduced
-    CSS,                // Character select — control-channel-lockstep, no GekkoNet
+    NATIVE,             // Menu / intro / results -- full original flow reproduced
+    CSS,                // Character select -- control-channel-lockstep, no GekkoNet
     TRAMPOLINE_BATTLE,  // GekkoNet drives sim + save + load + advance
     SPECTATOR_PLAYBACK  // Inputs sourced from spectator stream queue, no GekkoNet
 };
@@ -34,12 +34,12 @@ BOOL TrampolineMainLoop();
 bool Fm95InstallOwningLoop();
 #endif
 
-// Per-frame engine work — extracted body callable from either
+// Per-frame engine work -- extracted body callable from either
 // TrampolineMainLoop (FM2K, host loop replaced) or Hook_UpdateGameState
 // (FM95, where the host's WinMain owns the message pump and timing).
 // Returns the LoopPhase actually executed so callers can decide whether
 // the host's natural render call should still fire (NATIVE) or be skipped
-// (BATTLE / CSS — the tick already drove update + render via AdvanceEvent
+// (BATTLE / CSS -- the tick already drove update + render via AdvanceEvent
 // / RenderFrameWithSnapshot).
 LoopPhase TrampolineFrameTick();
 

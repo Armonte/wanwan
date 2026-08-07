@@ -2,10 +2,10 @@
 
 #include <cstdint>
 
-// C3.5 — vs_round_function detour for ROUND_START / ROUND_END emit.
+// C3.5 -- vs_round_function detour for ROUND_START / ROUND_END emit.
 //
 // FM2K-only emit; on FM95 builds these are no-ops (FM95 has different
-// round-state plumbing — separate hand-off).
+// round-state plumbing -- separate hand-off).
 //
 // Lifecycle:
 //   - RoundEvents_Install: called from Hooks::Hook_Initialize after the
@@ -24,7 +24,7 @@ void RoundEvents_OnMatchStart();
 // character_state_machine's HP-init instruction (installed by
 // PerGamePatches_InstallKofHpInitPatch) intercepts the next round's
 // HP write and substitutes the snapshotted values for the winner's
-// slot — the loser's incoming character initializes normally.
+// slot -- the loser's incoming character initializes normally.
 // Read from FM2K_TEAM_KOF_RETENTION env var at hook init; toggled
 // per-game via the launcher's host config panel.
 void RoundEvents_SetKofRetention(bool enabled);

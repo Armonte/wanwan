@@ -1,4 +1,4 @@
-// Combat-state introspection — see header for what each field means and the
+// Combat-state introspection -- see header for what each field means and the
 // IDA references used to derive the offsets.
 
 #if !defined(ENGINE_FM95)
@@ -16,20 +16,20 @@ namespace {
 // inside each slot, written every frame by character_facing_controller as it
 // finds the nearest valid type-4 fighter to that slot.
 constexpr uintptr_t kSlotBases[2] = {
-    0x004D1D80,  // slot 0 — P1 char_data (its 0xDF69 → P2 obj_ptr)
-    0x004DFDBF,  // slot 1 — P2 char_data (its 0xDF69 → P1 obj_ptr)
+    0x004D1D80,  // slot 0 -- P1 char_data (its 0xDF69 → P2 obj_ptr)
+    0x004DFDBF,  // slot 1 -- P2 char_data (its 0xDF69 → P1 obj_ptr)
 };
 constexpr uintptr_t kOffsetOpponentObjPtr = 0xDF69;
 
 // Object-layout offsets (byte offsets within the 382-byte ObjectSlot struct
-// in g_object_pool). Disasm-verified — Hex-Rays infers dword alignment but
+// in g_object_pool). Disasm-verified -- Hex-Rays infers dword alignment but
 // some fields here are byte-packed and the engine reads unaligned dwords.
 constexpr uintptr_t kObjOffPosX            = 0x08;
 constexpr uintptr_t kObjOffPosY            = 0x0C;
 constexpr uintptr_t kObjOffHitstopFrames   = 0x40;
 constexpr uintptr_t kObjOffPosYGround      = 0x58;
 // Hitbox slot array: 20 entries × 4 bytes, UNALIGNED starting at byte 0x89.
-// Source: hit_detection_system @ 0x40F050 `mov eax, [edi+eax*4+89h]` —
+// Source: hit_detection_system @ 0x40F050 `mov eax, [edi+eax*4+89h]` --
 // the engine loads slot pointers at obj+0x89, obj+0x8D, ..., obj+0xD5.
 // The Hex-Rays output's `obj[35]` rounds up to byte 0x8C and is wrong; an
 // aligned read at 0x8C straddles slot 0 and slot 1 and produces a spurious
@@ -37,7 +37,7 @@ constexpr uintptr_t kObjOffPosYGround      = 0x58;
 // every "has_active_hitbox" check fire even when nothing was active.
 constexpr uintptr_t kObjOffHitboxArray     = 0x89;
 constexpr int       kObjHitboxSlotCount    = 20;
-constexpr uintptr_t kObjOffFlagsStun       = 0x15E;  // obj+350 — stun state machine
+constexpr uintptr_t kObjOffFlagsStun       = 0x15E;  // obj+350 -- stun state machine
                                                      // (bits 2,3 used; upper bits unused).
 
 void* ReadOpponentObjForSlot(int slot) {
@@ -80,7 +80,7 @@ PlayerView ReadPlayer(int slot) {
 
     // Hitbox check: iterate the 20 unaligned-dword pointer slots starting at
     // obj+0x89 (stride 4). Any non-null entry means the engine has at least
-    // one offensive hitbox to test this frame — i.e., the character is in
+    // one offensive hitbox to test this frame -- i.e., the character is in
     // an active-frame window of an attack. Memcpy for the read so we don't
     // tickle MinGW's strict-aliasing or undefined-behavior sanitizers on
     // unaligned uint32_t loads.
@@ -98,7 +98,7 @@ PlayerView ReadPlayer(int slot) {
 }
 
 bool ShouldGuardP2() {
-    // Kept for back-compat callers — uses zero P1-input (no attack-press
+    // Kept for back-compat callers -- uses zero P1-input (no attack-press
     // signal). New callers should use GuardP2Input() with the real p1_input.
     return GuardP2Input(0) != 0u;
 }
@@ -112,7 +112,7 @@ namespace {
 //   * multi-hit moves where the hitbox slot blips null between active hits
 //   * attack recovery → next-string-hit window
 //
-// 12 frames @ 100fps ≈ 120ms — long enough to bridge typical FM2K stings,
+// 12 frames @ 100fps ≈ 120ms -- long enough to bridge typical FM2K stings,
 // short enough that P2 doesn't stand pinned in guard forever after a whiff.
 constexpr int kGuardHoldFrames = 12;
 int s_hold_frames = 0;
@@ -125,7 +125,7 @@ constexpr uint16_t kAttackBits = 0x3F0;
 // Direction bits in the screen-coord input convention used by the binder
 // before the facing-fix. FM2K layout (see FM2KInputBinder::Bit):
 //   0x001 = LEFT, 0x002 = RIGHT, 0x004 = UP, 0x008 = DOWN.
-// NOTE — bit 2 is UP and bit 3 is DOWN (not the other way around). Earlier
+// NOTE -- bit 2 is UP and bit 3 is DOWN (not the other way around). Earlier
 // I had these swapped and the "crouch-block" was actually pressing UP+back,
 // making P2 jump backwards every guard trigger.
 constexpr uint16_t kInputLeft  = 0x001;
@@ -168,7 +168,7 @@ uint16_t GuardP2Input(uint16_t p1_input_screen_coord) {
         //
         //   P1 grounded → crouch-block (DOWN + back). Catches LOW and MID
         //                 attacks via the engine's char_flags-bit-3 path.
-        //                 Misses overheads from a grounded P1 — those need
+        //                 Misses overheads from a grounded P1 -- those need
         //                 per-hitbox flag decode (deferred to Phase C).
         //
         //   P1 airborne → stand-block (back only, no DOWN). Jumping
@@ -176,7 +176,7 @@ uint16_t GuardP2Input(uint16_t p1_input_screen_coord) {
         //                 stand-block path handles them. A crouching P2
         //                 would whiff the block and eat the jump-in.
         //
-        // Re-evaluated every frame — the latch only governs "should we
+        // Re-evaluated every frame -- the latch only governs "should we
         // hold ANY direction?", not which one. So transitions (P1 jumps
         // → lands → ground attack) snap to the right block stance with
         // no extra frame delay.
@@ -184,7 +184,7 @@ uint16_t GuardP2Input(uint16_t p1_input_screen_coord) {
         // Blockstrings handle themselves automatically: while P2 sits in
         // blockstun (flags_stun & 0xC == 0x8), hit_detection_system skips
         // the input check and auto-blocks subsequent hits. So we only
-        // need to nail hit #1 — the engine carries the rest.
+        // need to nail hit #1 -- the engine carries the rest.
         const bool p1_airborne = p1.valid && !p1.grounded;
         const uint16_t crouch_bit = p1_airborne ? 0u : kInputDown;
 
@@ -197,7 +197,7 @@ uint16_t GuardP2Input(uint16_t p1_input_screen_coord) {
 
 }  // namespace combat_state
 
-#else   // ENGINE_FM95 — different engine, different addresses; stub for now.
+#else   // ENGINE_FM95 -- different engine, different addresses; stub for now.
 
 #include "combat_state.h"
 

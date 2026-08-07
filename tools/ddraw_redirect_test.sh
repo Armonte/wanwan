@@ -10,7 +10,7 @@
 # titles — and requires the hook to confirm cnc-ddraw is the loaded ddraw flavor.
 #
 # The hook emits an explicit verdict (FM2KHook/src/core/dllmain.cpp DDrawDiag):
-#   OK    -> "DDrawDiag: OK — cnc-ddraw (2DFMD.dll) is loaded"
+#   OK    -> "DDrawDiag: OK -- cnc-ddraw (2DFMD.dll) is loaded"
 #   FAIL  -> "DDrawDiag: *** cnc-ddraw redirect FAILED *** ... STOCK DirectDraw"
 #
 # Each game is launched via `--offline <filter>`, where <filter> is a
@@ -58,7 +58,7 @@ run_filter() {
   if [ -z "$log" ]; then echo "  [$filter] FAIL — no game launched (filter matched nothing?)"; return 1; fi
   local dir; dir="$(dirname "$log" | sed "s#$GAMES_ROOT/##; s#/logs##")"
   local ok=1
-  grep -qa "DDrawDiag: OK — cnc-ddraw" "$log" || { ok=0; }
+  grep -qa "DDrawDiag: OK -- cnc-ddraw" "$log" || { ok=0; }
   grep -qa "cnc-ddraw redirect FAILED" "$log" && ok=0
   grep -qa "game_mode changed: 0 -> 3000" "$log" || ok=0
   if [ "$ok" = 1 ]; then

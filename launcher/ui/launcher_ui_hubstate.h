@@ -39,14 +39,14 @@ struct LauncherUI::HubState {
     // Hub-authoritative settings for the active hub-driven match. Set
     // on K::MatchStart from ev.match.settings; consumed by the launch
     // path (FM2KLauncher::StartOnlineSession via on_online_session_start
-    // can't see this directly — we expose it via the existing
+    // can't see this directly -- we expose it via the existing
     // network_config_ piggyback below). Random-stage env vars are
     // derived from `random_seed`/`random_stage_*`.
     fm2k::MatchSettings current_match_settings;
     std::string status_line;
     bool show_challenge_modal = false;
 
-    // Outbound challenge state — populated when WE click Challenge on
+    // Outbound challenge state -- populated when WE click Challenge on
     // somebody, cleared when the hub tells us the outcome (declined,
     // cancelled, failed, or match_start). Drives the "Waiting for X..."
     // modal so the challenger gets feedback instead of a silent UI.
@@ -70,7 +70,7 @@ struct LauncherUI::HubState {
     // the hook turns into exactly one outbound match_result. Empty when
     // we're not in a hub match (offline / dev / spectator).
     std::string current_match_token;
-    // Per-match peer + role snapshot — stashed on K::MatchStart so the
+    // Per-match peer + role snapshot -- stashed on K::MatchStart so the
     // local results.csv writer (#42) can render the row from MY
     // perspective even after the hub modal / users-list state has moved
     // on. role is "host" (we're P1) or "guest" (we're P2); peer_nick
@@ -88,11 +88,11 @@ struct LauncherUI::HubState {
 
     // My own overall W/L/D, populated by hub `record` events and used
     // for the launcher titlebar. (-1, -1, -1) means we haven't received
-    // a record yet — render no titlebar suffix in that case.
+    // a record yet -- render no titlebar suffix in that case.
     int my_wins   = -1;
     int my_losses = -1;
     int my_draws  = -1;
-    // Per-launcher-session counters (Patrick's bug — wanted "current
+    // Per-launcher-session counters (Patrick's bug -- wanted "current
     // session record" alongside the overall in the titlebar). These
     // increment on every committed match_result (self_won / peer_won /
     // draw) and reset only on launcher process restart. Never reset
@@ -125,7 +125,7 @@ struct LauncherUI::HubState {
     // this counter exactly once per Netplay_StartBattleSession (after
     // chars + stage are published). Launcher fires match_progress only
     // when this counter advances, so during the inter-battle CSS
-    // window — where shared mem still holds the prev battle's data —
+    // window -- where shared mem still holds the prev battle's data --
     // no spurious match_progress is sent and the lobby's "(in CSS)"
     // row stays clean until the new battle actually starts.
     std::unordered_map<uint32_t, uint32_t> last_chars_seq;
@@ -137,7 +137,7 @@ struct LauncherUI::HubState {
 
     // Match results we couldn't send because the hub WS was disconnected
     // at outcome time (long pause → keepalive timeout → WS drop is the
-    // classic trigger — multiple users reported wins not counting after
+    // classic trigger -- multiple users reported wins not counting after
     // long pauses). On K::Connected we drain this queue and ship every
     // entry. Local CSV is written EITHER WAY (PollMatchOutcome writes
     // it before checking WS state), so the per-user record stays
@@ -166,7 +166,7 @@ struct LauncherUI::HubState {
 
     // Wall-clock SDL_GetTicks() of the last successful pre-match STUN.
     // Refreshed every ~20 s by the lobby tick so the hub-stored external
-    // port stays alive — most home NATs idle-time UDP mappings out
+    // port stays alive -- most home NATs idle-time UDP mappings out
     // around 30 s, so 20 s gives one re-bind worth of headroom.
     uint32_t    last_stun_refresh_ms = 0;
     // Last NAT classification reported to the hub (Phase 2a). The STUN probe

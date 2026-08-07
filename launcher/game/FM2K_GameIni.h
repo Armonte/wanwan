@@ -21,7 +21,7 @@
 //   Editor.TestPlay.VSSinglePlay=3
 //   Editor.TestPlay.VSTeamPlay=3
 //   ... (KEY / JOY input mappings + window geometry follow but are
-//        not our concern — we read+rewrite only the [GamePlay] keys)
+//        not our concern -- we read+rewrite only the [GamePlay] keys)
 //
 // `Save` preserves every other section + every non-[GamePlay] line in
 // place; the FM2K editor / game writes its own keys (keyboard maps with
@@ -95,7 +95,7 @@ bool Save(const std::filesystem::path& ini_path, const GamePlayConfig& cfg);
 // useful for offline practice but are cheating in online matches. The
 // host calls this on the resolved config before sending to the peer
 // (#54) and before launching the game (#55), so neither side ever sees
-// the overlays mid-match. JoyStick is left alone — it's a local input
+// the overlays mid-match. JoyStick is left alone -- it's a local input
 // preference, not a competitive concern.
 void ForceOnlineClamps(GamePlayConfig& cfg);
 
@@ -122,7 +122,7 @@ std::filesystem::path OverridePathForExe(const std::filesystem::path& exe_path);
 
 // Resolve effective config for a given exe by layering override on
 // defaults. `out` ends up with kUnset for any key neither file sets.
-// `defaults_out` (optional) gets the game's untouched defaults — useful
+// `defaults_out` (optional) gets the game's untouched defaults -- useful
 // for the editor UI to show "default" vs "override" distinctly.
 bool LoadResolved(const std::filesystem::path& exe_path,
                   GamePlayConfig& out,
@@ -150,7 +150,7 @@ bool SaveOverride(const std::filesystem::path& exe_path,
 bool ApplyForLaunch(const std::filesystem::path& exe_path, bool is_online);
 
 // Force `[GamePlay] GameScreenMode=1` (FM2K's fullscreen mode) in the
-// game's ini before launch. Used when the cnc-ddraw redirect is active —
+// game's ini before launch. Used when the cnc-ddraw redirect is active --
 // pinning FM2K to fullscreen lets cnc-ddraw own actual window-mode
 // presentation (its own `windowmode` ini key picks borderless / windowed /
 // exclusive). Without this pin a windowed FM2K would compose against

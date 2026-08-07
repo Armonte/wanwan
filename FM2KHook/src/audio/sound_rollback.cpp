@@ -10,10 +10,10 @@
 
 // ============================================================================
 // Engine-routed constants (globals.h). FM2K values verified via IDA 2026-04-23:
-//   g_sound_channel_table     @ 0x430640 — array of SoundBufferArray*
-//   g_sound_channel_table_end @ 0x433240 — end marker (used by ReleaseAllSoundBuffers)
-//   PlaySoundFromBufferArray  @ 0x415DF0 — core DSound play + round-robin
-//   StopAllSoundsInBufferArray@ 0x415F00 — stop every buffer in one array
+//   g_sound_channel_table     @ 0x430640 -- array of SoundBufferArray*
+//   g_sound_channel_table_end @ 0x433240 -- end marker (used by ReleaseAllSoundBuffers)
+//   PlaySoundFromBufferArray  @ 0x415DF0 -- core DSound play + round-robin
+//   StopAllSoundsInBufferArray@ 0x415F00 -- stop every buffer in one array
 // FM95: the play/stop/control FUNCTIONS are known (0x401590 / 0x4016A0 /
 // 0x4020A0) but the channel TABLE is not yet RE'd (RE-1 in
 // docs/FM95_Support_Status.md) -- its ADDR_SOUND_CHANNEL_TABLE is a 0 sentinel,
@@ -30,7 +30,7 @@ constexpr size_t    CHANNEL_TABLE_SLOTS    =
 
 // Real DSound plays happen by invoking the ORIGINAL DispatchScriptSoundCommand
 // trampoline on the saved script_item. That covers the full StopAllSounds +
-// PlaySoundFromBufferArray + IDirectSoundBuffer::Play + volume sequence — none
+// PlaySoundFromBufferArray + IDirectSoundBuffer::Play + volume sequence -- none
 // of which PlaySoundFromBufferArray alone performs (it only preps the buffer).
 SoundRollback::OriginalDispatcherFn g_original_dispatcher = nullptr;
 
@@ -50,9 +50,9 @@ uint32_t g_stat_record_known = 0;
 uint32_t g_stat_record_unknown = 0;
 uint32_t g_stat_last_log_tick = 0;
 
-// BGM (MIDI/CD/stop) rollback state — single global stream. desired is written
+// BGM (MIDI/CD/stop) rollback state -- single global stream. desired is written
 // by the dispatcher hook and saved in the ring; actual is what MCI is really
-// playing (NOT saved — reconstructed by SyncAfterAdvance). Cleared by
+// playing (NOT saved -- reconstructed by SyncAfterAdvance). Cleared by
 // OnBattleEnd. Replaces the old (cmd,payload) dedup with a proper
 // desired-vs-actual reconcile, so music survives save-ring scroll + rollback.
 SoundRollback::DesiredBgm g_desired_bgm = {};
@@ -60,7 +60,7 @@ SoundRollback::DesiredBgm g_actual_bgm  = {};
 
 // The engine's own sound control (FM2K ControlSound @ 0x4034D0 / FM95
 // ControlSoundSystem @ 0x4020A0 -- routed via globals.h): 0 = stop all channels
-// + MIDI + CD (scene-transition teardown — safe/idempotent, only Stop calls,
+// + MIDI + CD (scene-transition teardown -- safe/idempotent, only Stop calls,
 // no free), 2 = stop MIDI, 3 = stop CD. Used for battle-end stop and the
 // (rare) rollback-erased-music case.
 using ControlSoundFn = int(__cdecl*)(int);
@@ -78,7 +78,7 @@ bool BgmTrace() {
     return s == 1;
 }
 
-// Mute state — atomic so launcher-driven toggles are visible without
+// Mute state -- atomic so launcher-driven toggles are visible without
 // locks. The launcher writes %APPDATA%\FM2K_Rollback\audio.ini and the
 // dispatcher refreshes from it ~once per second.
 SoundRollback::MuteState g_mute = {};
@@ -87,7 +87,7 @@ uint32_t                 g_mute_last_check_tick = 0;
 bool StatesEqual(const SoundRollback::DesiredState& a,
                  const SoundRollback::DesiredState& b) {
     // Channel identity is (wave_ptr, play_frame, stopped). seq_in_frame is
-    // NOT part of identity — it's a within-frame tiebreaker that can drift
+    // NOT part of identity -- it's a within-frame tiebreaker that can drift
     // across stress-mode replay batches because g_seq_counter is global and
     // the number of channels firing in a given frame anchor varies across
     // batches. Including seq here caused constant stop+restart cycles on
@@ -104,7 +104,7 @@ inline bool FrameInWindow(uint32_t f, uint32_t lo, uint32_t hi) {
 int ChannelFor(void* arr) {
     auto it = g_ptr_to_chan.find(arr);
     if (it != g_ptr_to_chan.end()) return it->second;
-    // Lazy fallback — a buffer array might have been populated after Init()
+    // Lazy fallback -- a buffer array might have been populated after Init()
     // (e.g. mid-match asset load, unusual but handle cleanly).
     void** table = reinterpret_cast<void**>(ADDR_CHANNEL_TABLE);
     for (int i = 0; i < static_cast<int>(CHANNEL_TABLE_SLOTS); i++) {
@@ -150,7 +150,7 @@ void RefreshMuteFromDisk() {
     const std::string path = MuteIniPath();
     if (path.empty()) return;
     FILE* f = std::fopen(path.c_str(), "r");
-    if (!f) return;  // file doesn't exist yet — keep current state
+    if (!f) return;  // file doesn't exist yet -- keep current state
     MuteState m{};
     char line[128];
     while (std::fgets(line, sizeof(line), f)) {
@@ -223,14 +223,14 @@ void Init() {
         }
     }
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "SoundRollback: Init — %d non-null channels in %zu-slot table",
+        "SoundRollback: Init -- %d non-null channels in %zu-slot table",
         populated, CHANNEL_TABLE_SLOTS);
 }
 
 void OnBattleEnd() {
     if (g_stat_record_known + g_stat_record_unknown > 0) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "SoundRollback: battle end — total plays known=%u unknown=%u",
+            "SoundRollback: battle end -- total plays known=%u unknown=%u",
             g_stat_record_known, g_stat_record_unknown);
     }
     g_stat_record_known = 0;
@@ -243,7 +243,7 @@ void OnBattleEnd() {
     // cmd_low=0 dispatch on the battle->CSS transition, then its freshly
     // re-created CSS controller re-dispatches the CSS BGM (game_mode==2000).
     // An earlier ControlSoundSystem(0) here ran AFTER that and silenced the
-    // CSS-return music — we respect the game's own stop/start and just reset our
+    // CSS-return music -- we respect the game's own stop/start and just reset our
     // per-battle BGM tracking for the next match.
     g_desired_bgm = {};
     g_actual_bgm  = {};
@@ -255,7 +255,7 @@ void OnBattleEnd() {
 bool RecordDesired(void* arr, int script_item, uint32_t current_frame) {
     int chan = ChannelFor(arr);
     if (chan < 0 || chan >= MAX_CHANNELS) {
-        // Unknown channel — not in g_sound_channel_table. Caller must fall
+        // Unknown channel -- not in g_sound_channel_table. Caller must fall
         // through to the original dispatcher so the sound still plays; it just
         // won't be rollback-tracked.
         g_stat_record_unknown++;
@@ -269,7 +269,7 @@ bool RecordDesired(void* arr, int script_item, uint32_t current_frame) {
     }
 
     // SoundBufferArray layout: {wave_ptr, wave_len, buf_count, cur_index, buffers[]}.
-    // Identity uses wave_ptr — same wave on same channel = "no change", lets the
+    // Identity uses wave_ptr -- same wave on same channel = "no change", lets the
     // dedupe path skip re-triggering.
     uint32_t wave_ptr = *reinterpret_cast<uint32_t*>(arr);
 
@@ -291,12 +291,12 @@ void SyncAfterAdvance(uint32_t earliest_frame, uint32_t current_frame) {
 
     // Once-per-second coverage log. If unknown >> known, the Mike Z layer is
     // mostly inert and the pre-scanned g_sound_channel_table isn't where
-    // character SFX actually live — we need to widen the channel identity.
+    // character SFX actually live -- we need to widen the channel identity.
     uint32_t now_tick = GetTickCount();
     if (now_tick - g_stat_last_log_tick >= 1000 &&
         (g_stat_record_known + g_stat_record_unknown) > 0) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "SoundRollback: coverage — known=%u unknown=%u (passthrough ratio %.1f%%)",
+            "SoundRollback: coverage -- known=%u unknown=%u (passthrough ratio %.1f%%)",
             g_stat_record_known, g_stat_record_unknown,
             100.0f * g_stat_record_unknown /
                 (float)(g_stat_record_known + g_stat_record_unknown));
@@ -335,7 +335,7 @@ void SyncAfterAdvance(uint32_t earliest_frame, uint32_t current_frame) {
         }
 
         if (!des_in) {
-            // Desired was set outside the rollback window — rollback couldn't
+            // Desired was set outside the rollback window -- rollback couldn't
             // have changed it. But if actual is inside the window, rollback
             // erased a play that's currently audible: stop it by stopping
             // every buffer on the channel.
@@ -359,7 +359,7 @@ void SyncAfterAdvance(uint32_t earliest_frame, uint32_t current_frame) {
             // Sync desired forward so savestates capture "what's really playing."
             g_desired[chan] = g_actual[chan];
         } else {
-            // Desired was set during the window — trigger the actual play via
+            // Desired was set during the window -- trigger the actual play via
             // the original dispatcher, which runs the full
             // Stop+Prepare+Play+Volume sequence. PlaySoundFromBufferArray
             // alone only preps the buffer; this is why the previous version
@@ -370,7 +370,7 @@ void SyncAfterAdvance(uint32_t earliest_frame, uint32_t current_frame) {
                 g_original_dispatcher(
                     static_cast<int>(g_desired[chan].script_item_ptr));
             } else {
-                // Explicit "play nothing" or missing dispatcher — just stop.
+                // Explicit "play nothing" or missing dispatcher -- just stop.
                 void* arr = table[chan];
                 if (arr) {
                     using StopFn = int(__cdecl*)(void*);
@@ -400,7 +400,7 @@ void SyncAfterAdvance(uint32_t earliest_frame, uint32_t current_frame) {
         const bool des_in =
             FrameInWindow(g_desired_bgm.play_frame, earliest_frame, current_frame);
         if (des_in) {
-            // Confirmed new/changed BGM this batch — issue the real MCI play/stop
+            // Confirmed new/changed BGM this batch -- issue the real MCI play/stop
             // via the game's own dispatcher (WriteTempMIDIAndPlay /
             // InitializeCDAudio / ControlSoundSystem(0) for cmd_low 0), once.
             if (BgmTrace())
@@ -413,7 +413,7 @@ void SyncAfterAdvance(uint32_t earliest_frame, uint32_t current_frame) {
                 g_original_dispatcher(static_cast<int>(g_desired_bgm.script_item_ptr));
             }
         } else {
-            // Desired stable (set outside the window) but actual diverged — a
+            // Desired stable (set outside the window) but actual diverged -- a
             // play landed in the window then got rolled back. Restore truth: a
             // real track re-asserts via the dispatcher; a stop stops MCI.
             // (Music starts almost never land in the rollback window; degenerate
@@ -439,7 +439,7 @@ void RestoreDesired(const DesiredState* in) {
 }
 
 // BGM desired is deterministic (cmd_low/payload/play_frame + a script_item_ptr
-// into saved sim memory). actual is NOT saved — SyncAfterAdvance reconstructs
+// into saved sim memory). actual is NOT saved -- SyncAfterAdvance reconstructs
 // the real MCI stream from desired after a load.
 void CaptureBgm(DesiredBgm* out) {
     std::memcpy(out, &g_desired_bgm, sizeof(g_desired_bgm));

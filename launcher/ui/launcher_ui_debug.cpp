@@ -61,7 +61,7 @@ void LauncherUI::RenderDebugTools() {
 
         if (ImGui::BeginTabItem("Renderer")) {
             // Redirect is on-by-default. Toggle is presented as a
-            // "Disable" knob — when checked, the next launch skips the
+            // "Disable" knob -- when checked, the next launch skips the
             // IAT patch + PATH prepend and the game loads stock
             // KnownDlls ddraw.dll. Useful for diagnosing whether a
             // problem is rendering-related or game-code-related.
@@ -96,7 +96,7 @@ void LauncherUI::RenderDebugTools() {
             ImGui::Text("cnc-ddraw install");
 
             // Phase C: bundled cnc-ddraw downloader/updater. Status
-            // pill mirrors FM2K_Updater's idiom — labels pulled from
+            // pill mirrors FM2K_Updater's idiom -- labels pulled from
             // a single switch on the snapshot's State.
             const auto snap = fm2k::cnc_ddraw::Get();
             const char* state_label = "?";
@@ -240,7 +240,7 @@ void LauncherUI::RenderMultiClientTools() {
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                             "Launching dual clients for: %s", selected_game.exe_path.c_str());
 
-                // Both clients launch from the same folder — multi-instance
+                // Both clients launch from the same folder -- multi-instance
                 // window check is patched and shared memory is PID-namespaced.
                 bool success1 = on_launch_local_client1(selected_game.exe_path);
                 if (success1) {
@@ -275,7 +275,7 @@ void LauncherUI::RenderMultiClientTools() {
             ImGui::EndDisabled();
         }
 
-        // "Launch Spectator" — third local instance subscribing to client1
+        // "Launch Spectator" -- third local instance subscribing to client1
         // (host on 7000) for replay-streamed spectator validation. Only
         // enabled once Launch Dual Clients has the host alive.
         ImGui::SameLine();
@@ -519,7 +519,7 @@ void LauncherUI::SDLCustomLogOutput(void* userdata, int category, SDL_LogPriorit
     // of the launcher's log window (or written to console / a future
     // disk log) is already redacted. The scrubbed buffer is what gets
     // both chained to the original SDL logger AND added to the in-UI
-    // buffer — so any attempt the user makes to share it (right-click
+    // buffer -- so any attempt the user makes to share it (right-click
     // copy, "save log" button, screenshot) sees the redacted form.
     char scrubbed[2048];
     fm2k::pii::ScrubInto(message ? message : "",

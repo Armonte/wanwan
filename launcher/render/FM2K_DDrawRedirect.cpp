@@ -1,4 +1,4 @@
-// FM2K_DDrawRedirect — see header for rationale.
+// FM2K_DDrawRedirect -- see header for rationale.
 
 #include "FM2K_DDrawRedirect.h"
 
@@ -15,15 +15,15 @@ namespace FM2K::ddraw_redirect {
 namespace {
 
 // Process-wide redirect toggle. Default is ON now that the cnc-ddraw
-// installer auto-runs at launcher boot — every game launch pipes
+// installer auto-runs at launcher boot -- every game launch pipes
 // through the renamed dll unless the user explicitly opts out via the
 // Renderer-tab "Disable" checkbox or the FM2K_TEST_IAT_REWRITE env var.
-// Plain bool — the UI thread flips it; Launch reads it on the same
+// Plain bool -- the UI thread flips it; Launch reads it on the same
 // thread (launcher main runs both ImGui and the launch path), so no
 // atomic needed.
 bool g_force_redirect = true;
 
-// Slot length we'll never exceed — original `.rdata` string is `DDRAW.dll\0`
+// Slot length we'll never exceed -- original `.rdata` string is `DDRAW.dll\0`
 // (10 bytes). Patching past this would clobber whatever neighbour bytes
 // the linker placed next, which on FM2K binaries is the next imported
 // name (`KERNEL32.dll`, etc.). Keep the patch strictly local.
@@ -233,7 +233,7 @@ bool RedirectImport(HANDLE process, const char* new_name) {
                                   kSlotLen);
         }
 
-        // Read back BEFORE restoring protection — protection state
+        // Read back BEFORE restoring protection -- protection state
         // shouldn't matter for ReadProcessMemory, but doing it here
         // also tells us "we're reading from the same RW window we
         // just wrote to."
@@ -320,7 +320,7 @@ bool ShouldRedirect() {
 }
 
 std::wstring ResolveCncDdrawDir() {
-    // Env var override — wide, since paths might be JP. Use the W variant
+    // Env var override -- wide, since paths might be JP. Use the W variant
     // so we don't lose chars through the ANSI codepage.
     wchar_t override_buf[MAX_PATH] = {};
     DWORD n = GetEnvironmentVariableW(L"FM2K_DDRAW_DIR", override_buf, MAX_PATH);

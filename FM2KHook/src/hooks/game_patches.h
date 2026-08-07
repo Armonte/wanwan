@@ -6,7 +6,7 @@ void PatchVsRoundCase200T4FalsePositive();
 // Neuter the FM2K WndProc's F4 / Alt+Enter handlers so they no longer
 // toggle `g_graphics_mode` (the runtime mirror of GameScreenMode) and
 // re-init DirectDraw underneath cnc-ddraw. Called only when cnc-ddraw
-// redirect is active — without that, F4 keeps its stock toggle. Both
+// redirect is active -- without that, F4 keeps its stock toggle. Both
 // patches flip a 2-byte `jnz` -> `jmp` so the toggle body is never
 // entered; the rest of the WndProc dispatch is unaffected.
 //

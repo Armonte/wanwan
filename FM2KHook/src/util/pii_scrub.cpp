@@ -1,4 +1,4 @@
-// fm2k::pii — see pii_scrub.h for the contract.
+// fm2k::pii -- see pii_scrub.h for the contract.
 
 #include "pii_scrub.h"
 
@@ -22,13 +22,13 @@ namespace fm2k::pii {
 namespace {
 
 // Captured at Init() time. The username is what's embedded in basically
-// every OneDrive / Documents / Downloads path — replacing it with
+// every OneDrive / Documents / Downloads path -- replacing it with
 // "<USER>" handles 90%+ of the leak surface in one sweep without
 // having to enumerate every path-shape regex.
 std::string g_username;
 std::atomic<bool> g_initialized{false};
 
-// Case-insensitive substring replace-all. Used for the username pass —
+// Case-insensitive substring replace-all. Used for the username pass --
 // path strings from the OS come through with whatever case the file
 // system reports, which doesn't always match GetEnvironmentVariable.
 void ReplaceAllICase(std::string& s, std::string_view needle,
@@ -94,7 +94,7 @@ const std::regex& DiscordIdRe() {
         R"(((?:user_id|user|id|dc_id|discord_user_id|by_id)\s*[=:]\s*\"?)(\d{17,19})(\"?))");
     return re;
 }
-// "OneDrive - Acme Corp\" — strip the org, keep the OneDrive marker.
+// "OneDrive - Acme Corp\" -- strip the org, keep the OneDrive marker.
 const std::regex& OneDriveOrgRe() {
     static const std::regex re(
         R"(OneDrive - [^\\\/]{1,128})");
@@ -130,7 +130,7 @@ std::string Scrub(std::string_view in) {
     if (!g_initialized.load(std::memory_order_relaxed)) Init();
     std::string s(in);
 
-    // 1) USERNAME — most leaks are paths containing the OS username.
+    // 1) USERNAME -- most leaks are paths containing the OS username.
     // Done first because it's the cheapest and clears the bulk of
     // identifying data before the regex passes run.
     if (!g_username.empty() && g_username.size() >= 2) {
@@ -142,7 +142,7 @@ std::string Scrub(std::string_view in) {
     // name still leaks through the OneDrive folder path).
     s = std::regex_replace(s, OneDriveOrgRe(), "OneDrive");
 
-    // 3) Email addresses — total opaque mask, we don't need partial
+    // 3) Email addresses -- total opaque mask, we don't need partial
     // info to debug.
     s = std::regex_replace(s, EmailRe(), "<email>");
 
@@ -175,12 +175,12 @@ std::string Scrub(std::string_view in) {
         s = std::move(out);
     }
 
-    // 5) Public IPv4 addresses — FULLY masked. The original rule kept the
+    // 5) Public IPv4 addresses -- FULLY masked. The original rule kept the
     // first two octets ("108.197.*.*") for coarse correlation, but that's
     // still identifying (ISP + city) and users reading shared logs
     // shouldn't see ANY of a peer's address (FlippySpatula, 2026-07-19).
     // We KEEP private/RFC1918/loopback intact so LAN testing diagnostics
-    // ("punch -> 192.168.1.42") still read sensibly — those aren't PII.
+    // ("punch -> 192.168.1.42") still read sensibly -- those aren't PII.
     {
         std::string out;
         out.reserve(s.size());
@@ -199,7 +199,7 @@ std::string Scrub(std::string_view in) {
                 !IsPrivateIPv4(a, b, c, d)) {
                 out += "<pub-ip>";
             } else {
-                out += m[0].str();  // private/loopback/unspecified — keep raw
+                out += m[0].str();  // private/loopback/unspecified -- keep raw
             }
             last = (size_t)m.position() + (size_t)m.length();
         }

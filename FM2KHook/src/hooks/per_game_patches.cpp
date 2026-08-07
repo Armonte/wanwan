@@ -1,4 +1,4 @@
-// Per-game runtime patches — see header for what lives here.
+// Per-game runtime patches -- see header for what lives here.
 
 #if !defined(ENGINE_FM95)
 
@@ -29,19 +29,19 @@ namespace {
 // DAMAGE MULTIPLIER
 // =============================================================================
 //
-// health_damage_manager @ 0x40e7c0 — `int __cdecl(int char_data, int damage)`.
+// health_damage_manager @ 0x40e7c0 -- `int __cdecl(int char_data, int damage)`.
 // `damage < 0` subtracts from HP; `damage > 0` heals (adds to HP).
 //
 // Six call sites total, only TWO of which are actual hit-damage:
-//   (1) hit_detection_system @ 0x40f6de — opponent takes damage (signed neg)
-//   (2) hit_detection_system @ 0x40f7f9 — opponent takes damage (signed neg)
-//   (3) health_damage_manager self-recursion @ 0x40e978 — stage trigger
-//   (4) health_damage_manager self-recursion @ 0x40e98e — stage trigger
-//   (5) character_state_machine OP_CHECK_MOTION @ 0x41323a — script-side
-//   (6) character_state_machine OP_CHECK_MOTION @ 0x413298 — script-side
+//   (1) hit_detection_system @ 0x40f6de -- opponent takes damage (signed neg)
+//   (2) hit_detection_system @ 0x40f7f9 -- opponent takes damage (signed neg)
+//   (3) health_damage_manager self-recursion @ 0x40e978 -- stage trigger
+//   (4) health_damage_manager self-recursion @ 0x40e98e -- stage trigger
+//   (5) character_state_machine OP_CHECK_MOTION @ 0x41323a -- script-side
+//   (6) character_state_machine OP_CHECK_MOTION @ 0x413298 -- script-side
 //
 // Sites 3-6 pass tightly-balanced script-encoded values where a multiplier
-// breaks intent (e.g. self-damage paired with mirror damage to opponent —
+// breaks intent (e.g. self-damage paired with mirror damage to opponent --
 // scaling only the self-side desyncs the scripted exchange). v0.2.40 applied
 // the multiplier to ALL calls and broke Vanpri's stage-trigger scripts as a
 // result.
@@ -90,11 +90,11 @@ int __cdecl Hook_health_damage_manager(int char_data, int damage) {
 bool g_damage_hook_installed = false;
 
 // =============================================================================
-// OPTION-A KOF RETENTION — character_state_machine HP-init mid-hook
+// OPTION-A KOF RETENTION -- character_state_machine HP-init mid-hook
 // =============================================================================
 //
 // The substate-edge KOF apply (in round_events.cpp) wrote winner's HP to
-// g_charslot{0,1}_hp at 100→110 — AFTER the engine had already written
+// g_charslot{0,1}_hp at 100→110 -- AFTER the engine had already written
 // max_hp via character_state_machine's CSMK_PLAYER init at 0x411CB1. The
 // engine's brief "HP=max_hp then snap to retained value" caused a visual
 // jitter between rounds.
@@ -103,7 +103,7 @@ bool g_damage_hook_installed = false;
 //   0x411CB1: 89 83 05 DF 00 00    mov [ebx+0xDF05], eax
 //
 // We use SafetyHook's MidHook which handles ALL register/flag/XMM
-// preservation around our handler — no manual trampoline, no ECX/EDX
+// preservation around our handler -- no manual trampoline, no ECX/EDX
 // clobber footgun. Inside the handler we read ctx.ebx (char_data) and
 // modify ctx.eax to substitute the snapshotted HP; the original
 // `mov [ebx+0xDF05], eax` then runs (via SafetyHook's trampoline) with
@@ -121,7 +121,7 @@ constexpr uintptr_t ADDR_GAME_MODE_FLAG  = 0x00470058;  // 0=story 1=VS 2=team
 SafetyHookMid g_kof_mid_hook{};
 
 // =============================================================================
-// STORY-INIT AI HIJACK — char_state_machine g_game_mode_flag read override
+// STORY-INIT AI HIJACK -- char_state_machine g_game_mode_flag read override
 // =============================================================================
 //
 // For the 1P-entry → "1P VS CPU" / "Training" submodes, we hijack
@@ -137,7 +137,7 @@ SafetyHookMid g_kof_mid_hook{};
 // while every other consumer (vs_round_function for round flow, etc.)
 // still sees the global at 1.
 //
-// Site: 0x411C8F `cmp eax, ebp` — the compare right AFTER `mov eax,
+// Site: 0x411C8F `cmp eax, ebp` -- the compare right AFTER `mov eax,
 // g_game_mode_flag` @ 0x411C8A. At this instruction eax already holds
 // the loaded flag, the upcoming cmp sets flags, and the jz at 0x411C94
 // dispatches: ZF=1 → story init @ 0x411D0A (slot-aware: P2 gets AI
@@ -150,9 +150,9 @@ SafetyHookMid g_kof_mid_hook{};
 // flow through the mov (no flag-touching) into the jz at 0x411C94.
 //
 // The story branch ALSO covers per-frame AI tick (gated by [esi+0x156]
-// inside the branch — zero means init, non-zero means tick). So once
+// inside the branch -- zero means init, non-zero means tick). So once
 // init has fired, subsequent character_state_machine calls each frame
-// take the AI tick path — exactly 1P arcade's per-character behavior.
+// take the AI tick path -- exactly 1P arcade's per-character behavior.
 //
 // Caveat: for CPU vs CPU submode this only AI's P2 (slot != 0). The
 // story init's slot-0 branch sets up "player char" fields, not AI.
@@ -162,7 +162,7 @@ SafetyHookMid g_kof_mid_hook{};
 
 SafetyHookMid g_story_init_mid_hook{};
 
-// MidHook handler — invoked BEFORE the original instruction runs.
+// MidHook handler -- invoked BEFORE the original instruction runs.
 // SafetyHook saves & restores all registers + flags + XMM around us.
 //
 // On entry:
@@ -239,7 +239,7 @@ bool PerGamePatches_InstallDamageMultiplierHook() {
 
 bool PerGamePatches_InstallKofHpInitPatch() {
     // Skip if KOF retention is disabled at install time. Avoids touching
-    // the binary at all when the user isn't using the feature — toggle
+    // the binary at all when the user isn't using the feature -- toggle
     // off + restart leaves vanilla code intact at 0x411CB1.
     const char* e = std::getenv("FM2K_TEAM_KOF_RETENTION");
     if (!e || std::strcmp(e, "1") != 0) return true;
@@ -270,7 +270,7 @@ bool PerGamePatches_InstallKofHpInitPatch() {
 // input history), OP_RANDOM (passes randomly), OP_LIFE_GAUGE (HP
 // threshold), OP_GAUGE_BRANCH (meter threshold), etc. For a HUMAN
 // player, OP_CHECK_MOTION matches when the player has performed a
-// motion. For a "CPU" player, we feed ZERO input — OP_CHECK_MOTION
+// motion. For a "CPU" player, we feed ZERO input -- OP_CHECK_MOTION
 // can never match (no inputs to scan), so the script falls through to
 // OP_RANDOM / OP_LIFE_GAUGE branches, which is the engine's natural AI
 // path.
@@ -306,7 +306,7 @@ std::atomic<uint32_t> g_prev_game_mode{0};       // for title→CSS edge detecti
 std::atomic<int>  g_team_size_override{0};
 // }  // (was anon namespace; atomics un-anon'd for cross-TU sharing)
 
-// Forward decl — original_get_player_input is the MinHook trampoline,
+// Forward decl -- original_get_player_input is the MinHook trampoline,
 // declared in core/globals.h. We use it from the imitate path so we can
 // READ P1's current input even when called for P2.
 extern "C" {
@@ -319,7 +319,7 @@ int PerGamePatches_TryOverrideInput(int player_id, uint32_t game_mode) {
     const bool css    = (game_mode == 2000u);
 
     // CSS takeover: when any "single-player driver" mode is active, route
-    // P1's input to P2's cursor during CSS — but ONLY after P1 has
+    // P1's input to P2's cursor during CSS -- but ONLY after P1 has
     // confirmed their own character. Before P1 confirms, P2 cursor stays
     // put (gated to 0). After P1 confirms + releases attack, the pipe
     // engages so P1 navigates P2's cursor and confirms the dummy.
@@ -371,19 +371,19 @@ int PerGamePatches_BattleInputOverride(int player_id, uint16_t p1_input) {
     if (g_training_mode.load(std::memory_order_relaxed) && player_id == 1) {
         const int beh = g_training_p2_behavior.load(std::memory_order_relaxed);
         switch (beh) {
-            case 0: return -1;     // player — no override
-            case 1: return 0;      // CPU — zero input
-            case 2: return p1_input;  // imitate — mirror P1
+            case 0: return -1;     // player -- no override
+            case 1: return 0;      // CPU -- zero input
+            case 2: return p1_input;  // imitate -- mirror P1
             case 3: {
-                // Guard — state-driven with 12-frame latch, side-aware
+                // Guard -- state-driven with 12-frame latch, side-aware
                 // back-direction, crouch-block default, and P1 attack-
                 // press anticipation. See combat_state::GuardP2Input for
                 // the full predicate. Key changes from earlier iterations:
                 //   * Returns DOWN+back (crouch-block) instead of just
-                //     back — covers LOW + MID attacks via the engine's
+                //     back -- covers LOW + MID attacks via the engine's
                 //     crouching-block path (char_flags & 8 at +0x7CB6)
                 //   * Triggers on P1's attack-button press in addition
-                //     to state signals — closes the 1-frame state-
+                //     to state signals -- closes the 1-frame state-
                 //     detection delay since the button press leads
                 //     active hitbox by 3+ frames on typical attacks
                 //   * Picks 0x001 (LEFT) vs 0x002 (RIGHT) per P1/P2
@@ -391,7 +391,7 @@ int PerGamePatches_BattleInputOverride(int player_id, uint16_t p1_input) {
                 return (int)combat_state::GuardP2Input(p1_input);
             }
             case 4: return 0x004;  // jump-up (FM2K bit 2 = UP; bypassed in
-                                   // practice — engine's ai_input_processor
+                                   // practice -- engine's ai_input_processor
                                    // case 4 handles Jump via ai_mode=4)
             default: break;
         }
@@ -408,7 +408,7 @@ uint16_t PerGamePatches_GatedP2CssInput(uint16_t p1_input) {
     //          return 0, waiting for attack release so the same press
     //          doesn't instantly fire P2's confirm
     //   Phase 2 (P1 confirmed AND attack released at least once):
-    //          return p1_input — full pipe, P1 drives P2 cursor
+    //          return p1_input -- full pipe, P1 drives P2 cursor
     static std::atomic<int> s_phase{0};
 
     const uint32_t game_mode = *(const uint32_t*)0x00470054;
@@ -535,7 +535,7 @@ void PerGamePatches_OnTitleInputTick(uint16_t raw_input, uint32_t game_mode) {
         g_option_was_pressed.store(false, std::memory_order_relaxed);
         return;
     }
-    // OPTION = bit 11 (0x800) — dedicated meta-button, separate from
+    // OPTION = bit 11 (0x800) -- dedicated meta-button, separate from
     // START (0x400) so pressing START to confirm a title menu entry
     // doesn't also cycle the submode. Default-bound to Tab via the
     // input binder; user can rebind.
@@ -570,7 +570,7 @@ void PerGamePatches_OnFrameTick() {
     // needs to run on the logic frame BEFORE CSS STATE 0; this
     // per-render-frame tick fires after, which crashed 1P-to-2P hijack
     // because STATE 0 had already created one cursor object expecting
-    // 1P flow). Returning to title still clears flags here — that path
+    // 1P flow). Returning to title still clears flags here -- that path
     // doesn't have a strict ordering constraint.
     const uint32_t mode = *(const uint32_t*)0x00470054;  // FM2K::ADDR_GAME_MODE
     const uint32_t prev = g_prev_game_mode.exchange(mode, std::memory_order_relaxed);
@@ -588,7 +588,7 @@ void PerGamePatches_OnGameStateManagerEntry() {
     // Called from css_autoconfirm.cpp's Hook_GameStateManager BEFORE the
     // original body runs. Applies the OPTION-cycle submode override
     // (game_mode_flag + mode-driver flags) ONLY when STATE 0 of CSS is
-    // about to dispatch — that's the exact moment the engine reads
+    // about to dispatch -- that's the exact moment the engine reads
     // g_game_mode_flag to decide single-cursor vs 2-cursor init.
     //
     // STATE 0 dispatch detection via substate (obj->unknown_152, offset
@@ -597,7 +597,7 @@ void PerGamePatches_OnGameStateManagerEntry() {
     // it transitions to substate=1 and the engine stops re-running init.
     //
     // Prior latch-based approach was wrong: GSM is the tick function for
-    // the CSS object created by title on confirm — the FIRST GSM call
+    // the CSS object created by title on confirm -- the FIRST GSM call
     // already runs STATE 0 with the engine's original g_game_mode_flag,
     // and STATE 0 itself sets g_game_mode = 2000 near its end. So
     // "first call at mode==2000" fires the frame AFTER STATE 0, too
@@ -625,29 +625,29 @@ void PerGamePatches_OnGameStateManagerEntry() {
     volatile uint32_t* gmf = (uint32_t*)0x00470058;
     if (ctx == 0) {  // 1P / Story entry
         switch (sub) {
-            case 0: break;  // 1P Arcade — vanilla flow (no override)
-            case 1:         // 1P VS CPU — hijack to 2P CSS
+            case 0: break;  // 1P Arcade -- vanilla flow (no override)
+            case 1:         // 1P VS CPU -- hijack to 2P CSS
                 *gmf = 1u;
                 g_vs_cpu_mode.store(true, std::memory_order_relaxed);
                 break;
-            case 2:         // Training — hijack to 2P CSS
+            case 2:         // Training -- hijack to 2P CSS
                 *gmf = 1u;
                 g_training_mode.store(true, std::memory_order_relaxed);
                 break;
         }
     } else {  // VS entry
         switch (sub) {
-            case 0: break;  // 2P VS — vanilla flow
+            case 0: break;  // 2P VS -- vanilla flow
             case 1:         // Team Versus
                 *gmf = 2u;
                 break;
-            case 2:         // CPU vs CPU — stay in VS (flag=1) + both AI
+            case 2:         // CPU vs CPU -- stay in VS (flag=1) + both AI
                 g_cpu_vs_cpu_mode.store(true, std::memory_order_relaxed);
                 break;
         }
     }
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "PerGamePatches: GSM title→CSS edge — ctx=%s sub=%d (%s) → "
+        "PerGamePatches: GSM title→CSS edge -- ctx=%s sub=%d (%s) → "
         "game_mode_flag=%u vs_cpu=%d cpu_vs_cpu=%d training=%d",
         ctx == 0 ? "1P/Story" : "VS", sub,
         PerGamePatches_VsSubmodeLabel(sub, ctx),
@@ -656,7 +656,7 @@ void PerGamePatches_OnGameStateManagerEntry() {
         (int)g_cpu_vs_cpu_mode.load(std::memory_order_relaxed),
         (int)g_training_mode.load(std::memory_order_relaxed));
 
-    // (Title-confirm attack leak no longer needs a seed/clear — the
+    // (Title-confirm attack leak no longer needs a seed/clear -- the
     // GatedP2CssInput phase machine returns 0 until P1 has confirmed
     // AND released attack, so the carried-over press never reaches
     // P2's input as a rising edge.)

@@ -125,7 +125,7 @@ namespace FM2K {
     // Core character selection state (similar to CC_P1/P2_CHARACTER_ADDR)
     constexpr uintptr_t P1_CHARACTER_ID_ADDR = 0x470180;    // P1 selected character ID (u32)
     constexpr uintptr_t P2_CHARACTER_ID_ADDR = 0x470184;    // P2 selected character ID (u32)
-    constexpr uintptr_t SELECTED_STAGE_ADDR = 0x43010c;     // Selected stage ID (u32) — IDA-verified WW: vs_round_function reads this as wParam, settings_dialog_proc writes CB_GETCURSEL into it
+    constexpr uintptr_t SELECTED_STAGE_ADDR = 0x43010c;     // Selected stage ID (u32) -- IDA-verified WW: vs_round_function reads this as wParam, settings_dialog_proc writes CB_GETCURSEL into it
     
     // Character grid cursor positions (similar to CC_P1/P2_CHARA_SELECTOR_ADDR)
     constexpr uintptr_t P1_CURSOR_X_ADDR = 0x47018C;        // P1 character grid cursor X (u32)
@@ -264,17 +264,17 @@ namespace FM2K {
     constexpr DWORD FRAME_HOOK_ADDR = 0x4146D0;
     constexpr DWORD UPDATE_GAME_STATE_ADDR = 0x404CD0;
     
-    // Engine variant — selects address tables / hook strategy / launch flow.
+    // Engine variant -- selects address tables / hook strategy / launch flow.
     // FM2K (Fighter Maker 2nd) is the default supported engine. FM95 is the
-    // earlier prototype (e.g. CPW.exe — Comic Party Wars). They share the
+    // earlier prototype (e.g. CPW.exe -- Comic Party Wars). They share the
     // 256-slot object pool and 11-bit input format but differ in:
     //   - g_game_mode encoding (FM2K uses 2000/3000 magic; FM95 stays 0/1)
     //   - frame loop shape (FM2K has RUN_GAME_LOOP; FM95 inlines into WinMain)
     //   - CSS / battle phase classification (FM95 has no global mode flag)
     // See FM95_Integration.h for FM95 address tables and CharSelect:: helpers.
     enum class Engine : uint32_t {
-        FM2K = 0,  // default — Fighter Maker 2nd (most modern 2DFM titles)
-        FM95 = 1,  // prototype — Fighter Maker 95 (CPW.exe, early 2002 builds)
+        FM2K = 0,  // default -- Fighter Maker 2nd (most modern 2DFM titles)
+        FM95 = 1,  // prototype -- Fighter Maker 95 (CPW.exe, early 2002 builds)
     };
 
     inline const char* EngineName(Engine e) {
@@ -302,15 +302,15 @@ namespace FM2K {
         //   - xxh64      : computed once at discovery, reused for cache + UI.
         //
         // Three render states drive from these:
-        //   is_clean=true                       -> "<exe>  [<engine> — <label>]"           normal
-        //   packer_label non-empty              -> "* <exe>  [<engine> — packed: <name>]"  yellow
-        //   else (untested, no packer detected) -> "<exe>  [<engine> — untested]"          normal
+        //   is_clean=true                       -> "<exe>  [<engine> -- <label>]"           normal
+        //   packer_label non-empty              -> "* <exe>  [<engine> -- packed: <name>]"  yellow
+        //   else (untested, no packer detected) -> "<exe>  [<engine> -- untested]"          normal
         bool        is_clean = false;
         std::string clean_label;
         std::string packer_label;
         uint64_t    xxh64    = 0;
 
-        // Parsed .kgt summary — player/stage/demo name lists. Populated at
+        // Parsed .kgt summary -- player/stage/demo name lists. Populated at
         // discovery time so the UI can populate dropdowns pre-launch without
         // having to boot the game once and ReadProcessMemory the in-memory
         // buffers. `kgt.valid == false` means parse failed or no .kgt was

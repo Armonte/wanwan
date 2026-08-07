@@ -1,9 +1,9 @@
-// FM2K_DiscordAuth — launcher-side Discord OAuth pairing flow.
+// FM2K_DiscordAuth -- launcher-side Discord OAuth pairing flow.
 //
 // Pairing model:
 //   1. Begin() asks the hub for (pairing_code, authorize_url) via
 //      GET http://<hub>/pair/begin. The hub mints a pairing_code
-//      and constructs the Discord authorize URL on our behalf — that
+//      and constructs the Discord authorize URL on our behalf -- that
 //      keeps the OAuth client_id (and would-be code_challenge) entirely
 //      server-side.
 //   2. Begin() shells the OS browser to authorize_url (ShellExecute
@@ -69,7 +69,7 @@ struct Pairing {
     // True iff the worker tried to spawn the browser and BOTH the
     // ShellExecute("open") attempt and the cmd /c start fallback
     // returned <=32 (failure). UI uses this to flip the modal into
-    // "the browser did not open — paste this URL" mode and auto-copy
+    // "the browser did not open -- paste this URL" mode and auto-copy
     // the URL to the clipboard, instead of showing the optimistic
     // "Browser opened. Click Authorize on Discord..." status.
     bool        browser_open_failed() const;

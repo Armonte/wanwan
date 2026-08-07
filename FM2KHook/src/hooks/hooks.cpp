@@ -2,7 +2,7 @@
 // Sync barrier: block game until both clients connected (CCCaster-style)
 #include "hooks.h"
 #include "hooks_internal.h"
-#include "round_events.h"     // C3.5 — vs_round_function detour install
+#include "round_events.h"     // C3.5 -- vs_round_function detour install
 #include "css_autoconfirm.h"  // CSS lock-and-confirm for offline replay playback
 #include "css_fastsound.h"    // FM2K_FPK_CSS_FASTSOUND: lazy DSound buffers (CSS dip fix)
 #include "per_game_patches.h" // damage multiplier MinHook + team-size override
@@ -25,12 +25,12 @@
 #include "imgui_overlay.h"
 #include "shared_mem.h"
 #include "savestate.h"  // CHAR_SLOT_BASE, CHAR_SLOT_SIZE (corrected by Wave C audit)
-#include "../core/main_loop_trampoline.h"  // TrampolineMainLoop — owns the outer loop
+#include "../core/main_loop_trampoline.h"  // TrampolineMainLoop -- owns the outer loop
 #include "../audio/sound_rollback.h"        // Mike Z desired/actual sound layer
 #include "../netplay/spectator_node.h"      // spectator playback queue accessors
 #include "../ui/input_binder.h"             // FM2KInputBinder::Sample_Win32 + Bindings
 #include "../ui/screenshot.h"               // FM2KCapture::SaveScreenshot for the auto-banner pipeline
-#include "../ui/fc_hud.h"                   // IsChatInputActive — gate local input during typing
+#include "../ui/fc_hud.h"                   // IsChatInputActive -- gate local input during typing
 #include "../vfs/fpk_reader.h"              // FM2K_FPK_VFS: inflate a slim .fpk -> original asset bytes
 #include <MinHook.h>
 #include <SDL3/SDL_log.h>
@@ -84,17 +84,17 @@ static inline void PinFPUControlWord() {
 // 0x447DD4 every iteration, which lives inside our saved "afterimage_pool"
 // region. If forward-sim wrote wall-clock T1 and replay-sim wrote T2 at
 // the same frame, the saved afterimage_pool diverges by that timestamp
-// byte — this is the exact "REPLAY DIFF AfterimagePool +0x4A4" signature
+// byte -- this is the exact "REPLAY DIFF AfterimagePool +0x4A4" signature
 // we caught at f=9 in the stress test.
 //
 // Virtual clock is advanced by 10 ms EACH TIME an AdvanceEvent completes
 // (see netplay.cpp). Within a single main_game_loop iteration the game
-// polls timeGetTime() multiple times — we return the same value on every
+// polls timeGetTime() multiple times -- we return the same value on every
 // call until the next advance. Forward-sim and replay-sim both consume
 // the same advance sequence, so both produce identical virtual timestamps
 // at the same logical frame.
 //
-// Outside an active session we pass through — menus/CSS rely on real wall
+// Outside an active session we pass through -- menus/CSS rely on real wall
 // clock for music/animation pacing, and determinism doesn't matter there.
 extern bool Netplay_IsActive();
 using timeGetTime_t = DWORD(WINAPI*)();
@@ -105,7 +105,7 @@ uint32_t g_virtual_time_ms = 0;  // bumped by 10 per AdvanceEvent in netplay.cpp
 static DWORD WINAPI Hook_timeGetTime() {
     // Host: virtual clock during an active GekkoNet session so the per-peer
     // simulation evolves on a deterministic 10 ms/frame schedule.
-    // Spectator: same — must return virtual clock once playback is driving
+    // Spectator: same -- must return virtual clock once playback is driving
     // the sim, otherwise game code that consumes timeGetTime (animations,
     // particle pacing, etc.) sees wall-clock time and diverges from the
     // host's recorded execution every single frame. RunSpectatorTick is
@@ -136,11 +136,11 @@ static DWORD WINAPI Hook_timeGetTime() {
 // ============================================================================
 // CreateFile share-mode override
 // ============================================================================
-// FM2K opens character files (`.player`, etc.) with dwShareMode=0 — exclusive.
+// FM2K opens character files (`.player`, etc.) with dwShareMode=0 -- exclusive.
 // When two instances launch from the same folder, the second hits
 // ERROR_SHARING_VIOLATION ("Player Open error[…]"). Force-OR the shared-read
 // flags so multiple readers can coexist. Writes are still serialized by
-// the OS — we only widen sharing, never narrow it.
+// the OS -- we only widen sharing, never narrow it.
 //
 // Hooked at the kernel32 entry points; both A and W variants because old
 
@@ -148,7 +148,7 @@ static DWORD WINAPI Hook_timeGetTime() {
 
 // hand-off so CSS behavior is unchanged.
 BOOL __cdecl Hook_RunGameLoop() {
-    // Set VS player mode once — FM2K-only: 0x470058 is the FM2K char-select
+    // Set VS player mode once -- FM2K-only: 0x470058 is the FM2K char-select
     // mode flag, not anything meaningful on FM95.
     if constexpr (FM2K::kIsFM2K) {
         static bool vs_mode_set = false;
@@ -167,13 +167,13 @@ BOOL __cdecl Hook_RunGameLoop() {
     // Diagnostic: FM2K_BYPASS_TRAMPOLINE=1 falls through to vanilla
     // main_game_loop. All other hooks (input, update, render, RNG) still
     // fire as detours, so we can isolate the trampoline as a cause vs the
-    // individual hooks. Use only for offline tests — netplay/spectator
+    // individual hooks. Use only for offline tests -- netplay/spectator
     // require the trampoline's phase dispatcher to drive Save/Load/Advance.
     static const char* env_bypass = std::getenv("FM2K_BYPASS_TRAMPOLINE");
     static bool bypass = (env_bypass && std::strcmp(env_bypass, "1") == 0);
     if (bypass) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "Hooks: FM2K_BYPASS_TRAMPOLINE=1 — calling vanilla "
+                    "Hooks: FM2K_BYPASS_TRAMPOLINE=1 -- calling vanilla "
                     "main_game_loop. Trampoline phase dispatcher "
                     "DISABLED. Netplay/spectator will not work.");
         return original_run_game_loop ? original_run_game_loop() : TRUE;
@@ -191,7 +191,7 @@ int __cdecl Hook_ProcessGameInputs() {
     // allowed to mutate x87 precision at fullscreen toggle / driver callback
     // time. Without this line, two peers can run at different float
     // precision and float-heavy code (movement vectors, hit-rect math)
-    // diverges on the first substantial physics tick — which matches the
+    // diverges on the first substantial physics tick -- which matches the
     // "desync starts when you move" signature exactly.
     PinFPUControlWord();
 
@@ -287,12 +287,12 @@ bool InitializeHooks() {
     if (!InstallUpdateHook()) return false;  // hooks_update.cpp
     if (!InstallRenderHooks()) return false;  // hooks_render.cpp
 
-    // Hook RunGameLoop — FM2K only. On FM95, ADDR_RUN_GAME_LOOP IS WinMain
+    // Hook RunGameLoop -- FM2K only. On FM95, ADDR_RUN_GAME_LOOP IS WinMain
     // (the frame loop is inlined into WinMain); detouring it intercepts the
     // process entry point BEFORE init runs, so the trampoline takes over
     // with an uninitialized window/game state and CPW silently dies.
     // Until the trampoline is taught to coexist with FM95's WinMain-driven
-    // loop, leave the natural WinMain alone — the per-frame hooks
+    // loop, leave the natural WinMain alone -- the per-frame hooks
     // (Hook_UpdateGameState / Hook_RenderGame / Hook_ProcessGameInputs)
     // still fire from inside FM95's loop and that's enough to drive a
     // basic boot.
@@ -315,7 +315,7 @@ bool InitializeHooks() {
                         "Hooks: FM95 owns the loop via inline patch @0x40AD67");
         } else {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                        "Hooks: FM95 loop-patch FAILED — falling back to host-driven tick");
+                        "Hooks: FM95 loop-patch FAILED -- falling back to host-driven tick");
         }
 #endif
     }
@@ -333,26 +333,26 @@ bool InitializeHooks() {
     }
 
 
-    // C3.5 — vs_round_function detour. Emits ROUND_START / ROUND_END
+    // C3.5 -- vs_round_function detour. Emits ROUND_START / ROUND_END
     // SessionEvents at the round-state-machine substate edges (host only;
     // FM95 builds compile to a no-op). Best-effort install: if the hook
     // fails we keep going so the rest of the engine works (round events
     // are diagnostic, not load-bearing).
     if (!RoundEvents_Install()) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "Hooks: RoundEvents_Install failed — round events will be missing "
+            "Hooks: RoundEvents_Install failed -- round events will be missing "
             "from session_events / .fm2krep round_offsets");
     }
 
-    // CSS auto-lock-and-confirm — installs idle, only activates when
+    // CSS auto-lock-and-confirm -- installs idle, only activates when
     // SpectatorNode's MATCH_START apply path arms it for offline replay
     // playback (FM2K_REPLAY_FILE set). Live-spectator paths walk CSS via the
     // host's full input stream and don't need this. FM95 builds compile to a
-    // no-op (its CSS state machine is structured differently — separate
+    // no-op (its CSS state machine is structured differently -- separate
     // hand-off).
     if (!CssAutoConfirm_Install()) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "Hooks: CssAutoConfirm_Install failed — offline replay will fall "
+            "Hooks: CssAutoConfirm_Install failed -- offline replay will fall "
             "back to natural CSS traversal (likely picks wrong chars)");
     }
     // Test-harness CSS auto-confirm: arm the same auto-confirm path used
@@ -362,7 +362,7 @@ bool InitializeHooks() {
     // same chars/stage. Format: FM2K_TEST_AUTO_CSS=p1char,p1color,p2char,p2color,stage
     // (decimal bytes). Default chars/colors/stage = 0 (= first option).
     // Test-harness FM2K_TEST_AUTO_CSS now ONLY enables the gekko input
-    // pulse in Netplay_ProcessCSSInputPhase — no direct CssAutoConfirm
+    // pulse in Netplay_ProcessCSSInputPhase -- no direct CssAutoConfirm
     // memory pinning. CssAutoConfirm was designed for single-instance
     // offline replay; in 2-peer netplay it produced asymmetric CSS-state
     // transitions (P1 reached battle, P2 didn't) because gekko's
@@ -377,13 +377,13 @@ bool InitializeHooks() {
             env ? env : "(null)");
     }
 
-    // Per-game damage multiplier — only installs the hook if
+    // Per-game damage multiplier -- only installs the hook if
     // FM2K_DAMAGE_MULT_PCT is set and != 100, so default users don't pay
     // the trampoline cost on every damage event. FM95 build is a no-op.
     if constexpr (FM2K::kIsFM2K) {
         if (!PerGamePatches_InstallDamageMultiplierHook()) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "Hooks: damage multiplier hook install failed — damage "
+                "Hooks: damage multiplier hook install failed -- damage "
                 "scaling won't apply this session");
         }
         // Option-A KOF retention: code-cave patch on the engine's
@@ -392,34 +392,34 @@ bool InitializeHooks() {
         // FM2K_TEAM_KOF_RETENTION is enabled.
         if (!PerGamePatches_InstallKofHpInitPatch()) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "Hooks: KOF HP-init patch install failed — retention "
+                "Hooks: KOF HP-init patch install failed -- retention "
                 "will fall back to vanilla (HP resets between rounds)");
         }
         // /F boot-to-battle prime: MinHook on the slot-0 boot dispatcher
         // (InitializeGameFromCommandLine @ 0x409a60). At entry, restamps
-        // the kgt name into g_iniFile_nameOverride — counters hit_judge_-
+        // the kgt name into g_iniFile_nameOverride -- counters hit_judge_-
         // set_function's earlier empty-default stomp. Only installs when
         // FM2K_BOOT_TO_BATTLE=1 (launcher dev checkbox).
         if (!PerGamePatches_InstallBootToBattleHook()) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "Hooks: boot-to-battle hook install failed — /F path "
+                "Hooks: boot-to-battle hook install failed -- /F path "
                 "will fail with 'GameSystem Open error[]'");
         }
         // Story-init AI hijack: MidHook char_state_machine's
         // g_game_mode_flag dispatch read so battle-phase calls see
-        // flag=0 (1P arcade) — drives stage-script CPU AI init for
+        // flag=0 (1P arcade) -- drives stage-script CPU AI init for
         // P2 in our hijacked 1P→VS-CSS modes. Idempotent; only
         // installs if option_mode_selector or one of the mode flags
         // was on at startup (PerGamePatches_ApplyRuntime ran first
         // in DllMain, so atomics are already populated).
         if (!PerGamePatches_InstallStoryInitHijack()) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "Hooks: story-init hijack install failed — VS CPU / "
+                "Hooks: story-init hijack install failed -- VS CPU / "
                 "Training will leave P2 as a non-AI standing dummy");
         }
     }
 
-    // Hook timeGetTime (winmm.dll) — make the game's frame-skip pacing
+    // Hook timeGetTime (winmm.dll) -- make the game's frame-skip pacing
     // deterministic across peers. See comment on Hook_timeGetTime for the
     // rationale. Resolve the real address dynamically so the hook works
     // regardless of IAT layout.

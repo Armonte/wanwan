@@ -55,7 +55,7 @@ using namespace lui;  // shared persistence helpers (launcher_ui_internal.h)
 void LauncherUI::HandleMatchStartEvent(const fm2k::HubEvent& ev) {
     auto& hs = *hub_state_;
     using K = fm2k::HubEvent::Kind;  // body references K::RecordReceived
-                // Match is on — drop both modals (incoming and outgoing)
+                // Match is on -- drop both modals (incoming and outgoing)
                 // and clear any pending challenge state on both sides.
                 // Without clearing the incoming modal here, the
                 // accepter sees their challenge dialog persist after
@@ -104,7 +104,7 @@ void LauncherUI::HandleMatchStartEvent(const fm2k::HubEvent& ev) {
                 hs.match_result_sent      = false;
                 hs.disconnect_toast_fired = false;
                 hs.last_outcome_seq.clear();
-                // Reset chars_seq tracking — fresh game spawn means a
+                // Reset chars_seq tracking -- fresh game spawn means a
                 // fresh shared-mem mapping with seq=0; first
                 // Netplay_StartBattleSession will bump to 1 and fire
                 // match_progress against this token.
@@ -127,7 +127,7 @@ void LauncherUI::HandleMatchStartEvent(const fm2k::HubEvent& ev) {
                 //   (2) we have the room's game installed
                 //   (3) the launcher exposes on_online_session_start
                 // Failing any of these, tell the hub the "match" is over
-                // immediately so both peers go back to idle — otherwise
+                // immediately so both peers go back to idle -- otherwise
                 // the lobby reads "in_match" forever and they can't
                 // re-challenge or pick a new game.
                 int idx = FindInstalledGameForRoom(games_, hs.current_room_id);
@@ -136,7 +136,7 @@ void LauncherUI::HandleMatchStartEvent(const fm2k::HubEvent& ev) {
                        && (on_online_session_start != nullptr);
 
                 if (ok) {
-                    // Preflight punch — purely informational. We send
+                    // Preflight punch -- purely informational. We send
                     // a quick burst of UDP probes to the peer to wake
                     // up the NAT mappings so the in-game GekkoNet
                     // handshake has a head start, then ALWAYS proceed
@@ -147,7 +147,7 @@ void LauncherUI::HandleMatchStartEvent(const fm2k::HubEvent& ev) {
                     // and need relay), and the loopback fallback only
                     // works for same-box tests. The in-game NAT layer
                     // (nat_traversal.cpp) handles STUN, multiple punch
-                    // rounds, and relay engagement properly — let it
+                    // rounds, and relay engagement properly -- let it
                     // do its job instead of failing fast here.
                     //
                     // We still TRY the probe so cone-NAT pairs benefit
@@ -168,14 +168,14 @@ void LauncherUI::HandleMatchStartEvent(const fm2k::HubEvent& ev) {
                     // there is NO hub relay configured. With a relay
                     // available, falsely flipping peer_ip to 127.0.0.1
                     // sends HELLO into our own loopback while the relay
-                    // sits idle — both peers stall at handshake. Trust
+                    // sits idle -- both peers stall at handshake. Trust
                     // the public peer_ip on real cross-NAT matches and
                     // let the hook's NAT traversal use the relay.
                     const bool have_relay = !ev.match.relay_ip.empty()
                                          && ev.match.relay_port > 0;
                     if (!public_reachable && !have_relay) {
                         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                            "Hub: public probe timed out — trying 127.0.0.1 "
+                            "Hub: public probe timed out -- trying 127.0.0.1 "
                             "in case this is a same-box test");
                         if (HubPreflightPunch(
                                 static_cast<uint16_t>(network_config_.local_port),
@@ -185,25 +185,25 @@ void LauncherUI::HandleMatchStartEvent(const fm2k::HubEvent& ev) {
                                 1000)) {
                             peer_ip = "127.0.0.1";
                             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                                "Hub: loopback responded — same-box match, "
+                                "Hub: loopback responded -- same-box match, "
                                 "using 127.0.0.1 as remote");
                         } else {
                             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                                 "Hub: probe didn't get a reply. Spawning "
-                                "game anyway — in-game NAT traversal "
+                                "game anyway -- in-game NAT traversal "
                                 "(STUN + punch + relay) will retry on its own.");
                         }
                     } else if (!public_reachable && have_relay) {
                         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                             "Hub: public probe failed; relay configured "
                             "(%s:%u). Hook NAT path will fall through to "
-                            "the relay — keeping peer=%s:%d as remote.",
+                            "the relay -- keeping peer=%s:%d as remote.",
                             ev.match.relay_ip.c_str(),
                             (unsigned)ev.match.relay_port,
                             peer_ip.c_str(), peer_port);
                     } else {
                         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                            "Hub: public probe succeeded — direct path looks good");
+                            "Hub: public probe succeeded -- direct path looks good");
                     }
                     hs.status_line = "match starting...";
 
@@ -228,7 +228,7 @@ void LauncherUI::HandleMatchStartEvent(const fm2k::HubEvent& ev) {
                     // the launcher (a normal thread, not a loader-lock
                     // context) lets us survive slow DNS without timing
                     // out the inject. Falls back to the hostname only
-                    // if resolution fails — at least then the hook gets
+                    // if resolution fails -- at least then the hook gets
                     // its own attempt.
                     const char* hub_host_env = std::getenv("FM2K_HUB_HOST");
                     const std::string hub_host_str =
@@ -266,7 +266,7 @@ void LauncherUI::HandleMatchStartEvent(const fm2k::HubEvent& ev) {
                     ::SetEnvironmentVariableA("FM2K_HUB_UDP_ADDR",   hub_udp.c_str());
                     ::SetEnvironmentVariableA("FM2K_HUB_USER_ID",    hs.my_id.c_str());
                     ::SetEnvironmentVariableA("FM2K_HUB_MATCH_TOKEN", ev.match.token.c_str());
-                    // TCP-STUN endpoint — same hub host, port+2 (UDP-STUN
+                    // TCP-STUN endpoint -- same hub host, port+2 (UDP-STUN
                     // is +0, UDP-relay is +1). Hook's PerformTcpStun reads
                     // this; absent → hook skips TCP-STUN and the spec
                     // falls back to local listener port (works on port-
@@ -381,7 +381,7 @@ void LauncherUI::HandleMatchStartEvent(const fm2k::HubEvent& ev) {
                         if (!ev.match.peer_lan_ip.empty() &&
                             ev.match.peer_lan_ip == my_lan) {
                             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                                "Hub: peer LAN IP %s == ours — same-machine "
+                                "Hub: peer LAN IP %s == ours -- same-machine "
                                 "self-connect, skipping same-house punch",
                                 ev.match.peer_lan_ip.c_str());
                         }
@@ -469,7 +469,7 @@ void LauncherUI::HandleMatchStartEvent(const fm2k::HubEvent& ev) {
                         ::SetEnvironmentVariableA("FM2K_STAGE_RANDOM_MAX",  nullptr);
                         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                             "Random-stage: DISABLED (host's match_settings "
-                            "carried random_seed=0 — host hasn't enabled the "
+                            "carried random_seed=0 -- host hasn't enabled the "
                             "Random Stage toggle, or the wire dropped it)");
                     }
 
@@ -480,7 +480,7 @@ void LauncherUI::HandleMatchStartEvent(const fm2k::HubEvent& ev) {
                         (idx < 0)                     ? "game not in your library" :
                                                         "launcher missing online callback";
                     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                        "Hub: match_start aborted (%s) — sending match_ended", reason);
+                        "Hub: match_start aborted (%s) -- sending match_ended", reason);
                     hs.status_line = std::string("match aborted: ") + reason;
                     hs.client.MatchEnded();
                 }

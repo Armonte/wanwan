@@ -77,7 +77,7 @@ SDL_AppResult LauncherCli_ParseArgs(int argc, char** argv, LauncherCliArgs& out)
             direct_mode = true;
             // Optional next arg: game-name substring OR absolute path to
             // game .exe (same convention as --stress). Picks the specific
-            // game instead of "first discovered" — the test harness needs
+            // game instead of "first discovered" -- the test harness needs
             // this to target WonderfulWorld instead of whichever game
             // ends up alphabetically first in the launcher registry.
             if (i + 1 < argc && argv[i+1][0] != '-') {
@@ -212,7 +212,7 @@ SDL_AppResult LauncherCli_ParseArgs(int argc, char** argv, LauncherCliArgs& out)
             // and exits the launcher when the test game terminates.
             // Forces a rollback every check_distance=10 frames and
             // fires GekkoDesyncDetected on any forward-vs-replay
-            // mismatch — exactly the test we need to validate
+            // mismatch -- exactly the test we need to validate
             // Phase F (#23) fixes.
             stress_mode_cli = true;
             // Optional next arg: game-name substring (e.g. "wanwan"
@@ -296,7 +296,7 @@ SDL_AppResult LauncherCli_ApplyLaunchMode(FM2KLauncher* launcher, LauncherCliArg
     // Game-exe lookup: the replay file is always written to
     // <game_dir>/replays/<timestamp>.fm2krep (see WriteCurrentBattleFile),
     // so game_dir is the replay's grandparent. We scan that directory
-    // for the .exe directly — no dependency on the async discovery
+    // for the .exe directly -- no dependency on the async discovery
     // thread, which hasn't populated yet at this point in startup.
     if (!replay_file_path.empty()) {
         std::error_code ec;
@@ -306,7 +306,7 @@ SDL_AppResult LauncherCli_ApplyLaunchMode(FM2KLauncher* launcher, LauncherCliArg
         std::filesystem::path game_dir = canon.parent_path().parent_path();
 
         // FM2K games always ship with <project>.kgt next to <project>.exe.
-        // Find the .kgt's stem and use it to pick the matching .exe — this
+        // Find the .kgt's stem and use it to pick the matching .exe -- this
         // skips bundled helper binaries like antimicrox.exe that are 64-bit
         // and would fail injection.
         std::string game_exe_path;
@@ -439,7 +439,7 @@ SDL_AppResult LauncherCli_ApplyLaunchMode(FM2KLauncher* launcher, LauncherCliArg
         g_launcher->SetExitOnGameEnd(true);  // no lobby: quit when game ends
         std::cout << "Stress mode: GekkoStressSession started for "
                   << game_to_launch.exe_path
-                  << " — watch logs/FM2K_P1_Debug.log\n";
+                  << " -- watch logs/FM2K_P1_Debug.log\n";
     }
 
     if (offline_mode_cli) {
@@ -500,14 +500,14 @@ SDL_AppResult LauncherCli_ApplyLaunchMode(FM2KLauncher* launcher, LauncherCliArg
         g_launcher->SetExitOnGameEnd(true);  // no lobby: quit when game ends
         std::cout << "Offline mode: native session started for "
                   << games[pick].exe_path
-                  << " — watch logs/FM2K_P1_Debug.log [OFFLINE-SECT]/[FRAMETIME]\n";
+                  << " -- watch logs/FM2K_P1_Debug.log [OFFLINE-SECT]/[FRAMETIME]\n";
     }
 
     // If direct mode, skip UI and go straight to game launch + network
     if (direct_mode || spectate_mode) {
         // Direct-path bypass: if --host/--connect <filter> is a literal
         // absolute path, build a one-element discovered-games list and
-        // launch that — skips the registry-scan entirely (matches --stress
+        // launch that -- skips the registry-scan entirely (matches --stress
         // semantics for harness use). Otherwise treat as substring filter
         // against the discovered games list.
         const bool is_direct_path = !direct_game_filter.empty()
@@ -568,7 +568,7 @@ SDL_AppResult LauncherCli_ApplyLaunchMode(FM2KLauncher* launcher, LauncherCliArg
             const int spectator_port  = (config.local_port > 0) ? config.local_port : 7702;
 
             // CLI --spectate has no hub context, so session_kind isn't
-            // forwarded — assume "battle" (the typical e2e use case is
+            // forwarded -- assume "battle" (the typical e2e use case is
             // joining an already-running match). To test the CSS-walk
             // path from CLI, pass `--spectate-session-kind menu`.
             if (!g_launcher->LaunchRemoteSpectator(game_to_launch.exe_path,

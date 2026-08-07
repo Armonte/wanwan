@@ -48,7 +48,7 @@ constexpr size_t    SHAKE_OFFSET_IN_AI  = SHAKE_EFFECTS_ADDR - WaveCAddrs::AFTER
 
 // EFFECT_SYS1 (palette flash 1 struct) sits inside the afterimage_pool slice
 // at 0x447D7D, 42 B, immediately BEFORE the shake block. Render-side carve-
-// out must skip this region too — ProcessColorInterpolation writes
+// out must skip this region too -- ProcessColorInterpolation writes
 // per-frame interpolation values into g_object_data_ptr from inputs read out
 // of EFFECT_SYS1, and the [EB] handler in update_game writes the struct's
 // timer/duration. If the render-side restore stomps these every render, the
@@ -60,7 +60,7 @@ constexpr size_t    PFLASH1_OFFSET_IN_AI = PFLASH1_ADDR - WaveCAddrs::AFTERIMAGE
 static_assert(PFLASH1_OFFSET_IN_AI + PFLASH1_SZ <= SHAKE_OFFSET_IN_AI,
               "EFFECT_SYS1 must end before shake block");
 
-// [EB] diagnostic — see header for full doc. Defined here so both the
+// [EB] diagnostic -- see header for full doc. Defined here so both the
 // trampoline path and Hook_RenderGame share state (frame counter, log fp,
 // post-shake window). Only one of those two paths fires per frame depending
 // on FM2K_BYPASS_TRAMPOLINE: trampoline mode → RenderFrameWithSnapshot calls
@@ -88,7 +88,7 @@ void EbDiag_Dump(const char* tag) {
     const uint32_t s1_dur   = *(uint32_t*)(SHAKE_EFFECTS_ADDR + 16);
     const uint32_t s2_off   = *(uint32_t*)(SHAKE_EFFECTS_ADDR + 4 + 20);
     const uint32_t s2_timer = *(uint32_t*)(SHAKE_EFFECTS_ADDR + 12 + 20);
-    // Palette flash state — same [EB] opcode handler, separate timers.
+    // Palette flash state -- same [EB] opcode handler, separate timers.
     // p1: g_effect_id_1 @ 0x447D7D; timer (a1[5]) @ +0x14 (g_timer_countdown2 0x447D91)
     // p2: g_effect_id_2 @ 0x4456D0; timer (a1[5]) @ +0x14 (g_timer_countdown1 0x4456E4)
     // dur (a1[10]) @ +0x28
@@ -98,7 +98,7 @@ void EbDiag_Dump(const char* tag) {
     const uint32_t p2_mode  = *(uint32_t*)0x4456D0;  // g_effect_id_2 (FM2K, RE-4)
     const uint32_t p2_timer = *(uint32_t*)0x4456E4;  // g_timer_countdown1 (FM2K, RE-4)
     const uint32_t p2_dur   = *(uint32_t*)0x4456F8;  // 0x4456D0 + 0x28
-    // Global RNG seed — ProcessColorInterpolation mode 3 calls game_rand()
+    // Global RNG seed -- ProcessColorInterpolation mode 3 calls game_rand()
     // each render. Comparing rng across vanilla (FM2K_BYPASS_TRAMPOLINE=1)
     // vs our trampoline path tells us whether render-time RNG matches
     // vanilla. If rng differs, palette colors will visibly differ even
@@ -117,7 +117,7 @@ void EbDiag_Dump(const char* tag) {
     else if (s_eb_post_window > 0 && is_pre_save) --s_eb_post_window;
     else if (s_eb_post_window == 0 && !active) return;
 
-    // g_screen_x/y at 0x447F2C/30 — sprite_rendering_engine reads these for
+    // g_screen_x/y at 0x447F2C/30 -- sprite_rendering_engine reads these for
     // every sprite (stage AND characters). If they drift after shake ends,
     // that's the stage-offset bug.
     const int32_t scr_x = *(int32_t*)0x447F2C;  // g_screen_x (FM2K, RE-5)
@@ -171,7 +171,7 @@ void RenderFrameWithSnapshot() {
     Hook_BattleDiag_TickIfActive();
 
     // Render isolates sim state when we're driving the simulation
-    // deterministically — either as a player under GekkoNet (host) or as
+    // deterministically -- either as a player under GekkoNet (host) or as
     // a spectator replaying confirmed inputs. Without protection, render's
     // mutations to RNG / object pool / afterimage / input tracking leak into
     // sim memory, and the spectator's evolution diverges from the host's
@@ -192,7 +192,7 @@ void RenderFrameWithSnapshot() {
         // interpolation factor instead of the animated random gradient
         // vanilla shows. Both peers run render once per wall-clock frame
         // and consume identical RNG amounts, so they stay in lockstep
-        // without explicit RNG restore. Verified via offline/bypass diff —
+        // without explicit RNG restore. Verified via offline/bypass diff --
         // offline (no protection) matches vanilla; online (with protection)
         // showed RNG frozen at the pre-render value across 20+ frames.
         //
@@ -201,18 +201,18 @@ void RenderFrameWithSnapshot() {
         // ProcessColorInterpolation (g_object_data_ptr + 68/72/76/80) AND
         // various sprite/animation timers. Reverting those after render
         // makes palette flash mode 1 (Tyrogue fade-to-black) visually
-        // "undone" — sim-side timer keeps decrementing, but the persistent
+        // "undone" -- sim-side timer keeps decrementing, but the persistent
         // color state needed across frames gets wiped. Both peers run the
         // same renders, so object pool drift stays symmetric.
         (void)s_render_saved_object_pool; // (kept allocated for backward compat)
         // Afterimage save: three slices skipping both EFFECT_SYS1 (palette
         // flash 1) and SHAKE_EFFECTS so render-side state evolution for
         // each propagates back into sim memory:
-        //   [0                     .. PFLASH1_OFFSET)   — save (head)
-        //   [PFLASH1_OFFSET        .. PFLASH1_END)      — SKIP (palette flash 1)
-        //   [PFLASH1_END           .. SHAKE_OFFSET)     — save (gap, currently 0 B)
-        //   [SHAKE_OFFSET          .. SHAKE_END)        — SKIP (shake block)
-        //   [SHAKE_END             .. POOL_END)         — save (tail)
+        //   [0                     .. PFLASH1_OFFSET)   -- save (head)
+        //   [PFLASH1_OFFSET        .. PFLASH1_END)      -- SKIP (palette flash 1)
+        //   [PFLASH1_END           .. SHAKE_OFFSET)     -- save (gap, currently 0 B)
+        //   [SHAKE_OFFSET          .. SHAKE_END)        -- SKIP (shake block)
+        //   [SHAKE_END             .. POOL_END)         -- save (tail)
         constexpr size_t PFLASH1_END_IN_AI = PFLASH1_OFFSET_IN_AI + PFLASH1_SZ;
         constexpr size_t SHAKE_END_IN_AI   = SHAKE_OFFSET_IN_AI + SHAKE_EFFECTS_SZ;
         memcpy(s_render_saved_afterimage,
@@ -260,7 +260,7 @@ void RenderFrameWithSnapshot() {
     // (the full-screen blur case -10 + RLEDecompress + per-sprite LUT rebuild +
     // ddraw tail). blit calls / g_object_count reveals afterimage-trail
     // multiplication; the blend-mode mix shows which blit modes (additive/alpha
-    // are ~5x copy) to SIMD first. Display-only — no sim/determinism impact.
+    // are ~5x copy) to SIMD first. Display-only -- no sim/determinism impact.
     {
         static const bool s_rp_on = []{ const char* v = std::getenv("FM2K_RENDER_PROFILE");
                                         return v && v[0] == '1'; }();
@@ -311,12 +311,12 @@ void RenderFrameWithSnapshot() {
     // FM2K-only restore -- mirrors the gated save block above (FM95: RE-4 /
     // savestate_fm95-covered input tracking).
     if (protect) { if constexpr (FM2K::kIsFM2K) {
-        // (RNG restore removed — see PRE-RENDER comment above.)
-        // (Object pool restore removed too — see PRE-RENDER comment.
+        // (RNG restore removed -- see PRE-RENDER comment above.)
+        // (Object pool restore removed too -- see PRE-RENDER comment.
         // Tyrogue's mode-1 fade-to-black depends on the last per-frame
         // ProcessColorInterpolation write to g_object_data_ptr+68/72/76/80
         // PERSISTING into the next frame's object_pool. When the timer
-        // hits 0, ProcessColorInterpolation skips the write — and the
+        // hits 0, ProcessColorInterpolation skips the write -- and the
         // sprite render reads the persisted last-frame value (mostly
         // black) so the screen stays black. With object_pool restore,
         // that persistence is wiped each frame and the visual snaps back
@@ -343,7 +343,7 @@ void RenderFrameWithSnapshot() {
     // game_rand calls advanced the shared gameplay seed, so the saved slot
     // had to be patched to post-render rng for forward/replay to agree. With
     // render RNG now isolated to g_render_rng_seed (see Hook_GameRand), render
-    // no longer touches the gameplay seed at all — the saved seed is already
+    // no longer touches the gameplay seed at all -- the saved seed is already
     // the pure sim rng, identical across peers. No patch needed, and the
     // patch was what made cross-peer rng diverge under real rollback.
 

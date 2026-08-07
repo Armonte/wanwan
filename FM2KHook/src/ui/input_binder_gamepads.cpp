@@ -30,7 +30,7 @@ void RefreshGamepadList() {
     } guard{&s_refresh_in_progress};
 
     g_gamepad_ids.clear();
-    // Pump events first — a freshly-plugged stick may not show up in
+    // Pump events first -- a freshly-plugged stick may not show up in
     // SDL_GetGamepads / SDL_GetJoysticks until SDL has processed its
     // own JOYSTICK_ADDED event.
     SDL_PumpEvents();
@@ -60,7 +60,7 @@ void RefreshGamepadList() {
     // generic-HID modes, third-party PS3 clones, etc.) don't appear
     // in SDL_GetGamepads but CAN be opened as gamepads via SDL3's
     // synthetic mapping. Mirroring revolve_input_sdl3's pattern
-    // here — without it, only XInput-recognized devices showed up
+    // here -- without it, only XInput-recognized devices showed up
     // in our binder UI.
     int joy_count = 0;
     SDL_JoystickID* joys = SDL_GetJoysticks(&joy_count);
@@ -81,7 +81,7 @@ void RefreshGamepadList() {
             bool is_gp = SDL_IsGamepad(jid);
             if (!is_gp) { SDL_PumpEvents(); is_gp = SDL_IsGamepad(jid); }
             if (!is_gp) {
-                // Diagnostic — name + GUID for sticks we couldn't
+                // Diagnostic -- name + GUID for sticks we couldn't
                 // promote to a gamepad. Helps the user paste this
                 // info if they need a custom mapping added.
                 SDL_Joystick* j = SDL_OpenJoystick(jid);
@@ -90,7 +90,7 @@ void RefreshGamepadList() {
                     SDL_GUIDToString(SDL_GetJoystickGUID(j), guid, sizeof(guid));
                     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "InputBinder: joystick jid=%u name='%s' guid=%s "
-                        "(no SDL gamepad mapping — won't appear in binder)",
+                        "(no SDL gamepad mapping -- won't appear in binder)",
                         (unsigned)jid,
                         SDL_GetJoystickName(j) ? SDL_GetJoystickName(j) : "?",
                         guid);
@@ -107,7 +107,7 @@ void RefreshGamepadList() {
                 g_gamepad_ids.push_back(jid);
                 g_gamepad_handles[jid] = gp;
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "InputBinder: promoted joystick jid=%u to gamepad — name='%s'",
+                    "InputBinder: promoted joystick jid=%u to gamepad -- name='%s'",
                     (unsigned)jid,
                     SDL_GetGamepadName(gp) ? SDL_GetGamepadName(gp) : "?");
             }
@@ -136,7 +136,7 @@ void RefreshGamepadList() {
         }
     }
 
-    // Device set may have changed — re-resolve each player's identity-
+    // Device set may have changed -- re-resolve each player's identity-
     // bound pad against the fresh list.
     ResolvePlayerPads();
 }
@@ -177,7 +177,7 @@ void ResolvePlayerPads() {
 
     std::unordered_set<SDL_JoystickID> claimed;
 
-    // Pass 1 — keep still-valid resolutions. Instance ids are stable
+    // Pass 1 -- keep still-valid resolutions. Instance ids are stable
     // while connected, so a player never hops devices mid-session just
     // because the list reordered around them.
     for (int p = 0; p < kPlayers; ++p) {
@@ -192,7 +192,7 @@ void ResolvePlayerPads() {
         }
     }
 
-    // Pass 2 — resolve the rest by identity, in player order (P1 gets
+    // Pass 2 -- resolve the rest by identity, in player order (P1 gets
     // first pick when both players are configured for the same model
     // and only one unit is attached). List order breaks ties between
     // identical unclaimed units. A configured-but-absent device stays
@@ -201,7 +201,7 @@ void ResolvePlayerPads() {
     for (int p = 0; p < kPlayers; ++p) {
         if (g_player_pad_jid[p] != 0) continue;
         const std::string& want = g_players[p].device_id;
-        if (want.empty()) continue;  // legacy index routing — no identity
+        if (want.empty()) continue;  // legacy index routing -- no identity
         for (SDL_JoystickID jid : g_gamepad_ids) {
             if (claimed.count(jid)) continue;
             if (DeviceIdentityOfJid(jid) == want) {
@@ -220,11 +220,11 @@ void ResolvePlayerPads() {
             const char* n = (it != g_gamepad_handles.end() && it->second)
                 ? SDL_GetGamepadName(it->second) : nullptr;
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "InputBinder: P%d device resolved — jid=%u '%s'",
+                "InputBinder: P%d device resolved -- jid=%u '%s'",
                 p + 1, (unsigned)g_player_pad_jid[p], n ? n : "?");
         } else {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "InputBinder: P%d device '%s' disconnected — gamepad "
+                "InputBinder: P%d device '%s' disconnected -- gamepad "
                 "bindings inactive until it returns",
                 p + 1, g_players[p].device_name.c_str());
         }
@@ -262,7 +262,7 @@ void SetPlayerDevice(int player_slot, int list_index) {
     pb.device_id   = DeviceIdentityOfJid(jid);
     pb.device_name = GamepadNameAt(list_index);
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "InputBinder: P%d device set — '%s' (%s)",
+        "InputBinder: P%d device set -- '%s' (%s)",
         player_slot + 1, pb.device_name.c_str(), pb.device_id.c_str());
     ResolvePlayerPads();
 }

@@ -65,8 +65,8 @@ bool LoadDevFlag(const char* key, bool default_val) {
 void SaveDevFlag(const char* key, bool value) {
     const std::string path = DevFlagsIniPath();
     if (path.empty()) return;
-    // Read all existing keys, replace this one, write back. Tiny file —
-    // a few keys at most — so brute-force rewrite is fine.
+    // Read all existing keys, replace this one, write back. Tiny file --
+    // a few keys at most -- so brute-force rewrite is fine.
     std::vector<std::pair<std::string, std::string>> kv;
     if (FILE* f = std::fopen(path.c_str(), "r")) {
         char line[128];
@@ -276,11 +276,11 @@ static const char* const kGamePatchEnvVars[] = {
 // launch (online, stress, spectate): these vars are process-level on
 // the launcher and inherited by every spawned game, so without this a
 // prior OFFLINE launch's settings (training mode, team size, damage
-// multiplier...) leaked into the next netplay match — sim-affecting
+// multiplier...) leaked into the next netplay match -- sim-affecting
 // ones (team_size, damage_mult) only on THIS peer's side, i.e. a
 // guaranteed desync; training/vs-cpu leaks zeroed P2-style inputs.
 // Online stays "vanilla + hook defaults" by design until per-game
-// patches are host-synced. (FM2K_KEEP_GAMESPEED_PIC is opt-out — the
+// patches are host-synced. (FM2K_KEEP_GAMESPEED_PIC is opt-out -- the
 // hook's render fix defaults ON, so clearing keeps the fix active.)
 void NeutralizeGamePatchEnvVars() {
     for (const char* v : kGamePatchEnvVars) {
@@ -290,7 +290,7 @@ void NeutralizeGamePatchEnvVars() {
 
 // Apply per-game patch env vars before launching the game OFFLINE (the
 // netcfg Play-Offline button). Online / stress / spectate paths call
-// NeutralizeGamePatchEnvVars() instead — per-game patches are local
+// NeutralizeGamePatchEnvVars() instead -- per-game patches are local
 // house rules and are not synced between peers yet. Each new patch
 // added to the per-game INI gets a corresponding env var set here AND
 // an entry in kGamePatchEnvVars above.
@@ -302,14 +302,14 @@ void ApplyGamePatchEnvVars(const std::string& game_id) {
     ::SetEnvironmentVariableA("FM2K_KEEP_GAMESPEED_PIC",
                               gs_pic_fix ? nullptr : "1");
 
-    // team_css_dupe_lock: OPT-IN — masks confirm bits when the cursor
+    // team_css_dupe_lock: OPT-IN -- masks confirm bits when the cursor
     // would land on an already-locked team slot.
     const bool team_css_dupe_lock =
         LoadGamePatchBool(game_id, "team_css_dupe_lock", false);
     ::SetEnvironmentVariableA("FM2K_TEAM_CSS_DUPE_LOCK",
                               team_css_dupe_lock ? "1" : nullptr);
 
-    // team_kof_retention: OPT-IN — winner's HP/meter carries into next
+    // team_kof_retention: OPT-IN -- winner's HP/meter carries into next
     // round (loser gets fresh char). Team mode only.
     const bool team_kof_retention =
         LoadGamePatchBool(game_id, "team_kof_retention", false);
@@ -317,7 +317,7 @@ void ApplyGamePatchEnvVars(const std::string& game_id) {
                               team_kof_retention ? "1" : nullptr);
 
     // team_size: int 2..4, default 0 (engine default). Hard ceiling is
-    // 4 per side — the engine's CSS indexes its 8-slot character data
+    // 4 per side -- the engine's CSS indexes its 8-slot character data
     // pool as 4*player_idx + round_count, so N>4 stomps the opposite
     // player's slots. See per_game_patches.cpp for the full analysis.
     const int team_size = LoadGamePatchInt(game_id, "team_size", 0);
@@ -402,7 +402,7 @@ bool ReadBoolSetting(const std::string& path, const char* key, bool dflt) {
     return out;
 }
 
-// Tiny int-keyed setting reader/writer — same flat key=value format as
+// Tiny int-keyed setting reader/writer -- same flat key=value format as
 // the bool helpers; integers like SOCD mode use this. Default returned
 // when the key is missing or the value isn't a valid int.
 int ReadIntSetting(const std::string& path, const char* key, int dflt) {
@@ -459,7 +459,7 @@ void WriteIntSetting(const std::string& path, const char* key, int value) {
 }
 
 void WriteBoolSetting(const std::string& path, const char* key, bool value) {
-    // Read all keys, replace ours, rewrite. Tiny file, tiny number of keys —
+    // Read all keys, replace ours, rewrite. Tiny file, tiny number of keys --
     // brute force is fine and keeps the format stable.
     std::vector<std::pair<std::string, std::string>> kv;
     if (FILE* f = std::fopen(path.c_str(), "r")) {

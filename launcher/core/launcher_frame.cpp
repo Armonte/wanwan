@@ -337,7 +337,7 @@ void FM2KLauncher::Update(float delta_time SDL_UNUSED) {
         // we're done. Quit instead of zombie-ing the window.
         if (exit_on_game_end_) {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "Direct-mode: hosted game ended — exiting launcher.");
+                "Direct-mode: hosted game ended -- exiting launcher.");
             running_ = false;
         }
     }

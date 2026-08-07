@@ -2,13 +2,13 @@
 
 // Per-game runtime patches not better-housed in a feature-specific hook
 // module. Currently:
-//   - Damage multiplier (FM2K_DAMAGE_MULT_PCT, default 100) — MinHook
+//   - Damage multiplier (FM2K_DAMAGE_MULT_PCT, default 100) -- MinHook
 //     detour on health_damage_manager @ 0x40e7c0 that scales the damage
 //     argument by mult/100 before forwarding to the original.
-//   - Team size override (FM2K_TEAM_SIZE) — direct write to g_team_round
+//   - Team size override (FM2K_TEAM_SIZE) -- direct write to g_team_round
 //     (0x430128) at hook init.
 //   - Stubs for VS CPU, CPU vs CPU, training, and OPTION-button mode
-//     selector — toggles are exposed but the hook side just logs.
+//     selector -- toggles are exposed but the hook side just logs.
 //
 // All driven by env vars set by the launcher's ApplyGamePatchEnvVars
 // before CreateProcess. See FM2K_LauncherUI.cpp.
@@ -16,7 +16,7 @@
 #include <cstdint>
 
 // Install the damage-multiplier MinHook. Call AFTER MH_Initialize() so the
-// detour can register. Idempotent — safe to skip if FM2K_DAMAGE_MULT_PCT
+// detour can register. Idempotent -- safe to skip if FM2K_DAMAGE_MULT_PCT
 // is unset (no hook installed in that case to minimize overhead).
 bool PerGamePatches_InstallDamageMultiplierHook();
 
@@ -25,7 +25,7 @@ bool PerGamePatches_InstallDamageMultiplierHook();
 // and overrides ctx.eax to 0 when a hijack mode (vs_cpu / training /
 // cpu_vs_cpu) is active and we're in battle phase. That forces the
 // upcoming cmp+jz to dispatch character_state_machine's CSMK_PLAYER
-// init through the story-init / 1P-arcade branch — giving P2 the
+// init through the story-init / 1P-arcade branch -- giving P2 the
 // stage-script-driven AI fields (`something_xor_mask`, `unknown_dfbb
 // [80] = -1`, hitstop, starting_special_stock) instead of the VS-mode
 // default init which leaves P2 as a non-AI standing dummy.
@@ -42,7 +42,7 @@ bool PerGamePatches_InstallStoryInitHijack();
 // Apply the three AI-driver fields (gate=1, difficulty=50, mode=1) directly
 // to the relevant char_data slot(s) when a hijacked submode is active.
 // Replicates the per-fighter loop at 0x408B72 inside vs_round_function's
-// story-mode RSS_BATTLE_INIT branch — the VS-mode branch (which our flag=1
+// story-mode RSS_BATTLE_INIT branch -- the VS-mode branch (which our flag=1
 // hijack runs in) skips the loop entirely, so the AI gate at 0xDF5D stays
 // zero and ai_input_processor (0x411270) bails for every fighter.
 //
@@ -63,7 +63,7 @@ void PerGamePatches_OnBattleInitComplete();
 // 0x411CB1 (`mov [ebx+0xDF05], eax`). When the patched instruction
 // fires, our interceptor decides whether to write the engine's
 // computed max_hp value (normal init) or the winner's snapshotted
-// HP/meter from RoundEvents (KOF retention). Idempotent — only
+// HP/meter from RoundEvents (KOF retention). Idempotent -- only
 // installs when FM2K_TEAM_KOF_RETENTION is enabled.
 bool PerGamePatches_InstallKofHpInitPatch();
 
@@ -73,7 +73,7 @@ bool PerGamePatches_InstallKofHpInitPatch();
 void PerGamePatches_ApplyRuntime();
 
 // Install a MinHook trampoline on InitializeGameFromCommandLine
-// (0x409a60 — the slot-0 boot dispatcher). At entry, our detour writes
+// (0x409a60 -- the slot-0 boot dispatcher). At entry, our detour writes
 // "<exe_basename>.kgt" into g_iniFile_nameOverride (0x43012c) so the
 // engine's /F debug-boot path can resolve the kgt name.
 //
@@ -81,15 +81,15 @@ void PerGamePatches_ApplyRuntime();
 // (called by InitializeMainWindow during boot) reads the kgt's
 // [File].Filename key and writes its result back into the same global.
 // Standalone games ship without an editor INI, so the default fires
-// and the default is empty — clobbering any earlier write. The hook
+// and the default is empty -- clobbering any earlier write. The hook
 // fires AFTER that stomp and right before the dispatcher reads it.
 //
-// No-op unless FM2K_BOOT_TO_BATTLE=1 is set. Idempotent — safe to call
+// No-op unless FM2K_BOOT_TO_BATTLE=1 is set. Idempotent -- safe to call
 // when the env var isn't set (skips install, costs nothing). Call
 // AFTER MH_Initialize() so the detour can register.
 bool PerGamePatches_InstallBootToBattleHook();
 
-// Set BTB char/stage overrides at runtime — preferred over the
+// Set BTB char/stage overrides at runtime -- preferred over the
 // FM2K_BTB_* env vars when populated. Spec hook calls this from
 // SpectatorNode_HandleJoinAck when the host advertises real chars +
 // stage; ApplyBootToBattleStateOverrides reads from here first before
@@ -131,10 +131,10 @@ int PerGamePatches_TryOverrideInput(int player_id, uint32_t game_mode);
 // CSS takeover gating for solo-driver modes (VS CPU / CPU vs CPU /
 // Training). Computes what P2's input should be on a CSS frame given
 // P1's current 11-bit input:
-//   * Before P1 confirms (g_p1_action_state == 0): returns 0 — P2 cursor
+//   * Before P1 confirms (g_p1_action_state == 0): returns 0 -- P2 cursor
 //     stays put, doesn't follow P1 yet.
 //   * After P1 confirms, while P1's attack-confirm press is still held:
-//     returns 0 — prevents the rising-edge of the same attack press
+//     returns 0 -- prevents the rising-edge of the same attack press
 //     from instantly confirming P2.
 //   * After P1 confirms AND has released attack: returns p1_input as-is
 //     so P1 can move P2's cursor and confirm the second character.
@@ -146,7 +146,7 @@ uint16_t PerGamePatches_GatedP2CssInput(uint16_t p1_input);
 // value to return for `player_id` during battle (game_mode 3000-3999)
 // when an alt mode is active. Returns -1 when no override applies
 // (caller falls through to the original/binder input). Same precedence
-// as PerGamePatches_TryOverrideInput's battle branch — exposed so the
+// as PerGamePatches_TryOverrideInput's battle branch -- exposed so the
 // binder-active path in Hook_GetPlayerInput can apply it too (binder
 // returns before TryOverrideInput is reached).
 //   player_id:  0 = P1, 1 = P2
@@ -165,7 +165,7 @@ void PerGamePatches_CycleTrainingP2Behavior();
 int  PerGamePatches_GetTrainingP2Behavior();
 const char* PerGamePatches_TrainingP2BehaviorLabel(int behavior);
 
-// OPTION-button mode selector — title-screen sub-mode cycle. Cycle is
+// OPTION-button mode selector -- title-screen sub-mode cycle. Cycle is
 // CONTEXT-AWARE based on which title menu entry the cursor is currently
 // on (read from g_menu_selection @ 0x424780):
 //
@@ -174,7 +174,7 @@ const char* PerGamePatches_TrainingP2BehaviorLabel(int behavior);
 //                                   picks both chars)
 //   Context 1 (VS entry):        Default → Team Versus → CPU vs CPU
 //
-// Cycle position (g_vs_submode 0..2) is independent of context — moving
+// Cycle position (g_vs_submode 0..2) is independent of context -- moving
 // the cursor between entries changes the badge label but keeps the cycle
 // index. Confirming on a given entry applies that entry's slot-N action.
 void PerGamePatches_OnOptionPressed();
@@ -186,12 +186,12 @@ bool PerGamePatches_IsTrainingModeActive();
 bool PerGamePatches_IsVsCpuModeActive();
 bool PerGamePatches_IsCpuVsCpuModeActive();
 
-// Per-frame tick — call from a place that runs once per real frame
+// Per-frame tick -- call from a place that runs once per real frame
 // (imgui_overlay's NewFrame is convenient). Polls F2 for training-P2
 // behavior cycle, watches game_mode for CSS→title transitions to
 // clear stale mode flags. The title→CSS apply lives in
 // PerGamePatches_OnGameStateManagerEntry instead (so it fires BEFORE
-// CSS STATE 0 runs — render-frame ticks fire AFTER and that breaks
+// CSS STATE 0 runs -- render-frame ticks fire AFTER and that breaks
 // the 1P-to-2P hijack since STATE 0 has already created the wrong
 // number of cursor objects).
 void PerGamePatches_OnFrameTick();

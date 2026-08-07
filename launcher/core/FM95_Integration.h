@@ -18,7 +18,7 @@
 // ============================================================================
 
 // ============================================================================
-// FM95 Integration Header — Comic Party Wars (CPW.exe), the FM95 prototype
+// FM95 Integration Header -- Comic Party Wars (CPW.exe), the FM95 prototype
 // of FM2K. Address-only translation of FM2K_Integration.h; the launcher /
 // UI / networking layer is binary-agnostic and reused as-is.
 //
@@ -44,9 +44,9 @@ namespace FM95 {
 // Function addresses (hook targets)
 // ----------------------------------------------------------------------------
 
-// Frame loop driver — message pump + timeGetTime catchup loop (max 5 frames),
+// Frame loop driver -- message pump + timeGetTime catchup loop (max 5 frames),
 // calls update_game_state then render_game. FM2K analog: RUN_GAME_LOOP @ 0x405AD0.
-// `_WinMain@16` IS the frame loop in FM95 — the prototype has no separate driver.
+// `_WinMain@16` IS the frame loop in FM95 -- the prototype has no separate driver.
 constexpr uintptr_t ADDR_WINMAIN              = 0x40AB60;
 
 // Per-tick game logic. Iterates 256-entry object pool, runs collision pass,
@@ -65,11 +65,11 @@ constexpr uintptr_t ADDR_PROCESS_INPUTS       = 0x408FF0;
 constexpr uintptr_t ADDR_GET_PLAYER_INPUT_P1  = 0x408AE0;
 constexpr uintptr_t ADDR_GET_PLAYER_INPUT_P2  = 0x408D60;
 
-// CRT `_rand` — same LCG constants as FM2K (214013/2531011, return (state>>16)&0x7FFF).
+// CRT `_rand` -- same LCG constants as FM2K (214013/2531011, return (state>>16)&0x7FFF).
 // FM2K analog: GAME_RAND @ 0x417A22.
 constexpr uintptr_t ADDR_GAME_RAND            = 0x41A864;
 
-// Sound dispatch — **mute target during rollback resimulation**.
+// Sound dispatch -- **mute target during rollback resimulation**.
 // Switches on cmd byte: 0=stop, 1=play_wave, 2=play_midi, 3=play_cd.
 // FM2K analog: DISPATCH_SCRIPT_SOUND @ 0x403430.
 constexpr uintptr_t ADDR_DISPATCH_SCRIPT_SOUND = 0x401FF0;
@@ -127,11 +127,11 @@ constexpr uintptr_t ADDR_READ_JOYSTICK_INPUT      = 0x4041A0;
 // CRT _rand seed (single u32). FM2K analog: 0x41FB1C.
 constexpr uintptr_t ADDR_RANDOM_SEED          = 0x4243FC;
 
-// Game tick counter — incremented by update_game_state every frame.
+// Game tick counter -- incremented by update_game_state every frame.
 // LSB is ping-pong parity for object iteration direction. FM2K analog: 0x4456FC.
 constexpr uintptr_t ADDR_GAME_TICK_COUNTER    = 0x4DD7A8;
 
-// Render frame counter — incremented by render_game.
+// Render frame counter -- incremented by render_game.
 constexpr uintptr_t ADDR_RENDER_FRAME_COUNTER = 0x425520;
 
 // Game mode / round phase. 0=normal, 1=in-round-active, 2/3=KO/draw, 4=time-up.
@@ -181,7 +181,7 @@ constexpr uintptr_t ADDR_P2_INPUT             = 0x437754;
 constexpr uintptr_t ADDR_P1_CONTROL_MODE      = 0x432724;
 constexpr uintptr_t ADDR_P2_CONTROL_MODE      = 0x432734;
 
-// Raw GetKeyboardState buffer (256 bytes) — populated by process_game_inputs each frame.
+// Raw GetKeyboardState buffer (256 bytes) -- populated by process_game_inputs each frame.
 constexpr uintptr_t ADDR_KEY_STATE            = 0x4253C8;
 constexpr uintptr_t ADDR_KEYPRESS_STATE       = 0x4252C4;
 
@@ -209,30 +209,30 @@ constexpr size_t    OBJECT_POOL_STRIDE        = 0xA4;
 constexpr size_t    SIZE_OBJECT_POOL          = OBJECT_POOL_COUNT * OBJECT_POOL_STRIDE;
 constexpr uintptr_t ADDR_OBJECT_POOL_LAST     = 0x430D9C;  // last entry, used by reverse-direction iter
 
-// Object dispatch type IDs — index into g_object_function_table[31] at 0x424078.
+// Object dispatch type IDs -- index into g_object_function_table[31] at 0x424078.
 // Created via create_game_object(type, script_id, pos_x, pos_y, player_idx, aux).
 namespace ObjectType {
-    constexpr uint32_t INIT_MAIN          = 3;   // obj_init_main_state — boot-time game init
-    constexpr uint32_t CHARACTER          = 6;   // character_state_machine — playable character
-    constexpr uint32_t TITLE_DEMO_LOOP    = 15;  // obj_title_demo_loop — title attract loop
-    constexpr uint32_t BATTLE             = 16;  // vs_round_function — round / battle state machine
-    constexpr uint32_t TITLE_CSS          = 19;  // title_screen_state_machine — title + character select
-    constexpr uint32_t POST_CSS_INTRO     = 21;  // obj_post_css_round_intro — pre-battle setup
-    constexpr uint32_t MATCH_RESULT       = 22;  // obj_match_result_state — between-rounds reload
+    constexpr uint32_t INIT_MAIN          = 3;   // obj_init_main_state -- boot-time game init
+    constexpr uint32_t CHARACTER          = 6;   // character_state_machine -- playable character
+    constexpr uint32_t TITLE_DEMO_LOOP    = 15;  // obj_title_demo_loop -- title attract loop
+    constexpr uint32_t BATTLE             = 16;  // vs_round_function -- round / battle state machine
+    constexpr uint32_t TITLE_CSS          = 19;  // title_screen_state_machine -- title + character select
+    constexpr uint32_t POST_CSS_INTRO     = 21;  // obj_post_css_round_intro -- pre-battle setup
+    constexpr uint32_t MATCH_RESULT       = 22;  // obj_match_result_state -- between-rounds reload
     constexpr uint32_t DECREMENT_TIMER    = 25;  // obj_decrement_timer
     constexpr uint32_t SCORE_DIGIT        = 26;  // obj_score_digit_display
-    constexpr uint32_t DEMO_INTRO         = 27;  // obj_demo_intro_state — story cutscene player
-    constexpr uint32_t STORY_PROGRESS     = 28;  // obj_story_progress — story-mode dispatcher
-    constexpr uint32_t ROUND_DEMO         = 29;  // obj_round_demo_state — game-over demo
-    constexpr uint32_t LOGO_INTRO         = 30;  // obj_logo_intro_state — boot logo (default startup)
+    constexpr uint32_t DEMO_INTRO         = 27;  // obj_demo_intro_state -- story cutscene player
+    constexpr uint32_t STORY_PROGRESS     = 28;  // obj_story_progress -- story-mode dispatcher
+    constexpr uint32_t ROUND_DEMO         = 29;  // obj_round_demo_state -- game-over demo
+    constexpr uint32_t LOGO_INTRO         = 30;  // obj_logo_intro_state -- boot logo (default startup)
 }
 
-// Object dispatch table base — 31 function pointers, indexed by ObjectSlot.type.
+// Object dispatch table base -- 31 function pointers, indexed by ObjectSlot.type.
 constexpr uintptr_t ADDR_OBJECT_FUNCTION_TABLE_TYPED = 0x424078;
 constexpr size_t    OBJECT_FUNCTION_TABLE_COUNT      = 31;
 
 // State-machine objects (types 15/16/19/21/22/27/28/29/30) repurpose ObjectSlot fields:
-//   +108  sub_state                (header struct says 'script_partner_ptr' — that's only for type 6)
+//   +108  sub_state                (header struct says 'script_partner_ptr' -- that's only for type 6)
 //   +112  sub_state_data_a         (often player_idx)
 //   +116  sub_state_data_b
 //   +120  sub_state_timer          (counts up while waiting in a sub-state)
@@ -265,7 +265,7 @@ constexpr uintptr_t ADDR_OBJECT_LIST_HEADS    = 0x4351E0;
 constexpr uintptr_t ADDR_OBJECT_LIST_TAILS    = 0x4351E4;
 
 // Per-object struct layout (offsets in bytes, derived from update_game_state +
-// character_state_machine decompilation). NOT exhaustive — covers fields the
+// character_state_machine decompilation). NOT exhaustive -- covers fields the
 // rollback layer reads.
 struct ObjectSlot {
     uint32_t type;                // +0   : 0=empty, 1=disabled, ≥2=active
@@ -346,7 +346,7 @@ constexpr uintptr_t ADDR_STAGE_FILE_NAMES     = 0x467B88;
 constexpr uintptr_t ADDR_DEMO_FILE_NAMES      = 0x46AD88;
 
 // ----------------------------------------------------------------------------
-// Character Select state — per-player struct at 0x432720, stride 16 bytes.
+// Character Select state -- per-player struct at 0x432720, stride 16 bytes.
 // ----------------------------------------------------------------------------
 //
 // Layout (per player, indices 0=P1, 1=P2):
@@ -359,7 +359,7 @@ constexpr uintptr_t ADDR_DEMO_FILE_NAMES      = 0x46AD88;
 // and reread by obj_match_result_state when reloading player files between matches.
 //
 // FM95 has NO global g_game_mode value that signals 'CSS active' (FM2K uses 2000).
-// Detection requires walking the object pool — see CharSelect::IsCSSActive() below.
+// Detection requires walking the object pool -- see CharSelect::IsCSSActive() below.
 
 namespace CharSelect {
     constexpr uintptr_t ADDR_BASE              = 0x432720;
@@ -372,19 +372,19 @@ namespace CharSelect {
     constexpr uintptr_t ADDR_P2_COLOR_VARIANT  = 0x432738;
     constexpr uintptr_t ADDR_P2_CONFIRMED      = 0x43273C;
 
-    // Roster size — game iterates char_cursor mod 50 in CSS navigation.
+    // Roster size -- game iterates char_cursor mod 50 in CSS navigation.
     constexpr size_t    ROSTER_SIZE            = 50;
 
     // CSS-active sub_state range on a type=19 object (title_screen_state_machine).
     constexpr uint32_t  SUBSTATE_CSS_ENTRY     = 0x28;  // 40
     constexpr uint32_t  SUBSTATE_CSS_END       = 0xC9;  // 201 (assist-select tail)
-    constexpr uint32_t  SUBSTATE_CSS_ACTIVE_INPUT = 0x67;  // 103 — main char-grid input loop
+    constexpr uint32_t  SUBSTATE_CSS_ACTIVE_INPUT = 0x67;  // 103 -- main char-grid input loop
 
     // Battle-active sub_state range on a type=16 object (vs_round_function).
     constexpr uint32_t  SUBSTATE_BATTLE_HUD_SPAWN = 10;
     constexpr uint32_t  SUBSTATE_BATTLE_END       = 31;
 
-    // Phase classifier — walk the 256-slot pool looking for a type=19/16 object
+    // Phase classifier -- walk the 256-slot pool looking for a type=19/16 object
     // and read its sub_state. Inline here so both the launcher (read via RPM) and
     // the hook DLL (direct ptr) can share the formula.
     enum class Phase { Boot, Title, CSS, PostCSS, Battle, MatchEnd, Other };
@@ -541,11 +541,11 @@ constexpr uintptr_t ADDR_SCRIPT_CMD_PARAM4    = 0x50921A;
 constexpr uintptr_t ADDR_SCRIPT_CMD_PARAM5    = 0x50921C;
 
 // ----------------------------------------------------------------------------
-// Differences from FM2K (informational — affects rollback hook strategy)
+// Differences from FM2K (informational -- affects rollback hook strategy)
 // ----------------------------------------------------------------------------
 //
 // 1. **CSS exists, just looks different.** FM95 has a full character-select
-//    screen (50-slot roster, color variants, locked-in flag) — see CharSelect::
+//    screen (50-slot roster, color variants, locked-in flag) -- see CharSelect::
 //    namespace above. The earlier note claiming 'no CSS' was wrong; CPW IDA
 //    decompilation of title_screen_state_machine (0x40FB40) verifies cases
 //    0x63..0xC9 are the CSS sub-state machine.
@@ -557,7 +557,7 @@ constexpr uintptr_t ADDR_SCRIPT_CMD_PARAM5    = 0x50921C;
 //    (and the |= 0x10 bit indicates round-result phase). To classify the
 //    rollback phase, walk the object pool: see CharSelect::ClassifyPhase().
 //
-// 3. **No DirectPlay / Winsock imports.** The .exe has no native networking —
+// 3. **No DirectPlay / Winsock imports.** The .exe has no native networking --
 //    same as FM2K. Rollback is launcher-injected (GekkoNet over UDP).
 //
 // 4. **Frame loop lives in `_WinMain@16`.** No separate `RUN_GAME_LOOP` function.
@@ -569,12 +569,12 @@ constexpr uintptr_t ADDR_SCRIPT_CMD_PARAM5    = 0x50921C;
 //
 // 6. **CRT _rand vs FM2K's inline LCG.** FM95 uses the actual MSVC CRT _rand
 //    function. The seed at `g_rand_seed` is a single u32 with the same LCG
-//    constants (214013, 2531011) — capture/restore is identical.
+//    constants (214013, 2531011) -- capture/restore is identical.
 //
 // 7. **Object pool layout matches FM2K** (256 × 0xA4 stride). Field offsets in
 //    `ObjectSlot` below describe the type=6 (character) view; state-machine
 //    objects (types 15/16/19/21/22/27/28/29/30) reuse +108..+124 as
-//    sub_state/data/timer — see OBJ_OFF_SUB_STATE_* constants above.
+//    sub_state/data/timer -- see OBJ_OFF_SUB_STATE_* constants above.
 //
 // 8. **Sound dispatch.** FM95's `DispatchScriptSoundCommand` (0x401FF0) has a
 //    cleaner switch (0=stop, 1=wave, 2=midi, 3=cd) than FM2K's. Same hook
@@ -582,21 +582,21 @@ constexpr uintptr_t ADDR_SCRIPT_CMD_PARAM5    = 0x50921C;
 //
 // 9. **Per-character data is at 0x509100** with 229844-byte stride (5 slots in
 //    FM95 vs FM2K's larger character roster). Static script + image + sound
-//    payloads — *do not* save during rollback, only the per-instance state in
+//    payloads -- *do not* save during rollback, only the per-instance state in
 //    the object pool changes per-frame.
 //
 // 10. **Input bit layout is identical to FM2K** (left=0x1, right=0x2, up=0x4,
 //     down=0x8, btn1-6=0x010..0x200, btn7=0x400). Same facing-aware L/R flip
 //     in get_player_input_p1/p2 driven by g_p_facing_snap[25*player]. Same
-//     rollback hazard — must snapshot facing post-render and patch back into
+//     rollback hazard -- must snapshot facing post-render and patch back into
 //     the save-state pre-resimulation.
 //
-// 11. **Rollback hook target is process_game_inputs (0x408FF0)** — hook
+// 11. **Rollback hook target is process_game_inputs (0x408FF0)** -- hook
 //     post-call and overwrite g_p1_input_history[g_input_buffer_index] and
 //     g_p2_input_history[g_input_buffer_index]. Identical to FM2K strategy.
 
 // ----------------------------------------------------------------------------
-// Function typedefs (for MinHook trampolining — same shapes as FM2K)
+// Function typedefs (for MinHook trampolining -- same shapes as FM2K)
 // ----------------------------------------------------------------------------
 
 typedef int  (__cdecl* UpdateGameStateFunc)(void);
@@ -612,12 +612,12 @@ typedef int  (__cdecl* DispatchScriptSoundCommandFunc)(int sound_obj_addr);
 
 struct MinimalGameState {
     // Round/match state
-    uint32_t p1_total_wins;       // 0x5E9910 — current-round HP value
+    uint32_t p1_total_wins;       // 0x5E9910 -- current-round HP value
     uint32_t p2_total_wins;       // 0x5E9974
     uint32_t p1_win_counter;      // 0x5E9914
     uint32_t p2_win_counter;      // 0x5E9978
 
-    // Object 0/1 (player main objects) positions — read from g_p_main_object_ptr
+    // Object 0/1 (player main objects) positions -- read from g_p_main_object_ptr
     uint32_t p1_pos_x, p1_pos_y;
     uint32_t p2_pos_x, p2_pos_y;
 
@@ -633,7 +633,7 @@ struct MinimalGameState {
 static_assert(sizeof(MinimalGameState) == 48, "MinimalGameState must stay 48 bytes for parity with FM2K");
 
 // ----------------------------------------------------------------------------
-// Input bitmask (same 11-bit layout as FM2K — value lives in input history rings)
+// Input bitmask (same 11-bit layout as FM2K -- value lives in input history rings)
 // ----------------------------------------------------------------------------
 
 struct Input {

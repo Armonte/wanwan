@@ -16,21 +16,21 @@ namespace Utils {
 struct GameCacheEntry {
     std::string exe_path;
     std::string dll_path;
-    // exe stat — used for invalidation
+    // exe stat -- used for invalidation
     uint64_t    size       = 0;
     int64_t     mtime      = 0;
-    // exe identification — populated on cache hit, skips re-hash + sniff
+    // exe identification -- populated on cache hit, skips re-hash + sniff
     uint64_t    exe_xxh64  = 0;
     FM2K::Engine engine    = FM2K::Engine::FM2K;
     std::string clean_label;
     std::string packer_label;
     bool        is_clean   = false;
-    // kgt stat — separate from exe so kgt edits invalidate independently.
+    // kgt stat -- separate from exe so kgt edits invalidate independently.
     // kgt_present=false for FM95 .player-only games (no .kgt file).
     bool        kgt_present = false;
     uint64_t    kgt_size    = 0;
     int64_t     kgt_mtime   = 0;
-    // Parsed kgt summary — replaces fm2k::ParseKgtSummary on hit
+    // Parsed kgt summary -- replaces fm2k::ParseKgtSummary on hit
     fm2k::KgtSummary kgt;
 };
 

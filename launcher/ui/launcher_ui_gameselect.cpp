@@ -46,7 +46,7 @@
 
 using namespace lui;  // shared persistence helpers (launcher_ui_internal.h)
 
-// "Spectate by IP" — hub-less spec entry. Renders inline in the dev
+// "Spectate by IP" -- hub-less spec entry. Renders inline in the dev
 // panel's Network tab. The hook's SPEC_JOIN_REQ → JOIN_ACK protocol
 // works without any hub coordination; this just exposes the existing
 // direct-spec CLI path through a UI. Cross-Patreon-tier scenarios:
@@ -78,7 +78,7 @@ void LauncherUI::RenderDirectSpecInline() {
             const std::string host_ip = addr_str.substr(0, colon);
             const int host_port = std::atoi(addr_str.c_str() + colon + 1);
             if (host_port > 0 && host_port <= 0xFFFF) {
-                // Default session_kind="battle" — same convention as
+                // Default session_kind="battle" -- same convention as
                 // CLI --spectate. User is presumably joining a live
                 // match; /F-boots straight to battle and applies host's
                 // snapshot. on_spectate_match (on the launcher side)
@@ -97,7 +97,7 @@ void LauncherUI::RenderDirectSpecInline() {
     if (!can_connect) ImGui::EndDisabled();
 }
 
-// C11 — Replay browser. Walks configured games-root paths once
+// C11 -- Replay browser. Walks configured games-root paths once
 // (replays_cache_dirty_ → ScanReplays), then renders Session → Match tree.
 // Click a row to dispatch via on_replay_play. Future iterations: filter
 // chips (game/date/nick), right-click context menu (open file location,
@@ -108,7 +108,7 @@ void LauncherUI::ScanReplays() {
 
     // 256-byte FM2KSessionFileHeader (mirrors spectator_node.cpp's struct).
     // We read off the front of each file by offset rather than declaring
-    // the struct here so the launcher and hook stay decoupled — a hook
+    // the struct here so the launcher and hook stay decoupled -- a hook
     // schema bump would break the launcher's struct cast otherwise.
     constexpr uint32_t MAGIC_FMSS = 0x53534D46;  // 'FMSS' little-endian
     constexpr uint16_t VERSION_V2 = 2;
@@ -139,7 +139,7 @@ void LauncherUI::ScanReplays() {
         std::memcpy(m.p2_nick,           buf + 96, 32);
         m.p1_char_id    = buf[128];
         m.p2_char_id    = buf[129];
-        // colors at 130/131 — not displayed in the tree
+        // colors at 130/131 -- not displayed in the tree
         m.rounds_won_p1 = buf[132];
         m.rounds_won_p2 = buf[133];
         m.match_count   = buf[134];
@@ -154,7 +154,7 @@ void LauncherUI::ScanReplays() {
         std::filesystem::path root_fs = std::filesystem::u8path(root);
         if (!std::filesystem::is_directory(root_fs, ec)) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "ReplayBrowser: skipping root '%s' — not a directory (ec=%s)",
+                "ReplayBrowser: skipping root '%s' -- not a directory (ec=%s)",
                 root.c_str(), ec ? ec.message().c_str() : "ok");
             continue;
         }
@@ -214,17 +214,17 @@ void LauncherUI::RenderReplayBrowser() {
     // about EVERY row, but matches inside a set list in play order (match
     // 1 -> N) by design -- Melan's study flow depends on it. Say what the
     // ordering actually is instead of half of it.
-    ImGui::TextDisabled("%zu file(s) — sets newest first, matches in play order",
+    ImGui::TextDisabled("%zu file(s) -- sets newest first, matches in play order",
                         replays_cache_.size());
 
     // Show the configured games-root paths so the user can verify what's
     // being scanned. Common gotcha: launcher in C:\games but games on D:\,
-    // and the games-root config still points at the legacy C:\ path —
+    // and the games-root config still points at the legacy C:\ path --
     // recursive walk silently scans nothing relevant. Surfacing the list
     // means the user can spot it immediately instead of debugging blind.
     if (games_root_paths_.empty()) {
         ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f),
-            "No games-root paths configured — add one via Settings → Games "
+            "No games-root paths configured -- add one via Settings → Games "
             "Folders.");
     } else {
         ImGui::TextDisabled("Scanned roots:");
@@ -246,7 +246,7 @@ void LauncherUI::RenderReplayBrowser() {
     }
 
     // Group by session_id. Sessions with session_id==0 are legacy files
-    // (pre-C7 headers) — render them as standalone rows under a synthetic
+    // (pre-C7 headers) -- render them as standalone rows under a synthetic
     // "Legacy (no session id)" header.
     struct SessionGroup {
         uint64_t session_id;
@@ -307,13 +307,13 @@ void LauncherUI::RenderReplayBrowser() {
         char hdr[256];
         if (g.session_id == 0) {
             std::snprintf(hdr, sizeof(hdr),
-                "Legacy (no session id) — %zu file%s###leg_%p",
+                "Legacy (no session id) -- %zu file%s###leg_%p",
                 g.indices.size(),
                 g.indices.size() == 1 ? "" : "s",
                 (void*)&g);
         } else {
             std::snprintf(hdr, sizeof(hdr),
-                "%s vs %s — %s — %s — %zu match%s###sid_%016llx",
+                "%s vs %s -- %s -- %s -- %zu match%s###sid_%016llx",
                 g.p1_nick[0] ? g.p1_nick.c_str() : "?",
                 g.p2_nick[0] ? g.p2_nick.c_str() : "?",
                 fmt_unix(g.latest_finished).c_str(),
@@ -339,7 +339,7 @@ void LauncherUI::RenderReplayBrowser() {
                 char row[512];
                 if (r.is_battle_slice) {
                     std::snprintf(row, sizeof(row),
-                        "Match %u — char %u vs %u — wins %u-%u — %u INPUTs — %s",
+                        "Match %u -- char %u vs %u -- wins %u-%u -- %u INPUTs -- %s",
                         (unsigned)r.match_index,
                         (unsigned)r.p1_char_id, (unsigned)r.p2_char_id,
                         (unsigned)r.rounds_won_p1, (unsigned)r.rounds_won_p2,
@@ -347,7 +347,7 @@ void LauncherUI::RenderReplayBrowser() {
                         fmt_unix(r.finished_at_unix).c_str());
                 } else {
                     std::snprintf(row, sizeof(row),
-                        "Whole set — %u match%s — %u INPUTs — %s",
+                        "Whole set -- %u match%s -- %u INPUTs -- %s",
                         (unsigned)r.match_count,
                         r.match_count == 1 ? "" : "es",
                         (unsigned)r.input_count,
@@ -474,7 +474,7 @@ void LauncherUI::RenderGameSelection() {
 
             if (hovered) {
                 if (packed) {
-                    ImGui::SetTooltip("Packed with %s — may not run with rollback hooks until unpacked.\n"
+                    ImGui::SetTooltip("Packed with %s -- may not run with rollback hooks until unpacked.\n"
                                       "Hash: 0x%016llx",
                                       game.packer_label.c_str(),
                                       (unsigned long long)game.xxh64);

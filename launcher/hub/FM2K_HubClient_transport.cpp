@@ -1,11 +1,11 @@
-// FM2K Hub client — WinHTTP WebSocket transport.
+// FM2K Hub client -- WinHTTP WebSocket transport.
 //
 // One I/O thread does the WS handshake then spawns a sender thread.
 // The I/O thread itself owns the receive loop. Both push events
 // onto a thread-safe inbox; the launcher's UI thread drains via
 // HubClient::Poll() once per frame.
 //
-// JSON encode/decode is deliberately minimal — the message catalog
+// JSON encode/decode is deliberately minimal -- the message catalog
 // in docs/FM2K_Matchmaking_Design.md §15.2 is small enough that
 // hand-rolled extractors are simpler than vendoring a JSON lib.
 // If that catalog grows, swap in nlohmann/json.
@@ -47,17 +47,17 @@ void HubClient::IoThread(std::string host, uint16_t port,
         DWORD err = GetLastError();
         // Map the most common WinHTTP failure codes to text the user
         // can act on. "WinHttpSendRequest failed (err=12029)" by
-        // itself is opaque — the user keeps hitting these and asking
+        // itself is opaque -- the user keeps hitting these and asking
         // "what's going wrong?". Spelling out the cause + likely fix
         // surfaces the answer in the UI status_line.
         const char* hint = "";
         switch (err) {
-            case 12002: hint = " (timeout — host unreachable or slow)"; break;
-            case 12007: hint = " (name not resolved — typo in Host field?)"; break;
-            case 12029: hint = " (cannot connect — host reached but TCP refused. "
+            case 12002: hint = " (timeout -- host unreachable or slow)"; break;
+            case 12007: hint = " (name not resolved -- typo in Host field?)"; break;
+            case 12029: hint = " (cannot connect -- host reached but TCP refused. "
                                "If hub is local, set Host to 127.0.0.1.)"; break;
-            case 12030: hint = " (connection reset — hub closed unexpectedly)"; break;
-            case 12152: hint = " (invalid server response — wrong protocol on port?)"; break;
+            case 12030: hint = " (connection reset -- hub closed unexpectedly)"; break;
+            case 12152: hint = " (invalid server response -- wrong protocol on port?)"; break;
             default: break;
         }
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
@@ -123,7 +123,7 @@ void HubClient::IoThread(std::string host, uint16_t port,
     {
         std::string hello = "{\"type\":\"hello\",\"nick\":\""
                             + EscapeJsonString(nick) + "\"";
-        // client_version — sent so hub-side logs (connection, match,
+        // client_version -- sent so hub-side logs (connection, match,
         // spectate_request) can print "v0.2.37" alongside the user
         // and operators can spot version-mismatch bugs at a glance
         // (e.g. cross-NAT spec failing because the host they're
@@ -186,7 +186,7 @@ void HubClient::IoThread(std::string host, uint16_t port,
         if (r != ERROR_SUCCESS) { fail("WinHttpWebSocketSend(hello)"); return; }
     }
 
-    // Sender side-thread — drains outbox, sleeps on cv when empty.
+    // Sender side-thread -- drains outbox, sleeps on cv when empty.
     // Each OutMsg carries is_binary; we pick the matching WS buffer
     // type. Same thread for both JSON and binary so MSDN's per-handle
     // serialization guidance holds.
@@ -215,7 +215,7 @@ void HubClient::IoThread(std::string host, uint16_t port,
         }
     });
 
-    // Receive loop — assembles fragmented UTF-8 messages and dispatches.
+    // Receive loop -- assembles fragmented UTF-8 messages and dispatches.
     // Binary frames (Phase 3 spec hub-relay) get accumulated separately
     // and emitted as a SpecRelayBinary event when the message completes.
     std::string assembly;

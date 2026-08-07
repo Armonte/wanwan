@@ -26,7 +26,7 @@
 // Hook timing: must run BEFORE the host CRT initializes its locale cache. We
 // inject pre-ResumeThread (CreateProcess with CREATE_SUSPENDED + LoadLibrary
 // remote thread), so DllMain in the LoadLibrary thread runs before the host's
-// main thread starts executing — that's the right window.
+// main thread starts executing -- that's the right window.
 
 #include "locale_spoof.h"
 #include "locale_spoof_internal.h"  // p_DialogBoxParamA + Hook_DialogBoxParamA (locale_spoof_dialog.cpp)
@@ -65,7 +65,7 @@ using IsDBCSLeadByteEx_t     = BOOL (WINAPI*)(UINT, BYTE);
 using IsValidCodePage_t      = BOOL (WINAPI*)(UINT);
 using IsValidLocale_t        = BOOL (WINAPI*)(LCID, DWORD);
 
-// USER32 + GDI32 — ANSI rendering / windowing surfaces we redirect to W.
+// USER32 + GDI32 -- ANSI rendering / windowing surfaces we redirect to W.
 using SetWindowTextA_t   = BOOL    (WINAPI*)(HWND, LPCSTR);
 using TextOutA_t         = BOOL    (WINAPI*)(HDC, int, int, LPCSTR, int);
 using MessageBoxA_t      = int     (WINAPI*)(HWND, LPCSTR, LPCSTR, UINT);
@@ -75,7 +75,7 @@ using CreateWindowExA_t  = HWND    (WINAPI*)(DWORD, LPCSTR, LPCSTR, DWORD,
                                              HWND, HMENU, HINSTANCE, LPVOID);
 using DialogBoxParamA_t  = INT_PTR (WINAPI*)(HINSTANCE, LPCSTR, HWND, DLGPROC, LPARAM);
 
-// kernel32 path APIs — fix Windows' default best-fit char conversion
+// kernel32 path APIs -- fix Windows' default best-fit char conversion
 // (which collapses fullwidth Ｃ→C etc.) by routing through W variants and
 // converting via CP932 ourselves.
 using GetModuleFileNameA_t   = DWORD (WINAPI*)(HMODULE, LPSTR, DWORD);
@@ -84,7 +84,7 @@ using GetFullPathNameA_t     = DWORD (WINAPI*)(LPCSTR, DWORD, LPSTR, LPSTR*);
 using GetCommandLineA_t      = LPSTR (WINAPI*)(void);
 // File-OPEN side: the game passes narrow paths (SJIS under our 932 spoof) to
 // these; the kernel's ANSI thunk converts them back with the REAL system ACP
-// (1252 on a US box), NOT our hooked GetACP — so kanji in the install DIRECTORY
+// (1252 on a US box), NOT our hooked GetACP -- so kanji in the install DIRECTORY
 // path (D:\games\fm2k\闘闘\...) is mangled and the open fails. Convert the SJIS
 // bytes ourselves via CP932 and call the W variant. (The path-RETRIEVAL hooks
 // above only fixed the game GETTING its path; these fix it USING the path.)
@@ -94,7 +94,7 @@ using FindNextFileA_t        = BOOL   (WINAPI*)(HANDLE, LPWIN32_FIND_DATAA);
 // INI/profile READ+WRITE side: FM2K reads GameScreenMode / key configs / net
 // names via GetPrivateProfile*A, building the ini path from the (now CP932)
 // GetCurrentDirectoryA buffer. The kernel's ANSI thunk re-converts that path
-// with the REAL system ACP (1252 on a US box), NOT our hooked GetACP — so the
+// with the REAL system ACP (1252 on a US box), NOT our hooked GetACP -- so the
 // SJIS install DIRECTORY mangles, the ini isn't found, and GameScreenMode
 // falls back to its default 0 (GDI mode). The game then never calls
 // DirectDrawCreate, so cnc-ddraw can't engage and F4 fullscreen is dead.
@@ -140,7 +140,7 @@ WritePrivateProfileStringA_t p_WritePrivateProfileStringA= nullptr;
 
 bool g_installed = false;
 
-// Forward decl — installs a wrapper WNDPROC on a freshly-created window so
+// Forward decl -- installs a wrapper WNDPROC on a freshly-created window so
 // the OS treats it as Unicode and SetWindowTextW preserves wide titles.
 // Defined further down (after the dialog-template translator).
 void InstallLocaleProcOnWindow(HWND hwnd) noexcept;
@@ -208,7 +208,7 @@ BOOL WINAPI Hook_IsValidLocale(LCID lcid, DWORD flags) {
 // Windows' default GetModuleFileNameA/GetCurrentDirectoryA/GetFullPathNameA
 // applies BEST-FIT character mapping when converting wide paths to ANSI on
 // non-JP-locale systems. Fullwidth Ｃ Ｐ Ｗ collapse to ASCII C P W. CPW
-// then derives "CPW.kgt" from its module path and tries to open that file —
+// then derives "CPW.kgt" from its module path and tries to open that file --
 // which doesn't exist (the actual file on disk is "ＣＰＷ.kgt"). Result:
 // silent exit at startup. Fix: route through the W variants and convert via
 // CP932 ourselves with WC_NO_BEST_FIT_CHARS so the SJIS bytes survive.
@@ -290,7 +290,7 @@ UINT WINAPI Hook_GetPrivateProfileIntA(LPCSTR app, LPCSTR key, INT def, LPCSTR f
     // cnc-ddraw can only wrap the game when the game is in DirectDraw mode
     // (GameScreenMode != 0). Now that the read is CP932-correct we honor the
     // real ini, but ALSO pin DirectDraw when cnc-ddraw (2DFMD.dll) is present
-    // — matching the launcher's "pin GameScreenMode=1" intent and making the
+    // -- matching the launcher's "pin GameScreenMode=1" intent and making the
     // wrap engage regardless of what actually landed on disk for kanji-path
     // games (their launcher ini-write may have mangled). Without this the game
     // runs GDI-only: no ddraw, no overlay, no F4 fullscreen.
@@ -314,7 +314,7 @@ DWORD WINAPI Hook_GetPrivateProfileStringA(LPCSTR app, LPCSTR key, LPCSTR def,
     std::vector<wchar_t> wout(size);
     DWORD wn = GetPrivateProfileStringW(pApp, pKey, pDef, wout.data(), size, wfile.data());
     // Encode the wide result back to CP932. wn excludes the final terminator;
-    // when app or key is NULL the buffer is a double-NUL list — converting wn
+    // when app or key is NULL the buffer is a double-NUL list -- converting wn
     // chars carries the embedded NULs through faithfully.
     int alen = WideCharToMultiByte(kSpoofedCodePage, 0, wout.data(), (int)wn,
                                    ret, (int)size, nullptr, nullptr);
@@ -413,7 +413,7 @@ BOOL WINAPI Hook_SetWindowTextA(HWND hwnd, LPCSTR text) {
     // WM_SETTEXT to the window's current WNDPROC; if a third-party
     // subclass (e.g. cnc-ddraw via SetWindowLongPtrA in its init path)
     // has reverted the window's IsUnicode flag, the W→A bridge mangles
-    // wide chars via the SYSTEM CP_ACP (CP1252 on US Windows) — even
+    // wide chars via the SYSTEM CP_ACP (CP1252 on US Windows) -- even
     // though our wrapper would have stored wide correctly, that wrapper
     // is no longer the top of the WNDPROC chain by the time the game
     // first sets a title.
@@ -480,7 +480,7 @@ int WINAPI Hook_MessageBoxA(HWND hwnd, LPCSTR text, LPCSTR caption, UINT type) {
     return MessageBoxW(hwnd, wt, wc, type);
 }
 
-// SetDlgItemTextA — config dialog labels (key bind / joystick bind dialogs
+// SetDlgItemTextA -- config dialog labels (key bind / joystick bind dialogs
 // in FM2K games typically ship JP labels). HWND + control id pass through;
 // only the string parameter goes through CP932 → SetDlgItemTextW.
 BOOL WINAPI Hook_SetDlgItemTextA(HWND hwnd, int item_id, LPCSTR text) {
@@ -494,7 +494,7 @@ BOOL WINAPI Hook_SetDlgItemTextA(HWND hwnd, int item_id, LPCSTR text) {
     return SetDlgItemTextW(hwnd, item_id, wide.data());
 }
 
-// CreateWindowExA — main window + config dialogs. Class name can be either
+// CreateWindowExA -- main window + config dialogs. Class name can be either
 // a string pointer OR an ATOM (low 16 bits used as integer, returned by
 // RegisterClassA). ATOMs must pass through unchanged or the class lookup
 // fails. Per MSDN: an ATOM has its high 16 bits zero and (uintptr_t < 0x10000).
@@ -569,12 +569,12 @@ HWND WINAPI Hook_CreateWindowExA(DWORD ex_style, LPCSTR class_name,
 // --- Window Unicode promotion ---
 //
 // FM2K (and FM95) register their window class via RegisterClassA, which
-// marks the class — and every window created from it — as ANSI. When a
+// marks the class -- and every window created from it -- as ANSI. When a
 // later SetWindowTextA(hwnd, sjis_bytes) is intercepted by our hook and
 // re-emitted as SetWindowTextW(hwnd, wide), the WM_SETTEXT message has to
 // cross the W→A bridge to reach the ANSI WNDPROC. That bridge uses the
 // SYSTEM ANSI codepage (CP1252 on US Windows), NOT our user-mode GetACP
-// hook — so Japanese chars are destroyed in storage and the title bar
+// hook -- so Japanese chars are destroyed in storage and the title bar
 // renders garbage.
 //
 // Fix: after CreateWindowExW returns, install a W-flavored wrapper WNDPROC
@@ -587,7 +587,7 @@ HWND WINAPI Hook_CreateWindowExA(DWORD ex_style, LPCSTR class_name,
 //
 // Bypassing the game's WNDPROC for text messages is safe: FM2K's
 // main_window_proc (and FM95's equivalent) just forward those to
-// DefWindowProcA — there's no game-side handling to preserve.
+// DefWindowProcA -- there's no game-side handling to preserve.
 
 constexpr wchar_t kOrigWndProcProp[] = L"FM2KLocaleOrigWP";
 
@@ -596,7 +596,7 @@ LRESULT CALLBACK LocaleSpoofWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case WM_SETTEXT:
         case WM_GETTEXT:
         case WM_GETTEXTLENGTH:
-            // Wide-native title path — bypass the game's ANSI WNDPROC so
+            // Wide-native title path -- bypass the game's ANSI WNDPROC so
             // the system never collapses our wide title via CP1252.
             return DefWindowProcW(hwnd, msg, wp, lp);
         case WM_NCDESTROY: {
@@ -697,7 +697,7 @@ void InstallLocaleProcOnWindow(HWND hwnd) noexcept {
             }
         }
     }
-    // Capture the original WNDPROC as ANSI — that's how the game
+    // Capture the original WNDPROC as ANSI -- that's how the game
     // registered it via RegisterClassA.
     WNDPROC orig = (WNDPROC)GetWindowLongPtrA(hwnd, GWLP_WNDPROC);
     if (!orig) return;
@@ -721,7 +721,7 @@ bool CreateAndEnableHook(LPCSTR module, LPCSTR symbol, void* detour, T*& trampol
     void* target = reinterpret_cast<void*>(GetProcAddress(mod, symbol));
     if (!target) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "LocaleSpoof: GetProcAddress(%s!%s) not found — skipping", module, symbol);
+            "LocaleSpoof: GetProcAddress(%s!%s) not found -- skipping", module, symbol);
         return false;
     }
     void* tramp = nullptr;
@@ -735,7 +735,7 @@ bool CreateAndEnableHook(LPCSTR module, LPCSTR symbol, void* detour, T*& trampol
     // Queue rather than enable: each MH_EnableHook freezes/thaws every thread
     // in the process via Toolhelp32Snapshot (~80–120ms each). Queue all 24
     // locale hooks and flush once with MH_ApplyQueued at the end of
-    // InstallLocaleSpoof — single freeze instead of 24, ~2s saved on cold start.
+    // InstallLocaleSpoof -- single freeze instead of 24, ~2s saved on cold start.
     s = MH_QueueEnableHook(target);
     if (s != MH_OK) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
@@ -787,14 +787,14 @@ bool InstallLocaleSpoof() {
     try_hook("kernel32.dll", "IsValidCodePage",  (void*)&Hook_IsValidCodePage,  p_IsValidCodePage);
     try_hook("kernel32.dll", "IsValidLocale",    (void*)&Hook_IsValidLocale,    p_IsValidLocale);
 
-    // kernel32 path APIs — block best-fit narrow-char fallback that mangles
+    // kernel32 path APIs -- block best-fit narrow-char fallback that mangles
     // fullwidth Latin (Ｃ→C) and breaks CPW's filename derivation.
     try_hook("kernel32.dll", "GetModuleFileNameA",   (void*)&Hook_GetModuleFileNameA,   p_GetModuleFileNameA);
     try_hook("kernel32.dll", "GetCurrentDirectoryA", (void*)&Hook_GetCurrentDirectoryA, p_GetCurrentDirectoryA);
     try_hook("kernel32.dll", "GetFullPathNameA",     (void*)&Hook_GetFullPathNameA,     p_GetFullPathNameA);
     try_hook("kernel32.dll", "GetCommandLineA",      (void*)&Hook_GetCommandLineA,      p_GetCommandLineA);
 
-    // INI/profile APIs — the SJIS-folder GameScreenMode fix. Without these the
+    // INI/profile APIs -- the SJIS-folder GameScreenMode fix. Without these the
     // game reads GameScreenMode=default(0) on kanji paths → GDI mode → no
     // DirectDraw → cnc-ddraw never engages → F4 fullscreen dead. ASCII paths
     // round-trip through CP932 identically, so English games are unaffected.
@@ -813,7 +813,7 @@ bool InstallLocaleSpoof() {
     //   try_hook("kernel32.dll", "FindNextFileA",  &Hook_FindNextFileA,  p_FindNextFileA);
     (void)&Hook_CreateFileA; (void)&Hook_FindFirstFileA; (void)&Hook_FindNextFileA;
 
-    // USER32 / GDI32 visible-text rendering — covers in-game text, error
+    // USER32 / GDI32 visible-text rendering -- covers in-game text, error
     // popups, dialog labels, and window-creation titles. SetWindowTextA was
     // already in place; the rest were added in pass 2 of the FM2K analysis
     // after import-table xrefs surfaced all four ANSI render paths WW uses.
@@ -834,7 +834,7 @@ bool InstallLocaleSpoof() {
 
     g_installed = true;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "LocaleSpoof: Japanese (CP%u, LCID 0x%04X) — %d/%d hooks installed",
+        "LocaleSpoof: Japanese (CP%u, LCID 0x%04X) -- %d/%d hooks installed",
         kSpoofedCodePage, kSpoofedLCID, ok, total);
     return ok == total;
 }

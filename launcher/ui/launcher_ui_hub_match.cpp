@@ -52,7 +52,7 @@ using namespace lui;  // shared persistence helpers (launcher_ui_internal.h)
 
 
 // Match-results CSV helpers (moved from FM2K_LauncherUI.cpp; AppendResultsCsvRow owns them).
-// Local match log — CCCaster's results.csv with FM2K-specific columns.
+// Local match log -- CCCaster's results.csv with FM2K-specific columns.
 // One row per match end, written from MY perspective (the user running
 // THIS launcher), so each peer keeps its own view. Format:
 //
@@ -171,7 +171,7 @@ void LauncherUI::UpdateWindowTitleWithRecord() {
     if (!window_ || !hub_state_) return;
     auto& hs = *hub_state_;
     char title[256];
-    // Session suffix — Patrick's bug. Empty until we've finished at
+    // Session suffix -- Patrick's bug. Empty until we've finished at
     // least one match this launcher session so the title isn't
     // cluttered with "0-0-0" for everyone who just opened the app.
     char session_buf[48] = {};
@@ -181,7 +181,7 @@ void LauncherUI::UpdateWindowTitleWithRecord() {
                       hs.session_wins, hs.session_losses, hs.session_draws);
     }
     if (hs.my_wins < 0) {
-        // No overall record yet — bare title or session-only.
+        // No overall record yet -- bare title or session-only.
         if (session_buf[0]) {
             std::snprintf(title, sizeof(title),
                           "FM2K Rollback Launcher%s", session_buf);
@@ -209,7 +209,7 @@ void LauncherUI::PushStatsToHook() {
     if (!on_get_client_status(pid1, pid2)) return;
 
     // Resolve vs-peer record from the cached breakdown (filled by the
-    // hub's `record` event with no opponent_id filter — the same data
+    // hub's `record` event with no opponent_id filter -- the same data
     // the lobby's vs column reads).
     int32_t vs_w = -1, vs_l = -1, vs_d = -1;
     if (!hs.current_match_peer_id.empty()) {
@@ -219,7 +219,7 @@ void LauncherUI::PushStatsToHook() {
             vs_l = it->second.losses;
             vs_d = it->second.draws;
         } else {
-            // No prior matches against this peer — explicit zeros so the
+            // No prior matches against this peer -- explicit zeros so the
             // titlebar shows "0-0-0" instead of dashes.
             vs_w = vs_l = vs_d = 0;
         }
@@ -303,7 +303,7 @@ void LauncherUI::PollUploadQueue() {
     // in the developer section).
     if (!g_auto_upload_logs) return;
 
-    // Bail when the build had no secret baked in — nowhere to upload.
+    // Bail when the build had no secret baked in -- nowhere to upload.
     if (!fm2k::kLogUploadSecret || fm2k::kLogUploadSecret[0] == '\0') return;
 
     if (games_.empty()) return;
@@ -326,7 +326,7 @@ void LauncherUI::PollUploadQueue() {
     // of only the UI-selected one. The old code scanned
     // games_[selected_game_index_] only, which meant a crash/desync bundle
     // in (say) pkmncc/upload_queue never uploaded unless the user happened
-    // to reopen the launcher AND re-select pkmncc — and selected_game_index_
+    // to reopen the launcher AND re-select pkmncc -- and selected_game_index_
     // defaults to -1, so a fresh launcher start drained nothing at all.
     // That stranded the bulk of field reports (match c785d0ca's two peers
     // among them). Rotating one game per frame keeps the per-tick cost
@@ -414,7 +414,7 @@ void LauncherUI::PollMatchOutcome() {
 
     // Nothing more to report if there's no live hub-driven match or
     // the hub dropped. NOTE: we DON'T early-return on match_result_sent
-    // anymore — FM2K rematches stay inside the same hub `in_match`
+    // anymore -- FM2K rematches stay inside the same hub `in_match`
     // session (no fresh K::MatchStart fires), so the second match's
     // outcome would be permanently swallowed if we gated on a flag
     // that's set true after match #1 ends. Per-PID last_outcome_seq
@@ -425,7 +425,7 @@ void LauncherUI::PollMatchOutcome() {
     // Pre-v0.2.45: a WS disconnect HERE silently dropped the outcome
     // for the rest of the set (long pause → keepalive timeout → WS drop
     // is the classic trigger; multiple users reported wins not counting
-    // after long pauses). We now FALL THROUGH on disconnect — CSV mirror
+    // after long pauses). We now FALL THROUGH on disconnect -- CSV mirror
     // still writes, hub send is queued onto hs.pending_match_results,
     // and the K::Connected handler drains the queue on reconnect.
     const bool ws_connected = hs.client.IsConnected();
@@ -434,7 +434,7 @@ void LauncherUI::PollMatchOutcome() {
         if (!s_warned_disconnect) {
             s_warned_disconnect = true;
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "PollMatchOutcome: hub WS disconnected — outcomes will be "
+                "PollMatchOutcome: hub WS disconnected -- outcomes will be "
                 "queued and replayed on reconnect");
         }
     }
@@ -446,7 +446,7 @@ void LauncherUI::PollMatchOutcome() {
     auto try_pid = [&](uint32_t pid) {
         // Don't gate on hs.match_result_sent. Per-PID last_outcome_seq
         // already dedupes (line below), and after match #1 commits,
-        // match_result_sent stays true through the rematch — which
+        // match_result_sent stays true through the rematch -- which
         // means the post-match DISCONNECT outcome (peer closed window
         // mid-CSS) would never get processed → on_session_stop never
         // fires → survivor's game stays open with no opponent.
@@ -504,7 +504,7 @@ void LauncherUI::PollMatchOutcome() {
             // Stage name resolved from local KGT (FM2K has no in-memory
             // stage filename table; the launcher already parsed the .kgt
             // header at discovery). Empty when game isn't installed
-            // locally — hub will store id-only in that case.
+            // locally -- hub will store id-only in that case.
             std::string stage_name;
             if (stage_id != 0xFFFFFFFFu && on_resolve_stage_name) {
                 stage_name = on_resolve_stage_name(hs.current_match_game_id,
@@ -513,8 +513,8 @@ void LauncherUI::PollMatchOutcome() {
 
             // Fire match_progress to the hub when the hook bumps its
             // chars_seq counter (which it does exactly once per
-            // Netplay_StartBattleSession). Gating on seq advance —
-            // not on the chars themselves — sidesteps the rotate-
+            // Netplay_StartBattleSession). Gating on seq advance --
+            // not on the chars themselves -- sidesteps the rotate-
             // window race where shared mem still holds the prev
             // battle's chars at the time we set current_match_token
             // to the rotated value. During CSS / inter-battle, the
@@ -549,13 +549,13 @@ void LauncherUI::PollMatchOutcome() {
 
                 // CSS_ABORT: peer left during char select before battle
                 // started. Close the surviving local game but DON'T
-                // record anything — the match never reached battle, so
+                // record anything -- the match never reached battle, so
                 // there's no W/L/D to commit. No CSV row, no hub
                 // MatchResult, no in-flight commit.
                 if (outcome_u8 == FM2K_MATCH_OUTCOME_CSS_ABORT) {
                     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                        "Hub: peer left during CSS — closing local game (no record)");
-                    hs.status_line = "peer left during CSS — match not recorded";
+                        "Hub: peer left during CSS -- closing local game (no record)");
+                    hs.status_line = "peer left during CSS -- match not recorded";
                     if (on_session_stop) on_session_stop();
                     // Clear so subsequent broadcasts of the same token
                     // (e.g. a match_rotated arriving from the hub) don't
@@ -573,13 +573,13 @@ void LauncherUI::PollMatchOutcome() {
                 // first occurrence (prevents the cascading-corruption
                 // crash users were hitting at character_state_machine
                 // 0x4125FC after thousands of frames of bad sim state).
-                // No W/L/D record — sim diverged, outcome undefined.
+                // No W/L/D record -- sim diverged, outcome undefined.
                 if (outcome_u8 == FM2K_MATCH_OUTCOME_DESYNC) {
                     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                        "Hub: DESYNC — game terminated on first divergence "
+                        "Hub: DESYNC -- game terminated on first divergence "
                         "(no record). Inspect FM2K_P*_desync_f*.log for "
                         "the per-region diff.");
-                    hs.status_line = "desync detected — match not recorded";
+                    hs.status_line = "desync detected -- match not recorded";
                     FireSystemNotification(
                         "Desync detected",
                         "Game state diverged between peers. Match was "
@@ -597,11 +597,11 @@ void LauncherUI::PollMatchOutcome() {
                 // Hash mismatch: peers' game files diverge. Closes the
                 // local session and surfaces a clear toast pointing the
                 // user at the hook log so they can identify the
-                // offending file. Same no-record treatment as CSS_ABORT —
+                // offending file. Same no-record treatment as CSS_ABORT --
                 // no battle, no W/L/D delta.
                 if (outcome_u8 == FM2K_MATCH_OUTCOME_HASH_MISMATCH) {
                     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                        "Hub: GAME DATA MISMATCH — see launcher popup for "
+                        "Hub: GAME DATA MISMATCH -- see launcher popup for "
                         "the per-file manifest.");
                     hs.status_line = "game files don't match peer";
                     // Read this game's hook log and extract the
@@ -642,7 +642,7 @@ void LauncherUI::PollMatchOutcome() {
                     case FM2K_MATCH_OUTCOME_DISCONNECT: outcome_str = "disconnect"; break;
                     default: break;
                 }
-                // Session counter (Patrick's bug — wanted current-session
+                // Session counter (Patrick's bug -- wanted current-session
                 // record in the titlebar in addition to the overall). Only
                 // committed outcomes count; disconnect doesn't, matching
                 // the hub's ledger semantics.
@@ -655,7 +655,7 @@ void LauncherUI::PollMatchOutcome() {
                 }
                 if (session_changed) UpdateWindowTitleWithRecord();
                 if (outcome_str) {
-                    // Local CSV mirror first — runs even if the hub
+                    // Local CSV mirror first -- runs even if the hub
                     // send queues silently because we're disconnected.
                     // Same data, written to %APPDATA%\FM2K_Rollback\
                     // results.csv. CCCaster-equivalent for offline
@@ -713,7 +713,7 @@ void LauncherUI::PollMatchOutcome() {
                         hs.client.QueryRecord();
                         hs.client.RequestRecentMatches(50);
                     } else {
-                        // WS dropped — queue everything for K::Connected
+                        // WS dropped -- queue everything for K::Connected
                         // to drain. CSV mirror already written above so
                         // the local record is intact even if the hub
                         // stays down forever.
@@ -732,7 +732,7 @@ void LauncherUI::PollMatchOutcome() {
                         hs.pending_match_results.push_back(std::move(q));
                         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                             "Hub: match_result QUEUED (WS disconnected) "
-                            "token=%.8s... outcome=%s — pending=%zu, "
+                            "token=%.8s... outcome=%s -- pending=%zu, "
                             "will replay on reconnect",
                             hs.current_match_token.c_str(), outcome_str,
                             hs.pending_match_results.size());
@@ -753,7 +753,7 @@ void LauncherUI::PollMatchOutcome() {
                         std::snprintf(body, sizeof(body),
                                       T("toast_peer_disconnected_body"),
                                       peer_nick.c_str());
-                        hs.status_line = std::string("peer disconnected — closing match");
+                        hs.status_line = std::string("peer disconnected -- closing match");
                         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                             "Hub: peer dropped, stopping local session");
                         if (!hs.disconnect_toast_fired) {

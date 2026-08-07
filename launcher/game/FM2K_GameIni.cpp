@@ -80,7 +80,7 @@ std::filesystem::path PathForExe(const std::filesystem::path& exe_path) {
     if (std::filesystem::exists(a, ec)) return a;
     auto b = dir / "2dfm.ini";
     if (std::filesystem::exists(b, ec)) return b;
-    // Doesn't exist yet — return the canonical name so callers can
+    // Doesn't exist yet -- return the canonical name so callers can
     // create it. Most FM2K games use game.ini.
     return a;
 }
@@ -167,7 +167,7 @@ bool Save(const std::filesystem::path& ini_path, const GamePlayConfig& cfg) {
     }
 
     if (!had_gameplay_section) {
-        // No [GamePlay] yet — append. Prepend a blank line for spacing.
+        // No [GamePlay] yet -- append. Prepend a blank line for spacing.
         if (!kept.empty() && !kept.back().empty()) kept.push_back("");
         kept.push_back("[GamePlay]");
         gameplay_insert_at = (int)kept.size();
@@ -178,7 +178,7 @@ bool Save(const std::filesystem::path& ini_path, const GamePlayConfig& cfg) {
     body.reserve(sizeof(kKeyMap) / sizeof(kKeyMap[0]));
     for (const auto& m : kKeyMap) {
         const int v = cfg.*m.member;
-        if (v == kUnset) continue;  // skip — leave the key out of the file
+        if (v == kUnset) continue;  // skip -- leave the key out of the file
         char buf[160];
         std::snprintf(buf, sizeof(buf), "%s=%d", m.key, v);
         body.emplace_back(buf);
@@ -303,7 +303,7 @@ bool ApplyForLaunch(const std::filesystem::path& exe_path, bool is_online) {
     LoadOverride(exe_path, override_);
     const bool has_overrides = override_.any_set();
     if (!has_overrides && !is_online) {
-        // Nothing to do — no overrides AND no anti-cheat clamps to
+        // Nothing to do -- no overrides AND no anti-cheat clamps to
         // apply. Leave the user's game.ini untouched so we don't kick
         // off a backup-then-restore cycle on every launch when they
         // haven't changed anything.
@@ -311,7 +311,7 @@ bool ApplyForLaunch(const std::filesystem::path& exe_path, bool is_online) {
     }
     // Backup once; if .bak already exists from a prior launch that
     // didn't clean up (crashed launcher, force-killed game), keep the
-    // existing one — it's the older "true original."
+    // existing one -- it's the older "true original."
     auto bak = BackupPathFor(ini);
     std::error_code ec;
     if (!std::filesystem::exists(bak, ec) &&
@@ -336,7 +336,7 @@ bool ForceFullscreenForLaunch(const std::filesystem::path& exe_path) {
     GamePlayConfig current;
     Load(ini, current);
     if (current.game_screen_mode == 1) {
-        // Already fullscreen — no write needed, no backup needed.
+        // Already fullscreen -- no write needed, no backup needed.
         return true;
     }
     // Same backup-once behaviour as ApplyForLaunch. Done before we
@@ -376,11 +376,11 @@ bool RestoreFromBackup(const std::filesystem::path& exe_path) {
 }
 
 void ForceOnlineClamps(GamePlayConfig& cfg) {
-    // HitJudge: hit-box debug overlay. Cheating online — both sides
+    // HitJudge: hit-box debug overlay. Cheating online -- both sides
     // would expose internal hit/hurt-box geometry to the player.
     cfg.hit_judge = 0;
     // GameInformation: damage / state debug overlay. Same anti-cheat
-    // reasoning — exposes meter / stun / proration that's normally
+    // reasoning -- exposes meter / stun / proration that's normally
     // implicit in the visual.
     cfg.game_information = 0;
     // CPU: never let a CPU player creep into an online slot. If

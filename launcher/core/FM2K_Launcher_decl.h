@@ -28,7 +28,7 @@ public:
 
     // Resolve a hub-style game_id (exe stem, e.g. "WonderfulWorld_ver_0946")
     // to its parsed .kgt summary. Returns nullptr if the game isn't
-    // installed locally or its KGT failed to parse — UI callers should
+    // installed locally or its KGT failed to parse -- UI callers should
     // pass the result straight into fm2k::FormatCharLabel /
     // FormatStageLabel which fall back to "Char #N" / "Stage #N".
     const fm2k::KgtSummary* FindKgtByGameId(const std::string& game_id) const;
@@ -67,7 +67,7 @@ public:
     // thread when done. Implemented in FM2K_RollbackClient.cpp.
     //
     // `show_spinner` toggles the UI's "Scanning for games…" indicator. Pass
-    // false when the cache already populated the games list — the user
+    // false when the cache already populated the games list -- the user
     // shouldn't see a spinner if the displayed list is already correct;
     // the background walk is just an "anything new?" check at that point.
     void StartAsyncDiscovery(bool show_spinner = true);
@@ -92,13 +92,13 @@ private:
     // Multi-client testing instances
     std::unique_ptr<FM2KGameInstance> client1_instance_;
     std::unique_ptr<FM2KGameInstance> client2_instance_;
-    // Local spectator instance — subscribes to client1 (host) on its
+    // Local spectator instance -- subscribes to client1 (host) on its
     // multiplexed UDP port and replays the input stream. Used by the
     // launcher's "Launch Spectator" button so we can validate the
     // spectator pipeline against a live local dual-client session.
     std::unique_ptr<FM2KGameInstance> spectator_instance_;
     // Second local spectator that subscribes to spectator_instance_ rather
-    // than the host — exercises the daisy-chain relay (host → spec1 → spec2).
+    // than the host -- exercises the daisy-chain relay (host → spec1 → spec2).
     // Validates that a relay node correctly forwards confirmed-input frames
     // it received from upstream to its own subscribers.
     std::unique_ptr<FM2KGameInstance> spectator2_instance_;
@@ -136,12 +136,12 @@ private:
     // Launch a local spectator pointing at the host (client1) on host_port.
     // Spectator-mode hook will SPEC_JOIN_REQ the host and start replaying
     // the streamed input history (CSS + battle).
-    // mode: "current" (default; CCCaster-style snapshot join — v0.2.42's
+    // mode: "current" (default; CCCaster-style snapshot join -- v0.2.42's
     // Phases C+D+E made this the preferred path: /F boots spec straight
     // to battle for mid-battle joiners, per-round refresh keeps mid-set
     // joiners fresh, CSS snapshot covers mid-CSS joiners) or "full"
     // (legacy replay-from-session-start input log; falls back here when
-    // CURRENT_MATCH can't apply — version mismatch, snapshot transfer
+    // CURRENT_MATCH can't apply -- version mismatch, snapshot transfer
     // interrupted, etc.). Default flipped from "full" → "current" on
     // 2026-05-13 after the vanpri sim-determinism leak in the replay
     // path made FULL_SESSION untrustworthy past ~4000 frames.
@@ -160,7 +160,7 @@ public:
     // active match to watch it" path AND the --spectate CLI flag for e2e
     // testing. spectator_port is local UDP bind; host_ip:host_port is
     // where the spectator's FM2K_REMOTE_ADDR points and SpectatorNode
-    // JOIN_REQ is sent. mode default "current" — see LaunchLocalSpectator
+    // JOIN_REQ is sent. mode default "current" -- see LaunchLocalSpectator
     // for the 2026-05-13 v0.2.42 flip rationale.
     // spec_transport ("tcp" or "relay") -- Phase 4. If "relay", the
     // launcher sets FM2K_SPEC_TRANSPORT=relay on the spec game spawn
@@ -179,7 +179,7 @@ public:
     // + FM2K_REPLAY_FILE=<replay_path>; the hook reads the env var in
     // Netplay_InitAsSpectator, calls SpectatorNode_LoadSessionFile to
     // populate pb_queue, and the trampoline's RunSpectatorTick drives
-    // playback. No network, no peer, no STUN — just the file.
+    // playback. No network, no peer, no STUN -- just the file.
     bool LaunchReplayPlayer(const std::string& game_path,
                             const std::string& replay_path);
 private:

@@ -19,7 +19,7 @@
 #include "trampoline_internal.h"
 
 // Battle: GekkoNet owns state transitions. main_game_loop's prologue writes
-// are gone — we neither replicate them here nor let the native wrapper run.
+// are gone -- we neither replicate them here nor let the native wrapper run.
 // Any per-advance setup (like the per-slot buf-idx fan-out) already lives
 // inside the AdvanceEvent handler in netplay.cpp.
 void RunBattleTick() {
@@ -32,7 +32,7 @@ void RunBattleTick() {
     Netplay_PollRunaheadToggle();
 
     // Stress-mode path: no network, no peer sync. GekkoStressSession is the
-    // determinism check — it rolls back every check_distance frames and
+    // determinism check -- it rolls back every check_distance frames and
     // compares save hashes.
     if (g_stress_mode) {
         if (!Netplay_IsActive()) {
@@ -55,7 +55,7 @@ void RunBattleTick() {
     }
 
     // Offline path: no peer, no GekkoNet, no sync barrier. Just run the sim
-    // natively — same shape as RunNativeTick but invoked from the battle
+    // natively -- same shape as RunNativeTick but invoked from the battle
     // phase. Without this branch, g_battle_entry_signaled_pub stays true and
     // Netplay_IsBattleSynced never returns true (there's no remote to sync
     // with), so RunBattleTick would hang forever the moment game_mode hits
@@ -65,17 +65,17 @@ void RunBattleTick() {
         // [REMOVED] per-slot fan-out at slot+0xDF79 / slot+0xDF7D.
         // Originally added to mimic main_game_loop's prologue, but IDA
         // xref scan reveals those fields are DirectPlay-specific:
-        //   slot+0xDF7D = g_p1_input_buffer_index_field — read only by
+        //   slot+0xDF7D = g_p1_input_buffer_index_field -- read only by
         //     check_game_continue (DirectPlay packet handler, no-op
         //     when g_directplay_interface == NULL, which is always the
         //     case for us)
-        //   slot+0xDF79 = g_net_sync_frame_counter — written/read only
+        //   slot+0xDF79 = g_net_sync_frame_counter -- written/read only
         //     by check_game_continue
         // Neither KGT scripts nor update_game/process_game_inputs read
         // these fields. Writing them every frame did nothing useful and
         // interfered with adjacent memory the StudioS chars apparently
         // touch. Per-slot fan-out also removed from spectator + GekkoNet
-        // paths (same reason — DirectPlay isn't used anywhere).
+        // paths (same reason -- DirectPlay isn't used anywhere).
 
         // ---- Frame-skip: decouple sim from render (the fix for the Robot
         // Heroes heavy-stage slowdown). The trampoline replaced FM2K's native
@@ -259,7 +259,7 @@ void RunBattleTick() {
         // Drift adjustment now lives in SleepToTarget at the outer
         // loop (see RunBattleTick comment in TRAMPOLINE_BATTLE case).
 
-        // [BEAT] heartbeat — rate-limited to ~10s wall-clock internally,
+        // [BEAT] heartbeat -- rate-limited to ~10s wall-clock internally,
         // safe to call every tick. Single INFO line with role/ping/jitter/
         // FA/delay/ra/pred/rollback stats for support triage.
         Netplay_TickHeartbeat();
@@ -285,7 +285,7 @@ void RunBattleTick() {
         }
         if (end_ready) {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "Trampoline: battle-end swap_frame reached — destroying battle session");
+                "Trampoline: battle-end swap_frame reached -- destroying battle session");
             Netplay_EndBattle();
         }
     }

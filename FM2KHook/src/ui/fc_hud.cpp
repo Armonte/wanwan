@@ -1,4 +1,4 @@
-// fc_hud — see header for design rationale.
+// fc_hud -- see header for design rationale.
 
 #include "fc_hud.h"
 #include "shared_mem.h"   // FM2KSharedMemData::ui_*_nick (launcher-populated)
@@ -45,7 +45,7 @@ struct State {
 std::mutex g_mtx;
 State      g_state{};
 
-// Slice E — chat display ring. fc_hud owns this list; the source is
+// Slice E -- chat display ring. fc_hud owns this list; the source is
 // Netplay's existing ChatEntry ring (control-channel CHAT messages
 // + locally-sent echoes via Netplay_SendChatMessage). We pop on
 // every Render to drain, append into our local ring, evict the
@@ -62,7 +62,7 @@ struct ChatLine {
 std::deque<ChatLine> g_chat_lines;
 DWORD                g_chat_last_arrived_tick = 0;
 
-// Slice F — chat input mode.
+// Slice F -- chat input mode.
 //   - Tab toggles open/close (edge-detected via queue-synced GetKeyState).
 //   - Enter inside InputText submits via Netplay_SendChatMessage.
 //   - Esc cancels.
@@ -70,7 +70,7 @@ DWORD                g_chat_last_arrived_tick = 0;
 // can zero local input (chat keystrokes shouldn't drive the
 // fighter), and Hook_WndProc forwards messages to ImGui regardless
 // of overlay-visible state. ChatEntry.text is 24 bytes; clamp the
-// draft to that — over-long sends would silently truncate at the
+// draft to that -- over-long sends would silently truncate at the
 // netplay layer anyway.
 constexpr size_t kChatDraftCap = 24;
 
@@ -127,7 +127,7 @@ void Render(int rect_x, int rect_y, int rect_w, int rect_h) {
     // system message) under one lock. The launcher populates `ui_*_nick`
     // at K::MatchStart and clears on disconnect (FM2K_LauncherUI.cpp
     // :3194-3196 + the equivalent clears at :3376/:3416). HUD-specific
-    // fields land here too — score box and system message are gated
+    // fields land here too -- score box and system message are gated
     // on their `_seq > 0` so default-zero shared mem renders nothing
     // until the launcher (or hook) publishes for the first time.
     if (FM2KSharedMemData* sm = GetSharedMemory()) {
@@ -159,7 +159,7 @@ void Render(int rect_x, int rect_y, int rect_w, int rect_h) {
     }
 
     // ─── Slice F: Tab edge-detection ──────────────────────────────
-    // Press → toggle chat input. Polled via GetKeyState — synchronized
+    // Press → toggle chat input. Polled via GetKeyState -- synchronized
     // to this (window) thread's message queue, so a Tab typed while the
     // launcher or any other app has focus never registers (its key
     // messages go to that window's queue, not ours). GetAsyncKeyState
@@ -194,7 +194,7 @@ void Render(int rect_x, int rect_y, int rect_w, int rect_h) {
     ImFont*     font = ImGui::GetFont();
 
     // Layout in normalized coords scaled to a logical 260-unit-tall
-    // canvas — same idiom Fightcade uses (vid_overlay.cpp:1031), so
+    // canvas -- same idiom Fightcade uses (vid_overlay.cpp:1031), so
     // tweaking constants below to adjust look-and-feel translates
     // 1:1 across game resolutions (FM2K 480, FM95 240, larger
     // upscales). Multiplied by the user's runtime style scale so
@@ -202,7 +202,7 @@ void Render(int rect_x, int rect_y, int rect_w, int rect_h) {
     const StyleControls& style = Style();
     const float frame_scale = ((float)rect_h / 260.0f) * style.scale;
 
-    // Top bar geometry. ~16 logical units tall — slim like Fightcade.
+    // Top bar geometry. ~16 logical units tall -- slim like Fightcade.
     // Floor at 8px so even at scale 0.3 over a 480-pixel rect the bar
     // doesn't disappear into a sub-pixel sliver, but small enough to
     // honor the user's "smaller please" intent at low scales.
@@ -211,7 +211,7 @@ void Render(int rect_x, int rect_y, int rect_w, int rect_h) {
 
     const ImVec2 bar_a((float)rect_x, (float)rect_y);
     const ImVec2 bar_b((float)(rect_x + rect_w), (float)rect_y + bar_h);
-    // Semi-transparent dark fill — alpha modulated by the user
+    // Semi-transparent dark fill -- alpha modulated by the user
     // style.bar_opacity. Floor at 1/255 so a 0.0 setting hides the
     // fill but keeps the divider line visible (lets users see chrome
     // anchoring without the dark band over the action).
@@ -233,10 +233,10 @@ void Render(int rect_x, int rect_y, int rect_w, int rect_h) {
 
     // The remaining top-bar contents (player names, score box,
     // right-side stats) all key off the same visibility flag as the
-    // bar fill above — together they form the "top bar" the user
+    // bar fill above -- together they form the "top bar" the user
     // can hide.
     if (style.show_top_bar) {
-    // Left side — local player.
+    // Left side -- local player.
     char left_buf[128];
     std::snprintf(left_buf, sizeof(left_buf), "P1: %s",
                   s.p1_name[0] ? s.p1_name : "P1");
@@ -245,7 +245,7 @@ void Render(int rect_x, int rect_y, int rect_w, int rect_h) {
                 IM_COL32_WHITE, left_buf);
 
     // Center score box (Slice C). Only renders when scores have
-    // actually been published — hides on offline / pre-match. Layout:
+    // actually been published -- hides on offline / pre-match. Layout:
     // a compact pill `<P1 W>-<P2 W>` between the two name labels,
     // centered on the bar's vertical midline.
     if (s.score_seq > 0) {
@@ -266,7 +266,7 @@ void Render(int rect_x, int rect_y, int rect_w, int rect_h) {
                     IM_COL32_WHITE, score_buf);
     }
 
-    // Right side — opponent name first, then a compact stat block.
+    // Right side -- opponent name first, then a compact stat block.
     // Two-pipe separator keeps the stats group visually distinct from
     // the name without spending bar real estate on a divider sprite.
     // Offline → just `fps:N`.
@@ -296,7 +296,7 @@ void Render(int rect_x, int rect_y, int rect_w, int rect_h) {
     }  // if (style.show_top_bar)
 
     // ─── Slice E: chat history (bottom-left) ───────────────────────
-    // Drain Netplay's chat ring into our local list every frame —
+    // Drain Netplay's chat ring into our local list every frame --
     // Netplay_PushChatMessage is called for both received CHAT
     // packets (from_remote=true) and local echoes from
     // Netplay_SendChatMessage. Nobody else pops, so we own the
@@ -327,7 +327,7 @@ void Render(int rect_x, int rect_y, int rect_w, int rect_h) {
     const float chat_box_w  = chat_font * 26.0f;
     const float chat_box_x  = (float)rect_x + chat_pad;
     // When chat input is active, leave room for the input box at the
-    // very bottom — the history stack shifts up by one input-row's
+    // very bottom -- the history stack shifts up by one input-row's
     // worth so they don't overlap.
     const float input_box_h = chat_font * 1.6f;
     const float input_box_y = (float)(rect_y + rect_h)
@@ -357,7 +357,7 @@ void Render(int rect_x, int rect_y, int rect_w, int rect_h) {
             const float box_x = chat_box_x;
             const float box_y = history_bottom_y - box_h;
 
-            // Background — same idiom as the top bar's tinted fill,
+            // Background -- same idiom as the top bar's tinted fill,
             // ramped by the silence fade.
             dl->AddRectFilled(
                 ImVec2(box_x, box_y),
@@ -365,7 +365,7 @@ void Render(int rect_x, int rect_y, int rect_w, int rect_h) {
                 IM_COL32(0, 0, 0, (int)(170.0f * chat_alpha)));
 
             // Render lines top-down inside the box. Local messages
-            // colored P1-blue, remote P2-orange — matches the tone
+            // colored P1-blue, remote P2-orange -- matches the tone
             // most fighting-game chrome uses.
             const ImU32 col_local  = IM_COL32(120, 180, 255,
                                               (int)(255.0f * chat_alpha));
@@ -398,7 +398,7 @@ void Render(int rect_x, int rect_y, int rect_w, int rect_h) {
     // ─── Slice F: chat input box (when active) ─────────────────────
     // Borderless ImGui window with InputText. ImGui handles all the
     // typing, copy/paste, IME composition, cursor movement out of
-    // the box — we only need to: position it, autofocus on first
+    // the box -- we only need to: position it, autofocus on first
     // frame, submit on Enter, cancel on Esc. Bytes go to the existing
     // peer-to-peer netplay chat path; both peers' fc_hud rings then
     // pick the message up via the existing Slice E drain.
@@ -423,7 +423,7 @@ void Render(int rect_x, int rect_y, int rect_w, int rect_h) {
             ImGui::SetWindowFontScale(chat_font / 16.0f);
             if (g_chat_focus_pending) {
                 // Scrub any keys ImGui still has marked "down" from a
-                // previous session — when chat closes after Enter, the
+                // previous session -- when chat closes after Enter, the
                 // submitting Enter KEYUP can race with the chat-active
                 // gate flip and leak past as a still-pressed-key entry
                 // in ImGui's io state, which the next chat-open would
@@ -455,7 +455,7 @@ void Render(int rect_x, int rect_y, int rect_w, int rect_h) {
                 // Empty submit = same as cancel (nothing to send).
                 g_chat_input_active = false;
             }
-            // Esc cancels — checked via ImGui's keyboard state so it
+            // Esc cancels -- checked via ImGui's keyboard state so it
             // works while the InputText has focus.
             if (ImGui::IsKeyPressed(ImGuiKey_Escape, /*repeat=*/false)) {
                 g_chat_draft[0] = '\0';

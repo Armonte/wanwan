@@ -34,7 +34,7 @@ public:
     // Click-to-spectate. host_ip:host_port comes from the hub's
     // spectate_grant. Launcher should boot a local FM2K spectator instance
     // pointing at that addr (LaunchRemoteSpectator). session_kind is
-    // "menu" / "css" / "battle" — the host's current game phase, used
+    // "menu" / "css" / "battle" -- the host's current game phase, used
     // to decide whether to /F-boot-to-battle (host in battle) or walk
     // the normal title→CSS path (host in lobby/CSS).
     //
@@ -45,7 +45,7 @@ public:
     std::function<void(const std::string& host_ip, int host_port,
                        const std::string& session_kind,
                        const std::string& spec_transport)> on_spectate_match;
-    // Hub fired a spectator_incoming event — we're the host of an active
+    // Hub fired a spectator_incoming event -- we're the host of an active
     // match and a spectator wants in. Their external UDP addr is passed
     // so we can fire an outbound NAT-punch packet to open the inbound
     // mapping before their first JOIN_REQ arrives at our NAT.
@@ -60,11 +60,11 @@ public:
     std::function<void(const std::vector<uint8_t>& bytes)> on_spec_relay_bytes;
     std::function<void()> on_session_stop;
     std::function<void()> on_exit;
-    // C11 — replay browser dispatch. Called when the user clicks a row in
+    // C11 -- replay browser dispatch. Called when the user clicks a row in
     // the Replays panel; should call FM2KLauncher::LaunchReplayPlayer with
     // the absolute path to a .fm2krep / .fm2kset file. Game .exe is
     // resolved from the file's grandparent directory (replays/<f>.fm2krep
-    // is always under <game_dir>/replays/) — matches the same logic the
+    // is always under <game_dir>/replays/) -- matches the same logic the
     // CLI --replay flag uses.
     std::function<void(const std::string& replay_path)> on_replay_play;
     // Fired when the user adds, removes, or otherwise reorders the
@@ -283,25 +283,25 @@ private:
     void HandleHubEvent(const fm2k::HubEvent& ev);  // hub WS event dispatch (split into launcher_ui_hub_events.cpp)
     void HandleMatchStartEvent(const fm2k::HubEvent& ev);  // K::MatchStart handler (launcher_ui_hub_events_match.cpp)
     void RenderHostConfigWindow();      // Match-settings UI (SOCD, stage, etc.)
-    void RenderHubServerWindow();       // Legacy floating window — kept for hot-reload paths; new path is the Settings tab.
-    void RenderDiscordAuthWindow();     // Stays separate — OAuth pairing flow has its own state machine.
+    void RenderHubServerWindow();       // Legacy floating window -- kept for hot-reload paths; new path is the Settings tab.
+    void RenderDiscordAuthWindow();     // Stays separate -- OAuth pairing flow has its own state machine.
     void RenderGamesFoldersWindow();    // Legacy.
     void RenderRecentMatchesWindow();   // Legacy.
-    void RenderDirectSpecInline();      // "Spectate by IP" — hub-less spec, rendered in Debug → Network tab
+    void RenderDirectSpecInline();      // "Spectate by IP" -- hub-less spec, rendered in Debug → Network tab
 
     // Single consolidated Settings window with tabs. Replaces the
     // five floating Settings sub-windows. Floats but is non-movable
-    // and non-dockable so it stays a popup-style modal — open it from
+    // and non-dockable so it stays a popup-style modal -- open it from
     // Settings → Settings…, do your thing, close it. Tabs: Input P1,
     // Input P2, Host Config, Hub Server, Games Folders, Recent Matches.
     void RenderSettingsWindow();
-    // Per-tab body renderers (no Begin/End — caller owns the container).
+    // Per-tab body renderers (no Begin/End -- caller owns the container).
     // Reused by both the legacy floating windows and the new Settings tabs.
     void RenderHubServerBody();
     void RenderHostConfigBody();
     void RenderGamesFoldersBody();
     void RenderRecentMatchesBody();
-    // Hub-panel "Live Matches" — shows every InFlightMatch the hub knows
+    // Hub-panel "Live Matches" -- shows every InFlightMatch the hub knows
     // about. Char/stage names render via fm2k::FormatCharLabel /
     // FormatStageLabel so names appear when the viewer has the game
     // installed locally OR when a peer baked the names into the hub
@@ -312,14 +312,14 @@ private:
     // bundled cnc-ddraw build. State cached in `ddraw_cfg_`; loaded
     // lazily on first tab render via `LoadDDrawCfgIfNeeded`. Per-widget
     // changes write back through fm2k::cnc_ddraw::Save* helpers, which
-    // hit the ini through Win32 WritePrivateProfileString — preserves
+    // hit the ini through Win32 WritePrivateProfileString -- preserves
     // unknown keys + per-game `[<exe>]` blocks the user might have.
     void RenderDisplayBody();
     void LoadDDrawCfgIfNeeded();
     // Per-player SOCD picker rendered above/below each player's
     // binding tab. SOCD is a local input filter applied before the
     // 11-bit mask hits the wire, so different modes on the two peers
-    // do NOT cause desyncs — each peer's slot has its own setting.
+    // do NOT cause desyncs -- each peer's slot has its own setting.
     // Persisted to settings.ini (`socd_mode_p1`, `socd_mode_p2`).
     void RenderInputBindingsTab(int player_slot);
     // Per-launcher SOCD state. Loaded from settings.ini on first menu
@@ -347,7 +347,7 @@ private:
     // launches inherit them (online is re-applied by the hub match-start path).
     void PublishRandomStageEnv();
 
-    // Refresh the SDL window title to "FM2K Rollback Launcher — <nick> (W-L-D)"
+    // Refresh the SDL window title to "FM2K Rollback Launcher -- <nick> (W-L-D)"
     // any time the user's record changes. No-op if we don't have a record
     // yet (record-fetch races with first lobby render). Called from the
     // K::RecordReceived handler.
@@ -398,7 +398,7 @@ private:
 
     // Poll FM2KSharedMemData on every running game PID. When the hook
     // bumps `match_outcome_seq`, read the new outcome enum, map it to a
-    // hub `match_result` string, and send. Idempotent across frames —
+    // hub `match_result` string, and send. Idempotent across frames --
     // a per-PID last-seen-seq prevents re-sends of the same bump. No-op
     // when no hub match is active or the launcher isn't connected. Also
     // detects the FM2K_MATCH_OUTCOME_DISCONNECT case and asks the local
@@ -423,7 +423,7 @@ private:
     // gates Init() to a single call (gamepad subsystem startup) the first
     // time the user opens either binder window.
     bool show_settings_        = false;     // Single tabbed Settings window
-    bool show_discord_auth_    = false;     // Sign in with Discord — OAuth flow is its own window
+    bool show_discord_auth_    = false;     // Sign in with Discord -- OAuth flow is its own window
     // Legacy per-section flags kept for any path that still toggles them.
     // The unified Settings window is the user-facing surface now.
     bool show_input_binder_p1_ = false;
@@ -520,7 +520,7 @@ public:
     int selected_inspection_slot_ = -1;
     bool show_slot_inspection_ = false;
 
-    // C11 — Replay browser. Lazily-populated cache of .fm2krep / .fm2kset
+    // C11 -- Replay browser. Lazily-populated cache of .fm2krep / .fm2kset
     // files found across configured games-root paths. Each entry mirrors
     // the FM2KSessionFileHeader fields the tree UI displays. Sessions
     // group entries by session_id; matches inside each session order by
@@ -548,7 +548,7 @@ public:
     bool                    replays_cache_dirty_ = true;  // first-render rescan
 
     // Build replays_cache_ from games_root_paths_. Walks each root for
-    // <game>/replays/*.fm2krep — sniffs the 256-byte FM2KSessionFileHeader
+    // <game>/replays/*.fm2krep -- sniffs the 256-byte FM2KSessionFileHeader
     // off the front of each file. Cheap (<200ms for ~1000 files); called
     // lazily on Replay panel open or after a refresh button.
     void ScanReplays();

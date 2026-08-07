@@ -1,6 +1,6 @@
 #pragma once
 
-// fm2k::pii — log redaction pipeline. Runs every log line through a
+// fm2k::pii -- log redaction pipeline. Runs every log line through a
 // chain of pattern-based replacements before it hits disk OR the
 // in-memory launcher buffer, so users can share their logs with us
 // without leaking their Windows username, real name (often embedded
@@ -8,7 +8,7 @@
 //
 // Used by both the hook DLL's LogOutputFunction (in dllmain.cpp) and
 // the launcher's SDLCustomLogOutput (in FM2K_LauncherUI.cpp), so the
-// .cpp is added to BOTH targets in CMake. Idempotent — Init() can be
+// .cpp is added to BOTH targets in CMake. Idempotent -- Init() can be
 // called from each side without coordination.
 //
 // What gets redacted:

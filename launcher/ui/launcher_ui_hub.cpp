@@ -105,7 +105,7 @@ bool HubPreflightPunch(uint16_t local_port,
         token[i / 2] = static_cast<uint8_t>((hi << 4) | lo);
     }
 
-    // CTRL_PUNCH packet: 0xCD 0x10 [16-byte token] — matches
+    // CTRL_PUNCH packet: 0xCD 0x10 [16-byte token] -- matches
     // FM2KHook/src/netplay/nat_traversal.cpp wire format.
     uint8_t pkt[2 + 16];
     pkt[0] = 0xCD;
@@ -146,7 +146,7 @@ bool HubPreflightPunch(uint16_t local_port,
             }
             break;
         }
-        // recvfrom returned WSAETIMEDOUT or other err — loop and try
+        // recvfrom returned WSAETIMEDOUT or other err -- loop and try
         // again until deadline.
     }
 
@@ -491,7 +491,7 @@ std::string ExtractGameHashManifest(const std::filesystem::path& exe_path,
 
     // Read both candidates; prefer the one that actually contains a
     // manifest marker (in case both exist but only one was written
-    // this session — e.g. an old non-virtualized log lingering).
+    // this session -- e.g. an old non-virtualized log lingering).
     std::string text = read_log(canonical_log);
     if (text.empty() ||
         (text.find("local manifest follows") == std::string::npos &&
@@ -507,17 +507,17 @@ std::string ExtractGameHashManifest(const std::filesystem::path& exe_path,
     if (text.empty()) {
         return std::string("(couldn't open ") +
                fm2k::utf8path::FilenameUtf8(canonical_log) +
-               " from either the game folder or VirtualStore — "
+               " from either the game folder or VirtualStore -- "
                "is the launcher running with the wrong privileges?)";
     }
 
     // Find the LAST manifest dump. Two possible markers, in order of
     // preference:
-    //   1. "local manifest follows"  — emitted by netplay.cpp on the
+    //   1. "local manifest follows"  -- emitted by netplay.cpp on the
     //      actual hash-mismatch path. Always present when this popup
     //      fires from a current build, and includes the offending
     //      hashes both peers traded inline above the dump.
-    //   2. "GameHash: manifest"      — emitted by game_hash.cpp once
+    //   2. "GameHash: manifest"      -- emitted by game_hash.cpp once
     //      at boot, INFO level. Fallback for cases where we open the
     //      log on a session that didn't actually hit a mismatch yet,
     //      or older hook builds before the per-mismatch dump landed.
@@ -526,7 +526,7 @@ std::string ExtractGameHashManifest(const std::filesystem::path& exe_path,
         pos = text.rfind("GameHash: manifest");
     }
     if (pos == std::string::npos) {
-        return "(log present, but no manifest dump found — older hook "
+        return "(log present, but no manifest dump found -- older hook "
                "build, or the log was rotated. Open the log in a text "
                "editor and search for 'manifest'.)";
     }
@@ -588,9 +588,9 @@ void LauncherUI::RenderHubServerBody() {
     ImGui::TextWrapped(
         "Hub server hostname or IP. Default hub.2dfm.org for public play. "
         "Use 127.0.0.1 (or localhost) when running your own hub.py on the same "
-        "machine — NAT routers rarely hairpin so the public DNS won't loop back. "
+        "machine -- NAT routers rarely hairpin so the public DNS won't loop back. "
         "Takes effect on next Connect.");
-    // Update Channel toggle was moved to the top-level Settings menu —
+    // Update Channel toggle was moved to the top-level Settings menu --
     // 2 clicks instead of 4 to flip. See RenderMenuBar.
 }
 
@@ -611,7 +611,7 @@ void LauncherUI::RenderHubServerWindow() {
 void LauncherUI::RenderRecentMatchesBody() {
     auto& hs = *hub_state_;
 
-    // Unique-ID suffix — when the Recent Matches and Live Matches
+    // Unique-ID suffix -- when the Recent Matches and Live Matches
     // panels are both visible the bare T("btn_refresh") collides on
     // ImGui's hashed-by-label widget IDs and clicking one fires the
     // other's callback (FlippySpatula's bug). PushID isolates them.
@@ -660,15 +660,15 @@ void LauncherUI::RenderRecentMatchesBody() {
                     std::strftime(tbuf, sizeof(tbuf), "%Y-%m-%d %H:%M", &lt);
                 }
             }
-            ImGui::TextUnformatted(tbuf[0] ? tbuf : "—");
+            ImGui::TextUnformatted(tbuf[0] ? tbuf : "--");
 
             ImGui::TableSetColumnIndex(1);
-            ImGui::TextUnformatted(m.game_id.empty() ? "—" : m.game_id.c_str());
+            ImGui::TextUnformatted(m.game_id.empty() ? "--" : m.game_id.c_str());
 
             // P1 / P2 nick + char. Char fallback chain: wire-baked name
             // (from MatchResult) wins; else local KGT lookup; else
             // id-only stub. -1 char_id renders just the nick (the row
-            // simply lacks the char info — happens for older matches
+            // simply lacks the char info -- happens for older matches
             // committed before stage/char baking landed).
             auto draw_player = [&](const std::string& id, const std::string& nick,
                                    int char_id, const std::string& char_name) {
@@ -694,7 +694,7 @@ void LauncherUI::RenderRecentMatchesBody() {
             draw_player(m.p2_id, m.p2_nick, m.p2_char_id, m.p2_char_name);
 
             // Stage column. Same fallback chain as the live-matches
-            // panel: wire-baked > local KGT lookup > id-only > "—".
+            // panel: wire-baked > local KGT lookup > id-only > "--".
             ImGui::TableSetColumnIndex(4);
             if (!m.stage_name.empty()) {
                 ImGui::TextUnformatted(m.stage_name.c_str());
@@ -707,7 +707,7 @@ void LauncherUI::RenderRecentMatchesBody() {
                 if (!n.empty()) ImGui::TextUnformatted(n.c_str());
                 else            ImGui::Text("Stage #%d", m.stage_id);
             } else {
-                ImGui::TextDisabled("—");
+                ImGui::TextDisabled("--");
             }
 
             // Winner column: from local user's perspective when they're
@@ -766,7 +766,7 @@ void LauncherUI::RenderInProgressMatchesBody() {
             return;
         }
 
-        // Sort newest-first on every render — list size stays small
+        // Sort newest-first on every render -- list size stays small
         // (handful of in-flight matches max) so an in-place sort is
         // cheaper than maintaining a sorted insert in the dispatcher.
         std::sort(hs.current_matches.begin(), hs.current_matches.end(),
@@ -794,7 +794,7 @@ void LauncherUI::RenderInProgressMatchesBody() {
                 ImGui::TableNextRow();
 
                 ImGui::TableSetColumnIndex(0);
-                ImGui::TextUnformatted(m.game_id.empty() ? "—" : m.game_id.c_str());
+                ImGui::TextUnformatted(m.game_id.empty() ? "--" : m.game_id.c_str());
 
                 auto fmt_char = [&](const std::string& nick,
                                     const std::string& id,
@@ -818,7 +818,7 @@ void LauncherUI::RenderInProgressMatchesBody() {
                             ImGui::TextUnformatted(nick.c_str());
                         }
                         ImGui::SameLine();
-                        ImGui::TextDisabled("— %s", T("status_in_css"));
+                        ImGui::TextDisabled("-- %s", T("status_in_css"));
                         return;
                     }
                     std::string label;
@@ -836,10 +836,10 @@ void LauncherUI::RenderInProgressMatchesBody() {
                     }
                     if (!hs.my_id.empty() && id == hs.my_id) {
                         ImGui::TextColored(ImVec4(0.95f, 0.85f, 0.3f, 1.0f),
-                                           "%s — %s", nick.c_str(),
+                                           "%s -- %s", nick.c_str(),
                                            label.c_str());
                     } else {
-                        ImGui::Text("%s — %s", nick.c_str(), label.c_str());
+                        ImGui::Text("%s -- %s", nick.c_str(), label.c_str());
                     }
                 };
 
@@ -855,7 +855,7 @@ void LauncherUI::RenderInProgressMatchesBody() {
                 } else if (m.stage_id >= 0) {
                     // Best-effort local resolve via the launcher's
                     // FindKgtByGameId callback. Empty string means the
-                    // game isn't installed locally — fall back to
+                    // game isn't installed locally -- fall back to
                     // id-only stub.
                     std::string n;
                     if (on_resolve_stage_name) {
@@ -868,7 +868,7 @@ void LauncherUI::RenderInProgressMatchesBody() {
                         ImGui::Text("Stage #%d", m.stage_id);
                     }
                 } else {
-                    // No stage reported yet — same CSS-state visualization
+                    // No stage reported yet -- same CSS-state visualization
                     // as the char cells.
                     ImGui::TextDisabled("%s", T("status_in_css"));
                 }
@@ -880,7 +880,7 @@ void LauncherUI::RenderInProgressMatchesBody() {
                     secs %= 60;
                     ImGui::Text("%d:%02d", mins, secs);
                 } else {
-                    ImGui::TextDisabled("—");
+                    ImGui::TextDisabled("--");
                 }
             }
             ImGui::EndTable();

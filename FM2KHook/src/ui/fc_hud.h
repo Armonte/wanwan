@@ -1,11 +1,11 @@
 #pragma once
 
-// fc_hud — Fightcade-style in-game HUD for FM2K.
+// fc_hud -- Fightcade-style in-game HUD for FM2K.
 //
 // Draws a persistent top bar inside cnc-ddraw's game-pixels rect
 // (computed in imgui_overlay.cpp via cnc-ddraw's own layout math).
-// Uses ImGui's foreground draw list directly — no ImGui windows, no
-// chrome — so the HUD looks/feels native to the game frame rather
+// Uses ImGui's foreground draw list directly -- no ImGui windows, no
+// chrome -- so the HUD looks/feels native to the game frame rather
 // than like a debug menu. Mirrors the architecture of fightcade-fbneo's
 // `vid_overlay.cpp`: state setters push data in, a single per-frame
 // `Render` call lays everything out in normalized coords.
@@ -43,7 +43,7 @@ void Render(int rect_x, int rect_y, int rect_w, int rect_h);
 // field repeatedly with the same value is fine and cheap.
 
 // Update the player-name labels shown on the top bar. Pass UTF-8.
-// Either side may be null/empty — Render falls back to "P1" / "P2"
+// Either side may be null/empty -- Render falls back to "P1" / "P2"
 // for blank slots.
 void SetPlayerNames(const char* p1, const char* p2);
 
@@ -74,7 +74,7 @@ bool IsChatInputActive();
 // or "just chat" without code changes.
 struct StyleControls {
     // Defaults tuned for typical 640×480 / 800×600 windowed FM2K +
-    // upscaled cnc-ddraw output — at scale 1.0 the HUD bar dominates
+    // upscaled cnc-ddraw output -- at scale 1.0 the HUD bar dominates
     // the screen on small game rects. 0.3 keeps it discreet at native
     // size and the user can dial up via the F9 slider when running
     // on big monitors.

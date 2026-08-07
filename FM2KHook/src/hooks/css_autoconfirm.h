@@ -10,8 +10,8 @@
 // game_mode == 2000 (CSS), pre-injects state writes that pin cursor
 // positions to the chars recorded in MATCH_START's header and force a
 // confirm bit each frame until both action_states lock. The natural state-1
-// logic does the actual work — file loads, portrait creation, player color
-// assignment — so the local game ends up with the right chars selected
+// logic does the actual work -- file loads, portrait creation, player color
+// assignment -- so the local game ends up with the right chars selected
 // without any duplicated setup logic on our side.
 //
 // See docs/analysis/css_state_machine.md for the IDA pass that maps the
@@ -32,13 +32,13 @@ bool CssAutoConfirm_Install();
 // p1_color / p2_color are the recorded color slots (0..5) that map to the
 // attack-button bit our auto-confirm injects so AssignPlayerColor lands on
 // the same color the original player picked; stage_id is the recorded
-// stage slot. Live-spectator paths do NOT call this — they drive CSS via
+// stage slot. Live-spectator paths do NOT call this -- they drive CSS via
 // the full host input stream and don't need the override.
 void CssAutoConfirm_OnReplayMatchStart(uint8_t p1_char, uint8_t p1_color,
                                        uint8_t p2_char, uint8_t p2_color,
                                        uint8_t stage_id);
 
-// Reset on MATCH_END / battle-mode entry — re-engaged by the next
+// Reset on MATCH_END / battle-mode entry -- re-engaged by the next
 // CssAutoConfirm_OnReplayMatchStart for back-to-back replay matches.
 void CssAutoConfirm_Disengage();
 

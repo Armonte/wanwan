@@ -47,26 +47,26 @@ void FM2KLauncher::WireUICallbacks() {
         // host of an active match). Write into our running game instance's
         // shared mem so the hook's TickHostMaintenance polls the seq
         // bump and fires:
-        //   * UDP heartbeat burst toward spec_udp_addr (existing — opens
+        //   * UDP heartbeat burst toward spec_udp_addr (existing -- opens
         //     NAT for the spectator's first SPEC_JOIN_REQ replies),
         //   * TCP simultaneous-open punch toward spec_tcp_addr (new in
-        //     v0.2.35 — opens NAT for inbound TCP from spec:tcp_port to
+        //     v0.2.35 -- opens NAT for inbound TCP from spec:tcp_port to
         //     our listener port, the data path the INPUT_BATCH stream
         //     actually rides).
         // spec_tcp_port = 0 sentinel for older spec clients that don't
-        // know their own TCP listener port — host falls back to UDP-only
+        // know their own TCP listener port -- host falls back to UDP-only
         // (no TCP punch).
         DWORD target_pid = 0;
         if (game_instance_ && game_instance_->IsRunning()) {
             target_pid = game_instance_->GetProcessId();
         } else if (client1_instance_ && client1_instance_->IsRunning()) {
-            // Dev-mode dual-clients fallback — local-test spectator path.
+            // Dev-mode dual-clients fallback -- local-test spectator path.
             target_pid = client1_instance_->GetProcessId();
         }
         if (target_pid == 0) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                 "Hub: spectator_incoming with no running game instance "
-                "to deliver punch target to (addr=%s:%d/%d) — dropping",
+                "to deliver punch target to (addr=%s:%d/%d) -- dropping",
                 spec_udp_ip.c_str(), spec_udp_port, spec_tcp_port);
             return;
         }
@@ -75,7 +75,7 @@ void FM2KLauncher::WireUICallbacks() {
         if (inet_pton(AF_INET, spec_udp_ip.c_str(), &addr_bin) != 1 ||
             spec_udp_port <= 0 || spec_udp_port > 0xFFFF) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "Hub: spectator_incoming bad addr %s:%d — dropping",
+                "Hub: spectator_incoming bad addr %s:%d -- dropping",
                 spec_udp_ip.c_str(), spec_udp_port);
             return;
         }
@@ -112,7 +112,7 @@ void FM2KLauncher::WireUICallbacks() {
                 std::memcpy(shm->spectator_punch_user_id,
                             spec_user_id.data(), uid_n);
             }
-            // Bump seq AFTER the addr writes — hook's poll reads addr
+            // Bump seq AFTER the addr writes -- hook's poll reads addr
             // only when seq advances, so a torn write is harmless.
             shm->spectator_punch_seq  += 1;
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
@@ -195,7 +195,7 @@ void FM2KLauncher::WireUICallbacks() {
         // the launcher currently has selected.
         if (selected_game_.exe_path.empty()) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "Spectate: no game selected — pick one before clicking Spectate");
+                "Spectate: no game selected -- pick one before clicking Spectate");
             return;
         }
         // Phase 4: tell the user-facing log clearly which mode they're
@@ -229,9 +229,9 @@ void FM2KLauncher::WireUICallbacks() {
         running_ = false;
     };
 
-    // C11 — Replay browser dispatch. Resolve the game .exe from the
+    // C11 -- Replay browser dispatch. Resolve the game .exe from the
     // replay file's grandparent directory (replays/<file>.fm2krep is
-    // always under <game_dir>/replays/) — same logic as the --replay
+    // always under <game_dir>/replays/) -- same logic as the --replay
     // CLI flag. Then call LaunchReplayPlayer to spawn the game with
     // FM2K_REPLAY_FILE set.
     ui_->on_replay_play = [this](const std::string& replay_path) {

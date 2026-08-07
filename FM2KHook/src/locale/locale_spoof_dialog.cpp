@@ -33,7 +33,7 @@ INT_PTR (WINAPI* p_DialogBoxParamA)(HINSTANCE, LPCSTR, HWND, DLGPROC, LPARAM) = 
 // Symptom: WW's "specify title" popup renders as `?????`. Cause: the
 // dialog template is compiled into the .rc as wide UTF-16, but on a JP-
 // system build many wide values are actually SJIS BYTES stuffed into the
-// low half of WCHAR slots — i.e. the resource compiler emitted SJIS bytes
+// low half of WCHAR slots -- i.e. the resource compiler emitted SJIS bytes
 // expecting the OS to interpret them via CP_ACP=932, which doesn't
 // happen on US Windows. Our user-mode GetACP hook does NOT affect the
 // kernel-side resource string conversion, so static labels render as `?`.
@@ -47,7 +47,7 @@ INT_PTR (WINAPI* p_DialogBoxParamA)(HINSTANCE, LPCSTR, HWND, DLGPROC, LPARAM) = 
 // Heuristic for "packed-SJIS-in-WCHAR": every WCHAR has its high byte
 // zero (high-half ASCII range). True UTF-16 JP would have high bytes
 // like 0x30 (Hiragana), 0x4E-0x9F (CJK), etc. Pure-ASCII titles also
-// have all-zero high bytes — for those, the round-trip via CP932 is a
+// have all-zero high bytes -- for those, the round-trip via CP932 is a
 // no-op, so always-translate is safe.
 namespace {
 
@@ -171,7 +171,7 @@ std::vector<uint8_t> TranslateDialogTemplate(const uint8_t* raw, size_t size) {
     // DLGITEMTEMPLATE × cdit, each DWORD-aligned.
     for (uint16_t i = 0; i < cdit; ++i) {
         DlgTemplate_AlignToDword(out);
-        // Align cursor in source too — same rule.
+        // Align cursor in source too -- same rule.
         size_t cur_off = (size_t)(cursor - raw);
         while (cur_off % 4) { ++cursor; ++cur_off; }
 
@@ -229,7 +229,7 @@ INT_PTR WINAPI Hook_DialogBoxParamA(HINSTANCE inst, LPCSTR template_name,
     std::vector<uint8_t> translated = TranslateDialogTemplate((const uint8_t*)raw, sz);
     if (translated.empty()) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "LocaleSpoof: DialogBoxParamA template translate failed (size=%lu) — passing through",
+                    "LocaleSpoof: DialogBoxParamA template translate failed (size=%lu) -- passing through",
                     (unsigned long)sz);
         return p_DialogBoxParamA(inst, template_name, parent, dlg_proc, init_param);
     }

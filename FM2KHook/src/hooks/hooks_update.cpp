@@ -1,7 +1,7 @@
 // hooks_update.cpp -- Hook_UpdateGameState (the per-frame control point). Split from hooks.cpp.
 #include "hooks.h"
 #include "hooks_internal.h"
-#include "round_events.h"     // C3.5 — vs_round_function detour install
+#include "round_events.h"     // C3.5 -- vs_round_function detour install
 #include "css_autoconfirm.h"  // CSS lock-and-confirm for offline replay playback
 #include "css_fastsound.h"    // FM2K_FPK_CSS_FASTSOUND: lazy DSound buffers (CSS dip fix)
 #include "per_game_patches.h" // damage multiplier MinHook + team-size override
@@ -24,12 +24,12 @@
 #include "imgui_overlay.h"
 #include "shared_mem.h"
 #include "savestate.h"  // CHAR_SLOT_BASE, CHAR_SLOT_SIZE (corrected by Wave C audit)
-#include "../core/main_loop_trampoline.h"  // TrampolineMainLoop — owns the outer loop
+#include "../core/main_loop_trampoline.h"  // TrampolineMainLoop -- owns the outer loop
 #include "../audio/sound_rollback.h"        // Mike Z desired/actual sound layer
 #include "../netplay/spectator_node.h"      // spectator playback queue accessors
 #include "../ui/input_binder.h"             // FM2KInputBinder::Sample_Win32 + Bindings
 #include "../ui/screenshot.h"               // FM2KCapture::SaveScreenshot for the auto-banner pipeline
-#include "../ui/fc_hud.h"                   // IsChatInputActive — gate local input during typing
+#include "../ui/fc_hud.h"                   // IsChatInputActive -- gate local input during typing
 #include "../vfs/fpk_reader.h"              // FM2K_FPK_VFS: inflate a slim .fpk -> original asset bytes
 #include <MinHook.h>
 #include <SDL3/SDL_log.h>
@@ -101,7 +101,7 @@ int __cdecl Hook_UpdateGameState() {
         if (s_use_trampoline && !g_fm95_loop_owned) {
             // Host-driven variant: dispatches BATTLE/CSS/SPECTATOR but NOT
             // NATIVE (the fall-through below runs the single host update for
-            // NATIVE — running RunNativeTick here too would double-tick).
+            // NATIVE -- running RunNativeTick here too would double-tick).
             LoopPhase phase = TrampolineFrameTickHostDriven();
             // Log first-seen-per-phase so the log shows the engine-aware
             // classifier picking up FM95 phase transitions in real time.
@@ -196,7 +196,7 @@ int __cdecl Hook_UpdateGameState() {
     // Spectator mode: the trampoline's RunSpectatorTick owns the sim drive
     // (it pops streamed inputs and calls original_update_game itself). This
     // hook still fires because update_game runs from inside that trampoline
-    // call — but we must not run any of the player-side battle-sync /
+    // call -- but we must not run any of the player-side battle-sync /
     // Netplay_StartBattle / GekkoStressSession paths below. Just bump the
     // frame counter and pass through to the real update_game.
     if (g_spectator_mode) {

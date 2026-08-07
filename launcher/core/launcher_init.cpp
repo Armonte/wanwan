@@ -147,7 +147,7 @@ bool FM2KLauncher::Initialize() {
         ui_->SetGamesRootPaths(games_root_paths_);
     }
     // Suppress the "Scanning…" spinner when the cache already filled the
-    // list — the background walk just verifies nothing changed.
+    // list -- the background walk just verifies nothing changed.
     StartAsyncDiscovery(/*show_spinner=*/!seeded_from_cache);
     
     //SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launcher initialized successfully");
@@ -159,7 +159,7 @@ bool FM2KLauncher::Initialize() {
 bool FM2KLauncher::InitializeSDL() {
     // Hints MUST be set before the gamepad subsystem starts. SDL3
     // reads HIDAPI/RawInput hints when it stands up the joystick
-    // backend, NOT lazily — setting them later (e.g. inside the
+    // backend, NOT lazily -- setting them later (e.g. inside the
     // input binder's Init()) is a no-op. Without HIDAPI_PS3 the
     // PS3 controller (and Qanba sticks in PS3 mode) fall through to
     // a generic HID joystick path that has no SDL gamepad mapping,
@@ -207,13 +207,13 @@ bool FM2KLauncher::InitializeSDL() {
     }
     // Vsync is the framerate cap. If it silently fails (driver fallback,
     // headless / RDP session, software renderer), the launcher would spin
-    // at hundreds of fps and burn CPU/GPU — exactly the symptom users
+    // at hundreds of fps and burn CPU/GPU -- exactly the symptom users
     // reported on Xeon E3 / 3060 (~20% CPU + ~20% GPU at idle). Log the
     // result, and stash a flag so SDL_AppIterate can soft-cap to ~60fps
     // via SDL_DelayNS when vsync is unavailable.
     if (!SDL_SetRenderVSync(renderer_, 1)) {
         SDL_LogWarn(SDL_LOG_CATEGORY_RENDER,
-            "SDL_SetRenderVSync(1) failed: %s — falling back to software cap",
+            "SDL_SetRenderVSync(1) failed: %s -- falling back to software cap",
             SDL_GetError());
         vsync_available_ = false;
     } else {
@@ -222,7 +222,7 @@ bool FM2KLauncher::InitializeSDL() {
             vsync_available_ = true;
         } else {
             SDL_LogWarn(SDL_LOG_CATEGORY_RENDER,
-                "SDL_GetRenderVSync reports vsync=%d — assuming off, software-capping",
+                "SDL_GetRenderVSync reports vsync=%d -- assuming off, software-capping",
                 v);
             vsync_available_ = false;
         }
@@ -254,7 +254,7 @@ bool FM2KLauncher::InitializeSDL() {
 
     if (!icon) {
         // Decode the embedded base64 PNG. Decoder is short and self-
-        // contained — pulling SDL_base64 would mean wiring another
+        // contained -- pulling SDL_base64 would mean wiring another
         // header path, not worth it for a one-shot at startup.
         const char* b64 = fm2k::kAppIconBase64;
         const size_t b64_len = std::strlen(b64);
@@ -327,10 +327,10 @@ bool FM2KLauncher::InitializeSDL() {
         // via AllocConsole / parent inheritance. Convert the SDL surface
         // to an HICON and SendMessage(WM_SETICON) to the console window
         // so the smiley shows up in the title bar + Alt-Tab. Skipped if
-        // there's no console (launcher started without one — then
+        // there's no console (launcher started without one -- then
         // GetConsoleWindow returns NULL).
         if (HWND console_hwnd = GetConsoleWindow()) {
-            // Normalize to RGBA32 — DIB section we hand to CreateIconIndirect
+            // Normalize to RGBA32 -- DIB section we hand to CreateIconIndirect
             // expects 32-bit BGRA top-down. ConvertSurface returns NULL on
             // mismatch but a fresh copy on success; we own it.
             SDL_Surface* rgba = SDL_ConvertSurface(icon, SDL_PIXELFORMAT_BGRA32);
@@ -367,7 +367,7 @@ bool FM2KLauncher::InitializeSDL() {
                                      ICON_SMALL, (LPARAM)hicon);
                         SendMessageW(console_hwnd, WM_SETICON,
                                      ICON_BIG,   (LPARAM)hicon);
-                        // Don't DestroyIcon — the console keeps a reference
+                        // Don't DestroyIcon -- the console keeps a reference
                         // for the lifetime of the window. Leaks one icon
                         // handle on launcher exit, which is fine.
                     }

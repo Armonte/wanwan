@@ -101,7 +101,7 @@ bool FM2KLauncher::LaunchLocalClient(const std::string& game_path, bool is_host,
     (*target_instance)->SetEnvironmentVariable("FM2K_PLAYER_INDEX", std::to_string(player_index));  // Host=0, Guest=1
     (*target_instance)->SetEnvironmentVariable("FM2K_LOCAL_PORT", std::to_string(port));  // Keep port different (required for networking)
     // LOCAL-TEST PATH ONLY. LaunchLocalClient spawns two instances on this
-    // machine over loopback for hands-on testing — hence the hardcoded
+    // machine over loopback for hands-on testing -- hence the hardcoded
     // 127.0.0.1 remote and the FIXED RNG seed (both local instances must agree
     // on the seed). The real matchmaked/networked path is session_control.cpp,
     // which sets FM2K_REMOTE_ADDR from the actual peer and NEVER sets
@@ -116,7 +116,7 @@ bool FM2KLauncher::LaunchLocalClient(const std::string& game_path, bool is_host,
     (*target_instance)->SetEnvironmentVariable("FM2K_PRODUCTION_MODE", "0");
     (*target_instance)->SetEnvironmentVariable("FM2K_INPUT_RECORDING", "1");  // Enable input recording by default
 
-    // Fixed seed — SAFE here (local loopback test, both instances identical).
+    // Fixed seed -- SAFE here (local loopback test, both instances identical).
     // Never set on the matchmaked path.
     (*target_instance)->SetEnvironmentVariable("FM2K_FORCE_RNG_SEED", "12345678");
 
@@ -177,7 +177,7 @@ bool FM2KLauncher::LaunchLocalSpectator(const std::string& game_path,
     // Spectator-mode env vars. The hook reads FM2K_SPECTATOR_MODE=1 to skip
     // the normal HELLO/HELLO_ACK flow and instead send SPEC_JOIN_REQ to
     // FM2K_REMOTE_ADDR after the socket is up. Player index 2 is just a
-    // sentinel — spectators don't claim a player slot.
+    // sentinel -- spectators don't claim a player slot.
     spectator_instance_->SetEnvironmentVariable("FM2K_PLAYER_INDEX",   "2");
     spectator_instance_->SetEnvironmentVariable("FM2K_LOCAL_PORT",     std::to_string(spectator_port));
     spectator_instance_->SetEnvironmentVariable("FM2K_REMOTE_ADDR",    "127.0.0.1:" + std::to_string(host_port));
@@ -236,7 +236,7 @@ bool FM2KLauncher::LaunchRemoteSpectator(const std::string& game_path,
 
     spectator_instance_ = std::make_unique<FM2KGameInstance>();
 
-    // Spectators re-sim the host's match — a leaked offline per-game
+    // Spectators re-sim the host's match -- a leaked offline per-game
     // patch env (team size / damage mult) would fork their sim from the
     // stream. Same neutralize the online session start does.
     lui::NeutralizeGamePatchEnvVars();
@@ -267,7 +267,7 @@ bool FM2KLauncher::LaunchRemoteSpectator(const std::string& game_path,
             (mode == "full" || mode == "FULL" || mode == "FULL_SESSION") ? "full" : "current";
         spectator_instance_->SetEnvironmentVariable("FM2K_SPECTATE_MODE", normalized);
 
-        // /F boot-to-battle for spectators — conditional on host's
+        // /F boot-to-battle for spectators -- conditional on host's
         // current session_kind (forwarded by the hub in spectate_grant,
         // sourced from the host hook's published game_mode transitions
         // via SharedMem). Two cases:
@@ -275,8 +275,8 @@ bool FM2KLauncher::LaunchRemoteSpectator(const std::string& game_path,
         //  - host in "battle": set /F so the spec engine's slot-0
         //    dispatcher fires `create_game_object(14, 127, 0, 0)`
         //    straight into battle (skips CSS). SpectatorNode then
-        //    overlays the host's snapshot — chars, positions, RNG,
-        //    everything — and sim-forwards inputs to live. ~1s join
+        //    overlays the host's snapshot -- chars, positions, RNG,
+        //    everything -- and sim-forwards inputs to live. ~1s join
         //    instead of ~5s title→CSS→battle walk.
         //
         //  - host in "menu" / "css": do NOT set /F. Spec walks the
@@ -287,7 +287,7 @@ bool FM2KLauncher::LaunchRemoteSpectator(const std::string& game_path,
         //    when the eventual mode 2000→3000 transition fails.
         //
         // Older hubs / pre-session_kind clients default to "menu"
-        // (no /F). This is the safe default — worst case the spec
+        // (no /F). This is the safe default -- worst case the spec
         // joins via title walk instead of boot-to-battle (slower
         // join, never a crash).
         const bool boot_to_battle = (session_kind == "battle");
@@ -302,10 +302,10 @@ bool FM2KLauncher::LaunchRemoteSpectator(const std::string& game_path,
             spectator_instance_->SetEnvironmentVariable("FM2K_BTB_P2_CHAR", "0");
             spectator_instance_->SetEnvironmentVariable("FM2K_BTB_STAGE",   "0");
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "Spec: host in battle — set FM2K_BOOT_TO_BATTLE=1");
+                "Spec: host in battle -- set FM2K_BOOT_TO_BATTLE=1");
         } else {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "Spec: host in %s — walking normal title→CSS path (no /F)",
+                "Spec: host in %s -- walking normal title→CSS path (no /F)",
                 session_kind.c_str());
         }
     }

@@ -2,7 +2,7 @@
 #include "imgui_overlay.h"
 #include "imgui_overlay_internal.h"
 #include "fc_hud.h"
-#include "globals.h"  // FM2K::kIsFM95 — engine-aware window class match
+#include "globals.h"  // FM2K::kIsFM95 -- engine-aware window class match
 #include "netplay.h"
 #include "savestate.h"
 #include "../hooks/per_game_patches.h"  // training / OPTION mode badges + F2 cycle
@@ -26,7 +26,7 @@ static WNDPROC oWndProc = nullptr;
 
 // State
 bool g_overlay_visible = false;
-// In-game HUD master visibility. Defaults OFF for the v0.2.5 release —
+// In-game HUD master visibility. Defaults OFF for the v0.2.5 release --
 // the HUD scaffolding (top bar / chat / system message) is shipped but
 // hidden until F9 toggles it on. Once user-tested for stability and we
 // wire delay/score/match-state surfacing properly, flip the default to
@@ -44,7 +44,7 @@ static bool g_f10_key_pressed = false;
 // recreates it (render_d3d9.c:73,160). Reset is caught by Hook_Reset
 // below; the release-and-recreate path doesn't fire Reset at all, so
 // we detect by comparing the SWAP CHAIN's private-data tag below
-// (pointer comparison is unreliable — Windows heap reuse routinely
+// (pointer comparison is unreliable -- Windows heap reuse routinely
 // returns the same address for a freshly recreated device, leaving
 // the imgui backend pointing at freed GPU resources and producing
 // glitched glyphs every other fullscreen toggle).
@@ -52,7 +52,7 @@ static LPDIRECT3DDEVICE9 g_imgui_device = nullptr;
 
 // Stamped on every back-buffer surface we've initialized the imgui
 // DX9 backend against, via IDirect3DSurface9::SetPrivateData. Survives
-// only as long as the surface itself does — any Reset/Release
+// only as long as the surface itself does -- any Reset/Release
 // recreates the back buffer, the new one comes back without our tag,
 // and we know unambiguously that we need to rebuild. Resilient to
 // heap address reuse for both the device and back-buffer pointers.
@@ -67,7 +67,7 @@ static const DWORD kImguiSwapChainTagValue = 0xCAFEF00D;
 
 // Pixel-rect on the d3d9 backbuffer where cnc-ddraw is drawing the
 // game-quad. cnc-ddraw's `SetViewport` call at render_d3d9.c:531-541
-// is commented out — the quad is positioned via D3DFVF_XYZRHW vertex
+// is commented out -- the quad is positioned via D3DFVF_XYZRHW vertex
 // coords directly. Backbuffer's d3d9 viewport stays at full size, so
 // `pDevice->GetViewport(...)` gives us the wrong answer. We recompute
 // the rect ourselves using cnc-ddraw's exact formula (dd.c:924-979)
@@ -78,7 +78,7 @@ static const DWORD kImguiSwapChainTagValue = 0xCAFEF00D;
 D3DVIEWPORT9 g_game_viewport = { 0, 0, 0, 0, 0.0f, 1.0f };
 
 // cnc-ddraw layout flags read from <cnc_ddraw_dir>\ddraw.ini at first
-// frame — these don't change without a launcher restart, so reading
+// frame -- these don't change without a launcher restart, so reading
 // every frame is wasted work. `maintas` keeps 4:3, `boxing` does
 // integer-scaled letterbox (overrides maintas), `aspect_ratio` is an
 // optional override like "16:9" / "4:3".
@@ -146,7 +146,7 @@ static void LoadCncDdrawLayoutOnce() {
 // Replicate cnc-ddraw's `dd.c:924-979` to figure out where on the
 // backbuffer the game quad will land. We use the d3d9 backbuffer's
 // own dimensions (via GetBackBuffer/GetDesc) instead of GetClientRect
-// — fullscreen-exclusive presents through a different surface size
+// -- fullscreen-exclusive presents through a different surface size
 // than the window client, and the backbuffer is the source of truth
 // for the surface cnc-ddraw is rendering into.
 static void ComputeCncDdrawGameRect(LPDIRECT3DDEVICE9 pDevice,
@@ -154,7 +154,7 @@ static void ComputeCncDdrawGameRect(LPDIRECT3DDEVICE9 pDevice,
 {
     LoadCncDdrawLayoutOnce();
 
-    // Game logical resolution — fixed per engine.
+    // Game logical resolution -- fixed per engine.
     const int game_w = FM2K::kIsFM95 ? 320 : 640;
     const int game_h = FM2K::kIsFM95 ? 240 : 480;
 
@@ -227,7 +227,7 @@ static void ComputeCncDdrawGameRect(LPDIRECT3DDEVICE9 pDevice,
 // Render debug overlay
 
 // Find the game window owned by THIS process. Mirrors
-// wndproc_subclass.cpp's FindOwnWindowProc — the previous code used
+// wndproc_subclass.cpp's FindOwnWindowProc -- the previous code used
 // `FindWindowA(nullptr, "WonderfulWorld")` (title hardcoded, only
 // matched one specific game) with a `GetForegroundWindow()` fallback
 // that, in dual-client local testing, happily returned the OTHER
@@ -258,7 +258,7 @@ static HWND FindOwnGameWindow() {
 }
 
 // Returns true if `pDevice`'s back buffer carries our private-data
-// tag — i.e. the same surface we already initialized the imgui DX9
+// tag -- i.e. the same surface we already initialized the imgui DX9
 // backend against. False means it's fresh (Reset rebuilt it, or
 // release+CreateDevice produced a new one, possibly at the same heap
 // address) and we have to rebuild ImGui's GPU resources before
@@ -303,14 +303,14 @@ static bool ShouldRenderHud() {
 HRESULT APIENTRY Hook_EndScene(LPDIRECT3DDEVICE9 pDevice) {
     // Swap-chain identity check. If the swap chain we currently hand
     // the backend isn't tagged as ours, cnc-ddraw recreated the
-    // device or Reset rebuilt the chain — either way the cached GPU
+    // device or Reset rebuilt the chain -- either way the cached GPU
     // texture/buffer pointers are now garbage. Tear the backend down
     // (full Shutdown if the device pointer also changed; just
     // Invalidate+Create otherwise) and stamp the new swap chain so
     // we don't keep firing this branch.
     if (g_imgui_initialized && !ImguiSwapChainStillOurs(pDevice)) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "ImGui: swap chain changed (device %p -> %p) — rebuilding DX9 backend",
+            "ImGui: swap chain changed (device %p -> %p) -- rebuilding DX9 backend",
             (void*)g_imgui_device, (void*)pDevice);
         if (pDevice != g_imgui_device) {
             ImGui_ImplDX9_Shutdown();
@@ -330,7 +330,7 @@ HRESULT APIENTRY Hook_EndScene(LPDIRECT3DDEVICE9 pDevice) {
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
         // Replace ImGui's stock ProggyClean (a bitmap pixel font) with
-        // Segoe UI from %WINDIR%\Fonts. Loaded at 16px as a "base" —
+        // Segoe UI from %WINDIR%\Fonts. Loaded at 16px as a "base" --
         // fc_hud renders most text via ImDrawList::AddText with an
         // explicit font_size that scales with the bar geometry, so the
         // base size only matters as a rasterization quality target. If
@@ -344,7 +344,7 @@ HRESULT APIENTRY Hook_EndScene(LPDIRECT3DDEVICE9 pDevice) {
         }
 
         if (!g_game_window) {
-            // Process-scoped window lookup — must NOT cross processes
+            // Process-scoped window lookup -- must NOT cross processes
             // when running multiple clients on the same machine
             // (matches wndproc_subclass.cpp's class-name discovery).
             g_game_window = FindOwnGameWindow();
@@ -409,7 +409,7 @@ HRESULT APIENTRY Hook_EndScene(LPDIRECT3DDEVICE9 pDevice) {
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
-    // Per-game patches per-frame tick — F2 hotkey for training-mode P2
+    // Per-game patches per-frame tick -- F2 hotkey for training-mode P2
     // behavior cycle, game_mode edge tracker for OPTION-mode submode
     // application, etc. No-op when no relevant mode is active.
     PerGamePatches_OnFrameTick();
@@ -453,7 +453,7 @@ HRESULT APIENTRY Hook_EndScene(LPDIRECT3DDEVICE9 pDevice) {
         dl->AddRect(a, b, IM_COL32(0, 255, 0, 220), 0.0f, 0, 2.0f);
     }
 
-    // Per-game patch badges — small corner labels showing which
+    // Per-game patch badges -- small corner labels showing which
     // experimental mode is currently engaged. Always visible (no F-key
     // gate) so the user can see at a glance which mode is driving the
     // input. Renders to the foreground draw list inside the game
@@ -477,21 +477,21 @@ HRESULT APIENTRY Hook_EndScene(LPDIRECT3DDEVICE9 pDevice) {
             cy += (sz.y + pad * 2.5f);
         };
 
-        // ALT CSS MODE status — rendered ONLY when a non-default mode is
+        // ALT CSS MODE status -- rendered ONLY when a non-default mode is
         // engaged or queued. Default state stays visually quiet.
         //
         // Sources, in priority order:
         //   1. An active mode flag (vs_cpu / training / cpu_vs_cpu).
-        //   2. On title with option_mode_selector on AND submode != 0 —
+        //   2. On title with option_mode_selector on AND submode != 0 --
         //      the QUEUED submode (what title→CSS will engage).
-        //   3. Otherwise — badge hidden.
+        //   3. Otherwise -- badge hidden.
         //
         // On title→non-title transition (i.e., the user confirms a mode
         // and CSS init begins), the queued-label badge SLIDES OUT to the
         // right over ~0.4s instead of snap-disappearing. The frozen label
         // captured at transition stays drawn for the duration; the
         // post-CSS active-mode badge appears normally once the slide
-        // completes (a tiny gap where no badge shows is fine — keeps the
+        // completes (a tiny gap where no badge shows is fine -- keeps the
         // exit animation clean and avoids overlapping motion).
         {
             const uint32_t game_mode = *(const uint32_t*)0x00470054;
@@ -563,7 +563,7 @@ HRESULT APIENTRY Hook_EndScene(LPDIRECT3DDEVICE9 pDevice) {
                             IM_COL32(220, 255, 220, 255), s_exit_label);
                 cy += (sz.y + pad * 2.5f);
             } else if (mode_label) {
-                // Steady-state badge — render once exit-anim is done OR
+                // Steady-state badge -- render once exit-anim is done OR
                 // when we're on title and have a queued label.
                 char buf[80];
                 std::snprintf(buf, sizeof(buf), "ALT CSS MODE = %s", mode_label);
@@ -572,7 +572,7 @@ HRESULT APIENTRY Hook_EndScene(LPDIRECT3DDEVICE9 pDevice) {
             }
         }
 
-        // Training mode P2 behavior — shown below the ALT CSS MODE status
+        // Training mode P2 behavior -- shown below the ALT CSS MODE status
         // when training is active so the user sees what dummy is doing.
         if (PerGamePatches_IsTrainingModeActive()) {
             char buf[64];
@@ -583,7 +583,7 @@ HRESULT APIENTRY Hook_EndScene(LPDIRECT3DDEVICE9 pDevice) {
         }
     }
 
-    // Debug overlay window — F9-gated, drag-around, tabs etc. The
+    // Debug overlay window -- F9-gated, drag-around, tabs etc. The
     // HUD above is always-on; this is the developer surface.
     if (g_overlay_visible) {
         RenderDebugOverlay();
@@ -629,7 +629,7 @@ HRESULT APIENTRY Hook_Reset(LPDIRECT3DDEVICE9 pDevice, D3DPRESENT_PARAMETERS* pP
 }
 
 LRESULT WINAPI Hook_WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    // Tab is OUR chat-toggle key — swallow it at this layer so:
+    // Tab is OUR chat-toggle key -- swallow it at this layer so:
     //   - The game's WndProc / DefWindowProc don't see it (Tab would
     //     otherwise trigger focus-traversal in default DefWindowProc,
     //     which is harmless for FM2K but pointless).
@@ -650,7 +650,7 @@ LRESULT WINAPI Hook_WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     }
 
     // Always forward everything else so ImGui's key state stays
-    // coherent — the previous "gate forwarding on chat-active" mode
+    // coherent -- the previous "gate forwarding on chat-active" mode
     // dropped KEYUP events when chat closed mid-press, leaving keys
     // stuck "down" in ImGui state and breaking subsequent reopens.
     // ImGui_ImplWin32_WndProcHandler returns 1 only when a focused
@@ -766,7 +766,7 @@ void ToggleOverlay() {
 void CheckOverlayHotkey() {
     // Lazy-install d3d9 hooks on first call. Used to wait for F9
     // press, but the always-on HUD needs the hooks up at the first
-    // frame after the game starts rendering — we have no way to
+    // frame after the game starts rendering -- we have no way to
     // draw otherwise. InitializeImGuiOverlay spawns a worker thread
     // that polls for d3d9.dll, so it's safe to call before the
     // game's d3d9 device exists.
@@ -776,7 +776,7 @@ void CheckOverlayHotkey() {
         }
     }
 
-    // Hotkeys read via GetKeyState — synchronized to this (window)
+    // Hotkeys read via GetKeyState -- synchronized to this (window)
     // thread's message queue, so an F9/F10 typed into ANY other window
     // never registers here. GetAsyncKeyState is banned: it reads the
     // physical keyboard desktop-wide, and used to toggle the overlay /

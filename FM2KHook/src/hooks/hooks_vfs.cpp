@@ -4,7 +4,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "hooks_vfs_internal.h"  // VFile registry shared with hooks_vfs_serve.cpp
-#include "round_events.h"     // C3.5 — vs_round_function detour install
+#include "round_events.h"     // C3.5 -- vs_round_function detour install
 #include "css_autoconfirm.h"  // CSS lock-and-confirm for offline replay playback
 #include "css_fastsound.h"    // FM2K_FPK_CSS_FASTSOUND: lazy DSound buffers (CSS dip fix)
 #include "per_game_patches.h" // damage multiplier MinHook + team-size override
@@ -27,12 +27,12 @@
 #include "imgui_overlay.h"
 #include "shared_mem.h"
 #include "savestate.h"  // CHAR_SLOT_BASE, CHAR_SLOT_SIZE (corrected by Wave C audit)
-#include "../core/main_loop_trampoline.h"  // TrampolineMainLoop — owns the outer loop
+#include "../core/main_loop_trampoline.h"  // TrampolineMainLoop -- owns the outer loop
 #include "../audio/sound_rollback.h"        // Mike Z desired/actual sound layer
 #include "../netplay/spectator_node.h"      // spectator playback queue accessors
 #include "../ui/input_binder.h"             // FM2KInputBinder::Sample_Win32 + Bindings
 #include "../ui/screenshot.h"               // FM2KCapture::SaveScreenshot for the auto-banner pipeline
-#include "../ui/fc_hud.h"                   // IsChatInputActive — gate local input during typing
+#include "../ui/fc_hud.h"                   // IsChatInputActive -- gate local input during typing
 #include "../vfs/fpk_reader.h"              // FM2K_FPK_VFS: inflate a slim .fpk -> original asset bytes
 #include <MinHook.h>
 #include <SDL3/SDL_log.h>
@@ -60,7 +60,7 @@
 #include "hooks_internal.h"
 
 // FM95 vs-mode random-stage hook.
-// FM2K's selected_stage scalar (0x43010c) doesn't exist on FM95 — vs/story
+// FM2K's selected_stage scalar (0x43010c) doesn't exist on FM95 -- vs/story
 // mode reads stage_id from g_char_stage_per_round[char][round] table at
 // LoadStageFile_alt call time. To override, we trampoline the function
 // itself and rewrite arg0 (stage_id) when random-stage is enabled. The
@@ -71,14 +71,14 @@
 // Practice mode uses g_practice_stage_id (which our existing random-stage
 // write target ADDR_SELECTED_STAGE points at on FM95), so this hook is
 // only load-bearing for vs/story-mode random-stage. Practice mode still
-// works via the direct memory write — this hook is a NO-OP in that path
+// works via the direct memory write -- this hook is a NO-OP in that path
 // because the override comes back as the same value.
 using LoadStageFileAlt_t = int(__cdecl*)(int, int, int);
 static LoadStageFileAlt_t original_LoadStageFileAlt = nullptr;
 extern "C" uint32_t Netplay_PeekNextRolledStage();  // 0xFFFFFFFF if random off
 extern "C" uint32_t RandomStage_ConsumeForLoad();   // advances the roll
 extern "C" bool     RandomStage_IsEnabled();
-// Forward decl — definition at line ~280. Used by Hook_CreateFileA/W to
+// Forward decl -- definition at line ~280. Used by Hook_CreateFileA/W to
 // register virtual-file aliases for .player loads (other agent's WIP).
 extern "C" void MaybeRegisterPlayerVFileA(HANDLE h, LPCSTR name);
 static int __cdecl Hook_LoadStageFileAlt(int stage_id, int slot, int palette) {
@@ -212,7 +212,7 @@ static HANDLE WINAPI Hook_CreateFileA(LPCSTR name, DWORD access, DWORD share,
     // path conversion uses the SYSTEM ANSI codepage (1252 on US Windows), NOT
     // our user-mode GetACP hook, so SJIS bytes get reinterpreted as CP1252
     // and the file lookup fails silently. ASCII paths round-trip through
-    // CP932 unchanged, so this is safe for all callers — and CreateFileA
+    // CP932 unchanged, so this is safe for all callers -- and CreateFileA
     // internally just calls CreateFileW after its own path conversion anyway.
     if (name) {
         int wlen = MultiByteToWideChar(932, 0, name, -1, nullptr, 0);
@@ -227,7 +227,7 @@ static HANDLE WINAPI Hook_CreateFileA(LPCSTR name, DWORD access, DWORD share,
                     MaybeRegisterPlayerVFile(h, wide.data());
                     return h;
                 }
-                // W path failed — fall through to A so a system-codepage
+                // W path failed -- fall through to A so a system-codepage
                 // path (e.g. ASCII like "log.txt") still has a chance.
             }
         }
@@ -307,7 +307,7 @@ static HANDLE WINAPI Hook_CreateFileW(LPCWSTR name, DWORD access, DWORD share,
 // FM2K's `character_data_loader@0x403600` issues 200+ tiny ReadFile syscalls
 // per character (one per sound header + one per sound payload). On modern
 // Windows each syscall costs ~150 µs of kernel ping-pong; for a 100-150
-// sound character that's 30 ms of syscall overhead PER LOAD — and a CSS
+// sound character that's 30 ms of syscall overhead PER LOAD -- and a CSS
 // cursor flick triggers one of these synchronously every time the user
 // moves to a new character.
 //
@@ -320,7 +320,7 @@ static HANDLE WINAPI Hook_CreateFileW(LPCWSTR name, DWORD access, DWORD share,
 //
 // Gated on `FM2K_FAST_PLAYER_LOAD=1`. Off by default so behavior is bit-
 // identical to vanilla until explicitly opted in via the launcher dev
-// panel. Doesn't change parse semantics — every byte the original loader
+// panel. Doesn't change parse semantics -- every byte the original loader
 // would see, it still sees, just from RAM not disk.
 
 namespace {
@@ -641,7 +641,7 @@ extern "C" HANDLE FpkTryRedirectOpenA(LPCSTR name, DWORD access, DWORD share,
 //   (2) otherwise, under FM2K_FAST_PLAYER_LOAD -> slurp the original file whole.
 //
 // Either way the bytes are keyed under the ORIGINAL file's handle `h` (the one
-// the game holds). Failures leave the handle alone — the game's existing
+// the game holds). Failures leave the handle alone -- the game's existing
 // per-byte ReadFile path runs as a graceful fallback.
 extern "C" void MaybeRegisterPlayerVFileA(HANDLE h, LPCSTR name) {
     if (!VfsActive()) return;
@@ -744,7 +744,7 @@ bool InstallVfsHooks() {
                 std::memcmp(code, kLoadStageFileSig,
                             sizeof(kLoadStageFileSig)) != 0) {
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "Hooks: LoadStageFile signature MISMATCH at 0x%08X — this "
+                    "Hooks: LoadStageFile signature MISMATCH at 0x%08X -- this "
                     "build differs from the common FM2K runtime. Random stage "
                     "DISABLED for this game (not hooking, to avoid detouring "
                     "an unrelated function).",
@@ -754,7 +754,7 @@ bool InstallVfsHooks() {
                               (void**)&original_LoadStageFile) != MH_OK ||
                 MH_QueueEnableHook((void*)FM2K::ADDR_LOAD_STAGE_FILE) != MH_OK) {
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                    "Hooks: Failed to hook LoadStageFile — random stage will "
+                    "Hooks: Failed to hook LoadStageFile -- random stage will "
                     "not apply. Non-fatal: stage selection falls back to the "
                     "game's own pick.");
             } else {
@@ -774,7 +774,7 @@ bool InstallVfsHooks() {
                               (void**)&original_LoadStageFileAlt) != MH_OK ||
                 MH_QueueEnableHook((void*)FM2K::ADDR_LOAD_STAGE_FILE_ALT) != MH_OK) {
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                    "Hooks: Failed to hook LoadStageFile_alt — vs-mode "
+                    "Hooks: Failed to hook LoadStageFile_alt -- vs-mode "
                     "random-stage will not override game's per-character "
                     "stage table (practice-mode random still works via "
                     "direct g_practice_stage_id write).");
@@ -787,7 +787,7 @@ bool InstallVfsHooks() {
         }
     }
 
-    // CreateFileA/W share-mode override — force shared reads so two
+    // CreateFileA/W share-mode override -- force shared reads so two
     // instances launched from the same game folder don't get
     // ERROR_SHARING_VIOLATION on .player / .kgt opens.
     HMODULE kernel32 = GetModuleHandleA("kernel32.dll");

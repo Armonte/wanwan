@@ -1,4 +1,4 @@
-// FM2K_CncDDraw — see header for rationale.
+// FM2K_CncDDraw -- see header for rationale.
 
 #include "FM2K_CncDDraw.h"
 #include "FM2K_Utf8Path.h"  // WideToUtf8 -- keep the module path UTF-8, not ANSI
@@ -35,7 +35,7 @@ namespace fm2k::cnc_ddraw {
 namespace {
 
 // ---------------------------------------------------------------------------
-// Repo coordinates. Hardcoded — we don't pull from a config file. If
+// Repo coordinates. Hardcoded -- we don't pull from a config file. If
 // upstream moves we'll patch the launcher.
 // ---------------------------------------------------------------------------
 constexpr const char* kRepoOwner = "FunkyFr3sh";
@@ -45,13 +45,13 @@ constexpr const char* kAssetName = "cnc-ddraw.zip";
 // PINNED release. The hook DLL hard-depends on this exact build: the F4
 // fullscreen toggle calls util_toggle_fullscreen at 2DFMD.dll+0x8770
 // (signature-guarded) and the toggle diagnostics read RVAs from the
-// 2DFMD IDB — a different upstream build moves those and silently kills
+// 2DFMD IDB -- a different upstream build moves those and silently kills
 // the F4 hotkey. Tracking releases/latest meant any upstream release
 // could do that without us shipping anything. Bump this tag ONLY after
 // re-verifying the offsets in wndproc_subclass.cpp against the new build.
 constexpr const char* kPinnedTag = "v7.1.0.0";
 
-// File that lives in the install dir — its presence + 2DFMD.dll's
+// File that lives in the install dir -- its presence + 2DFMD.dll's
 // presence + version.txt's content tell us "install is good."
 constexpr const char* kRenamedDll = "2DFMD.dll";
 constexpr const char* kZipDllName = "ddraw.dll";   // what the zip contains
@@ -83,7 +83,7 @@ void SetFail(const std::string& detail) {
 }
 
 // ---------------------------------------------------------------------------
-// WinHTTP wrappers. Same pattern as FM2K_Updater — duplicated rather than
+// WinHTTP wrappers. Same pattern as FM2K_Updater -- duplicated rather than
 // extracted to a shared header so the two updaters stay independently
 // editable; the surface is small enough that the duplication cost is low.
 // ---------------------------------------------------------------------------
@@ -253,7 +253,7 @@ bool EnsureDir(const std::string& path) {
 // each non-directory entry to `dst_dir`, creating subdirectories as
 // needed. Returns true if every file extracted; on failure leaves
 // whatever was already written in place (caller wipes `dst_dir` and
-// retries). Pure C — runs on Win7 / Win8 / anywhere our 32-bit MinGW
+// retries). Pure C -- runs on Win7 / Win8 / anywhere our 32-bit MinGW
 // build executes, no OS dependency on bundled tar.exe.
 // ---------------------------------------------------------------------------
 bool ExtractZip(const std::string& zip_path, const std::string& dst_dir) {
@@ -328,7 +328,7 @@ bool ExtractZip(const std::string& zip_path, const std::string& dst_dir) {
 // Current migrations:
 //   keytogglefullscreen2: 0x73 (F4) -> 0x00. cnc-ddraw's single-key
 //   hotkey matcher has no Alt check and swallows the key at the
-//   WH_KEYBOARD hook (keyboard.c) — with F4 bound there, Alt+F4 toggled
+//   WH_KEYBOARD hook (keyboard.c) -- with F4 bound there, Alt+F4 toggled
 //   fullscreen instead of closing the game. Our wndproc subclass owns F4
 //   now (wndproc_subclass.cpp); cnc-ddraw itself passes Alt+F4 through
 //   to the normal close chain once nothing binds F4. Only the exact old
@@ -358,7 +358,7 @@ void InstallWorkerImpl(bool force) {
 
     MigrateManagedIniKeys();
 
-    // 1. Target version is the pinned tag — no releases/latest query.
+    // 1. Target version is the pinned tag -- no releases/latest query.
     // (Also removes the GitHub-API-rate-limit failure mode on every
     // launcher start; an up-to-date install now needs no network at all.)
     const std::string tag = kPinnedTag;
@@ -390,7 +390,7 @@ void InstallWorkerImpl(bool force) {
     const std::string zip_path = temp_dir + "cnc-ddraw_v" + remote + ".zip";
 
     // GitHub's release-download URL pattern. Redirects to objects.githubusercontent
-    // — HttpDownloadFile follows.
+    // -- HttpDownloadFile follows.
     char zip_url[512];
     std::snprintf(zip_url, sizeof(zip_url),
         "https://github.com/%s/%s/releases/download/%s/%s",
@@ -446,7 +446,7 @@ void InstallWorkerImpl(bool force) {
     const std::string staged_renamed = staging_dir + "\\" + kRenamedDll;
     if (!std::filesystem::exists(staged_ddraw, ec)) {
         SetFail("Zip didn't contain " + std::string(kZipDllName) +
-                " — upstream release layout changed?");
+                " -- upstream release layout changed?");
         std::filesystem::remove_all(staging_dir, ec);
         std::filesystem::remove(zip_path, ec);
         g_st.busy.store(false);
@@ -464,9 +464,9 @@ void InstallWorkerImpl(bool force) {
     }
 
     // Overwrite the stock ini that came out of the zip with our baked
-    // default — the launcher's canonical settings live in the binary,
+    // default -- the launcher's canonical settings live in the binary,
     // not in upstream's defaults. (cnc-ddraw's stock turns hotkeys on,
-    // doesn't pin the renderer, etc. — we want consistent defaults
+    // doesn't pin the renderer, etc. -- we want consistent defaults
     // matched to the FM2K integration.)
     {
         FILE* fp = std::fopen((staging_dir + "\\ddraw.ini").c_str(), "wb");
@@ -475,12 +475,12 @@ void InstallWorkerImpl(bool force) {
             std::fclose(fp);
         } else {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "CncDDraw: couldn't write baked ddraw.ini into staging — keeping zip's stock");
+                "CncDDraw: couldn't write baked ddraw.ini into staging -- keeping zip's stock");
         }
     }
 
     // Preserve a user-tuned ddraw.ini if one already lives in the
-    // install dir — copying it into staging AFTER our default write
+    // install dir -- copying it into staging AFTER our default write
     // means user tuning wins on updates while fresh installs still
     // pick up our baked defaults.
     const std::string user_ini = install_dir + "\\ddraw.ini";
@@ -489,7 +489,7 @@ void InstallWorkerImpl(bool force) {
             std::filesystem::copy_options::overwrite_existing, ec);
         if (ec) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "CncDDraw: couldn't preserve user ddraw.ini (%s) — using baked default",
+                "CncDDraw: couldn't preserve user ddraw.ini (%s) -- using baked default",
                 ec.message().c_str());
             ec.clear();
         }
@@ -499,7 +499,7 @@ void InstallWorkerImpl(bool force) {
     // move the old install aside, then rename staging into place, then
     // remove the old. If the game is currently running and 2DFMD.dll
     // is locked, the rename of the old dir will fail with sharing
-    // violation — surface that clearly.
+    // violation -- surface that clearly.
     const std::string backup_dir = install_dir + ".old";
     std::filesystem::remove_all(backup_dir, ec);
     if (std::filesystem::exists(install_dir, ec)) {
@@ -528,7 +528,7 @@ void InstallWorkerImpl(bool force) {
     std::filesystem::remove_all(backup_dir, ec);
     std::filesystem::remove(zip_path, ec);
 
-    // Write version.txt last — its presence is the integrity flag.
+    // Write version.txt last -- its presence is the integrity flag.
     {
         FILE* fp = std::fopen(VersionFilePath().c_str(), "wb");
         if (!fp) {
@@ -634,7 +634,7 @@ namespace {
 constexpr const char* kSection = "ddraw";
 
 // `WritePrivateProfileString(NULL, NULL, NULL, path)` flushes the
-// per-process Win32 profile cache for that file — call before reads
+// per-process Win32 profile cache for that file -- call before reads
 // when we suspect another process (cnc-ddraw config.exe, manual edits)
 // touched the file. We only do this on initial Load; per-widget writes
 // are already cache-coherent since they go through the same API.
@@ -750,7 +750,7 @@ void LoadIni(IniConfig& o) {
     o.remove_menu         = ReadBool(p, "remove_menu",         o.remove_menu);
     o.refresh_rate        = ReadInt (p, "refresh_rate",        o.refresh_rate);
 
-    // Hotkeys — read as int; cnc-ddraw accepts both decimal and 0x-prefixed
+    // Hotkeys -- read as int; cnc-ddraw accepts both decimal and 0x-prefixed
     // hex from GetPrivateProfileInt's standard parsing.
     o.keytogglefullscreen  = ReadInt(p, "keytogglefullscreen",  o.keytogglefullscreen);
     o.keytogglefullscreen2 = ReadInt(p, "keytogglefullscreen2", o.keytogglefullscreen2);

@@ -79,7 +79,7 @@ void FM2KLauncher::StartStressSession() {
 
     game_instance_ = std::make_unique<FM2KGameInstance>();
 
-    // Stress is a determinism harness — a leaked offline per-game patch
+    // Stress is a determinism harness -- a leaked offline per-game patch
     // (damage mult, team size...) would perturb the baseline sim.
     lui::NeutralizeGamePatchEnvVars();
 
@@ -91,7 +91,7 @@ void FM2KLauncher::StartStressSession() {
 
     // FM95's rollback driver only runs under FM95_TRAMPOLINE=1 (the hook
     // rides TrampolineFrameTick inside CPW's native WinMain loop). Stress
-    // mode IS the rollback driver, so a CPW stress session must enable it —
+    // mode IS the rollback driver, so a CPW stress session must enable it --
     // otherwise there's no Save/Load/Advance and the (protection-less,
     // dedup-less) Hook_RenderGame path runs instead. Per-instance env, so no
     // leakage to other spawns. No-op on FM2K.
@@ -135,7 +135,7 @@ void FM2KLauncher::StartOnlineSession(const NetworkConfig& config, bool is_host)
 
     // FM95 rollback runs only under FM95_TRAMPOLINE=1 (the hook rides
     // TrampolineFrameTick inside CPW's WinMain loop). Netplay IS the rollback
-    // driver, so a CPW online match must enable it — same as stress. Offline
+    // driver, so a CPW online match must enable it -- same as stress. Offline
     // deliberately does NOT set it (CPW runs natively at title→CSS→battle).
     // Per-instance env; no-op on FM2K.
     if (selected_game_.engine == FM2K::Engine::FM95) {
@@ -156,7 +156,7 @@ void FM2KLauncher::StartOnlineSession(const NetworkConfig& config, bool is_host)
     //     listens on its socket and learns the peer's address from
     //     the first inbound HELLO. The default "127.0.0.1:7001" from
     //     NetworkConfig's ctor is a UI copy-button placeholder, not
-    //     a real peer — clear it for legacy host.
+    //     a real peer -- clear it for legacy host.
     std::string remote_addr = config.remote_address;
     if (is_host && remote_addr == "127.0.0.1:7001") {
         remote_addr.clear();   // legacy-host placeholder; let hook learn
@@ -213,7 +213,7 @@ void FM2KLauncher::StopSession() {
     std::cout << "? Session stopped\n";
     // Tell the hub the match ended BEFORE we tear the local instance
     // down. Hub flips both peers' status back to "idle" and
-    // broadcasts user_status to the rest of the room — without this
+    // broadcasts user_status to the rest of the room -- without this
     // the lobby sticks at "in_match" and Challenge stays disabled
     // until the user reconnects.
     if (ui_) {

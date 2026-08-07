@@ -1,4 +1,4 @@
-// FM2K_Updater — auto-updater glue for the launcher.
+// FM2K_Updater -- auto-updater glue for the launcher.
 //
 // Pulls "LatestVersion" from raw.githubusercontent.com/<owner>/<repo>/main,
 // compares with kAppVersion (from version_local.h), and if newer
@@ -7,7 +7,7 @@
 // On user confirm, hands the zip to FM2KUpdater.exe (separate target),
 // which extracts it after the launcher exits and relaunches.
 //
-// All HTTP via WinHTTP. Async — work runs on a background thread, the
+// All HTTP via WinHTTP. Async -- work runs on a background thread, the
 // UI polls Snapshot() each frame and renders the pill state.
 #pragma once
 
@@ -20,11 +20,11 @@
 namespace fm2k::updater {
 
 enum class State {
-    Idle,           // boot — no check yet
+    Idle,           // boot -- no check yet
     Checking,       // GET LatestVersion in flight
     UpToDate,       // remote ≤ local
     UpdateAvailable,// remote > local, ready for user prompt
-    Downloading,    // user clicked Update — zip download in flight
+    Downloading,    // user clicked Update -- zip download in flight
     Ready,          // zip on disk, ready to invoke FM2KUpdater.exe
     Failed,         // anything went wrong; check error_detail
 };
@@ -61,7 +61,7 @@ bool ApplyUpdateAndExit();
 // Snapshot the current state for UI rendering. Cheap.
 Snapshot Get();
 
-// True when remote is OLDER than local — i.e. the channel they're on
+// True when remote is OLDER than local -- i.e. the channel they're on
 // has a version below their installed one. Common case: user is on a
 // dev build (0.2.55) and flips channel to stable (latest 0.2.54). UI
 // uses this to switch the pill copy from "Update X -> Y" to

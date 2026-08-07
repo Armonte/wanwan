@@ -9,7 +9,7 @@
 // docs/dev/banner_pipeline.md for the full state machine.
 //
 // Writes the game's current window contents to <out_dir>/<filename>
-// using GDI BitBlt + GDI+ for PNG encoding. No new dependencies —
+// using GDI BitBlt + GDI+ for PNG encoding. No new dependencies --
 // gdiplus.dll ships with every Windows since XP. PNG is the only
 // supported output format; callers append ".png" to filename.
 
@@ -17,7 +17,7 @@ namespace FM2KCapture {
 
 // Initialize once at hook bring-up. Picks up FM2K_AUTO_CAPTURE +
 // FM2K_CAPTURE_DIR from the environment; subsequent SaveScreenshot
-// calls become no-ops if FM2K_AUTO_CAPTURE is unset. Idempotent —
+// calls become no-ops if FM2K_AUTO_CAPTURE is unset. Idempotent --
 // safe to call repeatedly.
 void Init();
 

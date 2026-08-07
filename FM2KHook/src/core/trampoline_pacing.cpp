@@ -54,7 +54,7 @@ void SleepToTarget(uint64_t start_qpc, uint32_t target_ms,
         uint64_t remaining_ticks = target_ticks - now;
         uint64_t remaining_ms = (remaining_ticks * 1000) / freq;
         if (remaining_ms > 2) {
-            // Sleep all but the last ~1.5ms worth — leaves overshoot headroom.
+            // Sleep all but the last ~1.5ms worth -- leaves overshoot headroom.
             SDL_Delay((uint32_t)(remaining_ms - 1));
         }
         // Fall through and re-check; the tail gets busy-waited.

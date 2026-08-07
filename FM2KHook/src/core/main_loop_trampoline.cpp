@@ -8,11 +8,11 @@
 // inside GekkoAdvanceEvent (in netplay.cpp) which is deterministic.
 //
 // Phase dispatch per iteration:
-//   TRAMPOLINE_BATTLE — Netplay_ProcessBattleInputPhase drives sim via gekko,
+//   TRAMPOLINE_BATTLE -- Netplay_ProcessBattleInputPhase drives sim via gekko,
 //                       render fires post-advance, pacing via HandleFrameTime.
-//   CSS               — lockstep via control channel; native sim functions
+//   CSS               -- lockstep via control channel; native sim functions
 //                       called directly; pacing via a 10 ms sleep.
-//   NATIVE            — menu/intro/results; native sim functions called
+//   NATIVE            -- menu/intro/results; native sim functions called
 //                       directly; pacing via a 10 ms sleep.
 #include "main_loop_trampoline.h"
 #include "globals.h"
@@ -43,14 +43,14 @@ static LoopPhase ClassifyPhase() {
     // upstream JOIN_ACK has arrived yet, run RunSpectatorTick. Pre-ACK the
     // queue is empty so the trampoline holds the boot frame; once inputs
     // start flowing the sim animates through CSS, locks chars, transitions
-    // to battle, etc. — all driven by the streamed input pipe.
+    // to battle, etc. -- all driven by the streamed input pipe.
     if (g_spectator_mode || SpectatorNode_IsPlayingBack()) {
         return LoopPhase::SPECTATOR_PLAYBACK;
     }
 
     // Battle session still alive (e.g. game_mode just flipped 3000→2000 inside
     // the final battle UG, but the GekkoNet battle session hasn't been
-    // destroyed yet — it's waiting on Netplay_IsBattleEndSynced). Stay in the
+    // destroyed yet -- it's waiting on Netplay_IsBattleEndSynced). Stay in the
     // BATTLE phase so RunBattleTick keeps polling the swap-frame gate and
     // calling Netplay_EndBattle. Without this, the battle session sticks
     // forever and Netplay_StartCSSSession spins in a "session already exists"
@@ -67,7 +67,7 @@ static LoopPhase ClassifyPhase() {
     }
 
     // Engine-aware phase mapping. On FM2K g_game_mode hits 2000/3000+; on
-    // FM95 it stays near 0 and phase lives in the object pool — IsCSSMode /
+    // FM95 it stays near 0 and phase lives in the object pool -- IsCSSMode /
     // IsBattleMode (hooks.cpp, declared in hooks.h) do the right walk for
     // each engine.
     uint32_t mode = *(uint32_t*)FM2K::ADDR_GAME_MODE;
@@ -87,11 +87,11 @@ static bool PumpMessages() {
             // anything else is "something inside the game asked to
             // quit immediately." A user reporting WM_QUIT 4 ms after
             // 'main loop ACTIVE' means the game window self-destructed
-            // during creation — usually DirectDraw/DirectInput init
+            // during creation -- usually DirectDraw/DirectInput init
             // failure on the user's machine (driver, fullscreen, or
             // antivirus interference).
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "PumpMessages: WM_QUIT received (wParam=%u hwnd=%p) — main loop will exit",
+                "PumpMessages: WM_QUIT received (wParam=%u hwnd=%p) -- main loop will exit",
                 (unsigned)msg.wParam, (void*)msg.hwnd);
             return false;
         }
@@ -102,7 +102,7 @@ static bool PumpMessages() {
         // *see* the phantom F-keys.
         //
         // Default: only the function keys (VK_F1=0x70 .. VK_F24=0x87) on
-        // key-up/down — that's the entire point of this probe. Logging every
+        // key-up/down -- that's the entire point of this probe. Logging every
         // keystroke at INFO floods the log with movement keys (each WASD tap is
         // a KEYDOWN + KEYUP + WM_CHAR), so the firehose is gated behind
         // FM2K_MSG_DIAG=1 for when someone's actively debugging input routing.
@@ -147,15 +147,15 @@ static bool PumpMessages() {
 // Per-frame engine work, callable from either the FM2K trampoline loop OR
 // FM95's host-driven update_game callsite. Returns the LoopPhase actually
 // executed so callers can decide whether the host's natural render call
-// should still fire (NATIVE) or be skipped (BATTLE / CSS — we already
+// should still fire (NATIVE) or be skipped (BATTLE / CSS -- we already
 // drove update + render via AdvanceEvent / RenderFrameWithSnapshot).
 //
 // FM2K caller: TrampolineMainLoop wraps this with QPC-anchored pacing +
 // SleepToTarget. Host main_game_loop is replaced wholesale.
 //
-// FM95 caller (Hook_UpdateGameState path — Phase 2 wiring): the host's
+// FM95 caller (Hook_UpdateGameState path -- Phase 2 wiring): the host's
 // natural WinMain pumps messages and runs its own timeGetTime catchup
-// loop, so the FM95 path skips PumpMessages and SleepToTarget — calls
+// loop, so the FM95 path skips PumpMessages and SleepToTarget -- calls
 // this directly to drive one frame of GekkoNet save/load/advance dispatch.
 LoopPhase TrampolineFrameTick() {
     LoopPhase phase = ClassifyPhase();
@@ -177,7 +177,7 @@ LoopPhase TrampolineFrameTick() {
 }
 
 LoopPhase TrampolineFrameTickHostDriven() {
-    // Same as TrampolineFrameTick but NEVER runs RunNativeTick — the FM95
+    // Same as TrampolineFrameTick but NEVER runs RunNativeTick -- the FM95
     // host's WinMain owns the native update, so we'd double-tick title/menus
     // if we ran it here too. Non-NATIVE phases sim via gekko/CSS and suppress
     // the host render; NATIVE returns immediately for the caller to fall
@@ -200,12 +200,12 @@ LoopPhase TrampolineFrameTickHostDriven() {
 //
 // FM2K's CSS code path opens a .player file synchronously every time the
 // player's cursor hovers a new character. Cold-cache reads on Windows take
-// 100-500ms per file — fine for a human cursor (one move = one load) but
+// 100-500ms per file -- fine for a human cursor (one move = one load) but
 // disastrous for the spectator's input-replay-driven CSS replay, where
 // 30+ cursor moves get replayed back-to-back as fast as the trampoline
 // can run them. Pre-warming pulls every *.player file in the game
 // directory into the OS page cache once at startup so subsequent reads
-// hit RAM. No game-state side effects — purely passive.
+// hit RAM. No game-state side effects -- purely passive.
 //
 // Dev-mode gated. Enable via FM2K_DEV_MODE=1.
 static DWORD WINAPI PreloadPlayerFiles_Worker(LPVOID) {
@@ -233,7 +233,7 @@ static DWORD WINAPI PreloadPlayerFiles_Worker(LPVOID) {
                                nullptr, OPEN_EXISTING,
                                FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
         if (f == INVALID_HANDLE_VALUE) continue;
-        // Drain into a small scratch buffer — we don't care about the
+        // Drain into a small scratch buffer -- we don't care about the
         // bytes, only that the OS pages them in.
         char scratch[64 * 1024];
         DWORD n = 0;
@@ -251,7 +251,7 @@ static DWORD WINAPI PreloadPlayerFiles_Worker(LPVOID) {
 
 BOOL TrampolineMainLoop() {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "Trampoline: main loop ACTIVE — GekkoNet-driven outer loop");
+                "Trampoline: main loop ACTIVE -- GekkoNet-driven outer loop");
 
     // Kick off background .player file cache pre-warmer. Runs once;
     // typically completes within a second or two. Subsequent FM2K opens
@@ -272,7 +272,7 @@ BOOL TrampolineMainLoop() {
     *(uint32_t*)FM2K::ADDR_FRAME_TIME_MS = 10;
 
     // Parity recorder: if FM2K_PARITY_RECORD_PATH is set, open the .pty file
-    // here (DllMain runs too early — the game globals aren't initialized yet,
+    // here (DllMain runs too early -- the game globals aren't initialized yet,
     // and we want to record AFTER the warmup ticks below). MaybeAutoOpen
     // is a no-op if the env var isn't set, so this costs nothing in normal
     // play. Pairs with kgtengine's recorder for byte-level cross-engine
@@ -282,7 +282,7 @@ BOOL TrampolineMainLoop() {
                     "ParityRecorder: opened .pty output (FM2K_PARITY_RECORD_PATH)");
     }
 
-    // One-time warmup — matches main_game_loop's 8× update_game_state at
+    // One-time warmup -- matches main_game_loop's 8× update_game_state at
     // 0x405AF3. Required to initialize game subsystems before any input.
     // FM2K-only: FM95's WinMain does init_game_state ONCE then loops (no 8x
     // warmup), and we take over AT the loop head (0x40AD67) after that init has
@@ -297,13 +297,13 @@ BOOL TrampolineMainLoop() {
     while (true) {
         // QPC (microsecond-resolution) anchor for the frame pacing sleep.
         // SDL_GetTicks()'s 1ms resolution was causing pacing to land at
-        // 10.5-11 ms per frame on average due to SDL_Delay overshoot —
+        // 10.5-11 ms per frame on average due to SDL_Delay overshoot --
         // capping the loop at ~90 FPS. Using QPC + a busy-wait tail on
         // the final ~1 ms hits 100 Hz cleanly.
         uint64_t tick_start = SDL_GetPerformanceCounter();
 
         if (!PumpMessages()) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Trampoline: WM_QUIT — exiting");
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Trampoline: WM_QUIT -- exiting");
             // Patch the .pty header's frame_count and close the file before
             // process teardown. DllMain's DLL_PROCESS_DETACH runs at a point
             // where CRT FILE* state may already be torn down, so close here.
@@ -335,7 +335,7 @@ BOOL TrampolineMainLoop() {
                 // 1.6% slowdown when the host is ahead of the client (or
                 // vice versa). Without this the host runs rigid 10 ms
                 // forever, the client trails by 7-8 frames permanently,
-                // and FA stays pinned at ±8.5 — exactly the symptom we
+                // and FA stays pinned at ±8.5 -- exactly the symptom we
                 // saw. Stress / offline / pre-session paths all return
                 // 0.0 from Netplay_GetFramesAhead so the slowdown is a
                 // no-op there.
@@ -348,7 +348,7 @@ BOOL TrampolineMainLoop() {
             case LoopPhase::SPECTATOR_PLAYBACK: {
                 // Always 100 Hz outer tick. Catchup behaviour lives entirely
                 // INSIDE RunSpectatorTick's inner loop (one-shot at join,
-                // bounded at 250ms wall-clock per outer tick) — that path
+                // bounded at 250ms wall-clock per outer tick) -- that path
                 // drains 5–25 sim frames per outer tick during the burst,
                 // which is plenty to chew through a typical join-time
                 // backfill in a couple seconds. We deliberately don't

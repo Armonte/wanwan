@@ -1,11 +1,11 @@
-// FM2K Hub client — WinHTTP WebSocket transport.
+// FM2K Hub client -- WinHTTP WebSocket transport.
 //
 // One I/O thread does the WS handshake then spawns a sender thread.
 // The I/O thread itself owns the receive loop. Both push events
 // onto a thread-safe inbox; the launcher's UI thread drains via
 // HubClient::Poll() once per frame.
 //
-// JSON encode/decode is deliberately minimal — the message catalog
+// JSON encode/decode is deliberately minimal -- the message catalog
 // in docs/FM2K_Matchmaking_Design.md §15.2 is small enough that
 // hand-rolled extractors are simpler than vendoring a JSON lib.
 // If that catalog grows, swap in nlohmann/json.
@@ -55,7 +55,7 @@ bool HubClient::Connect(const std::string& host, uint16_t port,
                         const std::string& hub_token, bool secure) {
     if (running_.load()) return false;  // already connecting / connected
     // A previous failed Connect leaves io_ in a finished-but-joinable
-    // state — IoThread returned, but std::thread doesn't auto-detach.
+    // state -- IoThread returned, but std::thread doesn't auto-detach.
     // Reassigning over a joinable thread calls std::terminate(); join
     // first to clean up. The thread is already done so this is instant.
     if (io_.joinable()) {
@@ -120,6 +120,6 @@ void HubClient::EmitEvent(HubEvent ev) {
     inbox_.push_back(std::move(ev));
 }
 
-// ----- public outbound helpers — all just queue a JSON string -----
+// ----- public outbound helpers -- all just queue a JSON string -----
 
 }  // namespace fm2k

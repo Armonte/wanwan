@@ -23,7 +23,7 @@ bool g_initialized = false;
 // ---------------------------------------------------------------------------
 
 // Wire / display name per FM2K bit. These names also serve as the INI keys
-// in fm2k_inputs.ini, so renaming them is a wire-format break — old configs
+// in fm2k_inputs.ini, so renaming them is a wire-format break -- old configs
 // with "BTN5" / "BTN6" / "BTN7" lines will silently fail to load and fall
 // back to defaults. That's an acceptable one-time cost for matching the
 // 2DFM convention; the binder ships in v1 so very few configs exist.
@@ -52,7 +52,7 @@ void ApplyDefaultsP1(PlayerBindings& pb) {
     kb(Bit::DOWN,  SDL_SCANCODE_DOWN);
     // 6 attack buttons + Start, matching 2D Fighter Maker 2002's KEYINPUT
     // layout convention. Z X C V on the lower row, A S D on the upper row,
-    // Enter for Start — same defaults LilithPort and most FM2K-era setups
+    // Enter for Start -- same defaults LilithPort and most FM2K-era setups
     // shipped with so existing players don't have to relearn their bind.
     kb(Bit::A,     SDL_SCANCODE_Z);
     kb(Bit::B,     SDL_SCANCODE_X);
@@ -92,7 +92,7 @@ void ApplyDefaultsP2(PlayerBindings& pb) {
     kb(Bit::UP,    SDL_SCANCODE_KP_8);
     kb(Bit::DOWN,  SDL_SCANCODE_KP_2);
     // 6 attack buttons + Start. UIOJKL is the canonical "right hand"
-    // layout for P2 keyboard share — mirrors P1's ZXCV/ASD (Z X C
+    // layout for P2 keyboard share -- mirrors P1's ZXCV/ASD (Z X C
     // lower row, A S D upper row) on the home-row keys around U/J.
     kb(Bit::A,     SDL_SCANCODE_J);
     kb(Bit::B,     SDL_SCANCODE_K);
@@ -106,7 +106,7 @@ void ApplyDefaultsP2(PlayerBindings& pb) {
 // Fill the alt slot with the LEFT STICK axis bindings ONLY for the four
 // directionals. Buttons stay empty in alt. Pairs with FillPrimaryAsGamepad
 // to give the CXL pattern (dpad in primary + stick in alt, both move the
-// character) without duplicating face buttons across both slots — pressing
+// character) without duplicating face buttons across both slots -- pressing
 // A on the pad would otherwise fire the A bit twice through the same
 // physical button. Empty alt buttons keep the binding model honest:
 // "one device, one button, one bit" except where the user explicitly
@@ -123,12 +123,12 @@ void FillAltAsStickDirections(PlayerBindings& pb, int gp_idx) {
     axis(Bit::RIGHT, SDL_GAMEPAD_AXIS_LEFTX, +1);
     axis(Bit::UP,    SDL_GAMEPAD_AXIS_LEFTY, -1);
     axis(Bit::DOWN,  SDL_GAMEPAD_AXIS_LEFTY, +1);
-    // Buttons (A-F + START) intentionally NOT touched — leaving them
+    // Buttons (A-F + START) intentionally NOT touched -- leaving them
     // empty keeps each face button mapped exactly once.
 }
 
 // Fill the primary slot with the standard XInput-style gamepad layout
-// (dpad + face/shoulder buttons). Inverse of FillAltAsGamepad — used
+// (dpad + face/shoulder buttons). Inverse of FillAltAsGamepad -- used
 // when the user picks a gamepad as their primary device.
 void FillPrimaryAsGamepad(PlayerBindings& pb, int gp_idx) {
     auto btn = [&](Bit b, SDL_GamepadButton gb) {
@@ -156,7 +156,7 @@ void ApplyDefaults(int player) {
     for (auto& s : pb.bits)     s = Binding{};
     for (auto& s : pb.bits_alt) s = Binding{};
     // Defaults are KEYBOARD-ONLY. One device per player. Users who want a
-    // gamepad pick it via the device dropdown — that swaps primary to
+    // gamepad pick it via the device dropdown -- that swaps primary to
     // dpad+face-button layout AND fills alt with stick+face-button layout
     // (CXL stick+dpad pattern). Never auto-bind a second device behind
     // the user's back: dual-device bindings are how Muffin's parry
@@ -181,7 +181,7 @@ void Init() {
     g_initialized = true;
     g_config_path = DefaultConfigPath();
 
-    // Hints — must be set BEFORE SDL_InitSubSystem(GAMEPAD).
+    // Hints -- must be set BEFORE SDL_InitSubSystem(GAMEPAD).
     // HIDAPI brings the first-party DS4/DS3/Switch-Pro drivers in
     // SDL3, which handle PS4 sticks (Qanba Obsidian in PS4 mode is a
     // re-labelled DS4) and PS3 sticks correctly. RAWINPUT gives us
@@ -201,7 +201,7 @@ void Init() {
     if (!SDL_WasInit(SDL_INIT_GAMEPAD)) SDL_InitSubSystem(SDL_INIT_GAMEPAD);
 
     // Critical: without this the polled state behind SDL_GetGamepadButton
-    // never refreshes — clicking Bind and pressing a button looked like
+    // never refreshes -- clicking Bind and pressing a button looked like
     // the binder was ignoring controller inputs entirely. Enabled
     // unconditionally; mirrors revolve_input_sdl3 (sdl3_gamepad_manager
     // line 128).
@@ -210,7 +210,7 @@ void Init() {
     // Built-in mapping fallbacks for sticks SDL3 doesn't ship a
     // mapping for. PS3 controllers in particular: HIDAPI driver can't
     // always identify the controller flavor (Sony first-party vs
-    // clone) and falls through to a generic HID joystick — which has
+    // clone) and falls through to a generic HID joystick -- which has
     // axes/buttons but no gamepad mapping, so SDL_GetGamepads()
     // doesn't list it. Adding mappings ahead of time covers that.
     // Lifted verbatim from revolve_input_sdl3 (BBBR's input layer).

@@ -1,4 +1,4 @@
-// FM2K Launcher localization — see FM2K_Locale.h for the design rationale.
+// FM2K Launcher localization -- see FM2K_Locale.h for the design rationale.
 
 #include "FM2K_Locale.h"
 
@@ -195,7 +195,7 @@ namespace Locale {
 
 void Init() {
     // Load all three INIs unconditionally so switching language at runtime
-    // is just a pointer flip — no disk I/O on the toggle. Total memory cost
+    // is just a pointer flip -- no disk I/O on the toggle. Total memory cost
     // is trivial (under 50KB across all three for ~200 strings each).
     const std::string dir = ExeDir() + "\\locales";
     LoadIni((dir + "\\en.ini").c_str(), g_strings_en);
@@ -231,10 +231,10 @@ const char* CodeForLang(Lang lang) {
 }
 
 const char* DisplayNameForLang(Lang lang) {
-    // Always native-script — users find their language by recognizing it,
+    // Always native-script -- users find their language by recognizing it,
     // not by reading the launcher's current label. So "日本語" stays
     // "日本語" even when the launcher is set to English.
-    // Plain string literals — file is UTF-8 so the multibyte sequences
+    // Plain string literals -- file is UTF-8 so the multibyte sequences
     // pass through untouched. Avoids C++20's char8_t / char incompatibility.
     switch (lang) {
         case Lang::En: return "English";

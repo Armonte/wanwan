@@ -64,7 +64,7 @@ std::vector<wchar_t> BuildEnvBlockWithPathPrepend(
 
     // Walk the doubly-NUL-terminated parent block, copying each KEY=VALUE
     // entry into `out`. When we hit `PATH=...`, prepend prepend_path_dir.
-    // Comparison is case-insensitive — Windows env-var names are.
+    // Comparison is case-insensitive -- Windows env-var names are.
     std::vector<wchar_t> out;
     bool path_seen = false;
     for (LPWCH p = parent_env; *p; ) {
@@ -108,7 +108,7 @@ std::vector<wchar_t> BuildEnvBlockWithPathPrepend(
         out.push_back(L'\0');
     }
     // Append extra KEY=VALUE entries. Caller is responsible for not
-    // duplicating keys already in the parent env — we don't dedupe here
+    // duplicating keys already in the parent env -- we don't dedupe here
     // (CreateProcess takes the first occurrence). For our use case (a
     // launch-scoped CNC_DDRAW_CONFIG_FILE that the user almost never
     // sets in their shell), the first-wins rule is fine.
@@ -156,7 +156,7 @@ bool FM2KGameInstance::Initialize() {
 
 bool FM2KGameInstance::Launch(const std::string& exe_path, FM2K::Engine engine) {
     engine_ = engine;
-    // Stash for Terminate() — RestoreFromBackup needs the exe path to
+    // Stash for Terminate() -- RestoreFromBackup needs the exe path to
     // locate the game.ini we mutated.
     game_exe_path_ = exe_path;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
@@ -179,7 +179,7 @@ bool FM2KGameInstance::Launch(const std::string& exe_path, FM2K::Engine engine) 
     // Path strings come in as UTF-8 (SDL_GlobDirectory / Windows shell drag-
     // drop / config files). Construct the filesystem::path directly from the
     // wide form so the parent_path / stem operations work on Unicode-correct
-    // data — going `path(std::string)` then `parent_path().string()` on
+    // data -- going `path(std::string)` then `parent_path().string()` on
     // MinGW round-trips through the system ANSI codepage, mangling JP
     // names like ＣＰＷ.exe into '_'-soup before we ever reach CreateProcess.
     std::wstring wide_exe_path     = UTF8ToWide(exe_path_win);
@@ -200,7 +200,7 @@ bool FM2KGameInstance::Launch(const std::string& exe_path, FM2K::Engine engine) 
     // and the hook has no FM95 boot-to-battle prime (per_game_patches_
     // fm95's InstallBootToBattleHook is a stub). So /F on CPW derives an
     // EMPTY kgt name → "ゲーム読み込みエラー[]" (game-load error) on
-    // launch. Never pass /F to an FM95 game — it boots to title normally.
+    // launch. Never pass /F to an FM95 game -- it boots to title normally.
     //
     // Check the per-instance environment_variables_ map FIRST (where
     // LaunchRemoteSpectator and other per-spawn-config call sites
@@ -263,7 +263,7 @@ bool FM2KGameInstance::Launch(const std::string& exe_path, FM2K::Engine engine) 
     // When the cnc-ddraw redirect is active, build a private env block with
     // our cnc-ddraw dir prepended to PATH. The child process's loader walks
     // PATH when resolving the patched `2DFMD.dll` import, so this is the
-    // load-bearing piece — without it the IAT rewrite produces a
+    // load-bearing piece -- without it the IAT rewrite produces a
     // "DLL not found" failure. The block is constructed *after* the
     // FM2K_* var injection above, so those flow through to the child too.
     const bool ddraw_redirect_enabled = FM2K::ddraw_redirect::ShouldRedirect();
@@ -276,7 +276,7 @@ bool FM2KGameInstance::Launch(const std::string& exe_path, FM2K::Engine engine) 
         std::filesystem::path exe_fs(UTF8ToWide(exe_path));
         if (!fm2k::game_ini::ForceFullscreenForLaunch(exe_fs)) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "GameIni: ForceFullscreenForLaunch failed — game may launch windowed and fight cnc-ddraw");
+                "GameIni: ForceFullscreenForLaunch failed -- game may launch windowed and fight cnc-ddraw");
         }
     }
     std::wstring cnc_ddraw_dir;
@@ -297,7 +297,7 @@ bool FM2KGameInstance::Launch(const std::string& exe_path, FM2K::Engine engine) 
             // documented CNC_DDRAW_CONFIG_FILE env var (config.c:1994).
             // Without this pin, cnc-ddraw resolves the ini relative to
             // its own dll path (which is also our dir, so it'd land on
-            // the same file in practice) — but if the game folder also
+            // the same file in practice) -- but if the game folder also
             // has a stray ddraw.ini from a prior manual install, the
             // fallback at config.c:2011 (".\\ddraw.ini" = CWD = game
             // folder) can grab that instead. Setting the env var is
@@ -317,7 +317,7 @@ bool FM2KGameInstance::Launch(const std::string& exe_path, FM2K::Engine engine) 
             }
         } else {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "DDrawRedirect: enabled but ResolveCncDdrawDir returned empty — falling back to inherited env, redirect will likely fail with DLL not found");
+                "DDrawRedirect: enabled but ResolveCncDdrawDir returned empty -- falling back to inherited env, redirect will likely fail with DLL not found");
         }
     }
 
@@ -351,23 +351,23 @@ bool FM2KGameInstance::Launch(const std::string& exe_path, FM2K::Engine engine) 
 
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Process created with ID: %lu", process_id_);
 
-    // Patch the IAT before any user code runs — the loader hasn't resolved
+    // Patch the IAT before any user code runs -- the loader hasn't resolved
     // imports yet at this point (LdrInitializeThunk runs on first
     // ResumeThread). On a successful patch, when ResumeThread fires below,
     // the loader will look for `2DFMD.dll` instead of `DDRAW.dll`, fall
     // through KnownDlls (no match), and find our renamed cnc-ddraw via the
     // PATH we prepended above. On failure (no DDRAW.dll import in this
     // EXE, or RPM/WPM error) we fall through and let the process resume
-    // unmodified — the loader resolves DDRAW.dll the normal way and the
+    // unmodified -- the loader resolves DDRAW.dll the normal way and the
     // game runs without cnc-ddraw, which is the same as redirect-off.
     if (ddraw_redirect_enabled) {
         if (!FM2K::ddraw_redirect::RedirectImport(process_handle_)) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "DDrawRedirect: patch did not apply — game will load stock ddraw.dll");
+                "DDrawRedirect: patch did not apply -- game will load stock ddraw.dll");
         }
     }
 
-    // Inject hook DLL — FM2KHook.dll for FM2K, FM95Hook.dll for FM95.
+    // Inject hook DLL -- FM2KHook.dll for FM2K, FM95Hook.dll for FM95.
     std::wstring dll_path = GetDLLPath(engine_);
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Using DLL path: %s (engine=%s)",
                 std::string(dll_path.begin(), dll_path.end()).c_str(),
@@ -427,7 +427,7 @@ void FM2KGameInstance::Terminate() {
     // (cnc-ddraw redirect). Done after the game process is killed so
     // we don't race a still-running game holding its own ini open.
     // No-op when no backup exists. Online StopSession also calls
-    // RestoreFromBackup separately — second call is a no-op since
+    // RestoreFromBackup separately -- second call is a no-op since
     // the backup is already consumed.
     if (!game_exe_path_.empty()) {
         std::filesystem::path exe_fs(UTF8ToWide(game_exe_path_));
@@ -519,7 +519,7 @@ bool FM2KGameInstance::SetupProcessForHooking(const std::string& dll_path) {
     constexpr int kInjectTimeoutMs = 30000;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
         "Inject: waiting up to %ds for LoadLibrary in target (pid=%lu) "
-        "— if this takes more than a few seconds, Defender is scanning "
+        "-- if this takes more than a few seconds, Defender is scanning "
         "the DLL on first load",
         kInjectTimeoutMs / 1000,
         (unsigned long)::GetProcessId(process_handle_));
@@ -543,7 +543,7 @@ bool FM2KGameInstance::SetupProcessForHooking(const std::string& dll_path) {
         if (WaitForSingleObject(process_handle_, 0) == WAIT_OBJECT_0) {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                 "Inject: target process exited mid-injection (after %dms). "
-                "Game crashed during start-up — Windows SmartScreen, antivirus "
+                "Game crashed during start-up -- Windows SmartScreen, antivirus "
                 "(Defender, Bitdefender, Kaspersky), or DEP often kills FM2K "
                 "binaries on first run. Right-click the EXE + DLL → Properties "
                 "→ tick Unblock, and add an exclusion for the games folder.",
@@ -557,12 +557,12 @@ bool FM2KGameInstance::SetupProcessForHooking(const std::string& dll_path) {
     if (wait_result != WAIT_OBJECT_0) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
             "Inject: LoadLibrary in target hung past 30s (wait_result=%lu). "
-            "DllMain is stuck — most common causes:\n"
+            "DllMain is stuck -- most common causes:\n"
             "  1. FM2KHook.dll is BLOCKED by Windows. Right-click the DLL in "
             "Explorer → Properties → tick \"Unblock\" → OK. Re-launch.\n"
             "  2. Antivirus is scanning the DLL (Defender often does this on "
             "first load). Add an exclusion for the launcher's folder.\n"
-            "  3. Missing VC++ runtime in the target process (rare for FM2K — "
+            "  3. Missing VC++ runtime in the target process (rare for FM2K -- "
             "the games are vintage and don't need modern runtimes).\n"
             "  4. FM2KHook.dll is in a path with non-ASCII characters and the "
             "ANSI LoadLibraryA we use can't open it. Move the launcher to "
@@ -589,12 +589,12 @@ bool FM2KGameInstance::SetupProcessForHooking(const std::string& dll_path) {
 
     if (exit_code == 0) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-            "Inject: LoadLibraryA returned NULL — the DLL was rejected by "
+            "Inject: LoadLibraryA returned NULL -- the DLL was rejected by "
             "Windows. Most common cause: the file is BLOCKED (Mark of the "
             "Web). Right-click FM2KHook.dll → Properties → \"Unblock\" → OK. "
             "Other possibilities: file corrupted (re-download), wrong "
             "architecture (FM2K games are 32-bit; FM2KHook.dll must be 32-bit "
-            "too — it is in stock builds), or the path can't be resolved. "
+            "too -- it is in stock builds), or the path can't be resolved. "
             "DLL was: %s", dll_path.c_str());
         return false;
     }

@@ -75,7 +75,7 @@ bool AnyInputHeld() {
     // boot per user repro). With the capture threshold (16384/50%),
     // those stuck axes pin AnyInputHeld() to true forever and the
     // bind state machine never arms. Use 90% threshold for the held-
-    // check — only a deliberately-pushed stick passes — and the
+    // check -- only a deliberately-pushed stick passes -- and the
     // tighter 50% threshold still applies for capture itself, so
     // sloppy stick presses still bind cleanly.
     constexpr int kAxisHeldThreshold = 28000;  // ~85% of int16 range
@@ -96,7 +96,7 @@ bool AnyInputHeld() {
 // Returns true and fills `out` if a fresh press was captured.
 // Returns true when a binding was captured. `cancelled` is kept in
 // the API for the caller's switch but we no longer treat any specific
-// key as a built-in cancel — ESC is bindable now (Pokemon CC and other
+// key as a built-in cancel -- ESC is bindable now (Pokemon CC and other
 // 2DFM games map it to pause). The Cancel button next to the row is
 // the explicit out-of-capture path.
 bool PollCapture(Binding& out, bool& cancelled) {
@@ -189,7 +189,7 @@ bool RenderBody(int player_slot) {
     // Per-player primary device picker.
     //
     // Without this, "P1 controller goes to player 2 too" is the default
-    // experience — every gamepad-bound row stores its own gamepad_index,
+    // experience -- every gamepad-bound row stores its own gamepad_index,
     // and ApplyDefaultsP1/P2 leave gamepad bindings empty so the user
     // adds them one by one through capture, all picking up index 0.
     //
@@ -198,13 +198,13 @@ bool RenderBody(int player_slot) {
     // sourced bindings in one shot. Keyboard rows are untouched. Future
     // SDL3 multi-keyboard support (per the SDL_KeyboardEvent.which
     // field) will add a "primary keyboard" option to the same dropdown
-    // — keyboard bindings on a player become device-scoped instead of
+    // -- keyboard bindings on a player become device-scoped instead of
     // one shared queue-synced GetKeyboardState snapshot.
     // ------------------------------------------------------------------
     {
         // Identity-first preview: a player with a stored device identity
         // shows its resolved pad (or "disconnected: <name>" while the
-        // physical device is away — bindings are intentionally silent in
+        // physical device is away -- bindings are intentionally silent in
         // that state, never borrowed from the other player). Legacy
         // identity-less configs fall back to discovering the index from
         // the first gamepad-sourced binding, exactly as before.
@@ -225,7 +225,7 @@ bool RenderBody(int player_slot) {
                 }
             }
             // The dropdown PREVIEW must reflect reality, not a hopeful
-            // default — current_idx stays -1 ("Keyboard only") whenever no
+            // default -- current_idx stays -1 ("Keyboard only") whenever no
             // gamepad-sourced binding exists, regardless of how many pads
             // are plugged in.
             if (current_idx >= (int)g_gamepad_ids.size()) {
@@ -253,7 +253,7 @@ bool RenderBody(int player_slot) {
         ImGui::SetNextItemWidth(-1.0f);
         const char* combo_id = (player_slot == 0) ? "##p1_dev" : "##p2_dev";
         if (ImGui::BeginCombo(combo_id, preview)) {
-            // Keyboard only entry — clears gamepad bindings on this player.
+            // Keyboard only entry -- clears gamepad bindings on this player.
             bool sel = (current_idx < 0 && !identity_disconnected);
             if (ImGui::Selectable("Keyboard only", sel)) {
                 // Switch this player to keyboard-only. Reset to the
@@ -274,7 +274,7 @@ bool RenderBody(int player_slot) {
                 if (ImGui::Selectable(row, sel_i)) {
                     // Switch this player to gamepad i. Primary gets
                     // the dpad + face/shoulder buttons. Alt gets ONLY
-                    // the left-stick axes for directionals — buttons
+                    // the left-stick axes for directionals -- buttons
                     // in alt stay empty so each face button maps to
                     // exactly one bit (no double-fire on press). This
                     // is the CXL pattern: stick AND dpad both move
@@ -295,7 +295,7 @@ bool RenderBody(int player_slot) {
         ImGui::TextDisabled(
             "Routes this player's gamepad bindings to the chosen device. "
             "Keyboard rows are unaffected. Multi-keyboard support is a "
-            "follow-up — when SDL_KeyboardID lands the dropdown will "
+            "follow-up -- when SDL_KeyboardID lands the dropdown will "
             "include per-keyboard entries.");
     }
 
@@ -357,7 +357,7 @@ bool RenderBody(int player_slot) {
     ImGui::SameLine();
     if (ImGui::Button("Reset Defaults")) {
         // Reset to defaults for the device the user CURRENTLY has picked
-        // — slamming back to keyboard when they're on a gamepad is the
+        // -- slamming back to keyboard when they're on a gamepad is the
         // wrong move. We re-derive the picked device from the existing
         // bindings (same logic the dropdown uses for its preview text)
         // and dispatch to the matching default-fill helpers.
@@ -396,7 +396,7 @@ bool RenderBody(int player_slot) {
     // Live gamepad-state debug panel. Shows per-frame what SDL is
     // reporting from each opened device. If you press a button and
     // it doesn't change here, SDL isn't seeing the input at all
-    // (HIDAPI driver issue, controller in wrong mode, etc.) — vs.
+    // (HIDAPI driver issue, controller in wrong mode, etc.) -- vs.
     // if it DOES change here but Bind doesn't catch it, the bug is
     // in the binder's capture state machine.
     SDL_PumpEvents();
@@ -413,7 +413,7 @@ bool RenderBody(int player_slot) {
             const char* name = SDL_GetGamepadName(gp);
             ImGui::Text("[%zu] jid=%u %s",
                 idx, (unsigned)kv.first, name ? name : "?");
-            // Buttons — print the pressed-button names compactly.
+            // Buttons -- print the pressed-button names compactly.
             std::string pressed;
             for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b) {
                 if (SDL_GetGamepadButton(gp, (SDL_GamepadButton)b)) {
@@ -423,7 +423,7 @@ bool RenderBody(int player_slot) {
             }
             ImGui::Text("  buttons: %s",
                 pressed.empty() ? "(none)" : pressed.c_str());
-            // Axes — show all six even when zero so you can watch
+            // Axes -- show all six even when zero so you can watch
             // them move in real time.
             char axline[256] = {};
             char* p = axline;
@@ -452,7 +452,7 @@ bool RenderBody(int player_slot) {
         ImGui::Text("AnyInputHeld() = %d", any_held ? 1 : 0);
         if (g_capture.active && !g_capture.armed && any_held) {
             ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.20f, 1.0f),
-                "Waiting for full release before sampling — release "
+                "Waiting for full release before sampling -- release "
                 "ALL keys/sticks/buttons. If a stick axis is sitting "
                 "past 50%% threshold at idle (deadzone drift), arm "
                 "will never trigger.");
@@ -480,7 +480,7 @@ bool RenderBody(int player_slot) {
         }
     };
     for (size_t i = 0; i < (size_t)Bit::COUNT; ++i) {
-        // Same-bit primary vs. alt isn't a conflict — that's the WHOLE
+        // Same-bit primary vs. alt isn't a conflict -- that's the WHOLE
         // POINT (stick + dpad on the same direction). Skip i==j entirely
         // and only flag cross-bit collisions.
         for (size_t j = i + 1; j < (size_t)Bit::COUNT; ++j) {
@@ -499,7 +499,7 @@ bool RenderBody(int player_slot) {
             if (!AnyInputHeld()) {
                 g_capture.armed = true;
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "InputBinder: armed for player=%d bit=%d — waiting for press",
+                    "InputBinder: armed for player=%d bit=%d -- waiting for press",
                     g_capture.player, g_capture.bit);
             }
         } else {
@@ -515,7 +515,7 @@ bool RenderBody(int player_slot) {
                     if (g_capture.alt) pb.bits_alt[g_capture.bit] = cap;
                     else               pb.bits[g_capture.bit]     = cap;
                     // Gamepad capture also pins this player's device
-                    // identity to the pad that was pressed — one device
+                    // identity to the pad that was pressed -- one device
                     // per player, resolved by GUID from here on.
                     if (cap.source == Binding::Source::GAMEPAD_BUTTON ||
                         cap.source == Binding::Source::GAMEPAD_AXIS) {
@@ -532,7 +532,7 @@ bool RenderBody(int player_slot) {
         }
     }
 
-    // Bindings table — primary AND alt slot per bit. Both slots OR
+    // Bindings table -- primary AND alt slot per bit. Both slots OR
     // together at sample time so a single direction can fire from
     // EITHER source. CXL-style stick+dpad: drop the dpad in primary
     // and the stick axis in alt (or vice-versa); both work in-game.
@@ -615,7 +615,7 @@ bool RenderBody(int player_slot) {
                                        kBitNames[i]);
                     if (ImGui::IsItemHovered()) {
                         ImGui::SetTooltip(
-                            "PAUSE is not bound — the pause button will not "
+                            "PAUSE is not bound -- the pause button will not "
                             "work for this player.");
                     }
                 } else {

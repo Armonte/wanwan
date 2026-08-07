@@ -21,7 +21,7 @@ extern void PatchVsRoundCase200T4FalsePositive();
 extern void NeuterFullscreenTogglesForCncDdraw();
 
 // Per-game patches that delegate to css_autoconfirm.cpp's hook (already
-// detoured on game_state_manager — sharing the same MinHook entry).
+// detoured on game_state_manager -- sharing the same MinHook entry).
 #include "../hooks/css_autoconfirm.h"
 #include "../hooks/round_events.h"
 #include "../hooks/per_game_patches.h"
@@ -40,7 +40,7 @@ extern void NeuterFullscreenTogglesForCncDdraw();
 #include <cctype>
 #include <string>
 
-// Quill — async logging backend. SDL_Log call sites stay unchanged; our
+// Quill -- async logging backend. SDL_Log call sites stay unchanged; our
 // SDLCustomLogOutput function (LogOutputFunction below) routes the formatted
 // message into a quill Logger which the backend thread writes to disk
 // asynchronously. Fixes the "fprintf + fflush per log line" stall that was
@@ -87,12 +87,12 @@ bool Fm2k_BuildLogPath(char* out, size_t out_size, const char* filename) {
 // disk async on its own thread, so the sim never blocks on disk.
 //
 // We use a custom PatternFormatter ("%(message)") that emits the raw
-// formatted message verbatim — no quill-prefixed timestamp/level dup,
+// formatted message verbatim -- no quill-prefixed timestamp/level dup,
 // since LogOutputFunction already builds the "[hh:mm:ss.mmm] [P1] [INFO]"
 // prefix in the same shape the user/CI grep tools expect.
 static quill::Logger* g_quill_logger = nullptr;
 
-// Fallback FILE* for the case where quill init fails (rare — only seen on
+// Fallback FILE* for the case where quill init fails (rare -- only seen on
 // some 32-bit injected DLL paths where the backend thread can't spawn).
 // LogOutputFunction prefers g_quill_logger when non-null; falls through
 // to this synchronous-but-reliable file write otherwise. Bug v0.2.32:
@@ -142,7 +142,7 @@ static void SDLCALL LogOutputFunction(void* userdata, int category, SDL_LogPrior
                  g_player_index + 1, priority_str, scrubbed_msg);
     }
 
-    // File-only by default — fputs to stdout is synchronous and lags the
+    // File-only by default -- fputs to stdout is synchronous and lags the
     // sim under heavy log volume (SoundRollback / ROLLBACK stats /
     // BATTLE STATUS / SPEC-FP cadence). Spectator instances historically
     // mirrored to console for live protocol tracing; gated now behind
@@ -163,7 +163,7 @@ static void SDLCALL LogOutputFunction(void* userdata, int category, SDL_LogPrior
 
     // Quill async path: one snprintf'd line per call, hands off to the
     // backend thread for actual disk I/O. Pattern is "%(message)" so the
-    // line lands in the file verbatim — same byte stream as the prior
+    // line lands in the file verbatim -- same byte stream as the prior
     // fprintf path, just async. Strip the trailing \n we added since
     // quill always appends one of its own.
     if (g_quill_logger) {
@@ -184,7 +184,7 @@ static void SDLCALL LogOutputFunction(void* userdata, int category, SDL_LogPrior
         // us "diag-armed forever, zero disk IO until something breaks."
         //
         // FM2K_SPECTATOR_DEBUG=1 routes diag straight to disk like a
-        // normal log line — keep the existing opt-in path for users
+        // normal log line -- keep the existing opt-in path for users
         // who want continuous capture during a debug session.
         //
         // Routing for non-CUSTOM (regular APPLICATION) categories: WARN
@@ -203,14 +203,14 @@ static void SDLCALL LogOutputFunction(void* userdata, int category, SDL_LogPrior
                 LOG_BACKTRACE(g_quill_logger, "{}", formatted);
             }
         } else if (priority >= SDL_LOG_PRIORITY_ERROR) {
-            // ERROR / CRITICAL — flushes the backtrace ring as a side
+            // ERROR / CRITICAL -- flushes the backtrace ring as a side
             // effect of init_backtrace's flush_level being set to Error.
             LOG_ERROR(g_quill_logger, "{}", formatted);
         } else {
             LOG_INFO(g_quill_logger, "{}", formatted);
         }
     } else if (g_log_file_fallback) {
-        // Quill init failed — write directly. Re-add the trailing newline
+        // Quill init failed -- write directly. Re-add the trailing newline
         // since the LOG_BACKTRACE path strips it but fprintf needs it back.
         size_t len = std::strlen(formatted);
         bool had_newline = (len > 0 && formatted[len - 1] == '\n');
@@ -222,7 +222,7 @@ static void SDLCALL LogOutputFunction(void* userdata, int category, SDL_LogPrior
 
 void InitFileLogging() {
     // Capture USERNAME etc. before the first SDL_Log call hits the
-    // scrubber. Idempotent — the launcher's logger init also calls this.
+    // scrubber. Idempotent -- the launcher's logger init also calls this.
     fm2k::pii::Init();
 
     char base_name[64];
@@ -233,7 +233,7 @@ void InitFileLogging() {
     }
     char filename[MAX_PATH];
     if (!Fm2k_BuildLogPath(filename, sizeof(filename), base_name)) {
-        // Fallback to cwd if the helper failed (extremely unlikely — only
+        // Fallback to cwd if the helper failed (extremely unlikely -- only
         // CreateDirectoryA would have to fail with something other than
         // ERROR_ALREADY_EXISTS, e.g. permission denied).
         snprintf(filename, sizeof(filename), "%s", base_name);
@@ -251,7 +251,7 @@ void InitFileLogging() {
     // throw.
     //
     // The launcher (which inits quill from main(), not DllMain) is fine.
-    // The hook just uses synchronous fopen below — same as v0.2.31 and
+    // The hook just uses synchronous fopen below -- same as v0.2.31 and
     // earlier. Quill stays vendored; if we want it back in the hook a
     // future commit can defer init to a worker spawned AFTER DllMain
     // returns (e.g. on first frame-hook callback).
@@ -282,7 +282,7 @@ void InitFileLogging() {
     SDL_SetLogOutputFunction(LogOutputFunction, nullptr);
 }
 
-// Crash dumper — last-chance handler that records faulting address +
+// Crash dumper -- last-chance handler that records faulting address +
 // exception code + a hex stack-backtrace to the same log file the rest
 // of the hook writes to. No DbgHelp dependency: we capture raw frame
 // addresses (RtlCaptureStackBackTrace) and dump the module name + RVA
@@ -291,12 +291,12 @@ void InitFileLogging() {
 // Why this exists: alt-tab during init or modal title-drag mid-boot
 // occasionally crashes the game right after the main pump resumes.
 // Without a stack we can only guess at root cause (D3D9 device-lost,
-// rollback catchup explosion, ImGui state mismatch — all plausible).
+// rollback catchup explosion, ImGui state mismatch -- all plausible).
 // This handler turns the next incident into a concrete trace.
 static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
     FILE* f = g_log_file_fallback;  // shared with normal logging
     if (!f) {
-        // Last-resort fallback — open a dedicated crash file in case the
+        // Last-resort fallback -- open a dedicated crash file in case the
         // main log handle is lost. Same logs/ dir.
         char path[MAX_PATH];
         char base[64];
@@ -336,7 +336,7 @@ static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
 
         // ExceptionInformation[0] = 0 read, 1 write, 8 DEP.
         // ExceptionInformation[1] = the inaccessible address. Critical
-        // for AVs — tells us "tried to {read,write} <addr>".
+        // for AVs -- tells us "tried to {read,write} <addr>".
         if (code == EXCEPTION_ACCESS_VIOLATION &&
             ep->ExceptionRecord->NumberParameters >= 2) {
             ULONG_PTR rw   = ep->ExceptionRecord->ExceptionInformation[0];
@@ -379,7 +379,7 @@ static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
 
     // Drop an upload manifest so the launcher posts the crash artifact
     // to the hub on next launch (the launcher polls upload_queue/
-    // every tick — see PollUploadQueue). We're inside an unhandled
+    // every tick -- see PollUploadQueue). We're inside an unhandled
     // exception filter so the heap may be unstable; the std::vector
     // + std::string allocations Enqueue does are small (~520 bytes
     // worst case) and use the same allocator the existing fprintf
@@ -409,7 +409,7 @@ static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
 
         fm2k::upload_queue::Manifest m;
         m.kind = "crash";
-        m.frame = -1;  // unknown — crashes can fire from any phase
+        m.frame = -1;  // unknown -- crashes can fire from any phase
         m.session_id = SpectatorNode_GetSessionId();
         m.player_index = g_player_index;
         m.game_id = game_id;
@@ -443,7 +443,7 @@ static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
 // Recovery strategy: jump EIP to a known full-epilogue position inside
 // the function (0x40D7A8: `pop edi; pop esi; pop ebp; pop ebx; add esp,
 // 0x6C; ret`). At the crash address the function has only executed its
-// prologue + a handful of loads — no extra stack pushes — so the epilogue
+// prologue + a handful of loads -- no extra stack pushes -- so the epilogue
 // unwinds cleanly to the caller. Effect renders for that one frame are
 // skipped; game keeps running.
 //
@@ -467,7 +467,7 @@ static LONG WINAPI VectoredRenderGuard(EXCEPTION_POINTERS* ep) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    // Only recover at the known crash site for now — broad jump-to-epilogue
+    // Only recover at the known crash site for now -- broad jump-to-epilogue
     // from arbitrary EIPs inside the function risks unwinding past
     // mid-call stack pushes (later in the function). Tightens the
     // recovery to "the exact frame-decode AV we've observed" and lets
@@ -481,7 +481,7 @@ static LONG WINAPI VectoredRenderGuard(EXCEPTION_POINTERS* ep) {
     if (n <= 3 || (n % 1000) == 0) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
             "VectoredRenderGuard: recovered AV at 0x%08lX in sprite_rendering_engine "
-            "(occurrence #%u, EDX=0x%08lX) — skipping render via epilogue jump",
+            "(occurrence #%u, EDX=0x%08lX) -- skipping render via epilogue jump",
             (unsigned long)c->Eip, (unsigned)n, (unsigned long)c->Edx);
     }
     c->Eip = kSpriteEngineEpilogue;
@@ -502,7 +502,7 @@ void InstallCrashHandler() {
 void ShutdownFileLogging() {
     if (g_quill_logger) {
         LOG_INFO(g_quill_logger, "{}", "=== Session ended ===");
-        // Don't stop the backend thread here — quill's Backend::start
+        // Don't stop the backend thread here -- quill's Backend::start
         // installs a std::atexit handler that drains + stops cleanly on
         // normal process exit. Stopping early could swallow pending log
         // lines from late shutdown paths (gekko_destroy etc).

@@ -1,11 +1,11 @@
-// FM2K Hub client — WinHTTP WebSocket transport.
+// FM2K Hub client -- WinHTTP WebSocket transport.
 //
 // One I/O thread does the WS handshake then spawns a sender thread.
 // The I/O thread itself owns the receive loop. Both push events
 // onto a thread-safe inbox; the launcher's UI thread drains via
 // HubClient::Poll() once per frame.
 //
-// JSON encode/decode is deliberately minimal — the message catalog
+// JSON encode/decode is deliberately minimal -- the message catalog
 // in docs/FM2K_Matchmaking_Design.md §15.2 is small enough that
 // hand-rolled extractors are simpler than vendoring a JSON lib.
 // If that catalog grows, swap in nlohmann/json.
@@ -302,7 +302,7 @@ void HubClient::OnMessage(const std::string& msg) {
             if (sk == "menu" || sk == "css" || sk == "battle") {
                 ev.spectate.session_kind = std::move(sk);
             }
-            // else: hub didn't supply — keep default "menu" from struct init
+            // else: hub didn't supply -- keep default "menu" from struct init
         }
         {
             // Phase 4: pick up host's spec_transport so we can match
@@ -368,7 +368,7 @@ void HubClient::OnMessage(const std::string& msg) {
 
     if (type == "match_rotated") {
         // Hub minted a fresh in-flight match-id for the next FM2K
-        // round in the same hub_session (no re-spawn — peers are
+        // round in the same hub_session (no re-spawn -- peers are
         // already in CSS). We just forward the new token; the
         // launcher updates current_match_token + resets per-match
         // flags so the next outcome publish commits cleanly.
@@ -418,7 +418,7 @@ void HubClient::OnMessage(const std::string& msg) {
                 // finished_at is a float in JSON; GetInt lossy but
                 // sufficient for sorting / display purposes.
                 row.finished_at = (double)GetInt(obj, "finished_at", 0);
-                // Char + stage fields — server sends null when peers
+                // Char + stage fields -- server sends null when peers
                 // disagreed/omitted; GetInt returns the default (-1)
                 // for null so the row stays clean for UI fallbacks.
                 row.p1_char_id   = GetInt(obj, "p1_char_id", -1);
@@ -434,7 +434,7 @@ void HubClient::OnMessage(const std::string& msg) {
         return;
     }
 
-    // In-progress match payloads — used by the lobby panel. Snapshot
+    // In-progress match payloads -- used by the lobby panel. Snapshot
     // form (current_matches response, list of objects) and live forms
     // (match_in_progress_started/updated, single object) parse the
     // same shape via this helper.
@@ -489,7 +489,7 @@ void HubClient::OnMessage(const std::string& msg) {
     }
 
     if (type == "error") {
-        // Server-issued error — most commonly auth_required when the
+        // Server-issued error -- most commonly auth_required when the
         // launcher connects without a valid Discord hub_token. Surface
         // both reason and detail so the UI can show something useful.
         const std::string reason = GetStr(msg, "reason");
@@ -501,7 +501,7 @@ void HubClient::OnMessage(const std::string& msg) {
         }
         if (combined.empty()) combined = "hub error";
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "HubClient: hub error — %s", combined.c_str());
+                    "HubClient: hub error -- %s", combined.c_str());
         ev.kind  = HubEvent::Kind::Error;
         ev.error = std::move(combined);
         EmitEvent(std::move(ev));

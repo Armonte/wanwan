@@ -27,7 +27,7 @@ static bool    g_in_modal_loop   = false;
 // the user toggles fast-forward via F12 in spectator mode and restore the
 // plain title on toggle off. Stored as wide so JP titles round-trip
 // without loss across the FF toggle (the locale-spoof wrapper promoted
-// the window to Unicode at create time — ANSI snapshot here would
+// the window to Unicode at create time -- ANSI snapshot here would
 // hard-fold JP chars to '?' via the system codepage).
 static wchar_t g_original_title[256] = {};
 
@@ -46,7 +46,7 @@ static void UpdateSpectatorTitle() {
 //
 // For F4 this is the PRIMARY path: the managed ddraw.ini deliberately leaves
 // keytogglefullscreen2 unbound (0x00) because cnc-ddraw's single-key matcher
-// has no Alt check — binding F4 there made its WH_KEYBOARD hook swallow
+// has no Alt check -- binding F4 there made its WH_KEYBOARD hook swallow
 // Alt+F4 (the close chord) before dispatch. With nothing bound, every F4
 // reaches our WM_KEYDOWN handler below, and Alt+F4 flows untouched through
 // the normal close chain (cnc-ddraw's wndproc even fast-paths WM_SYSKEYDOWN
@@ -54,7 +54,7 @@ static void UpdateSpectatorTitle() {
 //
 // For Alt+Enter this is a FALLBACK: cnc-ddraw's hook owns it, but on
 // JP-titled games that hook goes dead (its window/hook attach races our
-// locale window handling) — cnc-ddraw *swallows* the key whenever it DOES
+// locale window handling) -- cnc-ddraw *swallows* the key whenever it DOES
 // handle it, so any Alt+Enter that reaches this subclass means cnc-ddraw did
 // not, and we call the toggle directly. cnc-ddraw's own hook runs on this
 // same window thread, so the call context is identical and safe; the toggle
@@ -65,7 +65,7 @@ static void TriggerCncDdrawFullscreenToggle(HWND our_hwnd) {
     HMODULE mod = GetModuleHandleA("2DFMD.dll");
     if (!mod) return;
     // Prologue of util_toggle_fullscreen: push ebp; mov ebp,esp; sub esp,8;
-    // cmp dword ptr [g_in_toggle],0 — first 8 bytes carry no relocated address.
+    // cmp dword ptr [g_in_toggle],0 -- first 8 bytes carry no relocated address.
     static const unsigned char kSig[8] =
         {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x08, 0x83, 0x3D};
     auto* base = reinterpret_cast<unsigned char*>(mod);
@@ -75,7 +75,7 @@ static void TriggerCncDdrawFullscreenToggle(HWND our_hwnd) {
         if (!s_warned) {
             s_warned = true;
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "CncDdrawToggle: signature mismatch at 2DFMD.dll+0x8770 — "
+                "CncDdrawToggle: signature mismatch at 2DFMD.dll+0x8770 -- "
                 "cnc-ddraw build changed; F4 fullscreen fallback disabled");
         }
         return;
@@ -83,7 +83,7 @@ static void TriggerCncDdrawFullscreenToggle(HWND our_hwnd) {
     // Diagnostic: cnc-ddraw's toggle self-guards on `g_in_toggle(0x5F064) ||
     // !SrcWidth(0x5EDC4) || menu`. If hWndTo(0x5F02C) isn't our window or
     // SrcWidth is 0, cnc-ddraw's ddraw state was never bound to the visible
-    // window — the real root of the dead JP-game hotkey. Log it once so we see
+    // window -- the real root of the dead JP-game hotkey. Log it once so we see
     // exactly why the toggle no-ops. (Offsets are RVAs from the 2DFMD IDB.)
     static int s_diag = 0;
     if (s_diag < 3) {
@@ -114,7 +114,7 @@ static LRESULT CALLBACK SubclassProc(HWND hwnd, UINT msg,
             if ((wparam & 0xFFF0) == SC_KEYMENU) return 0;
             break;
         case WM_SYSKEYDOWN:
-            // Alt+Enter fullscreen — fall back to cnc-ddraw's own toggle when
+            // Alt+Enter fullscreen -- fall back to cnc-ddraw's own toggle when
             // its hotkey hook didn't fire (JP-titled games). Non-repeat only.
             if (wparam == VK_RETURN && (lparam & 0x40000000) == 0) {
                 TriggerCncDdrawFullscreenToggle(hwnd);
@@ -142,10 +142,10 @@ static LRESULT CALLBACK SubclassProc(HWND hwnd, UINT msg,
         // that value. Swallow so the game's input layer never sees
         // the keystroke.
         case WM_KEYDOWN:
-            // F4 fullscreen — we OWN this hotkey (the managed ddraw.ini
+            // F4 fullscreen -- we OWN this hotkey (the managed ddraw.ini
             // leaves cnc-ddraw's single-key toggle unbound so Alt+F4 stays
             // a close chord; see TriggerCncDdrawFullscreenToggle's comment).
-            // Alt+F4 never lands here — with Alt held the key arrives as
+            // Alt+F4 never lands here -- with Alt held the key arrives as
             // WM_SYSKEYDOWN, which we pass through to the close chain.
             // Non-repeat only.
             if (wparam == VK_F4 && (lparam & 0x40000000) == 0) {
@@ -183,7 +183,7 @@ static LRESULT CALLBACK SubclassProc(HWND hwnd, UINT msg,
         // recipe for "keep the network alive while the user drags
         // the title bar". Same trick covers WM_INITMENU / system-
         // menu open, since those also fire ENTERSIZEMOVE-equivalent
-        // modal loops via WM_ENTERMENULOOP — handled below.
+        // modal loops via WM_ENTERMENULOOP -- handled below.
         case WM_ENTERSIZEMOVE:
         case WM_ENTERMENULOOP:
             if (!g_in_modal_loop) {
@@ -200,7 +200,7 @@ static LRESULT CALLBACK SubclassProc(HWND hwnd, UINT msg,
             break;
         case WM_TIMER:
             if (wparam == kModalPumpTimerId) {
-                // Drive networking only — no game-sim tick from here.
+                // Drive networking only -- no game-sim tick from here.
                 // The sim itself naturally pauses while the user drags
                 // (FM2K's render is single-threaded and the trampoline
                 // hasn't been audited for reentrance from WM_TIMER).
@@ -223,11 +223,11 @@ static LRESULT CALLBACK SubclassProc(HWND hwnd, UINT msg,
         // -- Menu Item 2320 redirect ---------------------------------
         // FM2K's window menu has a "Full Screen" entry whose handler
         // (HandleMainMenuCommand case 2320 @ 0x4177ae) toggles
-        // g_graphics_mode and reinits DirectDraw — same fight with
+        // g_graphics_mode and reinits DirectDraw -- same fight with
         // cnc-ddraw as the F4 / Alt+Enter keyboard paths. When
         // cnc-ddraw is loaded (i.e. our IAT redirect succeeded and
         // 2DFMD.dll is present in the process), translate the menu
-        // command into a synthetic VK_F4 keypress — dispatched by the
+        // command into a synthetic VK_F4 keypress -- dispatched by the
         // message pump into our own WM_KEYDOWN VK_F4 handler above,
         // which drives cnc-ddraw's util_toggle_fullscreen directly.
         // PostMessage rather than SendInput because we want this to
@@ -256,7 +256,7 @@ static LRESULT CALLBACK SubclassProc(HWND hwnd, UINT msg,
 }
 
 // Find the KGT2KGAME window owned by THIS process. FindWindowA is
-// process-blind and returns the first match globally — when two
+// process-blind and returns the first match globally -- when two
 // instances are running on the same PC, instance B would otherwise
 // pick up instance A's HWND and SetWindowLongPtr would fail with
 // ERROR_ACCESS_DENIED (cross-process subclass not allowed).

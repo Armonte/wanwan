@@ -68,7 +68,7 @@ bool g_spectator_ff_user = false;
 // FM95 host-driven trampoline: when Hook_UpdateGameState runs the
 // trampoline tick on the FM95 build, it sets this to tell the host's
 // natural render_game call (caught by Hook_RenderGame) to skip its body
-// — the trampoline already drove RenderFrameWithSnapshot inside the
+// -- the trampoline already drove RenderFrameWithSnapshot inside the
 // tick, calling original_render_game once. Without this, FM95 renders
 // twice per frame: once via RenderFrameWithSnapshot, once via the
 // host's natural render_game pump. Cleared at the top of Hook_RenderGame

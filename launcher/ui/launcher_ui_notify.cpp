@@ -103,7 +103,7 @@ void LauncherUI::FireChallengeNotification(const std::string& from_nick) {
     // Resolve the launcher's HWND once. SDL3 stores it on the window's
     // properties under SDL_PROP_WINDOW_WIN32_HWND_POINTER. If we can't get
     // it (e.g., SDL backend changed), every Win32-flavored notification
-    // silently no-ops — sound still works.
+    // silently no-ops -- sound still works.
     HWND hwnd = nullptr;
     if (window_) {
         hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(window_),
@@ -112,7 +112,7 @@ void LauncherUI::FireChallengeNotification(const std::string& from_nick) {
     }
 
     // 1) Taskbar flash. Only if the launcher isn't currently the foreground
-    // window — flashing while focused is annoying. FLASHW_ALL flashes both
+    // window -- flashing while focused is annoying. FLASHW_ALL flashes both
     // window caption AND taskbar button. FLASHW_TIMERNOFG keeps flashing
     // until the user focuses the window. Cancels automatically on focus.
     if (notify_flash_ && hwnd && hwnd != GetForegroundWindow()) {
@@ -124,23 +124,23 @@ void LauncherUI::FireChallengeNotification(const std::string& from_nick) {
     // 2) Sound: MessageBeep is the cheapest "make a noise" path on Windows.
     // No assets to ship; the Windows default-event sound is what users
     // already recognize as a notification chirp. MB_ICONINFORMATION maps
-    // to SystemAsterisk — a short, non-jarring ding.
+    // to SystemAsterisk -- a short, non-jarring ding.
     if (notify_sound_) {
         MessageBeep(MB_ICONINFORMATION);
     }
 
     // 3) Windows toast / balloon notification via Shell_NotifyIconW
     // (wide-string variant). The W variant is critical so non-ASCII nicks
-    // (Armonté, テスト, español) render correctly — Shell_NotifyIconA
+    // (Armonté, テスト, español) render correctly -- Shell_NotifyIconA
     // would interpret UTF-8 bytes through the system codepage (CP1252 on
     // most US installs), turning "é" (`C3 A9`) into "Ã©" garbage.
     //
     // Single-balloon protocol:
-    //   NIM_ADD    with NIF_ICON | NIF_TIP only      — register, no toast
-    //   NIM_MODIFY with NIF_INFO + content fields    — fires exactly 1 toast
-    //   NIM_DELETE                                   — cleanup
+    //   NIM_ADD    with NIF_ICON | NIF_TIP only      -- register, no toast
+    //   NIM_MODIFY with NIF_INFO + content fields    -- fires exactly 1 toast
+    //   NIM_DELETE                                   -- cleanup
     // Earlier impl set NIF_INFO on both ADD and MODIFY which fired TWO
-    // balloons (one per call) — fixed by splitting the flag set.
+    // balloons (one per call) -- fixed by splitting the flag set.
     if (notify_toast_ && hwnd) {
         char body_utf8[256];
         std::snprintf(body_utf8, sizeof(body_utf8),

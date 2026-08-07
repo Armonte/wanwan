@@ -14,7 +14,7 @@ typedef BOOL(__cdecl* RunGameLoopFunc)();
 typedef void(__cdecl* RenderGameFunc)();
 typedef uint32_t(__cdecl* GameRandFunc)();
 typedef int(__cdecl* ProcessGameInputsFunc)();
-// Render sub-profiler leaf (BlitSpriteWithBlendMode @ 0x40C140) — the per-sprite
+// Render sub-profiler leaf (BlitSpriteWithBlendMode @ 0x40C140) -- the per-sprite
 // software pixel blit. Hooked only when FM2K_RENDER_PROFILE=1, to rank heavy-
 // stage render cost. Display-only; a6=width, a7=height, *(obj+336)=blend mode.
 typedef int(__cdecl* BlitSpriteFunc)(int, int, int, int, int, int, int, short);
@@ -24,8 +24,8 @@ typedef void(__cdecl* SpriteRenderEngineFunc)(int);
 
 // Original function pointers (set by MinHook)
 extern GetPlayerInputFunc original_get_player_input;
-extern GetPlayerInputFM95Func original_get_player_input_p1;  // FM95 only — 0x408AE0
-extern GetPlayerInputFM95Func original_get_player_input_p2;  // FM95 only — 0x408D60
+extern GetPlayerInputFM95Func original_get_player_input_p1;  // FM95 only -- 0x408AE0
+extern GetPlayerInputFM95Func original_get_player_input_p2;  // FM95 only -- 0x408D60
 extern UpdateGameStateFunc original_update_game;
 extern RunGameLoopFunc original_run_game_loop;
 extern RenderGameFunc original_render_game;
@@ -54,7 +54,7 @@ extern uint32_t g_gp_rand_by_fn[8];     // spectate-desync hunt: gameplay-rand b
 // render_game; RenderFrameWithSnapshot snapshots deltas every 300 frames and
 // logs render_game-total vs blit-time vs residual(blur+rle+lut+tail), plus the
 // blend-mode mix and blit-calls-per-object (afterimage multiplier). Display-
-// only — these never feed sim/rollback state, so the renderer is free to
+// only -- these never feed sim/rollback state, so the renderer is free to
 // optimize without desync risk.
 extern volatile uint32_t g_rp_blit_calls;    // total blit calls
 extern volatile uint64_t g_rp_blit_ns;       // total time inside the blit leaf
@@ -69,11 +69,11 @@ extern volatile uint32_t g_rp_blit_mode[5];  // calls per blend mode (0=copy..4=
 extern volatile uint32_t g_sim_step_count;
 
 // ============================================================================
-// ENGINE TARGET — the same source compiles into:
+// ENGINE TARGET -- the same source compiles into:
 //   FM2KHook.dll : default build, addresses target Fighter Maker 2nd binaries
-//                  (e.g. WonderfulWorld_ver_0946.exe — base 0x400000)
+//                  (e.g. WonderfulWorld_ver_0946.exe -- base 0x400000)
 //   FM95Hook.dll : -DENGINE_FM95=1 build, addresses target Fighter Maker 95
-//                  prototype binaries (e.g. CPW.exe — base 0x400000)
+//                  prototype binaries (e.g. CPW.exe -- base 0x400000)
 //
 // Both DLLs export the same hook surface; only the address values change.
 // The launcher picks which to inject based on FM2K::FM2KGameInfo::engine.
@@ -81,13 +81,13 @@ extern volatile uint32_t g_sim_step_count;
 // FM95 addresses are sourced from /mnt/c/dev/wanwan/FM95_Integration.h (verified
 // against the live CPW IDB at C:\dev\fm95\CPW\ＣＰＷ.exe.i64). Address values
 // without a direct FM95 equivalent are set to 0 and must be guarded with
-// `#if !defined(ENGINE_FM95)` at consumer sites — the build will surface them.
+// `#if !defined(ENGINE_FM95)` at consumer sites -- the build will surface them.
 // ============================================================================
 #if defined(ENGINE_FM95)
 namespace FM2K {
-    // Function addresses (FM95 / CPW.exe — verified 2026-05-05)
+    // Function addresses (FM95 / CPW.exe -- verified 2026-05-05)
     // FM95 has SEPARATE per-player input fns; the trampoline assumes a single
-    // GET_PLAYER_INPUT — leave the P1 entry as the canonical hook target and
+    // GET_PLAYER_INPUT -- leave the P1 entry as the canonical hook target and
     // expose P2 separately for hooks that need it.
     constexpr uintptr_t ADDR_GET_PLAYER_INPUT = 0x408AE0;   // FM95: get_player_input_p1
     constexpr uintptr_t ADDR_GET_PLAYER_INPUT_P2 = 0x408D60; // FM95-only second target
@@ -117,14 +117,14 @@ namespace FM2K {
 
     // Game state addresses
     constexpr uintptr_t ADDR_FRAME_COUNTER = 0x4DD7A8;       // FM95: g_game_tick_counter
-    constexpr uintptr_t ADDR_GAME_MODE = 0x425558;           // values 0/1/10/0x10 — see FM95_Integration.h delta #2
+    constexpr uintptr_t ADDR_GAME_MODE = 0x425558;           // values 0/1/10/0x10 -- see FM95_Integration.h delta #2
     constexpr uintptr_t ADDR_RANDOM_SEED = 0x4243FC;
 
     // Player current-frame inputs (post-poll cache)
     constexpr uintptr_t ADDR_P1_INPUT = 0x437750;
     constexpr uintptr_t ADDR_P2_INPUT = 0x437754;
 
-    // Per-player HP — FM95 has no global HP scalar; the value lives at
+    // Per-player HP -- FM95 has no global HP scalar; the value lives at
     // offset +72 of each player's main-object slot in the pool. The
     // pointers to those slots are kept in the array below, indexed by
     // player_idx (0/1). HP read pattern (FM95-specific):
@@ -134,7 +134,7 @@ namespace FM2K {
     // kIsFM95 and use the indirection.
     constexpr uintptr_t ADDR_P1_HP = 0;
     constexpr uintptr_t ADDR_P2_HP = 0;
-    // g_p_main_object_ptr — array of pointers to each player's main
+    // g_p_main_object_ptr -- array of pointers to each player's main
     // object in g_object_pool. IDA-verified in CPW @ 0x430e84
     // (referenced by process_combo_input, character_state_machine).
     // Index 0 = P1, 1 = P2. Per-player HP read pattern:
@@ -142,7 +142,7 @@ namespace FM2K {
     //   uint32_t hp = *(uint32_t*)((uint8_t*)main + 72);
     constexpr uintptr_t ADDR_P_MAIN_OBJECT_PTR = 0x430e84;
 
-    // Round-win counters — IDA-verified canonical fields used by
+    // Round-win counters -- IDA-verified canonical fields used by
     // obj_match_result_state @ 0x410db0 case 4 to decide the match
     // winner. Per-player struct stride is 100 bytes (25 dwords);
     // g_p1_win_counter[25*1] == g_p2_win_counter. These are the
@@ -153,22 +153,22 @@ namespace FM2K {
     constexpr uintptr_t ADDR_P2_WIN_COUNTER = 0x5e9978;
 
     // FM2K-only fields (stubbed at 0 on FM95). Mirror of the symmetric
-    // stubs in the FM2K branch — keeps `if constexpr (kIsFM2K) { ... }`
+    // stubs in the FM2K branch -- keeps `if constexpr (kIsFM2K) { ... }`
     // bodies parseable in the FM95 build.
     constexpr uintptr_t ADDR_P1_ROUNDS_WON  = 0;
     constexpr uintptr_t ADDR_P2_ROUNDS_WON  = 0;
 
-    // Damage-taken / HP-loss scalars — IDA shows
+    // Damage-taken / HP-loss scalars -- IDA shows
     // vs_round_function case 30 spawning the KO panel when
     // g_p1_damage_taken[0] == g_char_max_hp_table[0]. Same 100-byte
     // stride as win_counter; useful for in-match HP queries (e.g.
     // titlebar live HP%) without going through the main_object_ptr
-    // indirection. (IDA's auto-name "g_p1_total_wins" is misleading —
+    // indirection. (IDA's auto-name "g_p1_total_wins" is misleading --
     // these aren't win counts; they're cumulative damage taken.)
     constexpr uintptr_t ADDR_P1_DAMAGE_TAKEN = 0x5e9910;
     constexpr uintptr_t ADDR_P2_DAMAGE_TAKEN = 0x5e9974;
 
-    // CSS state — FM95 layout differs (cursor is single int, not x/y pair).
+    // CSS state -- FM95 layout differs (cursor is single int, not x/y pair).
     // Treat ADDR_P*_CURSOR_POS as the cursor index slot. ACTION_STATE maps to
     // the per-player 'confirmed' flag at +0x0C of the per-player CSS struct.
     constexpr uintptr_t ADDR_P1_CURSOR_POS = 0x432720;       // FM95: g_p1_css_char_cursor (int32)
@@ -176,11 +176,11 @@ namespace FM2K {
     constexpr uintptr_t ADDR_P1_ACTION_STATE = 0x43272C;     // FM95: g_p1_css_confirmed
     constexpr uintptr_t ADDR_P2_ACTION_STATE = 0x43273C;     // FM95: g_p2_css_confirmed
 
-    // No direct FM95 analog — FM2K's "frames since both locked" is replaced by
+    // No direct FM95 analog -- FM2K's "frames since both locked" is replaced by
     // walking the type=19 object's sub_state in [0x69, 0x6F] range.
     constexpr uintptr_t ADDR_ROUND_TIMER_COUNTER = 0;
 
-    // Internal game timer — same address as frame counter on FM95 (single counter).
+    // Internal game timer -- same address as frame counter on FM95 (single counter).
     constexpr uintptr_t ADDR_GAME_TIMER = 0x4DD7A8;
 
     // No global CSS_ACTIVE_PLAYER on FM95; phase classification walks the pool.
@@ -191,43 +191,43 @@ namespace FM2K {
     // math. FM95_Integration.h ADDR_FRAME_TIME_MS.
     constexpr uintptr_t ADDR_FRAME_TIME_MS = 0x422F7C;
 
-    // Character data — FM95 has 5 slots × 229844 bytes at 0x509100.
+    // Character data -- FM95 has 5 slots × 229844 bytes at 0x509100.
     // Static (don't save during rollback).
     constexpr uintptr_t ADDR_CHAR_SLOTS       = 0x509100;
     constexpr size_t    CHAR_SLOT_TOTAL_SIZE  = 229844;
     constexpr size_t    CHAR_SLOT_COUNT       = 5;
 
-    // Object pool — 256 × 0xA4 layout, base 0x426A40.
+    // Object pool -- 256 × 0xA4 layout, base 0x426A40.
     constexpr uintptr_t ADDR_OBJECT_POOL      = 0x426A40;
     constexpr size_t    OBJECT_POOL_STRIDE    = 0xA4;        // 164 bytes/slot
     constexpr size_t    OBJECT_POOL_COUNT     = 256;
     constexpr size_t    SIZE_OBJECT_POOL      = OBJECT_POOL_COUNT * OBJECT_POOL_STRIDE;  // 0xA400
 
-    // Input ring — 256 entries × 4 bytes (8-bit modulo idx).
+    // Input ring -- 256 entries × 4 bytes (8-bit modulo idx).
     constexpr uintptr_t ADDR_INPUT_BUFFER_INDEX = 0x437700;
     constexpr uintptr_t ADDR_P1_INPUT_HISTORY   = 0x431720;
     constexpr uintptr_t ADDR_P2_INPUT_HISTORY   = 0x431B20;
     constexpr size_t    INPUT_HISTORY_LEN       = 256;
     constexpr uint32_t  INPUT_HISTORY_MASK      = INPUT_HISTORY_LEN - 1;  // 0xFF
 
-    // CSS — selected character IDs (cursor index at confirm time on FM95).
+    // CSS -- selected character IDs (cursor index at confirm time on FM95).
     constexpr uintptr_t ADDR_P1_SELECTED_CHAR     = 0x432720;
     constexpr uintptr_t ADDR_P2_SELECTED_CHAR     = 0x432730;
-    // Character filename table — 50 slots × 256-byte CP932 strings.
+    // Character filename table -- 50 slots × 256-byte CP932 strings.
     constexpr uintptr_t ADDR_CHAR_FILENAME_TABLE  = 0x463CF0;
     constexpr size_t    CHAR_FILENAME_STRIDE      = 256;
     constexpr size_t    CHAR_FILENAME_COUNT       = 50;
 
     // Stage selection on FM95 splits two ways:
     //   - Practice mode: vs_round_function reads g_practice_stage_id
-    //     (uint8) at 0x43274c — this IS the random-stage write target
+    //     (uint8) at 0x43274c -- this IS the random-stage write target
     //     that mirrors FM2K's 0x43010c.
     //   - VS / Story mode: stage is character-driven, read from
     //     g_char_stage_per_round[char][round] at 0x540337. There's no
     //     single "selected stage" scalar; to override in vs-mode the
     //     hook would need a function-prologue trampoline on
     //     LoadStageFile_alt @ 0x4054b0 to rewrite its first arg.
-    //     Deferred — random-stage on FM95 currently only takes effect
+    //     Deferred -- random-stage on FM95 currently only takes effect
     //     in practice mode.
     constexpr uintptr_t ADDR_SELECTED_STAGE       = 0x43274c;
     constexpr uintptr_t ADDR_LOAD_STAGE_FILE_ALT  = 0x4054b0;
@@ -242,13 +242,13 @@ namespace FM2K {
     // the random-stage clamp skips when 0.
     constexpr uintptr_t ADDR_STAGE_FILE_TABLE     = 0;
 
-    // FM2K-only fields stubbed at 0 on FM95 — the AssignPlayerColor /
+    // FM2K-only fields stubbed at 0 on FM95 -- the AssignPlayerColor /
     // per-slot color-pick mechanism is FM2K-specific. FM95 has its own
     // palette select that we don't currently surface to MATCH_START.
     constexpr uintptr_t ADDR_CHARSLOT0_COLOR_PICK = 0;
     constexpr size_t    CHARSLOT_STRIDE           = 0;
 
-    // Engine tag — runtime check for code that needs to branch on engine.
+    // Engine tag -- runtime check for code that needs to branch on engine.
     constexpr bool kIsFM95 = true;
     constexpr bool kIsFM2K = false;
 }
@@ -266,7 +266,7 @@ namespace FM2K {
     constexpr uintptr_t ADDR_SPRITE_RENDER_ENGINE = 0x40CC30;  // sprite_rendering_engine (case -10 blur intercept)
     constexpr uintptr_t ADDR_GAME_RAND = 0x417A22;
     constexpr uintptr_t ADDR_PROCESS_INPUTS = 0x4146D0;
-    constexpr uintptr_t ADDR_DISPATCH_SCRIPT_SOUND = 0x403430;  // SFX dispatcher — rollback sound hook
+    constexpr uintptr_t ADDR_DISPATCH_SCRIPT_SOUND = 0x403430;  // SFX dispatcher -- rollback sound hook
 
     // Sound-system entry points (rollback sound layer, IDA-verified 2026-04-23).
     constexpr uintptr_t ADDR_PLAY_SOUND_FROM_BUFFER_ARRAY    = 0x415DF0;  // core DSound play + round-robin
@@ -298,7 +298,7 @@ namespace FM2K {
     constexpr uintptr_t ADDR_P2_ACTION_STATE = 0x4701A0;  // g_p2_action_state
 
     // Round timer counter: frames since both players locked (>100 triggers battle).
-    // Verified 2026-05-08 via IDA xref of game_state_manager @ 0x406FC0 — there are
+    // Verified 2026-05-08 via IDA xref of game_state_manager @ 0x406FC0 -- there are
     // 7 reads/writes from there. The legacy 0x47008E address had zero xrefs (dead);
     // it predates the IDA pass and never actually drove the CSS->battle transition.
     constexpr uintptr_t ADDR_ROUND_TIMER_COUNTER = 0x424F00;  // g_round_timer_counter
@@ -311,7 +311,7 @@ namespace FM2K {
 
     // CSS-selected character index pair (uint32 [2]). The IDA name on
     // this address used to be g_player_stage_positions, which was a
-    // misnomer — neither field carries stage data; both are just the
+    // misnomer -- neither field carries stage data; both are just the
     // currently-selected character grid index for each player. Renamed
     // 2026-05-05 to g_p1_selected_char_idx / g_p2_selected_char_idx
     // after verifying via ProcessCharacterSelectHandler (0x407D70).
@@ -327,13 +327,13 @@ namespace FM2K {
     constexpr size_t    CHAR_SLOT_TOTAL_SIZE  = 57407;     // Per-slot size from IDA
     constexpr size_t    CHAR_SLOT_COUNT       = 8;
 
-    // Object pool — 1024 × 382 layout, base 0x4701E0.
+    // Object pool -- 1024 × 382 layout, base 0x4701E0.
     constexpr uintptr_t ADDR_OBJECT_POOL      = 0x4701E0;
     constexpr size_t    OBJECT_POOL_STRIDE    = 382;       // bytes/slot
     constexpr size_t    OBJECT_POOL_COUNT     = 1024;
     constexpr size_t    SIZE_OBJECT_POOL      = 0x5F800;   // OBJECT_POOL_COUNT * OBJECT_POOL_STRIDE
 
-    // Input ring — 1024 entries × 4 bytes (10-bit modulo idx).
+    // Input ring -- 1024 entries × 4 bytes (10-bit modulo idx).
     // g_input_buffer_index @ 0x447EE0 -- matches savestate_internal.h and every
     // live buf_idx read in the hooks (rings at 0x4280E0/0x4290E0). The previous
     // value here (0x470000) had zero consumers in the FM2K build and did not
@@ -346,7 +346,7 @@ namespace FM2K {
     constexpr size_t    INPUT_HISTORY_LEN       = 1024;
     constexpr uint32_t  INPUT_HISTORY_MASK      = INPUT_HISTORY_LEN - 1;  // 0x3FF
 
-    // CSS — selected character indexes. Point to g_player_stage_positions,
+    // CSS -- selected character indexes. Point to g_player_stage_positions,
     // a uint32 pair at 0x470020/0x470024. ProcessCharacterSelectHandler
     // (0x407D70 in WonderfulWorld_ver_0946) writes each player's pick
     // into [0]/[1] then immediately calls
@@ -356,7 +356,7 @@ namespace FM2K {
     // .player roster lookup. Verified via IDA xrefs 2026-05-05.
     //
     // The previous values 0x470180/0x470184 were unwritten zero memory
-    // (no xrefs from any code) — every match shipped char_id=0 to the
+    // (no xrefs from any code) -- every match shipped char_id=0 to the
     // hub, so both peers always got logged as the slot-0 character.
     constexpr uintptr_t ADDR_P1_SELECTED_CHAR     = 0x470020;
     constexpr uintptr_t ADDR_P2_SELECTED_CHAR     = 0x470024;
@@ -369,12 +369,12 @@ namespace FM2K {
     constexpr uintptr_t ADDR_P1_WIN_COUNTER     = 0;
     constexpr uintptr_t ADDR_P2_WIN_COUNTER     = 0;
 
-    // FM2K round-win counters — IDA-suggested + empirically verified
+    // FM2K round-win counters -- IDA-suggested + empirically verified
     // (v0.2.21 [ROUND-WIN-PROBE] log: P1=0, P2=1 after P2 wins round 1;
     // P2=2 after round 2). Per-char-slot field at offset -0x18 from HP
     // (HP at 0x4DFC85, win at 0x4DFC6D). Stride 0xE03F = HP_STRIDE.
     // Hooks.cpp:680 misnames these `g_match_phase` / `g_round_sub_state`
-    // — they're actually per-slot rounds-won counters. Reset to 0 at
+    // -- they're actually per-slot rounds-won counters. Reset to 0 at
     // start of new match, increment on each round won by that player.
     constexpr uintptr_t ADDR_P1_ROUNDS_WON      = 0x4DFC6D;
     constexpr uintptr_t ADDR_P2_ROUNDS_WON      = 0x4EDCAC;
@@ -382,18 +382,18 @@ namespace FM2K {
     constexpr uintptr_t ADDR_P2_DAMAGE_TAKEN    = 0;
     constexpr uintptr_t ADDR_LOAD_STAGE_FILE_ALT  = 0;
     constexpr uintptr_t ADDR_CHAR_STAGE_PER_ROUND = 0;
-    // Character filename table — g_char_slot_data, 256-byte CP932 strings.
+    // Character filename table -- g_char_slot_data, 256-byte CP932 strings.
     constexpr uintptr_t ADDR_CHAR_FILENAME_TABLE  = 0x435474;
     constexpr size_t    CHAR_FILENAME_STRIDE      = 256;
     constexpr size_t    CHAR_FILENAME_COUNT       = 258;       // 0x1023C / 256
 
-    // Stage selection — global int32 the round-init code reads as the
+    // Stage selection -- global int32 the round-init code reads as the
     // VS-mode stage_id. IDA-verified in WonderfulWorld_ver_0946:
     //   * vs_round_function @ 0x4087e0 calls LoadStageFile(wParam),
     //     where wParam is IDA's name for this address.
     //   * settings_dialog_proc @ 0x416387 stores the stage dropdown's
     //     CB_GETCURSEL into this address.
-    // The previous value 0x470188 had ZERO xrefs in WW — every write
+    // The previous value 0x470188 had ZERO xrefs in WW -- every write
     // from the random-stage feature went to a dead address while
     // the game read the cursor's own pick from 0x43010c.
     constexpr uintptr_t ADDR_SELECTED_STAGE       = 0x43010c;
@@ -422,14 +422,14 @@ namespace FM2K {
 
     // Per-character-slot record table. Each slot is 0xE03F bytes;
     // 8 slots span 0x4D1D80..0x54FF83. Field at slot+0xE00B is the
-    // resolved palette/color slot (0..5) — written by AssignPlayerColor
+    // resolved palette/color slot (0..5) -- written by AssignPlayerColor
     // @ 0x406F20 once a player presses an attack button on confirm. In
     // 1v1 VS mode slot[0]=P1, slot[1]=P2; team mode uses 0..3 / 4..7.
     //
     // ADDR_CHARSLOT0_COLOR_PICK is `&slot[0].color` (0x4D1D80 + 0xE00B).
     // For slot N's color: ADDR_CHARSLOT0_COLOR_PICK + CHARSLOT_STRIDE * N.
     // IDA: g_charslot0_color_pick @ 0x4DFD8B (renamed from
-    // g_charslot0_demo_link_id 2026-05-09 — the field at +0xE00B is the
+    // g_charslot0_demo_link_id 2026-05-09 -- the field at +0xE00B is the
     // color pick, the stale name was a misread of the same struct slot
     // when used in demo-replay context).
     constexpr uintptr_t ADDR_CHARSLOT0_COLOR_PICK = 0x4DFD8B;
@@ -439,7 +439,7 @@ namespace FM2K {
     // to 10 and the CSS frame-skip math / BATTLE STATUS debug log read it.
     constexpr uintptr_t ADDR_FRAME_TIME_MS = 0x41E2F0;
 
-    // Engine tag — runtime check for code that needs to branch on engine.
+    // Engine tag -- runtime check for code that needs to branch on engine.
     constexpr bool kIsFM95 = false;
     constexpr bool kIsFM2K = true;
 }
@@ -499,7 +499,7 @@ extern bool g_spectator_catchup;
 
 // User-toggled fast-forward (F12 in spectator window). When true, the
 // spectator's catchup loop engages regardless of the one-shot latch and
-// the queue-depth target — lets the user manually race to live edge
+// the queue-depth target -- lets the user manually race to live edge
 // after a lag spike, then toggle off to resume normal-speed playback.
 // Window title displays "[FF]" while active. Default false.
 extern bool g_spectator_ff_user;
@@ -512,7 +512,7 @@ extern bool g_fm95_skip_next_render;
 
 // FM95: true only while a trampoline sim tick is executing (set around the
 // TrampolineFrameTickHostDriven dispatch). Hook_timeGetTime uses it to
-// virtualize the clock ONLY during the sim — CPW's own WinMain pacing loop
+// virtualize the clock ONLY during the sim -- CPW's own WinMain pacing loop
 // also consumes timeGetTime, and virtualizing THAT warps the loop
 // (catchup-spin/stall). Unused on FM2K (its TrampolineMainLoop owns pacing).
 extern bool g_fm95_in_sim_tick;

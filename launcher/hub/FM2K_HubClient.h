@@ -1,6 +1,6 @@
 #pragma once
 
-// FM2K Hub client — WebSocket transport for hub.py.
+// FM2K Hub client -- WebSocket transport for hub.py.
 // Phase-1 scaffold; talks the JSON protocol documented in
 // docs/FM2K_Matchmaking_Design.md §15.2. No persistence, no auth.
 //
@@ -36,8 +36,8 @@ struct HubUser {
     std::string status;        // "idle" | "challenging" | "in_match"
     std::string opponent_id;
     int rtt_ms = 0;
-    // Patreon tier label sent by hub. "tester" ($5 — blue name) or
-    // "thanks" ($10 Special Thanks — gold name). Empty string for legacy
+    // Patreon tier label sent by hub. "tester" ($5 -- blue name) or
+    // "thanks" ($10 Special Thanks -- gold name). Empty string for legacy
     // hubs that don't include the field; the launcher treats empty/unknown
     // values as plain (no recolor).
     std::string tier;
@@ -49,12 +49,12 @@ struct HubRoom {
     int user_count = 0;
 };
 
-// Mirror of fm2k::game_ini::GamePlayConfig — kept in this header
+// Mirror of fm2k::game_ini::GamePlayConfig -- kept in this header
 // (instead of pulling FM2K_GameIni.h into the public hub-client API)
 // so external consumers don't have to depend on the launcher's INI
 // module just to inspect a challenge payload. Sentinel -1 = unset.
 //
-// random_seed != 0 (#56) signals "random stage enabled — both peers
+// random_seed != 0 (#56) signals "random stage enabled -- both peers
 // seed an xorshift PRNG with this value and roll a fresh stage at
 // every Netplay_StartBattle. Lilith-equivalent semantics: one seed
 // agreed at challenge time, deterministic re-rolls on rematches."
@@ -122,7 +122,7 @@ struct HubEvent {
     Kind kind{Kind::Error};
     std::string error;
 
-    // Generic payloads — only the fields relevant to a given Kind are set.
+    // Generic payloads -- only the fields relevant to a given Kind are set.
     std::vector<HubRoom> rooms;
     std::vector<HubUser> users;
     HubUser user;
@@ -197,16 +197,16 @@ struct HubEvent {
         std::string opponent_nick;
         std::string host_ip;
         int         host_port = 0;
-        // session_kind — "menu" / "css" / "battle". The hub relays the
+        // session_kind -- "menu" / "css" / "battle". The hub relays the
         // host's current game phase (host hook publishes on every
         // game_mode transition). Spec launcher uses it to decide
         // FM2K_BOOT_TO_BATTLE: "battle" → /F (instant join via snapshot
         // apply); "css" → walk title→CSS for the mid-CSS-join handshake;
         // "menu" → walk title→CSS naturally (host's CSS-entry transition
         // will arrive over the wire). Default "menu" only fires if the
-        // hub field is absent — shouldn't happen in practice.
+        // hub field is absent -- shouldn't happen in practice.
         std::string session_kind = "menu";
-        // spec_transport — Phase 4 of v0.3 spec rebuild. Echoes the
+        // spec_transport -- Phase 4 of v0.3 spec rebuild. Echoes the
         // target host's hello spec_transport so the spec launcher can
         // set FM2K_SPEC_TRANSPORT on the spec game spawn matching the
         // host's mode. Default "tcp" matches legacy behavior for hosts
@@ -229,7 +229,7 @@ struct HubEvent {
     // SpectatorNode_HandleSpecData expects.
     std::vector<uint8_t> spec_relay_bytes;
 
-    // SpectatorIncoming payload — we're the host; hub forwarded the
+    // SpectatorIncoming payload -- we're the host; hub forwarded the
     // spectator's external UDP addr so we can fire a NAT-punch packet
     // to it before the spectator's first JOIN_REQ arrives. Without this
     // step the spectator's UDP packet hits our NAT and gets dropped
@@ -261,7 +261,7 @@ struct HubEvent {
         std::vector<VsRow> vs_breakdown;
     } record;
 
-    // RecentMatchesReceived payload — newest match first.
+    // RecentMatchesReceived payload -- newest match first.
     struct MatchRow {
         std::string id;
         std::string p1_id;
@@ -272,7 +272,7 @@ struct HubEvent {
         std::string winner_id;     // empty = draw
         double      finished_at = 0.0;
         // Char + stage detail. -1 / empty mean "missing" (peers
-        // disagreed or didn't report — older client). UI uses
+        // disagreed or didn't report -- older client). UI uses
         // fm2k::FormatCharLabel / FormatStageLabel which fall back
         // gracefully to "Char #N" / "Stage #N" when names are absent.
         int32_t     p1_char_id   = -1;
@@ -304,7 +304,7 @@ struct HubEvent {
         int32_t     stage_id     = -1;
         std::string stage_name;
     };
-    // CurrentMatchesReceived snapshot — full list. Live updates use
+    // CurrentMatchesReceived snapshot -- full list. Live updates use
     // `current_match_update` (Started/Updated) or `current_match_token`
     // (Ended; only the token to evict).
     std::vector<MatchInProgress> current_matches;
@@ -328,13 +328,13 @@ public:
     // with a `auth_required` error if empty/invalid. Pass "" to attempt
     // an unauthenticated connect (only works against a hub started
     // with FM2K_HUB_AUTH_DISABLE=1).
-    // secure=true upgrades the WebSocket to TLS (wss://) — required
+    // secure=true upgrades the WebSocket to TLS (wss://) -- required
     // when fronting through Caddy / a reverse proxy that terminates
     // HTTPS. Defaults to false for the legacy direct-port path.
     bool Connect(const std::string& host, uint16_t port, const std::string& path,
                  const std::string& nick, const std::string& hub_token,
                  bool secure = false);
-    // Compat overload — defaults hub_token to empty.
+    // Compat overload -- defaults hub_token to empty.
     bool Connect(const std::string& host, uint16_t port, const std::string& path,
                  const std::string& nick) {
         return Connect(host, port, path, nick, std::string{});
@@ -401,7 +401,7 @@ public:
 
     // External TCP addr discovered by the spec hook via hub TCP-STUN
     // (see FM2KHook/src/netplay/spectator_tcp.cpp PerformTcpStun). Sent
-    // separately from SendUdpAddr because TCP-STUN is async — the
+    // separately from SendUdpAddr because TCP-STUN is async -- the
     // hook's outbound STUN connect happens after Init, the launcher
     // polls SharedMem for the result, and forwards once it arrives.
     void SendTcpAddr(const std::string& ip, int port);
@@ -409,7 +409,7 @@ public:
     void JoinRoom(const std::string& game_id, const std::string& display_name = "");
     void LeaveRoom();
     void Challenge(const std::string& target_id);
-    // Variant — includes the host's resolved [GamePlay] config so the
+    // Variant -- includes the host's resolved [GamePlay] config so the
     // target sees what they're agreeing to in the accept modal (#54).
     // Hub forwards `settings` verbatim; older hubs / launchers safely
     // ignore the extra fields. -1 in any int means "not set".
@@ -424,7 +424,7 @@ public:
     // populate user state so that when someone requests to spectate us,
     // the hub can return our current session_kind in `spectate_grant`,
     // letting the spec launcher decide whether to /F-boot-to-battle
-    // (we're in battle) or do natural CSS-walk (we're in CSS — needed
+    // (we're in battle) or do natural CSS-walk (we're in CSS -- needed
     // for the CSS snapshot to apply with the correct surfaces/state).
     //   kind ∈ {"menu", "css", "battle"}
     void UpdateSessionKind(const std::string& kind);
@@ -455,14 +455,14 @@ public:
     void MatchResult(const std::string& match_id, const std::string& outcome);
     void MatchResult(const std::string& match_id, const std::string& outcome,
                      uint32_t p1_char_id, uint32_t p2_char_id);
-    // Full overload — adds resolved .player filenames (UTF-8) so the
+    // Full overload -- adds resolved .player filenames (UTF-8) so the
     // hub can store human-readable char names alongside the IDs.
     // Empty strings are omitted from the JSON payload to save bytes.
     void MatchResult(const std::string& match_id, const std::string& outcome,
                      uint32_t p1_char_id, uint32_t p2_char_id,
                      const std::string& p1_char_name,
                      const std::string& p2_char_name);
-    // Full overload — adds stage_id + resolved stage_name (UTF-8). Stage
+    // Full overload -- adds stage_id + resolved stage_name (UTF-8). Stage
     // name is resolved on the launcher via FindKgtByGameId because FM2K
     // has no in-memory stage-filename table; pass empty string when the
     // game isn't installed locally and the hub will store id-only.
@@ -474,7 +474,7 @@ public:
                      uint32_t stage_id,
                      const std::string& stage_name);
 
-    // C10 — schema-2 overload. Adds session correlation + per-round results.
+    // C10 -- schema-2 overload. Adds session correlation + per-round results.
     // session_id is the 64-bit token generated at peer-connect time on the
     // host (shared across every match this pair plays until disconnect);
     // match_index_in_session is 1-based (1 = first match of the session).
@@ -497,7 +497,7 @@ public:
                      uint8_t  match_index_in_session,
                      const std::vector<RoundJson>& rounds);
 
-    // Ask hub for our W/L/D record. Both args optional — pass empty
+    // Ask hub for our W/L/D record. Both args optional -- pass empty
     // string to omit. Hub responds with K::RecordReceived carrying
     // wins/losses/draws + per-opponent breakdown.
     void QueryRecord(const std::string& opponent_id = "",

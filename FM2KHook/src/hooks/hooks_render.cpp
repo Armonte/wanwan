@@ -2,7 +2,7 @@
 // + blit/sprite SIMD reimpl + FPS/title diagnostics + game-window find. Split from hooks.cpp.
 #include "hooks.h"
 #include "hooks_internal.h"
-#include "round_events.h"     // C3.5 — vs_round_function detour install
+#include "round_events.h"     // C3.5 -- vs_round_function detour install
 #include "css_autoconfirm.h"  // CSS lock-and-confirm for offline replay playback
 #include "css_fastsound.h"    // FM2K_FPK_CSS_FASTSOUND: lazy DSound buffers (CSS dip fix)
 #include "per_game_patches.h" // damage multiplier MinHook + team-size override
@@ -25,12 +25,12 @@
 #include "imgui_overlay.h"
 #include "shared_mem.h"
 #include "savestate.h"  // CHAR_SLOT_BASE, CHAR_SLOT_SIZE (corrected by Wave C audit)
-#include "../core/main_loop_trampoline.h"  // TrampolineMainLoop — owns the outer loop
+#include "../core/main_loop_trampoline.h"  // TrampolineMainLoop -- owns the outer loop
 #include "../audio/sound_rollback.h"        // Mike Z desired/actual sound layer
 #include "../netplay/spectator_node.h"      // spectator playback queue accessors
 #include "../ui/input_binder.h"             // FM2KInputBinder::Sample_Win32 + Bindings
 #include "../ui/screenshot.h"               // FM2KCapture::SaveScreenshot for the auto-banner pipeline
-#include "../ui/fc_hud.h"                   // IsChatInputActive — gate local input during typing
+#include "../ui/fc_hud.h"                   // IsChatInputActive -- gate local input during typing
 #include "../vfs/fpk_reader.h"              // FM2K_FPK_VFS: inflate a slim .fpk -> original asset bytes
 #include <MinHook.h>
 #include <SDL3/SDL_log.h>
@@ -108,13 +108,13 @@ int g_current_sim_fps = 0;
 // unrendered". Cleared inside Hook_RenderGame after original_render_game()
 // has drawn it. Any extra Hook_RenderGame invocations between advances skip
 // the real render entirely, so render count cannot outpace sim count on
-// either peer — both peers render exactly as many frames as GekkoNet has
+// either peer -- both peers render exactly as many frames as GekkoNet has
 // advanced. Without this gate, render mutates object-pool animation counters
 // on wall-clock cadence, producing asymmetric state that feeds back into
 // the next sim tick's RNG draws.
 bool g_frame_pending_render = false;
 
-// Public — called by the trampoline's render step so FPS + title bar stats
+// Public -- called by the trampoline's render step so FPS + title bar stats
 // keep updating even though Hook_RenderGame is bypassed in battle mode.
 extern "C" void Hook_RenderDiagnostics_Tick();
 extern "C" void Hook_RenderDiagnostics_Tick() {
@@ -156,7 +156,7 @@ extern "C" void Hook_RenderDiagnostics_Tick() {
             // (peer nicks from shm, the final MultiByteToWideChar at the
             // bottom) assumes UTF-8. Going through GetModuleFileNameW
             // first avoids the SJIS-vs-UTF-8 mojibake we'd hit if we
-            // pulled bytes directly via GetModuleFileNameA — those bytes
+            // pulled bytes directly via GetModuleFileNameA -- those bytes
             // are SJIS (our locale spoof preserves SJIS via
             // WC_NO_BEST_FIT_CHARS) and re-interpreting them as UTF-8
             // turns JP names into garbage in the title bar.
@@ -196,9 +196,9 @@ extern "C" void Hook_RenderDiagnostics_Tick() {
 
             // Build the role+vs+wld lead chunk that sits between the game
             // prefix and the STATE / fps section. Three forms:
-            //   (a) "P1 vs Armonté 12-3-1" — active match, peer + record known
-            //   (b) "P1 (overall 47-30-2)" — no active peer, only personal record
-            //   (c) "P1"                   — no record yet (pre-first-query)
+            //   (a) "P1 vs Armonté 12-3-1" -- active match, peer + record known
+            //   (b) "P1 (overall 47-30-2)" -- no active peer, only personal record
+            //   (c) "P1"                   -- no record yet (pre-first-query)
             char lead[160] = {};
             FM2KSharedMemData* shm = GetSharedMemory();
             const bool have_peer = shm && shm->ui_peer_nick[0] != '\0' &&
@@ -241,7 +241,7 @@ extern "C" void Hook_RenderDiagnostics_Tick() {
                 // Differentiate offline-replay (file-driven, no peer) from
                 // live-spec (subscribed to a host's stream). Replay mode
                 // never has an upstream so "Connecting..." would be a lie
-                // — it's already loaded everything from disk.
+                // -- it's already loaded everything from disk.
                 static int s_replay_cached = -1;
                 if (s_replay_cached < 0) {
                     const char* rp = std::getenv("FM2K_REPLAY_FILE");
@@ -353,7 +353,7 @@ extern "C" void Hook_RenderDiagnostics_Tick() {
 //   +40  uint8  cmd byte (low nibble: 0=stop 1=SFX 2=MIDI 3=CD; bit 0x10=volume flag)
 //   +41  uint8  CD track number             (CD case)
 //
-// MIDI and CD paths (music) pass through unchanged — music-restart on
+// MIDI and CD paths (music) pass through unchanged -- music-restart on
 // rollback is a v2 concern.
 typedef int(__cdecl* DispatchScriptSoundFunc)(int);
 static DispatchScriptSoundFunc original_dispatch_script_sound = nullptr;
@@ -371,7 +371,7 @@ int __cdecl Hook_DispatchScriptSoundCommand(int script_item) {
         return original_dispatch_script_sound(script_item);
     }
     // Spectator catch-up mute (C5.5). While the spectator is burning
-    // through queued events to reach live edge, we run sim only — no
+    // through queued events to reach live edge, we run sim only -- no
     // render, no audio. Without this, joining 30k events late would
     // blast 5 minutes of compressed audio in the few seconds it takes
     // to drain. SoundRollback's dedup table still updates on the host
@@ -381,7 +381,7 @@ int __cdecl Hook_DispatchScriptSoundCommand(int script_item) {
         return 0;
     }
 
-    // Mute gates — applied UNCONDITIONALLY (offline + online + spectator).
+    // Mute gates -- applied UNCONDITIONALLY (offline + online + spectator).
     // Re-checks the audio.ini file ~once per second so the launcher's
     // toggle reaches the running game without a separate IPC channel.
     {
@@ -397,7 +397,7 @@ int __cdecl Hook_DispatchScriptSoundCommand(int script_item) {
         const uint8_t cmd_low  = cmd_byte & 0xF;
         const bool    looping  = (cmd_byte & 0x10) != 0;
 
-        // Audio classification — verified against WonderfulWorld disasm
+        // Audio classification -- verified against WonderfulWorld disasm
         // (0x403430 dispatcher) + LilithPort's BGM_VOLUME / SE_VOLUME
         // hook sites (stdafx.h:152-159, MainForm.cpp:2719-2733):
         //   cmd_low 0           → stop everything (never muted)
@@ -427,7 +427,7 @@ int __cdecl Hook_DispatchScriptSoundCommand(int script_item) {
     // on the LIVE game phase, not a battle-session latch that lingers past the
     // transition. That matters on the battle->CSS transition frame: the game
     // stops the battle BGM (cmd 0) and its freshly re-created CSS controller
-    // re-dispatches the CSS BGM at game_mode==2000 — keying on the live phase lets
+    // re-dispatches the CSS BGM at game_mode==2000 -- keying on the live phase lets
     // that CSS BGM play IMMEDIATELY instead of being deferred into a battle sync
     // that's ending (which silenced CSS-return music).
     const bool in_battle_phase =
@@ -438,12 +438,12 @@ int __cdecl Hook_DispatchScriptSoundCommand(int script_item) {
 
     if (cmd_low == 0) {
         // Full stop-all (ControlSoundSystem(0)). This MUST run in order at its
-        // sim frame — the game issues it to clear pre-round audio right before
+        // sim frame -- the game issues it to clear pre-round audio right before
         // the battle BGM starts. Deferring it to SyncAfterAdvance ran it AFTER
         // the SFX layer replayed the battle BGM, silencing the whole battle
         // (observed: cmd_low=0 @ bf182 every match). Fire immediately on the
         // forward pass; skip during rollback replay so it isn't re-applied.
-        // Re-firing on the save-ring forward re-scroll is harmless — a repeated
+        // Re-firing on the save-ring forward re-scroll is harmless -- a repeated
         // stop is just silence (no audible cut, unlike a repeated play).
         if (!g_is_rolling_back)
             return original_dispatch_script_sound(script_item);
@@ -451,7 +451,7 @@ int __cdecl Hook_DispatchScriptSoundCommand(int script_item) {
     }
 
     if (cmd_low != 1) {
-        // BGM play — MIDI (case 2) or CD audio (case 3). DEFER to the rollback
+        // BGM play -- MIDI (case 2) or CD audio (case 3). DEFER to the rollback
         // layer only while the battle sync tick is live: there the desired-vs-
         // actual identity check stops the save-ring scroll from restarting MCI
         // (the old cut-in/out), and bgm_desired rides the save ring so a
@@ -470,28 +470,28 @@ int __cdecl Hook_DispatchScriptSoundCommand(int script_item) {
     }
 
     // SFX (cmd 1, incl. looping-WAV BGM). The loop bit (0x10) marks looping-WAV
-    // music (CSS/battle BGM) vs a one-shot SFX — trace it to see the CSS-return
+    // music (CSS/battle BGM) vs a one-shot SFX -- trace it to see the CSS-return
     // dispatch behaviour.
     if ((cmd & 0x10) != 0)
         SoundRollback::TraceWavMusicDispatch(Netplay_GetFrame(), in_battle_phase);
     // Same gate as BGM: only defer to the Mike-Z desired/actual layer while the
     // battle sync tick is live. Outside battle (CSS cursor SFX, CSS looping-WAV
-    // music — incl. the CSS-BGM re-dispatch on the battle->CSS return) play
-    // immediately — else the deferred dispatch is recorded and never heard.
+    // music -- incl. the CSS-BGM re-dispatch on the battle->CSS return) play
+    // immediately -- else the deferred dispatch is recorded and never heard.
     if (!in_battle_phase) {
         return original_dispatch_script_sound(script_item);
     }
 
     void* arr = *reinterpret_cast<void**>(script_item + 36);
     if (!arr || !SoundRollback::RecordDesired(arr, script_item, Netplay_GetFrame())) {
-        // Unknown / null channel — not in g_sound_channel_table. Fall through
+        // Unknown / null channel -- not in g_sound_channel_table. Fall through
         // to the original dispatcher so the sound still plays (without
         // rollback tracking). The vast majority of FM2K SFX buffer_arrays
         // appear to be allocated outside the system table; we only Mike-Z the
         // ones we can identify.
         return original_dispatch_script_sound(script_item);
     }
-    // Known channel — desired[] updated; defer the real play to
+    // Known channel -- desired[] updated; defer the real play to
     // SoundRollback::SyncAfterAdvance at end of the displayed frame.
     return 1;
 }
@@ -553,7 +553,7 @@ static void BlitVerify(int sprite_desc, int src_pixels, int palette_lut,
 //   FM2K_BLIT_SIMD=simd/scalar -> replace with our reimplementation (the fix)
 //   ...,verify                 -> double-render + pixel-diff vs original
 //   FM2K_RENDER_PROFILE=1 only -> time/count/area/blend census (g_blit_cfg Off)
-// Pure display path — never touches sim/rollback state, so this is desync-safe.
+// Pure display path -- never touches sim/rollback state, so this is desync-safe.
 static int __cdecl Hook_BlitSpriteWithBlendMode(int sprite_desc, int src_pixels,
                                                 int palette_lut, int dst_x, int dst_y,
                                                 int width, int height, short flags) {
@@ -660,7 +660,7 @@ void __cdecl Hook_RenderGame() {
 
     // In trampoline mode, render goes through RenderFrameWithSnapshot in
     // main_loop_trampoline.cpp. This hook still catches direct calls from
-    // the game (e.g. init/menu paths) — run diagnostics and pass through.
+    // the game (e.g. init/menu paths) -- run diagnostics and pass through.
     // Also fires under FM2K_BYPASS_TRAMPOLINE=1 (vanilla main_game_loop)
     // so [EB] diag works for A/B testing the trampoline against the
     // vanilla render path.
@@ -688,22 +688,22 @@ void __cdecl Hook_RenderGame() {
     // three. That way render can freely update visual counters but the
     // gameplay-authoritative memory image is unchanged across renders.
     //
-    // SPECTATOR FIX: include SpectatorNode_IsPlayingBack() — without it,
+    // SPECTATOR FIX: include SpectatorNode_IsPlayingBack() -- without it,
     // Hook_RenderGame (this function) ran UNPROTECTED on spectators when
     // FM2K-internal code triggered render directly (instead of through the
     // trampoline's RenderFrameWithSnapshot, which already had this check).
     // ProcessShakeEffect / ProcessColorInterpolation / sprite_rendering_engine
-    // call game_rand() — those calls accumulated into spectator's RNG but
+    // call game_rand() -- those calls accumulated into spectator's RNG but
     // were rolled back on host. RNG drifted by exactly that delta over time,
     // showing up as paired [HOST-FP]/[SPEC-FP] divergence with all other
     // sim state matching (HP/timer/pos/input identical, only RNG differed).
     // FM2K-ONLY. The protect save/restore below memcpys the afterimage pool
-    // (WaveCAddrs::AFTERIMAGE_POOL) and the input-tracking block at 0x447EE0 —
+    // (WaveCAddrs::AFTERIMAGE_POOL) and the input-tracking block at 0x447EE0 --
     // both FM2K addresses. On FM95 AFTERIMAGE_POOL / _SZ are 0-sentinels, so
     // the slices become a read from null + a ~4GB size_t underflow + a write
     // to the FM2K input-tracking address = guaranteed AV the first render
     // frame with an active session. FM95's render-side protected regions are
-    // RE-4 pending; until then FM95 renders without protection (acceptable —
+    // RE-4 pending; until then FM95 renders without protection (acceptable --
     // same as RenderFrameWithSnapshot, which gates its own block on kIsFM2K).
     [[maybe_unused]] bool protect_regions =
         Netplay_IsActive() || SpectatorNode_IsPlayingBack();
@@ -728,11 +728,11 @@ void __cdecl Hook_RenderGame() {
     constexpr size_t    kShakeEnd      = kShakeOffset + kShakeSize;
     static_assert(kPflash1End <= kShakeOffset, "EFFECT_SYS1 must end before shake block");
     if constexpr (FM2K::kIsFM2K) if (protect_regions) {
-        // RNG intentionally NOT saved/restored — render's game_rand calls
+        // RNG intentionally NOT saved/restored -- render's game_rand calls
         // need to propagate so palette mode 3 / shake mode 4 produce
         // animated random values matching vanilla. See trampoline comment.
         //
-        // Object pool also NOT saved/restored — palette mode 1
+        // Object pool also NOT saved/restored -- palette mode 1
         // (Tyrogue fade-to-black) needs ProcessColorInterpolation's per-frame
         // writes to g_object_data_ptr+68/72/76/80 to PERSIST into the next
         // frame's object pool, otherwise the fade visually undoes itself
@@ -770,8 +770,8 @@ void __cdecl Hook_RenderGame() {
     EbDiag_Dump("POST-RENDER");
 
     if constexpr (FM2K::kIsFM2K) if (protect_regions) {
-        // (RNG and object_pool restores removed — see save block.)
-        // Afterimage restore: mirror of the 3-slice split save — both
+        // (RNG and object_pool restores removed -- see save block.)
+        // Afterimage restore: mirror of the 3-slice split save -- both
         // EFFECT_SYS1 and shake regions in live memory keep whatever
         // render-side code just wrote.
         memcpy((void*)WaveCAddrs::AFTERIMAGE_POOL,
@@ -791,7 +791,7 @@ void __cdecl Hook_RenderGame() {
     SharedMem_Update();
 
     // GekkoNet frame-pacing drift correction now lives in the
-    // trampoline's SleepToTarget — that function applies the 1.6%
+    // trampoline's SleepToTarget -- that function applies the 1.6%
     // slowdown when ahead of peer. The Sleep(extra_ms) trick that
     // used to be in Netplay_HandleFrameTime was unreliable (Sleep
     // granularity, fights with QPC-based outer loop) and didn't
@@ -851,7 +851,7 @@ bool InstallRenderHooks() {
         }
     }
 
-    // Hook DispatchScriptSoundCommand — Mike Z desired/actual sound layer.
+    // Hook DispatchScriptSoundCommand -- Mike Z desired/actual sound layer.
     // During battle the hook records `desired[channel]` instead of playing;
     // SoundRollback::SyncAfterAdvance reconciles once per displayed frame by
     // calling back through the original trampoline.

@@ -54,7 +54,7 @@ void LauncherUI::LoadDDrawCfgIfNeeded() {
 
 // Settings → Display. Mirrors every documented cnc-ddraw [ddraw] key
 // from <install_dir>\ddraw.ini. Edits write per-key on change so each
-// flick of a checkbox lands on disk immediately — no Apply button.
+// flick of a checkbox lands on disk immediately -- no Apply button.
 // Changes take effect on the NEXT game launch (cnc-ddraw reads its ini
 // at DLL_PROCESS_ATTACH); the header label calls that out.
 //
@@ -296,7 +296,7 @@ void LauncherUI::RenderDisplayBody() {
             return false;
         };
 
-        // Drive the capture state machine — runs once per frame regardless
+        // Drive the capture state machine -- runs once per frame regardless
         // of which row's Bind button started it. Fires before we render
         // the rows so a successful capture is reflected this frame.
         if (s_capture_key && s_capture_field) {
@@ -438,7 +438,7 @@ void LauncherUI::RenderDisplayBody() {
     }
 
     // ── Undocumented / advanced ──────────────────────────────────────
-    if (ImGui::CollapsingHeader("Advanced (undocumented — only touch if needed)")) {
+    if (ImGui::CollapsingHeader("Advanced (undocumented -- only touch if needed)")) {
         ImGui::TextColored(ImVec4(0.85f, 0.6f, 0.4f, 1.0f),
             "Per cnc-ddraw: 'These will probably not solve your problem'.");
         if (ImGui::Checkbox("fix_alt_key_stuck", &c.fix_alt_key_stuck))

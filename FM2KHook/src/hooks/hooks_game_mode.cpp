@@ -1,6 +1,6 @@
 // hooks_game_mode.cpp -- game-mode detection (IsCSSMode/IsBattleMode) + CheckGameModeTransition. Split from hooks.cpp (pure move).
 #include "hooks.h"
-#include "round_events.h"     // C3.5 — vs_round_function detour install
+#include "round_events.h"     // C3.5 -- vs_round_function detour install
 #include "css_autoconfirm.h"  // CSS lock-and-confirm for offline replay playback
 #include "css_fastsound.h"    // FM2K_FPK_CSS_FASTSOUND: lazy DSound buffers (CSS dip fix)
 #include "per_game_patches.h" // damage multiplier MinHook + team-size override
@@ -23,12 +23,12 @@
 #include "imgui_overlay.h"
 #include "shared_mem.h"
 #include "savestate.h"  // CHAR_SLOT_BASE, CHAR_SLOT_SIZE (corrected by Wave C audit)
-#include "../core/main_loop_trampoline.h"  // TrampolineMainLoop — owns the outer loop
+#include "../core/main_loop_trampoline.h"  // TrampolineMainLoop -- owns the outer loop
 #include "../audio/sound_rollback.h"        // Mike Z desired/actual sound layer
 #include "../netplay/spectator_node.h"      // spectator playback queue accessors
 #include "../ui/input_binder.h"             // FM2KInputBinder::Sample_Win32 + Bindings
 #include "../ui/screenshot.h"               // FM2KCapture::SaveScreenshot for the auto-banner pipeline
-#include "../ui/fc_hud.h"                   // IsChatInputActive — gate local input during typing
+#include "../ui/fc_hud.h"                   // IsChatInputActive -- gate local input during typing
 #include "../vfs/fpk_reader.h"              // FM2K_FPK_VFS: inflate a slim .fpk -> original asset bytes
 #include <MinHook.h>
 #include <SDL3/SDL_log.h>
@@ -63,7 +63,7 @@ static uint32_t g_last_game_mode = 0;
 
 // Engine-aware phase detection.
 // FM2K encodes phase via g_game_mode magic numbers (2000=CSS, 3000+=Battle).
-// FM95 keeps g_game_mode near 0/1/10 — phase lives inside per-object slots
+// FM95 keeps g_game_mode near 0/1/10 -- phase lives inside per-object slots
 // in the 256-entry pool (type==19 sub_state ∈ [0x28,0xC9] = CSS, type==16
 // sub_state ∈ [10,31] = Battle). Walk the pool once per call; could be
 // frame-cached if it shows up hot in profiles.
@@ -175,7 +175,7 @@ void CheckGameModeTransition() {
         // FM95: CSS↔battle transitions do NOT move the game_mode scalar (title,
         // CSS, and battle all sit near 0) and IsBattleMode/IsCSSMode pool-walk
         // the CURRENT state (ignoring their mode arg), so the scalar-edge
-        // detector below can NEVER see the transition — its `!was && is` test
+        // detector below can NEVER see the transition -- its `!was && is` test
         // compares the current phase to itself. That left g_battle_entry_
         // signaled false forever → Netplay_StartBattle never fired → the CPW
         // netplay match hung at the CSS→battle transition (both peers stuck in
@@ -196,7 +196,7 @@ void CheckGameModeTransition() {
             uint32_t end_frame = 0;
             if (Netplay_Fm95PollConfirmedBattleEnd(&end_frame)) {
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    ">>> FM95 LEAVING BATTLE (confirmed edge f=%u) — signaling peer",
+                    ">>> FM95 LEAVING BATTLE (confirmed edge f=%u) -- signaling peer",
                     end_frame);
                 Netplay_SignalBattleEndAtFrame(end_frame);
                 g_battle_entry_signaled = false;
@@ -222,7 +222,7 @@ void CheckGameModeTransition() {
                 // round-boundary dip/return never re-enters.
                 if (!g_offline_mode && Netplay_IsConnected()) {
                     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                        ">>> FM95 ENTERING BATTLE (phase edge) — signaling peer");
+                        ">>> FM95 ENTERING BATTLE (phase edge) -- signaling peer");
                     Netplay_SignalBattleEntry();
                     g_battle_entry_signaled = true;
                 }
@@ -252,7 +252,7 @@ void CheckGameModeTransition() {
         // someone requests to spectate us, the hub returns our current
         // session_kind in spectate_grant so their launcher knows
         // whether to set FM2K_BOOT_TO_BATTLE=1 (we're in battle) or
-        // not (we're in CSS — spec needs natural CSS init for the
+        // not (we're in CSS -- spec needs natural CSS init for the
         // CSS-state snapshot to apply cleanly at mode==2000).
         uint8_t kind = 0;  // menu / unknown
         if (current_mode == 2000u) kind = 1;            // CSS
@@ -281,7 +281,7 @@ void CheckGameModeTransition() {
                 && current_mode < 4000) {
                 FM2KCapture::SaveScreenshot("battle.png");
                 s_captured_battle = true;
-                // All three core captures done — touch a sentinel so
+                // All three core captures done -- touch a sentinel so
                 // the launcher's capture-runner sees "ready to kill".
                 // Empty zero-byte file; the launcher polls for its
                 // existence on a 250 ms cadence.
@@ -299,7 +299,7 @@ void CheckGameModeTransition() {
         // Fighters) at battle entry. Reset the per-window counter.
         // BATTLE-DIAG window: gated on FM2K_BATTLE_DIAG=1. Off by default
         // because each open-window dumps 300 frames of [BD ##] state into
-        // the log per CSS↔battle transition — useful for diffing broken
+        // the log per CSS↔battle transition -- useful for diffing broken
         // FM2K variants at battle entry but pure noise during normal play.
         // Cached once at first call.
         static int s_battle_diag_enabled = -1;
@@ -322,7 +322,7 @@ void CheckGameModeTransition() {
         // the SessionEvent stream (see Netplay_StartBattle, Netplay_ProcessCSS,
         // CheckFullyConnected); the spectator applies them in
         // SpectatorNode_PopFrameInputs's head-drain at the moment its local
-        // sim is about to consume the corresponding INPUT — same logical
+        // sim is about to consume the corresponding INPUT -- same logical
         // frame the host's pin happened. Eliminates the off-by-N race
         // between host-side write and spectator-side game_mode flip.
         //
@@ -344,7 +344,7 @@ void CheckGameModeTransition() {
 
             // Drain the trailing CSS-frame capture before the battle session
             // gates capture_and_return out. The pair sitting in g_capture_p[]
-            // is the LAST CSS frame — the one whose confirm flipped game_mode.
+            // is the LAST CSS frame -- the one whose confirm flipped game_mode.
             // Without this flush, spectator never sees that frame, never
             // flips its own game_mode, and desyncs at battle entry.
             // #66: under CSS rollback capture_and_return was gated out (CSS
@@ -387,7 +387,7 @@ void CheckGameModeTransition() {
             if (!g_offline_mode && Netplay_IsActive()) {
                 Netplay_SignalBattleEnd();
             } else if (Netplay_IsActive()) {
-                // Offline / stress paths still tear down synchronously —
+                // Offline / stress paths still tear down synchronously --
                 // there's no remote peer to negotiate with.
                 Netplay_EndBattle();
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,

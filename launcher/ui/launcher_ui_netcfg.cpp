@@ -132,7 +132,7 @@ void LauncherUI::RenderNetworkConfig() {
                 }
             }
 
-            // Local port (editable for client — required to avoid collisions when both peers run on localhost)
+            // Local port (editable for client -- required to avoid collisions when both peers run on localhost)
             ImGui::SetNextItemWidth(100);
             ImGui::InputInt("Local Port", &network_config_.local_port, 0, 0, ImGuiInputTextFlags_CharsDecimal);
         }
@@ -147,7 +147,7 @@ void LauncherUI::RenderNetworkConfig() {
 
 void LauncherUI::RenderConnectionStatus() {
     // ImGui popup IDs are hashed from the title string. Keep the ID stable
-    // across language switches by appending a `##` suffix — text after `##`
+    // across language switches by appending a `##` suffix -- text after `##`
     // is treated as ID-only and never displayed. This way the visible
     // title localizes but the popup keeps its identity if someone changes
     // language while a popup is open.
@@ -219,7 +219,7 @@ void LauncherUI::RenderSessionControls() {
             ImGui::BeginDisabled();
         }
 
-        // Boot/auto-mash defaults — applied to every offline launch, both
+        // Boot/auto-mash defaults -- applied to every offline launch, both
         // dev and end-user paths. End users never see these toggles.
         static int  s_boot_strategy     = 0;     // 0=safe, 1=fast
         static bool s_auto_title_skip   = true;
@@ -240,7 +240,7 @@ void LauncherUI::RenderSessionControls() {
             ::SetEnvironmentVariableA("FM2K_EB_DIAG", v ? "1" : nullptr);
             return v;
         }();
-        // Fast .player loader — collapses ~30ms of per-sound ReadFile syscall
+        // Fast .player loader -- collapses ~30ms of per-sound ReadFile syscall
         // overhead per CSS-cursor flick into one big slurp + RAM memcpy.
         // OFF by default until validated; flipping it persists + applies to
         // every launch path.
@@ -264,7 +264,7 @@ void LauncherUI::RenderSessionControls() {
         // g_iniFile_nameOverride from the hook so its kgt loader works
         // on shipped binaries. Skips splash/title/CSS entirely; uses
         // the kgt's TestPlay-section preset chars for the matchup.
-        // VS 1v1 only — engine hardcodes g_game_mode_flag=1 in that
+        // VS 1v1 only -- engine hardcodes g_game_mode_flag=1 in that
         // branch. Off by default; persists across launcher restarts.
         static bool s_dev_boot_to_battle = []() {
             bool v = LoadDevFlag("boot_to_battle", false);
@@ -274,7 +274,7 @@ void LauncherUI::RenderSessionControls() {
         }();
         // Auto-upload crash + desync diagnostics to the hub. Default ON
         // now that the META is PII-scrubbed before transmit (fm2k::pii::Scrub
-        // in FM2K_UploadQueue) and log contents are scrubbed at write time —
+        // in FM2K_UploadQueue) and log contents are scrubbed at write time --
         // so we actually get crash telemetry from the playerbase instead of
         // chasing manual log sends. Users can still opt OUT via the dev
         // checkbox (the saved flag overrides this default once they touch it).
@@ -310,7 +310,7 @@ void LauncherUI::RenderSessionControls() {
             // Move the user to the Hub panel and, if they've already
             // got a game selected and a hub connection, drop them into
             // a per-game lobby on demand. Hub creates rooms lazily on
-            // join_room — no master room list needed; the room id is
+            // join_room -- no master room list needed; the room id is
             // the exe stem so two players on the same game converge.
             ImGui::SetWindowFocus("Hub");
             const bool game_selected =
@@ -396,11 +396,11 @@ void LauncherUI::RenderSessionControls() {
             ImGui::SetItemTooltip(
                 "Boots to title_screen_manager (skips intro cutscene). The "
                 "hook auto-mashes button A with cursor pre-set to VS Player. "
-                "Works on every game — adds ~10 frames to boot.");
+                "Works on every game -- adds ~10 frames to boot.");
             ImGui::RadioButton(T("dev_boot_fast"), &s_boot_strategy, 1);
             ImGui::SetItemTooltip(
                 "Skips title screen entirely. WORKS on WW. BREAKS StudioS "
-                "Fighters / Strip Fighter Zero — characters self-damage on "
+                "Fighters / Strip Fighter Zero -- characters self-damage on "
                 "frame 0. Only enable per-game once verified safe.");
 
             ImGui::Checkbox(T("dev_auto_title_skip"), &s_auto_title_skip);
@@ -423,15 +423,15 @@ void LauncherUI::RenderSessionControls() {
             ImGui::SetItemTooltip(
                 "Append /F to the game's command line. The engine's WinMain "
                 "sets g_debug_mode=3 and its slot-0 boot dispatcher creates "
-                "a battle-init object instead of splash/title/CSS — no hook-"
+                "a battle-init object instead of splash/title/CSS -- no hook-"
                 "side input mashing involved.\n\n"
                 "VS 1v1 only (engine hardcodes the mode flag in the /F "
                 "branch). Use the char/stage inputs below to pick the "
                 "matchup; values map directly to the CSS grid index.\n\n"
                 "Needs <exe_basename>.kgt sitting next to the .exe (the "
-                "standard layout — works on WonderfulWorld, vanpri, etc.).");
+                "standard layout -- works on WonderfulWorld, vanpri, etc.).");
 
-            // Char / stage / meter inputs — only meaningful when the
+            // Char / stage / meter inputs -- only meaningful when the
             // checkbox above is on. Hook ignores the env vars if BTB is
             // off, but we hide the controls to reduce visual noise.
             if (s_dev_boot_to_battle) {
@@ -460,7 +460,7 @@ void LauncherUI::RenderSessionControls() {
                     SaveDevFlagInt("btb_stage", s_btb_stage);
                 }
                 ImGui::SetItemTooltip(
-                    "Stage index (0-49). Maps to wParam/g_fm2k_game_mode — "
+                    "Stage index (0-49). Maps to wParam/g_fm2k_game_mode -- "
                     "vs_round_function reads it on battle init.");
 
                 ImGui::SetNextItemWidth(80);
@@ -480,7 +480,7 @@ void LauncherUI::RenderSessionControls() {
 
             ImGui::Spacing();
 
-            // FM2K_DEV_MODE master flag — gates experimental hook features
+            // FM2K_DEV_MODE master flag -- gates experimental hook features
             // that aren't ready for production default-on. Current users:
             //   * .player OS-cache pre-warmer in the spectator trampoline
             //     (CSS replay performance).
@@ -500,7 +500,7 @@ void LauncherUI::RenderSessionControls() {
 
             // Auto-upload crash + desync diagnostic bundles to the hub
             // so we can pull them down for debugging. OFF by default
-            // (user must explicitly opt in — game logs are sensitive
+            // (user must explicitly opt in -- game logs are sensitive
             // even with PII-scrubbed IP addresses).
             const bool secret_baked =
                 fm2k::kLogUploadSecret && fm2k::kLogUploadSecret[0] != '\0';
@@ -522,13 +522,13 @@ void LauncherUI::RenderSessionControls() {
                       "client_version + game_id + hook-DLL SHA1, indexed "
                       "for pull-down by the dev tool."
                     : "Disabled: this build wasn't compiled with a "
-                      "FM2K_LOG_UPLOAD_SECRET — feature would have no "
+                      "FM2K_LOG_UPLOAD_SECRET -- feature would have no "
                       "endpoint to authenticate against.");
 
             ImGui::Spacing();
 
             // ---------- FM2K diagnostics (collapsed by default) ----------
-            // FM2K-engine-specific toggles — most users never touch these
+            // FM2K-engine-specific toggles -- most users never touch these
             // outside of debugging desync repros.
             if (ImGui::CollapsingHeader("FM2K diagnostics")) {
                 ImGui::Indent();
@@ -536,7 +536,7 @@ void LauncherUI::RenderSessionControls() {
                 ImGui::Checkbox(T("dev_bypass_trampoline"), &s_bypass_trampoline);
                 ImGui::SetItemTooltip(
                     "Routes Hook_RunGameLoop to vanilla. Other hooks still fire. "
-                    "Offline only — netplay/spectator require the trampoline.");
+                    "Offline only -- netplay/spectator require the trampoline.");
 
                 ImGui::Checkbox(T("dev_skip_vs_mode_patch"), &s_skip_vs_mode_patch);
                 ImGui::SetItemTooltip("%s", T("dev_skip_vs_mode_tooltip"));
@@ -552,7 +552,7 @@ void LauncherUI::RenderSessionControls() {
                     // Apply immediately so EVERY launch path (offline, online,
                     // hub, dual-clients, spectator) inherits the env var.
                     // Persist to dev_flags.ini so the toggle survives launcher
-                    // restarts — otherwise the static-bool default loses your
+                    // restarts -- otherwise the static-bool default loses your
                     // setting every time you close the launcher.
                     ::SetEnvironmentVariableA("FM2K_EB_DIAG",
                                               s_eb_diag ? "1" : nullptr);
@@ -585,19 +585,19 @@ void LauncherUI::RenderSessionControls() {
                     "Hooks ReadFile/SetFilePointer/SetFilePointerEx/CloseHandle "
                     "globally; non-.player handles fall through unchanged. "
                     "Off by default until validated. Restart the game after "
-                    "toggling — env var is read at hook init.");
+                    "toggling -- env var is read at hook init.");
 
                 ImGui::Unindent();
             }
 
-            // (Experimental patches moved to Host Config panel — they're
+            // (Experimental patches moved to Host Config panel -- they're
             // per-game now, stored in %APPDATA%\FM2K_Rollback\game_patches\
             // <game_id>.ini, edited via the Host Config tab when a game
             // is selected.)
 
             // ---------- FM95 / CPW (collapsed by default) ----------
             // Engine-specific to FM95Hook.dll-injected games. Won't fire
-            // on FM2K builds — environment vars get set anyway, and
+            // on FM2K builds -- environment vars get set anyway, and
             // FM2KHook just ignores them.
             if (ImGui::CollapsingHeader("FM95 (CPW etc.)")) {
                 ImGui::Indent();
@@ -608,7 +608,7 @@ void LauncherUI::RenderSessionControls() {
                     "FM95's RUN_GAME_LOOP is _WinMain (no separate driver), so the "
                     "trampoline can't replace it like on FM2K. With this enabled, "
                     "Hook_UpdateGameState calls TrampolineFrameTick() and Hook_"
-                    "RenderGame skips the host's natural render — the trampoline's "
+                    "RenderGame skips the host's natural render -- the trampoline's "
                     "RenderFrameWithSnapshot drives one render per frame. Required "
                     "for FM95 rollback parity. OFF = current working baseline (no "
                     "rollback driver, host runs CPW natively). Toggle off if you "
@@ -632,7 +632,7 @@ void LauncherUI::RenderSessionControls() {
             }
             ImGui::SetItemTooltip(
                 "GekkoStressSession with a single instance. Forces rollback every 10 frames "
-                "and compares save hashes — any DESYNC = local determinism bug.");
+                "and compares save hashes -- any DESYNC = local determinism bug.");
 
             ImGui::Spacing();
             ImGui::Text("%s", T("dev_local_testing"));
@@ -676,7 +676,7 @@ void LauncherUI::RenderSessionControls() {
 
         ImGui::SetItemTooltip("%s", T("dev_launch_dual_tip"));
 
-        // "Launch Spectator" — spawns a third local instance that subscribes
+        // "Launch Spectator" -- spawns a third local instance that subscribes
         // to client1 (host on 7000) for replay-streamed spectating. Only
         // makes sense after Launch Dual Clients has the host running.
         bool can_spectate = on_launch_local_spectator && game_selected && client1_pid != 0;
@@ -693,7 +693,7 @@ void LauncherUI::RenderSessionControls() {
         if (!can_spectate) ImGui::EndDisabled();
         ImGui::SetItemTooltip("%s", T("dev_launch_spectator_tip"));
 
-        // "Launch Spectator 2 (chain)" — daisy-chain test. Subscribes to
+        // "Launch Spectator 2 (chain)" -- daisy-chain test. Subscribes to
         // spectator 1 (port 7002) instead of the host. Validates that
         // spectator 1 correctly relays its received frames to its own
         // subscribers. Disabled until both dual clients + spectator 1 are
@@ -723,7 +723,7 @@ void LauncherUI::RenderSessionControls() {
 
         // Hub-free Spectate-by-IP. Sits at the bottom of the dev section
         // so it's grouped with the other "test the netcode directly"
-        // controls. Cross-Patreon-tier viewing — patron specs a non-
+        // controls. Cross-Patreon-tier viewing -- patron specs a non-
         // patron friend, or two non-patrons in dev mode. Requires host
         // to share their public addr OOB (Discord etc).
         ImGui::Spacing();

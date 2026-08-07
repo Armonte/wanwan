@@ -1,6 +1,6 @@
 #pragma once
 
-// Combat-state introspection — typed accessors over the live game object /
+// Combat-state introspection -- typed accessors over the live game object /
 // char_data fields we use to drive smarter training-mode behaviors. Read-only
 // helpers; nothing here writes to game memory. Always safe to call (returns a
 // neutral value if the underlying pointers are null / unset, e.g. pre-battle).
@@ -22,10 +22,10 @@ namespace combat_state {
 // hit_detection_system and reset by character_action_controller):
 //   bit 2 (=0x04): in scripted action (attack animation, hit reaction, etc.)
 //   bit 3 (=0x08): in defensive/stun state (block or hit)
-//   bit 4 (=0x10): "already hit this attack" — attacker-side filter
+//   bit 4 (=0x10): "already hit this attack" -- attacker-side filter
 // Combinations we care about (mask the value with 0xC):
 //   0x0  → actionable / idle
-//   0x4  → in scripted action (NOT stunned — e.g., attacking)
+//   0x4  → in scripted action (NOT stunned -- e.g., attacking)
 //   0x8  → blockstun
 //   0xC  → hitstun
 constexpr uint32_t kStunStateMask  = 0x0C;
@@ -35,7 +35,7 @@ constexpr uint32_t kStunBlock      = 0x08;
 constexpr uint32_t kStunHit        = 0x0C;
 
 // Per-player view bundled for one accessor call. Reads are atomic w.r.t. the
-// game thread (single-frame snapshot) — caller should treat as a value type.
+// game thread (single-frame snapshot) -- caller should treat as a value type.
 struct PlayerView {
     bool valid;            // false if obj_ptr was null (pre-battle / between rounds)
     uint32_t flags_stun;   // raw obj+0x15E value
@@ -46,9 +46,9 @@ struct PlayerView {
     bool has_active_hitbox;// any non-null pointer in obj+0x8C..0xD8 (20 slots)
     int32_t pos_x;         // obj+0x08 raw (16.16 fixed point)
     int32_t pos_y;         // obj+0x0C
-    int32_t pos_y_ground;  // obj+0x58 — equals pos_y when grounded
+    int32_t pos_y_ground;  // obj+0x58 -- equals pos_y when grounded
     bool grounded;         // pos_y == pos_y_ground
-    int32_t hitstop_frames;// obj+0x40 — count of frozen frames remaining
+    int32_t hitstop_frames;// obj+0x40 -- count of frozen frames remaining
 };
 
 // Read a snapshot of either side. slot is 0=P1, 1=P2. Returns a PlayerView
@@ -82,7 +82,7 @@ bool ShouldGuardP2();
 //     the crouching-block path covering LOW and MID attacks.
 //
 // Limitation: overheads from a grounded P1 still slip through (need to
-// crouch-block lows but stand-block overheads — disambiguation requires
+// crouch-block lows but stand-block overheads -- disambiguation requires
 // hit-flag decode work, deferred). Acceptable default since FM2K games
 // rarely use grounded overheads.
 //
@@ -106,13 +106,13 @@ bool ShouldGuardP2();
 // Triggers (any one refreshes the latch):
 //   1. P2 is currently in blockstun (string continuation)
 //   2. P1 has an active hitbox (the strict state signal)
-//   3. P1 is in any scripted action (flags_stun & 4 — startup coverage)
+//   3. P1 is in any scripted action (flags_stun & 4 -- startup coverage)
 //   4. P1's CURRENT input has any attack button pressed (anticipates the
 //      hitbox by 3+ frames since button press leads active frames; this
 //      is what makes the Guard actually fast enough on jab-speed attacks)
 //
 // `p1_input_screen_coord` is the 11-bit screen-coordinate input value
-// sampled from P1's bindings before the facing-fix — same value passed to
+// sampled from P1's bindings before the facing-fix -- same value passed to
 // PerGamePatches_BattleInputOverride. Used for trigger #4.
 uint16_t GuardP2Input(uint16_t p1_input_screen_coord);
 

@@ -172,7 +172,7 @@ namespace Utils {
 
     // Persisted games-root list lives in launcher.cfg as one path per line.
     // The historical single-string format is just a one-line file, which the
-    // line-by-line reader handles transparently — that's our migration story.
+    // line-by-line reader handles transparently -- that's our migration story.
     std::vector<std::string> LoadGamesRootPaths() {
         std::vector<std::string> result;
         std::string cfg = GetConfigFilePath();
@@ -256,7 +256,7 @@ namespace Utils {
     //     u32 demo_count   + that many strings
     //
     // Old text-format caches fail the "FM2K" magic check on read and are
-    // silently dropped — first warm rescan after the upgrade pays the full
+    // silently dropped -- first warm rescan after the upgrade pays the full
     // cost once, then writes the new binary format. No migration needed.
     // -------------------------------------------------------------
 
@@ -281,7 +281,7 @@ namespace Utils {
 
     // UTF-8 ↔ wide via Win32 so std::filesystem doesn't go through the
     // system ANSI codepage (CP1252 on most non-Japanese installs),
-    // which silently rewrites unrepresentable codepoints — full-width
+    // which silently rewrites unrepresentable codepoints -- full-width
     // forms ＣＰＷ (U+FF23/FF30/FF37) become '_' or '?' on the trip
     // through path::string(). Use wide internally and convert at the
     // boundaries so the launcher renders / caches the original bytes.
@@ -407,12 +407,12 @@ static SDL_EnumerationResult DirectoryEnumerator(void* userdata, const char* ori
 
 // Look up an exe path in the cache and validate that BOTH the exe and
 // the kgt (if present) have not changed since the cache was written.
-// `kgt_path` may be empty for FM95 .player-only games — in that case the
+// `kgt_path` may be empty for FM95 .player-only games -- in that case the
 // kgt-stat check is skipped.
 //
 // Returns true on a full hit; the caller can then populate FM2KGameInfo
 // directly from `out` and skip xxh64, kgt parse, engine sniff, packer
-// sniff — i.e. zero file I/O for this game.
+// sniff -- i.e. zero file I/O for this game.
 static bool TryUseCachedEntry(
     const std::unordered_map<std::string, Utils::GameCacheEntry>* cache,
     const std::string& exe_path,
@@ -474,7 +474,7 @@ static void ScanDirForGames(const std::string& dir,
             // Use platform-preferred separator so the paths displayed in
             // the games list match the slash style of the user-typed
             // root folder. FlippySpatula reported the visible mismatch
-            // as confusing — Windows users see "C:\games" for their
+            // as confusing -- Windows users see "C:\games" for their
             // root then "C:\games/foo.exe" for the scraped child.
             std::string exe_path = dir + "\\" + exe_name;
             std::string kgt_path = dir + "\\" + kgt_name;
@@ -505,7 +505,7 @@ static void ScanDirForGames(const std::string& dir,
                 // we still surface the game; dropdowns fall back to indices.
                 if (!fm2k::ParseKgtSummary(std::filesystem::u8path(kgt_path), info.kgt)) {
                     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-                                 "KGT parse failed for '%s' — dropdowns will be empty",
+                                 "KGT parse failed for '%s' -- dropdowns will be empty",
                                  kgt_path.c_str());
                 }
 
@@ -542,7 +542,7 @@ static void ScanDirForGames(const std::string& dir,
                             cache_hit ? " [cached]" : "",
                             exe_path.c_str(),
                             (unsigned long long)info.xxh64,
-                            info.clean_label.empty() ? "" : (" — " + info.clean_label).c_str());
+                            info.clean_label.empty() ? "" : (" -- " + info.clean_label).c_str());
             }
             games.push_back(std::move(info));
             found_kgt_pair = true;
@@ -552,7 +552,7 @@ static void ScanDirForGames(const std::string& dir,
 
     // 1b) FM95 fallback: directories with no .kgt but with .player files
     //     alongside an .exe are likely FM95 prototype builds (e.g. CPW.exe).
-    //     FM95 has no master KGT data file — character data lives in .player
+    //     FM95 has no master KGT data file -- character data lives in .player
     //     files loaded directly via cmdline.
     if (!found_kgt_pair) {
         int player_count = 0;
@@ -580,7 +580,7 @@ static void ScanDirForGames(const std::string& dir,
                         info.clean_label  = cached_entry.clean_label;
                         info.packer_label = cached_entry.packer_label;
                         info.is_clean     = cached_entry.is_clean;
-                        // No kgt for the .player-only fallback — leave info.kgt default.
+                        // No kgt for the .player-only fallback -- leave info.kgt default.
                     } else {
                         info.xxh64 = Utils::HashFileXXH64(exe_path);
 
@@ -703,7 +703,7 @@ const fm2k::KgtSummary* FM2KLauncher::FindKgtByGameId(const std::string& game_id
 }
 
 std::vector<FM2K::FM2KGameInfo> FM2KLauncher::DiscoverGames() {
-    // Snapshot the roots list — the launcher might mutate it while we walk.
+    // Snapshot the roots list -- the launcher might mutate it while we walk.
     std::vector<std::string> roots = games_root_paths_;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "Starting game discovery across %d root(s)", (int)roots.size());
@@ -715,7 +715,7 @@ std::vector<FM2K::FM2KGameInfo> FM2KLauncher::DiscoverGames() {
     auto cache = Utils::LoadGameCacheMap();
 
     // Walk each root concurrently. std::async with a small per-root task is
-    // the right granularity — the work is filesystem-bound, not CPU-bound,
+    // the right granularity -- the work is filesystem-bound, not CPU-bound,
     // so a thread pool would add complexity without buying anything.
     std::vector<std::future<std::vector<FM2K::FM2KGameInfo>>> futures;
     futures.reserve(roots.size());

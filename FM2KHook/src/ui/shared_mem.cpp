@@ -142,7 +142,7 @@ void SharedMem_PublishMatchStage(uint32_t stage_id) {
     g_shared_mem->match_stage_id = stage_id;
     // Bump the chars+stage publish seq AFTER the final field of the
     // battle-start snapshot is in place. Launcher uses this as the
-    // "fire match_progress now" trigger — by gating on seq advance
+    // "fire match_progress now" trigger -- by gating on seq advance
     // instead of value change, we avoid the rotate-window race where
     // shared-mem still holds the prev battle's chars and the launcher
     // would otherwise fire under the rotated token with stale data.
@@ -163,7 +163,7 @@ void SharedMem_PublishRoundResult(uint8_t  winner_idx,
                                   uint32_t frames_elapsed) {
     if (!g_shared_mem) return;
     const uint8_t i = g_shared_mem->match_rounds_count;
-    if (i >= 8) return;  // ring is bounded — silently drop overflow
+    if (i >= 8) return;  // ring is bounded -- silently drop overflow
     FM2KRoundResult& r = g_shared_mem->match_rounds[i];
     r.frames_elapsed   = frames_elapsed;
     r.p1_hp_remaining  = p1_hp_remaining;
@@ -193,7 +193,7 @@ void SharedMem_PublishExternalTcp(uint32_t ip_be, uint16_t port) {
     if (g_shared_mem->tcp_stun_ext_ip_be == ip_be &&
         g_shared_mem->tcp_stun_ext_port  == port  &&
         g_shared_mem->tcp_stun_seq       != 0) {
-        return;  // unchanged — don't bump seq
+        return;  // unchanged -- don't bump seq
     }
     g_shared_mem->tcp_stun_ext_ip_be = ip_be;
     g_shared_mem->tcp_stun_ext_port  = port;
@@ -205,7 +205,7 @@ void SharedMem_PublishLocalV6(const uint8_t addr[16], uint16_t port_be) {
     if (std::memcmp(g_shared_mem->local_v6_addr, addr, 16) == 0 &&
         g_shared_mem->local_v6_port == port_be &&
         g_shared_mem->local_v6_seq  != 0) {
-        return;  // unchanged — don't bump seq
+        return;  // unchanged -- don't bump seq
     }
     std::memcpy(g_shared_mem->local_v6_addr, addr, 16);
     g_shared_mem->local_v6_port = port_be;
@@ -216,7 +216,7 @@ void SharedMem_PublishSessionKind(uint8_t kind) {
     if (!g_shared_mem) return;
     if (g_shared_mem->session_kind == kind &&
         g_shared_mem->session_kind_seq != 0) {
-        return;  // unchanged — don't bump seq (launcher only forwards on change)
+        return;  // unchanged -- don't bump seq (launcher only forwards on change)
     }
     g_shared_mem->session_kind     = kind;
     g_shared_mem->session_kind_seq += 1;
@@ -256,7 +256,7 @@ void SharedMem_PublishHudSystemMessage(const char* text_utf8, uint32_t ttl_ms) {
 void SharedMem_PublishHudSpectatorCount(uint16_t n) {
     if (!g_shared_mem) return;
     g_shared_mem->hud_spectator_count = n;
-    // No seq for spectator count — fc_hud reads the raw value every
+    // No seq for spectator count -- fc_hud reads the raw value every
     // frame and renders if non-zero. No coherency concern: the value
     // is a 16-bit aligned write, atomic on x86.
 }

@@ -21,7 +21,7 @@ namespace {
 std::string DefaultProfileBaseDir() {
     if (const char* env = std::getenv("FM2K_INPUT_CONFIG_PATH")) {
         if (env[0]) {
-            // env override — derive the base dir by stripping the filename.
+            // env override -- derive the base dir by stripping the filename.
             std::string s = env;
             size_t slash = s.find_last_of("/\\");
             return (slash == std::string::npos) ? "." : s.substr(0, slash);
@@ -40,7 +40,7 @@ std::string DefaultProfileBaseDir() {
 }
 
 std::string SanitizeProfileName(const char* name) {
-    // Filenames go on disk — strip ONLY the Windows-forbidden chars
+    // Filenames go on disk -- strip ONLY the Windows-forbidden chars
     // and ASCII control bytes. Letting non-ASCII through preserves
     // UTF-8 sequences for games shipped by Japanese authors (e.g.
     // ＣＰＷ.exe → "ＣＰＷ" profile name). Original sanitizer treated
@@ -73,8 +73,8 @@ std::string SanitizeProfileName(const char* name) {
 
 std::string DefaultProfilePath() {
     // Anchor in %APPDATA%\FM2K_Rollback so the launcher EXE and the
-    // injected hook DLL — which live in different working directories
-    // — resolve to THE SAME path. CWD-relative was bugged: launcher
+    // injected hook DLL -- which live in different working directories
+    // -- resolve to THE SAME path. CWD-relative was bugged: launcher
     // saved at e.g. C:\games\fm2k_inputs.ini, hook stat'd
     // C:\games\2dfm\wanwan\fm2k_inputs.ini. File never found in-game.
     return DefaultProfileBaseDir() +
@@ -181,7 +181,7 @@ bool Save() {
     // "Use override for X" checkbox). Otherwise write to the default
     // profile. Without this gate, every Save() while a game is
     // selected silently re-creates the per-game file even after the
-    // user unchecked override — the checkbox would auto-re-check
+    // user unchecked override -- the checkbox would auto-re-check
     // itself on the next render after any binding tweak.
     const bool route_to_game =
         !g_active_game.empty() && FileExists(GameProfilePath());
@@ -194,7 +194,7 @@ bool Save() {
     std::fprintf(f, "; FM2K input bindings\n");
     for (int p = 0; p < kPlayers; ++p) {
         std::fprintf(f, "[Player%d]\n", p);
-        // Stable device identity ("<GUID>[#serial]") — written before the
+        // Stable device identity ("<GUID>[#serial]") -- written before the
         // bit rows. Omitted entirely for identity-less (legacy) players so
         // their configs keep index-based routing untouched.
         if (!g_players[p].device_id.empty()) {
@@ -203,7 +203,7 @@ bool Save() {
         }
         for (size_t i = 0; i < (size_t)Bit::COUNT; ++i) {
             WriteBinding(f, kBitNames[i], g_players[p].bits[i]);
-            // Alt slot — emit only when set so legacy single-source
+            // Alt slot -- emit only when set so legacy single-source
             // configs round-trip without picking up a noisy ".alt = NONE"
             // for every bit.
             if (g_players[p].bits_alt[i].source != Binding::Source::NONE) {
@@ -226,7 +226,7 @@ bool Load() {
     // The config file exists → clear alt slots before parsing so missing
     // ".alt" keys mean "empty alt", not "XInput defaults from Init". Without
     // this, every pre-v0.2.16 config (no .alt keys ever written) silently
-    // gets its alt slots populated with the auto-defaults — which OR with
+    // gets its alt slots populated with the auto-defaults -- which OR with
     // the user's custom primary bindings and fire wrong bits when they
     // press a face button. Fresh installs (no config file) skip this branch
     // and keep the Init-time defaults; that's the intended path for new
@@ -284,11 +284,11 @@ bool Load() {
     }
     std::fclose(f);
 
-    // Identity may have changed with the file contents — re-resolve each
+    // Identity may have changed with the file contents -- re-resolve each
     // player's pad against the currently-connected set.
     ResolvePlayerPads();
 
-    // Breadcrumb — which file actually drives in-game input, and how many
+    // Breadcrumb -- which file actually drives in-game input, and how many
     // bits each player has bound. Load() runs on a 1 s cadence, so only
     // log when the resolved path or a player's bound-count changes. This
     // is the line that turns a "P2 does nothing" report into a diagnosis
@@ -313,7 +313,7 @@ bool Load() {
             const bool is_override =
                 !g_active_game.empty() && g_config_path == GameProfilePath();
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "InputBinder: loaded '%s' (%s) — P1 %d/%d bits bound, "
+                "InputBinder: loaded '%s' (%s) -- P1 %d/%d bits bound, "
                 "P2 %d/%d bits bound%s",
                 g_config_path.c_str(),
                 is_override ? "per-game override" : "default profile",
@@ -325,11 +325,11 @@ bool Load() {
         // merely inconvenient. The engine toggles g_game_paused (0x4701BC)
         // only on a RISING EDGE of bit 0x400 in g_combined_input_changes
         // (vs_round_function @0x4086A0), and that word is built from what our
-        // binder returns — so an unbound PAUSE row means the pause button is
+        // binder returns -- so an unbound PAUSE row means the pause button is
         // simply dead, with no other symptom to hint at why. We deliberately
         // do NOT repair the profile here: the user's config is the user's
         // config. But a dead pause must not be silent. (Residual half of the
-        // "P2 controls & pause dead in offline" report — the P2 half was a
+        // "P2 controls & pause dead in offline" report -- the P2 half was a
         // per-player takeover bug, this half is just an unbound row.)
         //
         // Warn whenever PAUSE is unbound, regardless of how many other bits
@@ -353,7 +353,7 @@ bool Load() {
                 s_last_pause_state[p] = cur;
                 if (cur == 0) {
                     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                        "InputBinder: P%d has NO PAUSE BINDING — the pause "
+                        "InputBinder: P%d has NO PAUSE BINDING -- the pause "
                         "button will not work for that player. Bind PAUSE in "
                         "the input settings to restore it.", p + 1);
                 }
@@ -383,7 +383,7 @@ bool ForkDefaultToGameProfile() {
     if (g_active_game.empty()) return false;
     const std::string dst = GameProfilePath();
     if (FileExists(dst)) {
-        // Already exists — caller can choose to overwrite via Save().
+        // Already exists -- caller can choose to overwrite via Save().
         // Treat fork-of-already-existing as a no-op success so the UI
         // checkbox toggle works idempotently.
         RefreshActivePath();
@@ -404,7 +404,7 @@ bool ForkDefaultToGameProfile() {
         }
         std::fclose(in);
     } else {
-        // No default file yet — write the current in-memory bindings as the
+        // No default file yet -- write the current in-memory bindings as the
         // seed of the per-game profile. Otherwise the per-game file would
         // be empty and Load() would silently leave defaults in place.
         std::fclose(out);

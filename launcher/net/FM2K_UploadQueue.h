@@ -6,7 +6,7 @@
 //
 // Workflow:
 //   Hook → <game_dir>/upload_queue/<unix_ms>_<kind>_p<n>_<sid>.json
-//   Launcher (this code) — polls the dir every tick, processes one
+//   Launcher (this code) -- polls the dir every tick, processes one
 //     manifest per tick to avoid blocking the UI:
 //     1. Read JSON, validate fields.
 //     2. Read each referenced file (truncating Debug.log tail to 2 MB

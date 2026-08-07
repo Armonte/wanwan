@@ -1,4 +1,4 @@
-// FM2K_DiscordAuth — launcher-side Discord OAuth pairing flow.
+// FM2K_DiscordAuth -- launcher-side Discord OAuth pairing flow.
 // See FM2K_DiscordAuth.h for the design.
 
 #include "FM2K_DiscordAuth.h"
@@ -27,7 +27,7 @@ namespace fm2k::discord_auth {
 namespace {
 
 // ---------------------------------------------------------------------------
-// %APPDATA%\FM2K_Rollback\discord_auth.json — flat string fields, hand
+// %APPDATA%\FM2K_Rollback\discord_auth.json -- flat string fields, hand
 // parsed. We don't need a real JSON library for three string keys.
 // ---------------------------------------------------------------------------
 
@@ -311,16 +311,16 @@ static HttpResp HttpGetOnce(const std::string& url, int timeout_ms,
 }
 
 // Public: walks an access-type ladder until one returns an HTTP response.
-//   1. AUTOMATIC_PROXY — WPAD auto-detect (corporate / managed networks).
+//   1. AUTOMATIC_PROXY -- WPAD auto-detect (corporate / managed networks).
 //      BUT this access type only exists on Windows 8.1+; on Windows 8.0 and
 //      earlier WinHttpOpen rejects it with ERROR_INVALID_PARAMETER (87)
 //      BEFORE any network I/O. That 87 is pure noise on old OSes.
-//   2. DEFAULT_PROXY — honors the system/WinHTTP proxy config. Works on
+//   2. DEFAULT_PROXY -- honors the system/WinHTTP proxy config. Works on
 //      EVERY Windows version, so this is what saves Win8.0 guests.
-//   3. NO_PROXY — direct, ignores proxy config (broken/orphaned VPN clients).
+//   3. NO_PROXY -- direct, ignores proxy config (broken/orphaned VPN clients).
 // On total failure we must NOT surface the auto-proxy 87: it masks the real
 // reason (it's just "old OS doesn't know that access type"). Prefer an attempt
-// that got PAST WinHttpOpen — that carries the genuine network error.
+// that got PAST WinHttpOpen -- that carries the genuine network error.
 HttpResp HttpGet(const std::string& url, int timeout_ms = 15000) {
     auto is_open_param_noise = [](const HttpResp& x) {
         return x.status == 0 && x.failed_at
@@ -363,7 +363,7 @@ CachedAuth LoadCached() {
     a.discord_user_id      = JsonField(s, "discord_user_id");
     a.nick                 = JsonField(s, "nick");
     a.discord_global_name  = JsonField(s, "discord_global_name");
-    // Default true for legacy files that pre-date the field — matches the
+    // Default true for legacy files that pre-date the field -- matches the
     // struct's initializer. JsonField returns "" on missing key; treat
     // anything other than the literal string "false" as true.
     const std::string udn  = JsonField(s, "use_discord_name");
@@ -453,14 +453,14 @@ Pairing* Begin(const std::string& hub_base_url) {
             // list: docs.microsoft.com/en-us/windows/win32/winhttp/error-messages
             const char* hint = "";
             switch (begin.last_error) {
-                case 12002: hint = " — timeout, hub unreachable (firewall / port blocked / VPN)"; break;
-                case 12007: hint = " — DNS lookup failed for hub host"; break;
-                case 12029: hint = " — connection refused (firewall / AV web shield / hub down)"; break;
-                case 12030: hint = " — connection dropped"; break;
-                case 12152: hint = " — bad response from hub (hub crashed?)"; break;
-                case 12175: hint = " — TLS handshake failed (clock skew / cert issue)"; break;
+                case 12002: hint = " -- timeout, hub unreachable (firewall / port blocked / VPN)"; break;
+                case 12007: hint = " -- DNS lookup failed for hub host"; break;
+                case 12029: hint = " -- connection refused (firewall / AV web shield / hub down)"; break;
+                case 12030: hint = " -- connection dropped"; break;
+                case 12152: hint = " -- bad response from hub (hub crashed?)"; break;
+                case 12175: hint = " -- TLS handshake failed (clock skew / cert issue)"; break;
                 case 0:     hint = "";  break;  // normal HTTP-level failure
-                default:    hint = " — WinHttp error";  break;
+                default:    hint = " -- WinHttp error";  break;
             }
             char buf[256];
             std::snprintf(buf, sizeof(buf),
@@ -512,7 +512,7 @@ Pairing* Begin(const std::string& hub_base_url) {
         };
         bool opened = try_open(url.c_str());
         if (!opened) {
-            // Fallback: spawn `cmd.exe /c start "" <url>` — `start` uses
+            // Fallback: spawn `cmd.exe /c start "" <url>` -- `start` uses
             // its own URL-handler resolution path which sometimes works
             // when ShellExecute("open") fails (e.g. when the http verb
             // is mis-registered but the URL falls through to whatever
@@ -527,7 +527,7 @@ Pairing* Begin(const std::string& hub_base_url) {
         }
         if (!opened) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "DiscordAuth: browser auto-launch FAILED — user must "
+                "DiscordAuth: browser auto-launch FAILED -- user must "
                 "copy the URL from the auth modal and paste in browser "
                 "manually. Common cause: launcher running as Admin "
                 "(UAC blocks elevated→non-elevated browser spawn). "
@@ -590,7 +590,7 @@ Pairing* Begin(const std::string& hub_base_url) {
                 p->status_.store((int)Pairing::Status::Error);
                 return;
             }
-            // 202 (pending) or transient failure — wait and retry.
+            // 202 (pending) or transient failure -- wait and retry.
             std::this_thread::sleep_for(std::chrono::seconds(2));
         }
     });

@@ -1,4 +1,4 @@
-// CSS auto-lock-and-confirm hook — see header for design rationale and
+// CSS auto-lock-and-confirm hook -- see header for design rationale and
 // docs/analysis/css_state_machine.md for the IDA-pass that maps the state
 // machine and globals.
 
@@ -38,33 +38,33 @@ constexpr uintptr_t ADDR_GAME_MODE          = 0x00470054;
 constexpr uintptr_t ADDR_GAME_MODE_FLAG     = 0x00470058;  // 0=story, 1=VS, 2=team
 constexpr uintptr_t ADDR_P1_TEAM_HISTORY    = 0x0047006C;  // g_player_move_history (u32×4: P1 team chars)
 constexpr uintptr_t ADDR_P2_TEAM_HISTORY    = 0x0047007C;  // g_p2_round_history_chars (u32×4: P2 team chars)
-constexpr uintptr_t ADDR_P1_TEAM_SLOT_COUNT = 0x004700EC;  // g_p1_round_count — # P1 chars locked so far
-constexpr uintptr_t ADDR_P2_TEAM_SLOT_COUNT = 0x004700F0;  // g_p1_round_state — # P2 chars locked so far (P2 counter, despite the name)
+constexpr uintptr_t ADDR_P1_TEAM_SLOT_COUNT = 0x004700EC;  // g_p1_round_count -- # P1 chars locked so far
+constexpr uintptr_t ADDR_P2_TEAM_SLOT_COUNT = 0x004700F0;  // g_p1_round_state -- # P2 chars locked so far (P2 counter, despite the name)
 
 // AssignPlayerColor @ 0x406F20 reads `input_changes & 0x3E0` (bits 5..9) to
 // pick color slot 1..5; if none of those bits set, the function falls
 // through to color 0. The caller in game_state_manager triggers the call
-// only when `input_changes & 0x3F0` (bits 4..9) is non-zero — so bit 4
+// only when `input_changes & 0x3F0` (bits 4..9) is non-zero -- so bit 4
 // (0x10) on its own confirms with color 0.
 //
 // Earlier versions of this file used a fixed `INJECTED_CONFIRM_BIT = 0x10`
 // for both players, which always landed on color 0 regardless of what the
 // recorded match used. That made offline replays look like every fight
 // confirmed with palette 0 even when the original players picked colors
-// 1..5 — visible as wrong palette in the replay's CSS portrait + battle
+// 1..5 -- visible as wrong palette in the replay's CSS portrait + battle
 // sprites.
 //
 // Replacement: per-player target bit derived from the MATCH_START header's
 // p1_color / p2_color, mapped through ColorBitForSlot:
 //
-//   color 0 → 0x10  (bit 4 — confirm-only, falls through to default 0)
+//   color 0 → 0x10  (bit 4 -- confirm-only, falls through to default 0)
 //   color 1 → 0x20  (bit 5)
 //   color 2 → 0x40  (bit 6)
 //   color 3 → 0x80  (bit 7)
 //   color 4 → 0x100 (bit 8)
 //   color 5 → 0x200 (bit 9)
 //
-// We still OVERWRITE the 0x3F0 bits rather than OR — pb_queue's leaked
+// We still OVERWRITE the 0x3F0 bits rather than OR -- pb_queue's leaked
 // battle-input bits could otherwise set a different attack button and shift
 // AssignPlayerColor's bit ladder onto the wrong color.
 inline uint32_t ColorBitForSlot(uint8_t color) {
@@ -84,7 +84,7 @@ std::atomic<uint8_t> g_target_p1_color{0};
 std::atomic<uint8_t> g_target_p2_color{0};
 std::atomic<uint8_t> g_target_stage_id{0};
 
-// Tick counter for diag — log first few frames of pinning then stay quiet so
+// Tick counter for diag -- log first few frames of pinning then stay quiet so
 // CSS doesn't blast the log file with 100+ "pinning chars" lines.
 std::atomic<uint32_t> g_pin_tick{0};
 
@@ -156,11 +156,11 @@ char __cdecl Hook_GameStateManager() {
     PerGamePatches_OnGameStateManagerEntry();
 
     // Team-mode dupe-lock runs independently of the replay auto-confirm
-    // path — they're orthogonal features that both happen to live in the
+    // path -- they're orthogonal features that both happen to live in the
     // same hook because MinHook only allows one detour per function.
     ApplyTeamDupeLock();
 
-    // Team size override — apply BEFORE original so the natural copy
+    // Team size override -- apply BEFORE original so the natural copy
     // from g_team_round at game_state_manager STATE 0 (init CSS) sees
     // our value via g_team_round (we also re-write g_team_round_setting
     // post-call below for paths that don't re-read from g_team_round).
@@ -299,7 +299,7 @@ char __cdecl Hook_GameStateManager() {
                 // battle-init spawns post-CSS-timer.
                 *(uint32_t*)ADDR_SELECTED_STAGE = stg;
 
-                // Mask out d-pad bits in g_processed_input — pb_queue's
+                // Mask out d-pad bits in g_processed_input -- pb_queue's
                 // leaked LRUD bits would otherwise drift the cursor away
                 // from our pin via WrapPositionToStageBounds before
                 // game_state_manager computes grid_pos.
@@ -318,7 +318,7 @@ char __cdecl Hook_GameStateManager() {
                 //  natural state-1 d-pad branch sees prev_pos==-1 + new grid
                 //  pos == target_idx → triggers player_data_file_loader to
                 //  load the right .player file. We MUST NOT inject confirm
-                //  here — mode-1's CSS code is if/else: confirm path AND
+                //  here -- mode-1's CSS code is if/else: confirm path AND
                 //  d-pad/file-load path are mutually exclusive per frame,
                 //  and the confirm path is checked first. Without this,
                 //  state-0 init's stale selected[player]=0 (cursor was at
@@ -367,14 +367,14 @@ char __cdecl Hook_GameStateManager() {
                 }
             }
         } else if (game_mode >= 3000u) {
-            // Battle entered — disengage automatically.
+            // Battle entered -- disengage automatically.
             CssAutoConfirm_Disengage();
         }
     }
 
     char ret = g_orig ? g_orig() : 0;
 
-    // Team size override — second pass, AFTER the engine ran. The engine
+    // Team size override -- second pass, AFTER the engine ran. The engine
     // copies g_team_round → g_team_round_setting at CSS init (state 0);
     // we re-stamp g_team_round_setting directly so any subsequent game
     // logic reading it during this frame sees our override even on
@@ -400,7 +400,7 @@ bool CssAutoConfirm_Install() {
             (unsigned)ADDR_GAME_STATE_MANAGER);
         return false;
     }
-    // Queue only — InitializeHooks flushes all queued hooks with a single
+    // Queue only -- InitializeHooks flushes all queued hooks with a single
     // MH_ApplyQueued (one thread-freeze for the whole boot path).
     if (MH_QueueEnableHook((void*)ADDR_GAME_STATE_MANAGER) != MH_OK) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
@@ -425,7 +425,7 @@ void CssAutoConfirm_OnReplayMatchStart(uint8_t p1_char, uint8_t p1_color,
     g_pin_tick.store(0, std::memory_order_relaxed);
     g_active.store(true, std::memory_order_release);
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "CssAutoConfirm: armed for replay — p1=%u/c%u p2=%u/c%u stage=%u",
+        "CssAutoConfirm: armed for replay -- p1=%u/c%u p2=%u/c%u stage=%u",
         p1_char, p1_color, p2_char, p2_color, stage_id);
 }
 
@@ -455,7 +455,7 @@ void CssAutoConfirm_SetSeamHold(bool enabled,
     }
 }
 
-#else  // ENGINE_FM95 — separate state machine, separate hand-off
+#else  // ENGINE_FM95 -- separate state machine, separate hand-off
 
 #include "css_autoconfirm.h"
 

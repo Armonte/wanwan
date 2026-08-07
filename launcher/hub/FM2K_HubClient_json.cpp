@@ -1,11 +1,11 @@
-// FM2K Hub client — WinHTTP WebSocket transport.
+// FM2K Hub client -- WinHTTP WebSocket transport.
 //
 // One I/O thread does the WS handshake then spawns a sender thread.
 // The I/O thread itself owns the receive loop. Both push events
 // onto a thread-safe inbox; the launcher's UI thread drains via
 // HubClient::Poll() once per frame.
 //
-// JSON encode/decode is deliberately minimal — the message catalog
+// JSON encode/decode is deliberately minimal -- the message catalog
 // in docs/FM2K_Matchmaking_Design.md §15.2 is small enough that
 // hand-rolled extractors are simpler than vendoring a JSON lib.
 // If that catalog grows, swap in nlohmann/json.
@@ -65,7 +65,7 @@ std::string EscapeJsonString(const std::string& s) {
 }
 
 // Find `"key":` and return the position right after the colon (skipping whitespace).
-// Returns std::string::npos if not found at outermost scope. Naive — doesn't
+// Returns std::string::npos if not found at outermost scope. Naive -- doesn't
 // guard against nested objects with the same key. Fine for our flat protocol.
 size_t FindKey(const std::string& s, const std::string& key) {
     std::string needle = "\"" + key + "\"";
@@ -178,7 +178,7 @@ std::string GetStr(const std::string& s, const std::string& key) {
 int GetInt(const std::string& s, const std::string& key, int def) {
     size_t p = FindKey(s, key);
     if (p == std::string::npos) return def;
-    // Treat a literal `null` as "absent" — same as the field being
+    // Treat a literal `null` as "absent" -- same as the field being
     // omitted. Without this, atoi("null") returns 0 and a server
     // sending null for an unknown char/stage_id would silently parse
     // as "char/stage 0", which then resolves to the slot-0 entry of
@@ -200,7 +200,7 @@ bool GetBool(const std::string& s, const std::string& key, bool def) {
 }
 
 // Pull a substring containing the JSON value following `key`. Returns empty
-// if not found. Handles only object/array values where braces match — used
+// if not found. Handles only object/array values where braces match -- used
 // for nested {peer:{...}}.
 std::string GetSub(const std::string& s, const std::string& key) {
     size_t p = FindKey(s, key);

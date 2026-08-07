@@ -25,12 +25,12 @@
 void RunCssTick() {
     Hook_CheckGameModeTransition_Public();
 
-    // Stress mode + offline both run CSS natively — no peer, no lockstep.
+    // Stress mode + offline both run CSS natively -- no peer, no lockstep.
     const bool skip_netplay = g_offline_mode || g_stress_mode;
 
     // No connection barrier here. Same reasoning as RunNativeTick:
     // freezing the render path while we wait for handshake leaves the
-    // user staring at an unresponsive CSS window for several seconds —
+    // user staring at an unresponsive CSS window for several seconds --
     // they tab out, see "not responding", and force-close. The CSS
     // state machine is fine to tick unsynchronized in this window:
     // Netplay_ProcessCSS already handles the !g_remote_css_ready case
@@ -48,7 +48,7 @@ void RunCssTick() {
                                      fm2k::game_hash::Compute());
             last_poll = now;
         }
-        // Fall through — let the CSS tick.
+        // Fall through -- let the CSS tick.
     }
 
     // CSS lockstep + stall: Netplay_ProcessCSS returns false while we're

@@ -2,7 +2,7 @@
 // Split from hooks.cpp (pure move + per-cluster InstallRngHook).
 
 #include "hooks.h"
-#include "round_events.h"     // C3.5 — vs_round_function detour install
+#include "round_events.h"     // C3.5 -- vs_round_function detour install
 #include "css_autoconfirm.h"  // CSS lock-and-confirm for offline replay playback
 #include "css_fastsound.h"    // FM2K_FPK_CSS_FASTSOUND: lazy DSound buffers (CSS dip fix)
 #include "per_game_patches.h" // damage multiplier MinHook + team-size override
@@ -25,12 +25,12 @@
 #include "imgui_overlay.h"
 #include "shared_mem.h"
 #include "savestate.h"  // CHAR_SLOT_BASE, CHAR_SLOT_SIZE (corrected by Wave C audit)
-#include "../core/main_loop_trampoline.h"  // TrampolineMainLoop — owns the outer loop
+#include "../core/main_loop_trampoline.h"  // TrampolineMainLoop -- owns the outer loop
 #include "../audio/sound_rollback.h"        // Mike Z desired/actual sound layer
 #include "../netplay/spectator_node.h"      // spectator playback queue accessors
 #include "../ui/input_binder.h"             // FM2KInputBinder::Sample_Win32 + Bindings
 #include "../ui/screenshot.h"               // FM2KCapture::SaveScreenshot for the auto-banner pipeline
-#include "../ui/fc_hud.h"                   // IsChatInputActive — gate local input during typing
+#include "../ui/fc_hud.h"                   // IsChatInputActive -- gate local input during typing
 #include "../vfs/fpk_reader.h"              // FM2K_FPK_VFS: inflate a slim .fpk -> original asset bytes
 #include <MinHook.h>
 #include <SDL3/SDL_log.h>
@@ -58,7 +58,7 @@
 // Value 0x1F80 is the x86 default but we pin it explicitly to ensure both
 #include "hooks_internal.h"
 
-// RNG-call trace — gated on FM2K_RNG_TRACE=1 env var. Each call records
+// RNG-call trace -- gated on FM2K_RNG_TRACE=1 env var. Each call records
 // (call_index, caller_pc, rng_pre, rng_post) as 16-byte little-endian
 // records to FM2K_rng_trace_pid<PID>.bin in cwd. Used to diff host vs
 // spectator processes and find the first divergent rng call site.
@@ -97,7 +97,7 @@ static void RngTrace_ResolveOnce() {
             // Larger buffer keeps the per-call overhead amortized.
             std::setvbuf(g_rng_trace_fp, nullptr, _IOFBF, 1 << 20);
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                        "RngTrace: enabled — writing to %s (max=%u calls)",
+                        "RngTrace: enabled -- writing to %s (max=%u calls)",
                         path, g_rng_trace_max_calls);
         } else {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,

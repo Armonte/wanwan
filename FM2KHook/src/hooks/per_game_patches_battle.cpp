@@ -26,14 +26,14 @@ extern int g_player_index;               // core/globals.h (avoid full include: 
 #include "per_game_patches_internal.h"
 
 // =============================================================================
-// AI FIELD WRITES — replicate vs_round_function's story-mode RSS_BATTLE_INIT
+// AI FIELD WRITES -- replicate vs_round_function's story-mode RSS_BATTLE_INIT
 // =============================================================================
 //
 // `ai_input_processor` (0x411270) is the engine's per-frame AI driver, called
 // from `character_action_controller` for every fighter object every frame. It
 // dispatches based on three char_data fields:
 //
-//   [slot + 0xDF5D]  AI gate — must be non-zero or the whole function bails.
+//   [slot + 0xDF5D]  AI gate -- must be non-zero or the whole function bails.
 //                    Story init writes 1; meter logic may also write here.
 //   [slot + 0xDF61]  AI difficulty (clamped 0..100). Controls how aggressively
 //                    the AI picks moves vs. waits. Story init reads it from
@@ -51,10 +51,10 @@ extern int g_player_index;               // core/globals.h (avoid full include: 
 //     mov dword ptr [esi+4], 1     ; AI mode = full script
 //
 // The VS-mode branch (flag==1) and team-mode branch (flag==2) skip those
-// writes — they only spawn the char objects. Our story-init MidHook at
+// writes -- they only spawn the char objects. Our story-init MidHook at
 // 0x411C8F flips `character_state_machine`'s flag-read view to 0, but
 // vs_round_function still sees flag=1 (we don't override there because the
-// VS round flow — single fight, no stage progression — is what we WANT), so
+// VS round flow -- single fight, no stage progression -- is what we WANT), so
 // the AI-field loop never runs and ai_input_processor's gate stays at 0.
 //
 // Patch: at the RSS_BATTLE_INIT → RSS_ROUND_ANNOUNCE_WAIT (100 → 110)
@@ -78,7 +78,7 @@ void ApplyAiFieldsForSlot(int slot, uint32_t difficulty) {
     *(volatile uint32_t*)(base + OFF_AI_MODE)       = 1;
 }
 
-// Story-init AI hijack handler — see big comment near the MidHook decl
+// Story-init AI hijack handler -- see big comment near the MidHook decl
 // (top of file). Fires AFTER `mov eax, g_game_mode_flag` so ctx.eax
 // already holds the loaded flag; we override to 0 when a hijack mode
 // is active and we're in battle, which makes the trampoline's cmp set
@@ -100,7 +100,7 @@ void OnCharStateMachineFlagDispatch(SafetyHookContext& ctx) {
 }
 
 bool PerGamePatches_InstallStoryInitHijack() {
-    // DISABLED — was counterproductive in practice. Story-init branch in
+    // DISABLED -- was counterproductive in practice. Story-init branch in
     // character_state_machine reads `g_stage_script_index[g_css_active_-
     // player]` to derive char_data->something_xor_mask (0xDFB7), which
     // character_facing_controller uses as the opponent bitmask. In our
@@ -111,8 +111,8 @@ bool PerGamePatches_InstallStoryInitHijack() {
     //
     // Without this MidHook the engine takes the VS-init branch, which
     // writes the correct xor_mask = -1 - (1 << slot_id). The AI fields
-    // we WANT are now written directly by ApplyAiFieldsForSlot — gate,
-    // difficulty, and mode — invoked every battle frame from round_-
+    // we WANT are now written directly by ApplyAiFieldsForSlot -- gate,
+    // difficulty, and mode -- invoked every battle frame from round_-
     // events.cpp's Hook_vs_round_function. This separates "tell the
     // engine to run AI for this slot" (direct field writes) from "let
     // the engine think the round is 1P arcade" (story-init hijack);
@@ -127,17 +127,17 @@ bool PerGamePatches_InstallStoryInitHijack() {
 
 // Map a training-mode P2 behavior selector value to the ai_input_processor
 // switch case it should drive. The engine has built-in cases for our
-// Imitate (case 2 — mirror P1's history into P2's) and Jump (case 4 —
+// Imitate (case 2 -- mirror P1's history into P2's) and Jump (case 4 --
 // force the UP bit each frame), so we just point ai_mode at them; for
 // Player and Guard we keep ai_mode=0 so the input pipeline runs raw
 // (and Guard's "force back" is applied by PerGamePatches_BattleInputOverride).
 static uint32_t TrainingBehaviorToAiMode(int behavior) {
     switch (behavior) {
-        case 0: return 0;  // Player — raw input, no engine override
-        case 1: return 1;  // CPU — full script AI
-        case 2: return 2;  // Imitate — engine mirrors P1's history to P2
-        case 3: return 0;  // Guard — handled by BattleInputOverride (back dir)
-        case 4: return 4;  // Jump-up — engine writes UP each frame
+        case 0: return 0;  // Player -- raw input, no engine override
+        case 1: return 1;  // CPU -- full script AI
+        case 2: return 2;  // Imitate -- engine mirrors P1's history to P2
+        case 3: return 0;  // Guard -- handled by BattleInputOverride (back dir)
+        case 4: return 4;  // Jump-up -- engine writes UP each frame
         default: return 0;
     }
 }
@@ -152,7 +152,7 @@ void ApplyAiFieldsForSlotWithMode(int slot, uint32_t difficulty, uint32_t ai_mod
 void PerGamePatches_OnBattleInitComplete() {
     // Called every frame from round_events.cpp's Hook_vs_round_function
     // (the round-state object's per-frame tick). The function name is a
-    // misnomer — it was originally a one-shot at RSS_BATTLE_INIT → 110
+    // misnomer -- it was originally a one-shot at RSS_BATTLE_INIT → 110
     // but health_damage_manager has a write at 0x40EA63 that clobbers
     // [slot+0xDF65] when the CPU takes damage, and char_state_machine
     // init runs late enough that a one-shot pre-init write gets stomped.
@@ -174,7 +174,7 @@ void PerGamePatches_OnBattleInitComplete() {
     if (!vs_cpu && !cpu_cpu && !training) return;
 
     // Determine P2's desired ai_mode. 0 means "don't drive the slot via
-    // the engine" — input override handles it (Player/Guard).
+    // the engine" -- input override handles it (Player/Guard).
     uint32_t p2_ai_mode = 0;
     if (vs_cpu || cpu_cpu) {
         p2_ai_mode = 1;
@@ -194,7 +194,7 @@ void PerGamePatches_OnBattleInitComplete() {
     } else {
         // Player / Guard: input pipeline + BattleInputOverride drive P2.
         //
-        // We MUST clear BOTH the AI gate (0xDF5D) AND the mode (0xDF65) —
+        // We MUST clear BOTH the AI gate (0xDF5D) AND the mode (0xDF65) --
         // not just the mode. The gate field doubles as a discriminator in
         // hit_detection_system @ 0x40F3DA:
         //
@@ -207,7 +207,7 @@ void PerGamePatches_OnBattleInitComplete() {
         // Leaving gate=1 (residual from a prior CPU/Imitate/Jump phase)
         // makes the engine RNG-block at difficulty% instead of running
         // the actual input-based block check. With difficulty=50 that's
-        // a 50/50 block rate — exactly the symptom that motivated this
+        // a 50/50 block rate -- exactly the symptom that motivated this
         // patch. Clearing the gate forces the engine to fall through to
         // the section-4 block path (input-driven, deterministic).
         //
@@ -242,7 +242,7 @@ void PerGamePatches_ApplyRuntime() {
     // *4 stride in game_state_manager @ 0x406fc0), and the pool itself
     // is exactly 8 statically-allocated 57407-byte slots based at
     // g_character_data_base @ 0x4d1d80. P1 fills slots 0..N-1, P2 fills
-    // slots 4..4+N-1 — so N>4 collides P1 into P2's slot 4. The
+    // slots 4..4+N-1 -- so N>4 collides P1 into P2's slot 4. The
     // g_team_char_objects portrait array @ 0x424e80 is similarly only
     // 8 dwords before bumping into g_team_cursor_array @ 0x424e90.
     if (const char* e = std::getenv("FM2K_TEAM_SIZE"); e && *e) {
@@ -254,7 +254,7 @@ void PerGamePatches_ApplyRuntime() {
                 "(applied per-frame in game_state_manager detour)", n);
         } else {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "PerGamePatches: FM2K_TEAM_SIZE=%s out of range [2,4] — ignored", e);
+                "PerGamePatches: FM2K_TEAM_SIZE=%s out of range [2,4] -- ignored", e);
         }
     }
 
@@ -273,7 +273,7 @@ void PerGamePatches_ApplyRuntime() {
     if (g_vs_cpu_mode.load() || g_cpu_vs_cpu_mode.load() ||
         g_training_mode.load() || g_option_mode_selector.load()) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "PerGamePatches: modes — vs_cpu=%d cpu_vs_cpu=%d training=%d "
+            "PerGamePatches: modes -- vs_cpu=%d cpu_vs_cpu=%d training=%d "
             "option_selector=%d",
             (int)g_vs_cpu_mode.load(),
             (int)g_cpu_vs_cpu_mode.load(),
@@ -283,7 +283,7 @@ void PerGamePatches_ApplyRuntime() {
 }
 
 // =============================================================================
-// BOOT-TO-BATTLE PRIME — populate g_iniFile_nameOverride for /F path
+// BOOT-TO-BATTLE PRIME -- populate g_iniFile_nameOverride for /F path
 // =============================================================================
 //
 // The engine has a built-in dev shortcut: pass /F on the command line and
@@ -300,7 +300,7 @@ void PerGamePatches_ApplyRuntime() {
 // function (called by InitializeMainWindow during boot, AFTER our DllMain
 // but BEFORE the slot-0 dispatcher fires) reads the kgt's [File].Filename
 // from the editor INI (which doesn't exist for shipped games) and writes
-// the default (empty string) into the same global — clobbering our prime.
+// the default (empty string) into the same global -- clobbering our prime.
 //
 // So we hook the boot dispatcher itself and write the global at entry,
 // after the stomp, before the original body reads it. Single hook fires
@@ -316,13 +316,13 @@ InitGameFromCmdFn g_orig_init_game_from_cmd = nullptr;
 // Derive "<exe_basename>.kgt" from GetModuleFileNameA(NULL) and write it
 // to g_iniFile_nameOverride. Returns true on success. Game-agnostic; any
 // FM2K title whose .kgt sits next to the .exe (the standard shipped
-// layout — WonderfulWorld, vanpri, etc.) works.
+// layout -- WonderfulWorld, vanpri, etc.) works.
 bool WriteKgtNameToOverride() {
     char exe_path[MAX_PATH] = {};
     DWORD n = GetModuleFileNameA(nullptr, exe_path, sizeof(exe_path));
     if (n == 0 || n >= sizeof(exe_path)) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "PerGamePatches: WriteKgtName — GetModuleFileNameA failed (%lu)",
+            "PerGamePatches: WriteKgtName -- GetModuleFileNameA failed (%lu)",
             GetLastError());
         return false;
     }
@@ -337,7 +337,7 @@ bool WriteKgtNameToOverride() {
     if (char* dot = std::strrchr(kgt_name, '.')) *dot = '\0';
     if (std::strlen(kgt_name) + 4 >= sizeof(kgt_name)) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "PerGamePatches: WriteKgtName — basename too long ('%s')",
+            "PerGamePatches: WriteKgtName -- basename too long ('%s')",
             basename);
         return false;
     }
@@ -348,12 +348,12 @@ bool WriteKgtNameToOverride() {
     std::memcpy(dst, kgt_name, std::strlen(kgt_name));
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "PerGamePatches: WriteKgtName — '%s' → g_iniFile_nameOverride "
+        "PerGamePatches: WriteKgtName -- '%s' → g_iniFile_nameOverride "
         "(0x%08lX)", kgt_name, (unsigned long)ADDR_INI_NAME_OVERRIDE);
     return true;
 }
 
-// Runtime BTB overrides — preferred over FM2K_BTB_* env vars when set.
+// Runtime BTB overrides -- preferred over FM2K_BTB_* env vars when set.
 // Spec hook populates these from SPEC_JOIN_ACK so the slot-0 dispatcher
 // loads the host's actual chars instead of the launcher's placeholder.
 // 0xFF sentinel = "not set, fall through to env var".
@@ -393,11 +393,11 @@ void PerGamePatches_SetRuntimeBtbOverrides(uint8_t p1_char,
 // them here, after hit_judge_set_function and before the slot-0
 // dispatcher reads them.
 //
-//   g_config_value1 @ 0x4300e0 — P1 char grid index (Player0Nb)
-//   g_config_value2 @ 0x4300e4 — P1 super-meter init (Player0Cpu)
-//   g_config_value3 @ 0x4300f0 — P2 char grid index (Player1Nb)
-//   g_config_value4 @ 0x4300f4 — P2 super-meter init (Player1Cpu)
-//   wParam         @ 0x43010c — stage index (StageNb); also written
+//   g_config_value1 @ 0x4300e0 -- P1 char grid index (Player0Nb)
+//   g_config_value2 @ 0x4300e4 -- P1 super-meter init (Player0Cpu)
+//   g_config_value3 @ 0x4300f0 -- P2 char grid index (Player1Nb)
+//   g_config_value4 @ 0x4300f4 -- P2 super-meter init (Player1Cpu)
+//   wParam         @ 0x43010c -- stage index (StageNb); also written
 //                                to g_fm2k_game_mode @ 0x470040 by
 //                                the original dispatcher
 //
@@ -414,7 +414,7 @@ void ApplyBootToBattleStateOverrides() {
     };
 
     int v;
-    // Runtime override wins over env var — see PerGamePatches_SetRuntimeBtbOverrides.
+    // Runtime override wins over env var -- see PerGamePatches_SetRuntimeBtbOverrides.
     if (g_runtime_btb_p1_char != 0xFF && g_runtime_btb_p1_char < 50) {
         *(uint32_t*)0x004300E0 = (uint32_t)g_runtime_btb_p1_char;
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
@@ -666,7 +666,7 @@ int __cdecl Hook_InitializeGameFromCommandLine() {
     // lifetime. The engine's LoadGameSystemFile (called from inside
     // the original we just returned from) sprintfs a "%s -テストプレイ-"
     // suffix into the window title and probes for ".t" variants of
-    // every file (kgt, stage, player) — both are editor-only artifacts
+    // every file (kgt, stage, player) -- both are editor-only artifacts
     // that bleed into the spectator view. Zero the flag now so any
     // FUTURE engine code that branches on debug_mode takes the
     // production path (per-round LoadGameSystemFile, etc.). The one-
@@ -686,7 +686,7 @@ int __cdecl Hook_InitializeGameFromCommandLine() {
 
 bool PerGamePatches_InstallBootToBattleHook() {
     const char* e = std::getenv("FM2K_BOOT_TO_BATTLE");
-    if (!e || std::strcmp(e, "1") != 0) return true;  // disabled — no-op
+    if (!e || std::strcmp(e, "1") != 0) return true;  // disabled -- no-op
 
     if (MH_CreateHook((void*)ADDR_INIT_FROM_CMD,
                       (void*)Hook_InitializeGameFromCommandLine,

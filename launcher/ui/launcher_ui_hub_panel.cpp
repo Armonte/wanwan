@@ -57,7 +57,7 @@ void LauncherUI::RenderHubPanel() {
 
     // Periodic pre-match STUN refresh (every 20 s while connected) so
     // the hub-stored external NAT port stays alive even on quiet
-    // lobbies. Cheap — one UDP packet up, one back, ≤800 ms timeout.
+    // lobbies. Cheap -- one UDP packet up, one back, ≤800 ms timeout.
     // Skipped while we're in an active match (the in-game hook owns the
     // socket then) and while the user is mid-challenge (we'd briefly
     // bind/release the port the preflight punch is about to need).
@@ -138,7 +138,7 @@ void LauncherUI::RenderHubPanel() {
     // ---- UI ----
     ImGui::SeparatorText(T("hub_section_header"));
 
-    // Nick input — 128-byte buffer covers 32 visible codepoints even at
+    // Nick input -- 128-byte buffer covers 32 visible codepoints even at
     // 4 bytes per UTF-8 char (CJK / emoji). Hub caps incoming nicks to 32
     // codepoints + sanitizes control chars (see hub.py). Local buffer is
     // generous so the input field doesn't truncate mid-character.
@@ -187,7 +187,7 @@ void LauncherUI::RenderHubPanel() {
     static int s_delay_override = 0;
     {
         // Manual delay range: 0..16. 0 is opt-in for sub-1ms LAN /
-        // loopback / hot-seat play — GekkoNet's prediction-0 mode applies
+        // loopback / hot-seat play -- GekkoNet's prediction-0 mode applies
         // input same frame, but ANY jitter on the link will rollback
         // every frame. Users on actual internet should leave this on
         // computed. 16 = 160 ms, basically the upper limit of playable
@@ -259,10 +259,10 @@ void LauncherUI::RenderHubPanel() {
     }
 
     if (!hs.client.IsConnected()) {
-        // "Use Discord name" checkbox — when checked, the nick input is
+        // "Use Discord name" checkbox -- when checked, the nick input is
         // grayed and shows the user's Discord global_name (read-only).
         // When unchecked, the user can edit their custom nick. Toggling
-        // doesn't destroy the custom nick — it just switches WHICH value
+        // doesn't destroy the custom nick -- it just switches WHICH value
         // gets sent on Connect. Persists immediately.
         if (ImGui::Checkbox(T("hub_use_discord_name"), &s_use_discord_name)) {
             auto cached_save = fm2k::discord_auth::LoadCached();
@@ -357,7 +357,7 @@ void LauncherUI::RenderHubPanel() {
             // think about it. Cross-machine: any free port works.
             //
             // WSAStartup is required before socket() on Windows. It's
-            // idempotent — internal refcount, fine to call repeatedly.
+            // idempotent -- internal refcount, fine to call repeatedly.
             // Without it socket() fails with WSANOTINITIALISED and the
             // fallback picks 7000, which then collides between two
             // launchers on the same box.
@@ -367,7 +367,7 @@ void LauncherUI::RenderHubPanel() {
             SOCKET s = socket(AF_INET, SOCK_DGRAM, 0);
             if (s == INVALID_SOCKET) {
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "Hub: auto-pick socket() failed (err=%d) — falling back to 7000",
+                    "Hub: auto-pick socket() failed (err=%d) -- falling back to 7000",
                     WSAGetLastError());
             } else {
                 sockaddr_in addr{};
@@ -395,20 +395,20 @@ void LauncherUI::RenderHubPanel() {
             // the same host.
             const std::string hub_host = (hub_host_[0] != '\0') ? hub_host_ : "hub.2dfm.org";
             ::SetEnvironmentVariableA("FM2K_HUB_HOST", hub_host.c_str());
-            // TCP-STUN endpoint — same hub host, port 7713 (UDP-STUN at
+            // TCP-STUN endpoint -- same hub host, port 7713 (UDP-STUN at
             // 7711, UDP-relay at 7712). Set process-wide here so every
             // spawned game (player AND spectator) inherits and can run
             // its outbound TCP-STUN probe at hook init. Without this,
-            // the spec hook logs "FM2K_HUB_TCP_STUN_ADDR unset — skipping"
+            // the spec hook logs "FM2K_HUB_TCP_STUN_ADDR unset -- skipping"
             // and falls back to local listener port for cross-NAT punch
-            // — which fails on non-port-preserving NATs.
+            // -- which fails on non-port-preserving NATs.
             ::SetEnvironmentVariableA("FM2K_HUB_TCP_STUN_ADDR",
                                       (hub_host + ":7713").c_str());
-            // FM2K_HUB_UDP_ADDR — set at connect time (hub_host known here).
+            // FM2K_HUB_UDP_ADDR -- set at connect time (hub_host known here).
             // FM2K_HUB_USER_ID is set on Connected (hello_ack) where my_id
             // first lands; both are required by the hook's STUN probe
             // (nat_traversal.cpp::SendStunProbe). Used to be set only
-            // inside the match_start handler — meaning a spec instance
+            // inside the match_start handler -- meaning a spec instance
             // launched before joining any match wouldn't STUN, so hub's
             // user.udp_addr stayed at whatever earlier game STUN landed
             // (or empty), and spectator_incoming forwarded the wrong UDP
@@ -496,7 +496,7 @@ void LauncherUI::RenderHubPanel() {
         // first. Stable secondary sort by room name (alpha) so empty/quiet
         // rooms have a deterministic order between renders. Sort a copy so
         // we don't mutate hs.rooms (which the hub broadcast handler also
-        // touches asynchronously — sorting in-place would race).
+        // touches asynchronously -- sorting in-place would race).
         std::vector<fm2k::HubRoom> sorted_rooms = hs.rooms;
         std::sort(sorted_rooms.begin(), sorted_rooms.end(),
             [](const fm2k::HubRoom& a, const fm2k::HubRoom& b) {
@@ -554,7 +554,7 @@ void LauncherUI::RenderHubPanel() {
         for (auto& [uid, u] : hs.users) {
             if (u.status != "in_match") continue;
             if (u.opponent_id.empty())  continue;
-            if (uid >= u.opponent_id)   continue;  // dedupe — only the lower-id half
+            if (uid >= u.opponent_id)   continue;  // dedupe -- only the lower-id half
             auto it = hs.users.find(u.opponent_id);
             if (it == hs.users.end())   continue;
             if (it->second.status != "in_match") continue;
@@ -581,7 +581,7 @@ void LauncherUI::RenderHubPanel() {
 
                 ImGui::TableSetColumnIndex(2);
                 ImGui::PushID(a->id.c_str());
-                // Spectate via the hub — RequestSpectate asks the hub to
+                // Spectate via the hub -- RequestSpectate asks the hub to
                 // grant us this match's host UDP addr; on grant we get a
                 // K::SpectateGranted event which dispatches into
                 // on_spectate_match (FM2K_RollbackClient.cpp) and ends up
@@ -590,7 +590,7 @@ void LauncherUI::RenderHubPanel() {
                 // input-replay drift that gated this button before is
                 // sidestepped now: snapshot-join skips replay entirely
                 // and consumes only post-anchor INPUTs. Tooltip kept
-                // ambient — see docs/dev/spectator_smoke_test.md for the
+                // ambient -- see docs/dev/spectator_smoke_test.md for the
                 // observable checklist.
                 if (ImGui::SmallButton(T("btn_spectate"))) {
                     if (hs.client.IsConnected()) {
@@ -601,7 +601,7 @@ void LauncherUI::RenderHubPanel() {
                         hs.status_line = "spectate request sent: " + a->nick;
                     }
                 }
-                ImGui::SetItemTooltip("Watch this match (FULL_SESSION — "
+                ImGui::SetItemTooltip("Watch this match (FULL_SESSION -- "
                                       "replays from session start; snapshot-join "
                                       "still baking)");
                 ImGui::PopID();
@@ -636,7 +636,7 @@ void LauncherUI::RenderHubPanel() {
             ImGui::TableSetupColumn(T("col_nick"));
             ImGui::TableSetupColumn(T("col_status"), ImGuiTableColumnFlags_WidthFixed, 110.0f);
             ImGui::TableSetupColumn(T("col_ping"),   ImGuiTableColumnFlags_WidthFixed, 60.0f);
-            // "vs" column — my W-L-D against this opponent, "—" if we've
+            // "vs" column -- my W-L-D against this opponent, "--" if we've
             // never played them. Self-row leaves it blank.
             ImGui::TableSetupColumn(T("col_vs"),     ImGuiTableColumnFlags_WidthFixed, 90.0f);
             ImGui::TableSetupColumn("",              ImGuiTableColumnFlags_WidthFixed, 100.0f);
@@ -645,9 +645,9 @@ void LauncherUI::RenderHubPanel() {
             // Tier → color mapping. Tester ($5) gets blue (0x2C7BDB,
             // matching Patreon's hub branding); Special Thanks ($10) gets
             // gold (0xFFBF03); monte (operator) gets red (0xE53935, Material
-            // red 600 — distinct from gold without being garish); guest
+            // red 600 -- distinct from gold without being garish); guest
             // (open-access non-patron, when the hub gate is lifted) gets grey
-            // (0x9E9E9E, Material grey 500) — clearly not a paying tier.
+            // (0x9E9E9E, Material grey 500) -- clearly not a paying tier.
             // Anything else (legacy hub, missing field) renders in the default
             // text color so stale clients don't turn invisible.
             const ImVec4 kTierTester(0x2C / 255.0f, 0x7B / 255.0f, 0xDB / 255.0f, 1.0f);
@@ -655,7 +655,7 @@ void LauncherUI::RenderHubPanel() {
             const ImVec4 kTierMonte (0xE5 / 255.0f, 0x39 / 255.0f, 0x35 / 255.0f, 1.0f);
             const ImVec4 kTierGuest (0x9E / 255.0f, 0x9E / 255.0f, 0x9E / 255.0f, 1.0f);
             for (auto& [uid, u] : hs.users) {
-                // Self is shown in the list (top row, naturally — most
+                // Self is shown in the list (top row, naturally -- most
                 // hubs put your row at the top so you can see your own
                 // tier color + status without scrolling). The Challenge
                 // button is hidden for your own row below since
@@ -678,7 +678,7 @@ void LauncherUI::RenderHubPanel() {
                 ImGui::TableSetColumnIndex(1);
                 ImVec4 c(0.6f, 0.6f, 0.6f, 1.0f);
                 // Localize status label too. The protocol value (u.status)
-                // stays untranslated — that's an internal protocol token,
+                // stays untranslated -- that's an internal protocol token,
                 // not user-facing text. Map it to a translation key.
                 const char* status_label = u.status.c_str();
                 if (u.status == "idle")             { c = ImVec4(0.3f, 0.9f, 0.4f, 1.0f); status_label = T("status_idle"); }
@@ -698,7 +698,7 @@ void LauncherUI::RenderHubPanel() {
                     if (hs.my_wins >= 0) {
                         ImGui::Text("%d-%d-%d", hs.my_wins, hs.my_losses, hs.my_draws);
                     } else {
-                        ImGui::TextDisabled("—");
+                        ImGui::TextDisabled("--");
                     }
                     if (hs.session_wins + hs.session_losses + hs.session_draws > 0) {
                         ImGui::SameLine();
@@ -718,13 +718,13 @@ void LauncherUI::RenderHubPanel() {
                         ImGui::Text("%d-%d-%d",
                                     it->second.wins, it->second.losses, it->second.draws);
                     } else {
-                        ImGui::TextDisabled("—");
+                        ImGui::TextDisabled("--");
                     }
                 }
 
                 ImGui::TableSetColumnIndex(4);
                 ImGui::PushID(uid.c_str());
-                // Self-row shows nothing in the action column — challenging
+                // Self-row shows nothing in the action column -- challenging
                 // yourself isn't a thing. Other rows get the Challenge button
                 // gated on idle status.
                 if (!is_self) {
@@ -764,7 +764,7 @@ void LauncherUI::RenderHubPanel() {
                         // their hook PRNG from this same value, then
                         // run identical sequences on rematches with
                         // zero per-rematch wire traffic. Seed != 0
-                        // is the wire signal "random is on" — keep
+                        // is the wire signal "random is on" -- keep
                         // a tiny rejection loop so we never accidentally
                         // hand a 0 seed.
                         EnsureRandomStageLoaded();  // per-game
@@ -791,7 +791,7 @@ void LauncherUI::RenderHubPanel() {
                         hs.outgoing_challenge_to_id   = uid;
                         hs.outgoing_challenge_to_nick = u.nick;
                         hs.show_outgoing_challenge_modal = true;
-                        hs.status_line = "challenged " + u.nick + " — waiting for response";
+                        hs.status_line = "challenged " + u.nick + " -- waiting for response";
                     }
                     if (!can_challenge) ImGui::EndDisabled();
                 }
@@ -813,7 +813,7 @@ void LauncherUI::RenderHubPanel() {
         ImGui::Spacing();
 
         // Match settings preview (#54). Only render if the challenger
-        // actually sent any — older clients leave the whole struct at
+        // actually sent any -- older clients leave the whole struct at
         // -1 and we want to keep the modal compact in that case.
         const auto& s = hs.pending_challenge_settings;
         const bool any_set =
@@ -911,12 +911,12 @@ void LauncherUI::RenderHubPanel() {
     }
     if (ImGui::BeginPopupModal("##hash_mismatch", nullptr,
                                ImGuiWindowFlags_NoSavedSettings)) {
-        ImGui::Text("Game data mismatch — match cancelled.");
+        ImGui::Text("Game data mismatch -- match cancelled.");
         ImGui::Spacing();
         ImGui::TextWrapped(
             "Your .kgt / .player roster differs from your peer's. "
             "Below is what we hashed locally. Send this to your peer (or "
-            "exchange hook logs) — the row with a different size or "
+            "exchange hook logs) -- the row with a different size or "
             "content_hash is the file that needs to match. Read the hook "
             "log for more details.");
         ImGui::Spacing();
@@ -943,7 +943,7 @@ void LauncherUI::RenderHubPanel() {
     }
 
     // ---- Recent matches (collapsing) ----
-    // Lives at the bottom of the Hub panel — it's session data, not a
+    // Lives at the bottom of the Hub panel -- it's session data, not a
     // configuration setting, so it doesn't belong in the Settings tabs.
     // Collapsed by default; users who care about history click to
     // expand. The body renderer is shared with the legacy floating

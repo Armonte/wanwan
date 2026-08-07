@@ -31,14 +31,14 @@
  *       +4   facing
  *       +8   pos_x (Q14.18 fixed)
  *       +12  pos_y
- *       +16  vel_x  (TODO confirm — may be accel)
+ *       +16  vel_x  (TODO confirm -- may be accel)
  *       +20  vel_y
  *       +0x2C item_idx (script item index / PC)
  *       +0x30 script_idx
  *       +0x40 hitstun
  *       +0x44 hitstop  (TODO confirm)
  *       +0x156 char_index
- *   - HP @ 0x470134 (P1) / 0x470138 (P2) — separate g_player_hp table
+ *   - HP @ 0x470134 (P1) / 0x470138 (P2) -- separate g_player_hp table
  *   - Super: g_char_value_current @ 0x4DFC95 + char_index * 0xE03F
  *   - RNG @ 0x41FB1C
  *   - Input ring index @ 0x447EE0 (g_input_buffer_index)
@@ -65,7 +65,7 @@ constexpr size_t    OBJECT_SLOT_SIZE       = 382;
 
 /* Per-player HP at fixed addresses; 57407-byte stride between slots.
  * Verified via IDA xref of g_p1_hp (read in vs_round_function @ 0x4086A0
- * and camera_manager @ 0x40AF30). Was previously 0x470134/138 — those
+ * and camera_manager @ 0x40AF30). Was previously 0x470134/138 -- those
  * are inside g_player_action_history, NOT the HP table, so HP always
  * read 0 in captures. */
 constexpr uintptr_t ADDR_P1_HP             = 0x4DFC85;
@@ -93,7 +93,7 @@ constexpr uintptr_t ADDR_FRAME_COUNTER     = 0x4456FC;
  *   ADDR_ROUND_TIMER_COUNTER = 0x424F00 (post-CSS lock counter; battle
  *                                         starts when > 100; per IDA
  *                                         game_state_manager @ 0x406FC0)
- * Camera offsets aren't yet mapped in FM2KHook source — parity diff
+ * Camera offsets aren't yet mapped in FM2KHook source -- parity diff
  * surfaces them as divergences (kgt populates camera_x/y, FM2K side
  * leaves zero until offset is found). */
 constexpr uintptr_t ADDR_MATCH_PHASE       = 0x470054;   /* g_game_mode */
@@ -167,7 +167,7 @@ void FillPlayerSnapshot(KgtParityPlayer& dst, int slot_idx) {
         return;
     }
     /* Object-slot byte offsets per WW_0946.exe hit_detection_system @
-     * 0x40F010 disasm (this session — see docs/parity_runbook.md):
+     * 0x40F010 disasm (this session -- see docs/parity_runbook.md):
      *   +0x08  pos_x (Q14.18)             confirmed
      *   +0x0C  pos_y                      confirmed
      *   +0x18  vel_x (MoveCmd target)     per docs/editor/opcode_dispatcher.md
@@ -177,7 +177,7 @@ void FillPlayerSnapshot(KgtParityPlayer& dst, int slot_idx) {
      *   +0x40  hitstop                    confirmed (was wrongly at +0x44)
      *   +0x5C  facing                     confirmed (was wrongly at +0x04)
      *   +0x15E state_flags                confirmed
-     * (hitstun field — defender state offset — needs further RE; v1
+     * (hitstun field -- defender state offset -- needs further RE; v1
      * leaves this 0). */
     /* Facing at +0x5C is a DWORD where only bit 0 is meaningful:
      *   bit 0 clear = facing right, bit 0 set = facing left.
@@ -199,7 +199,7 @@ void FillPlayerSnapshot(KgtParityPlayer& dst, int slot_idx) {
     dst.hitstop     = Read32S(slot_addr + 0x40);
     dst.state_flags = Read32S(slot_addr + 0x15E);
 
-    /* HP/super: not in object slot — pull from per-character data table. */
+    /* HP/super: not in object slot -- pull from per-character data table. */
     const int char_idx = Read32S(slot_addr + 0x156);
     if (char_idx >= 0 && char_idx < 8) {
         const uintptr_t char_base = ADDR_CHAR_DATA_BASE +
@@ -219,12 +219,12 @@ void FillPlayerSnapshot(KgtParityPlayer& dst, int slot_idx) {
         dst.hp = 0;
     }
 
-    /* v2: hit/hurt slot popcounts — cross-process comparable summary
+    /* v2: hit/hurt slot popcounts -- cross-process comparable summary
      * of the 20 + 20 box-pointer arrays. The slot_idx for [C] cancel
      * needs to be DERIVED from the script-item pointer (subtract the
      * script-items base, divide by item size). For v1 of the FM2K
      * recorder we just store -1 if pointer is null, else a positive
-     * "armed" sentinel — the kgt side stores the actual item index, so
+     * "armed" sentinel -- the kgt side stores the actual item index, so
      * exact-match parity only holds when both sides are NULL/-1.
      * TODO: reverse-engineer the script-items array base address to
      * convert pointer → index for true parity. */
@@ -238,7 +238,7 @@ void FillPlayerSnapshot(KgtParityPlayer& dst, int slot_idx) {
     const uint32_t cancel_ptr = Read32(slot_addr + SLOT_CANCEL_OFFSET);
     dst.cancel_script_item    = cancel_ptr ? 1 : -1;   /* "armed" sentinel */
 
-    /* v3: task_vars per-object — direct memcpy from the slot's int16
+    /* v3: task_vars per-object -- direct memcpy from the slot's int16
      * array at +0x131. */
     for (int i = 0; i < TASK_VAR_COUNT; ++i) {
         dst.task_vars[i] = *reinterpret_cast<const int16_t*>(
@@ -271,7 +271,7 @@ bool Open(const char* path) {
     hdr.snapshot_size = static_cast<uint32_t>(sizeof(KgtParitySnapshot));
     hdr.flags         = KGT_PARITY_FLAG_FROM_FM2K;
     hdr.frame_count   = 0u;
-    /* initial_seed is patched on the first Capture() call — at Open()
+    /* initial_seed is patched on the first Capture() call -- at Open()
      * time (DLL attach) FM2K hasn't yet executed srand(time(NULL)) so
      * g_rand_seed reads as the C-runtime default (1). The first frame
      * we capture is post-init, so g_rand_seed is the real time-based
@@ -296,7 +296,7 @@ void Capture() {
 
     // Diagnostic: log every capture with rng + frame_counter + buf_idx so
     // we can pair host's captures with replay's captures across the
-    // entire run. Gated on FM2K_PARITY_CAPTURE_TRACE=1 — off by default.
+    // entire run. Gated on FM2K_PARITY_CAPTURE_TRACE=1 -- off by default.
     {
         static int s_trace_cached = -1;
         if (s_trace_cached < 0) {
@@ -485,7 +485,7 @@ void Capture() {
      * is in battle phase (g_game_mode == 3000). srand(time(NULL)) runs
      * during the title-to-CSS transition, well before battle. Capturing
      * here means kgt boots with the same seed FM2K's vs_round_function
-     * has at battle start — frame-0-of-battle rng matches by construction.
+     * has at battle start -- frame-0-of-battle rng matches by construction.
      *
      * Reading at Open() (DLL attach) catches g_rand_seed == 1 (CRT
      * default), and even reading on the very first capture catches the
@@ -510,7 +510,7 @@ void Capture() {
      * starts already-in-battle from kgt_engine_create) happens at the
      * diff-tool layer: kgt_diff_pty searches for the first frame on
      * each side where game_mode == 5000 AND p1.hp > 0, then aligns. No
-     * recorder-side filtering — we want every frame's state for the
+     * recorder-side filtering -- we want every frame's state for the
      * full session so future tools (timeline diff, divergence-since-N)
      * have the data they need. */
 
@@ -550,7 +550,7 @@ void Capture() {
 
     /* v2 match-level fields. rng_after_frame mirrors rng (we capture
      * post-update so they're identical). system_vars maps to FM2K's
-     * dword_601B34 + idx*2 array per the [V] opcode handler — that's
+     * dword_601B34 + idx*2 array per the [V] opcode handler -- that's
      * a 32-byte i16[16] block. */
     snap.rng_after_frame = Read32(ADDR_RNG);
     /* TODO: confirm dword_601B34 base address in WW build; if it differs,
@@ -581,7 +581,7 @@ bool MaybeAutoOpen() {
     /* FM2K-ONLY. Every snapshot address (FillPlayerSnapshot / Capture) is a
      * hardcoded FM2K literal (object pool 0x4701E0, char slot 0x4D1D90, input
      * rings 0x4259C0.., etc.). On FM95 those are wrong memory, so refuse to
-     * open the recorder at all — Capture() then no-ops on the null fp and no
+     * open the recorder at all -- Capture() then no-ops on the null fp and no
      * FM2K address is ever read. FM95 parity recording is a separate task with
      * its own address set (workplan Phase 2c); it will get its own snapshot
      * path, not this one. */

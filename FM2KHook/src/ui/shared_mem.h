@@ -9,19 +9,19 @@
 // ============================================================================
 
 constexpr uint32_t FM2K_SHARED_MEM_MAGIC = 0x464D324B;  // "FM2K"
-// v13 (2026-05-18): spec hub-relay user-id propagation — adds
+// v13 (2026-05-18): spec hub-relay user-id propagation -- adds
 // spectator_punch_user_id[32] alongside the existing punch target so
 // the host hook can address relay-mode subs by hub user-id instead of
 // sockaddr. Set by launcher on every spec_incoming WS event from hub.
 // Empty string = legacy spec_incoming (pre-relay hub). Phase 2c of
 // the v0.3 spec rebuild; see docs/dev/spec_hub_relay_design.md.
 // v12 (2026-05-12): spec TCP-STUN external addr + session_kind blocks.
-// v11 (2026-05-09): spectator NAT-punch coordination — adds
+// v11 (2026-05-09): spectator NAT-punch coordination -- adds
 // spectator_punch_{ip_be,port,seq}. Launcher writes when hub forwards a
 // spectator_incoming event; hook's TickHostMaintenance polls the seq
 // for changes and calls StartPunch on bumps. Fixes "stuck on Connecting"
 // for spectators outside the host's NAT.
-// v10 (2026-05-08): C10 hub-schema-v2 plumbing — adds match_session_id +
+// v10 (2026-05-08): C10 hub-schema-v2 plumbing -- adds match_session_id +
 // match_index_in_session + match_rounds_count + match_rounds[8]. The
 // launcher includes these in its `match_result` JSON to the hub so
 // matches.json records (schema: 2) can carry per-match round
@@ -69,7 +69,7 @@ enum FM2KMatchOutcome : uint8_t {
     FM2K_MATCH_OUTCOME_DRAW        = 3,
     FM2K_MATCH_OUTCOME_DISCONNECT  = 4,
     // CSS-phase abort (peer left before battle started). Triggers
-    // session-stop on the launcher but does NOT contribute to W/L/D —
+    // session-stop on the launcher but does NOT contribute to W/L/D --
     // the match never reached battle, so there's nothing to record.
     FM2K_MATCH_OUTCOME_CSS_ABORT   = 5,
     // Game-data hash mismatch on HELLO (#57). Peers' .player/.kgt/.exe
@@ -83,7 +83,7 @@ enum FM2KMatchOutcome : uint8_t {
     // from playing on through corrupted sim state (which previously
     // led to character_state_machine AVs at 0x4125FC after thousands
     // of frames of cascading garbage) and (b) give us a clean,
-    // diagnostic-frozen state to inspect. No W/L/D recorded — the
+    // diagnostic-frozen state to inspect. No W/L/D recorded -- the
     // match's outcome is undefined once sim diverges.
     FM2K_MATCH_OUTCOME_DESYNC      = 7,
 };
@@ -103,7 +103,7 @@ struct FM2KSharedMemData {
     uint32_t rollback_count;  // Total rollbacks this session
     uint32_t desync_count;    // Total desyncs detected
     float    frames_ahead;    // Frame advantage (gekko_frames_ahead)
-    uint32_t ping_ms;         // NOT wired here — placeholder, not populated by the hook.
+    uint32_t ping_ms;         // NOT wired here -- placeholder, not populated by the hook.
                               // The live RTT the HUD shows comes from fc_hud SetStats
                               // (ControlChannel_GetRttMs), not this field. Don't read this.
 
@@ -180,7 +180,7 @@ struct FM2KSharedMemData {
     // associated `_seq` field; fc_hud tracks the seq it last consumed
     // so the bar refreshes on any change.
     //
-    // The `_seq == 0` sentinel means "never written" — fc_hud uses it
+    // The `_seq == 0` sentinel means "never written" -- fc_hud uses it
     // to suppress UI elements that haven't been populated yet (the
     // score box stays hidden offline, system-message overlay stays
     // hidden until something fires).
@@ -193,7 +193,7 @@ struct FM2KSharedMemData {
 
     // System message: short notice rendered centered inside the game
     // rect with a fade-out near expiry. Use cases: "Round 1, Fight",
-    // "Peer disconnected", "Slow CPU detected — switching to gdi
+    // "Peer disconnected", "Slow CPU detected -- switching to gdi
     // renderer", etc. Writer order: fill the buffer, set the expiry
     // tick (= GetTickCount() at which the message disappears), THEN
     // bump the seq. fc_hud reads in seq → buffer → expiry order.
@@ -201,7 +201,7 @@ struct FM2KSharedMemData {
     uint32_t hud_system_message_expiry_tick;  // GetTickCount() value
     char     hud_system_message[160];         // UTF-8, NUL-terminated
 
-    // ─── C10: Hub schema v2 — session grouping + per-round results ───
+    // ─── C10: Hub schema v2 -- session grouping + per-round results ───
     //
     // Hook populates these as battle progresses; launcher reads on
     // match_outcome_seq bump and includes them in the match_result JSON
@@ -214,7 +214,7 @@ struct FM2KSharedMemData {
     // matches don't carry over previous match's rounds.
     //
     // session_id == 0 / match_index_in_session == 0 mean "not yet
-    // populated" — launcher omits them from the JSON in that case.
+    // populated" -- launcher omits them from the JSON in that case.
     uint64_t match_session_id;
     uint8_t  match_index_in_session;   // 1-based; 0 if not yet known
     uint8_t  match_rounds_count;       // valid entries in match_rounds[]
@@ -237,7 +237,7 @@ struct FM2KSharedMemData {
     uint32_t spectator_punch_ip_be;
     uint16_t spectator_punch_port;       // spectator's external UDP port
     uint16_t spectator_punch_tcp_port;   // spectator's external TCP port (v12)
-                                         // — drives the host-side raw-winsock
+                                         // -- drives the host-side raw-winsock
                                          // TCP "punch" that opens host's NAT
                                          // for inbound TCP from spec:tcp_port.
                                          // 0 sentinel = TCP punch disabled
@@ -293,7 +293,7 @@ struct FM2KSharedMemData {
 
     // Hook → launcher: the client's own GLOBAL IPv6 endpoint (addr + bound
     // UDP port), discovered at NAT init via the connected-UDP source-address
-    // trick (the address the OS uses to reach a global v6 destination — i.e.
+    // trick (the address the OS uses to reach a global v6 destination -- i.e.
     // the address a peer should punch back to, so v6 firewall pinholes align).
     // Launcher polls local_v6_seq for changes and forwards (addr, port) to the
     // hub via WS; the lobby hands it to the peer as an IPv6 punch candidate
@@ -335,14 +335,14 @@ void SharedMem_PublishMatchOutcome(FM2KMatchOutcome outcome);
 // extension) for each side, already converted to UTF-8 by the caller.
 // Pass nullptr to leave the corresponding name slot empty. The buffer
 // is truncated to FM2K_MATCH_CHAR_NAME_MAX-1 bytes and null-terminated;
-// no validation that the input is well-formed UTF-8 — callers convert
+// no validation that the input is well-formed UTF-8 -- callers convert
 // from CP932 via Win32 before calling.
 void SharedMem_PublishMatchChars(uint32_t p1_char_id, uint32_t p2_char_id,
                                  const char* p1_name_utf8 = nullptr,
                                  const char* p2_name_utf8 = nullptr);
 
 // Stash the selected stage_id for the upcoming battle. Same lifecycle as
-// SharedMem_PublishMatchChars — the launcher reads it at end-of-match
+// SharedMem_PublishMatchChars -- the launcher reads it at end-of-match
 // alongside char_ids/names and forwards as part of the hub match_result.
 // Pass 0xFFFFFFFF to clear / mark unknown.
 void SharedMem_PublishMatchStage(uint32_t stage_id);
@@ -359,14 +359,14 @@ void SharedMem_PublishMatchSession(uint64_t session_id,
 
 // PublishRoundResult: called at every ROUND_END
 // (SpectatorNode_AppendRoundEnd) to append one entry into
-// match_rounds[]. Caps at 8 rounds (excess silently dropped — far
+// match_rounds[]. Caps at 8 rounds (excess silently dropped -- far
 // more than any sane best-of-N format).
 void SharedMem_PublishRoundResult(uint8_t  winner_idx,
                                   uint16_t p1_hp_remaining,
                                   uint16_t p2_hp_remaining,
                                   uint32_t frames_elapsed);
 
-// Spectator NAT-punch coordination — called from the launcher's
+// Spectator NAT-punch coordination -- called from the launcher's
 // SpectatorIncoming hub event handler. Writes the spectator's external
 // UDP+TCP addr into shared mem and bumps spectator_punch_seq so the
 // hook's TickHostMaintenance polling loop notices and fires both the
@@ -374,14 +374,14 @@ void SharedMem_PublishRoundResult(uint8_t  winner_idx,
 // TCP simultaneous-open punch (opens NAT for inbound TCP from
 // spec:tcp_port to our listener port). ip_be is network-byte-order;
 // udp_port and tcp_port are both host-byte-order. tcp_port=0 sentinel
-// for "spec is on an older client without TCP-punch support" — host
+// for "spec is on an older client without TCP-punch support" -- host
 // only does UDP heartbeat in that case.
 void SharedMem_PublishSpectatorPunchTarget(uint32_t ip_be, uint16_t udp_port,
                                            uint16_t tcp_port);
 
 // Hook → launcher: SpectatorTCP::PerformTcpStun result. Launcher polls
 // tcp_stun_seq for bumps and forwards to the hub via `tcp_addr` WS msg.
-// Idempotent — safe to call repeatedly with the same value (won't bump
+// Idempotent -- safe to call repeatedly with the same value (won't bump
 // seq if values unchanged).
 void SharedMem_PublishExternalTcp(uint32_t ip_be, uint16_t port);
 

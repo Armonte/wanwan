@@ -90,7 +90,7 @@ void LauncherUI::HandleHubEvent(const fm2k::HubEvent& ev) {
                     hs.client.QueryRecord();
                     hs.client.RequestRecentMatches(50);
                 }
-                // Process-wide FM2K_HUB_USER_ID — companion to FM2K_HUB_UDP_ADDR
+                // Process-wide FM2K_HUB_USER_ID -- companion to FM2K_HUB_UDP_ADDR
                 // set at hub-connect time. Together they unlock the hook's
                 // SendStunProbe call, so any spawned game (player or spec)
                 // gets STUN'd and hub's user.udp_addr reflects this hook's
@@ -100,7 +100,7 @@ void LauncherUI::HandleHubEvent(const fm2k::HubEvent& ev) {
                 // it to a peer in match_start. Both launchers register
                 // their already-configured network_config_.local_port.
                 // For LAN/internet, replace "127.0.0.1" with the hub-
-                // observed reflexive IP (Phase 2 — STUN responder).
+                // observed reflexive IP (Phase 2 -- STUN responder).
                 // Spec hook binds its TCP listener to the same port as UDP
                 // (convention enforced in spectator_tcp.cpp's Start). Send
                 // both so the hub can forward spec_tcp_port in the
@@ -153,7 +153,7 @@ void LauncherUI::HandleHubEvent(const fm2k::HubEvent& ev) {
                 // seconds (after game spawn + hook init). Without a
                 // pre-match STUN, hub.peer_dict() falls back to the
                 // launcher-reported local port, which only matches the
-                // external NAT mapping on port-preserving cone NATs —
+                // external NAT mapping on port-preserving cone NATs --
                 // every other client gets the wrong port and punches a
                 // closed door. Doing this here means the hub has the
                 // correct (ip, ext_port) before any challenge fires.
@@ -193,7 +193,7 @@ void LauncherUI::HandleHubEvent(const fm2k::HubEvent& ev) {
                 // in. last_room_id is set by the Disconnected handler
                 // before it clears current_room_id. The hub re-creates
                 // the room on demand if it's not seeded, so the name
-                // we pass is purely cosmetic — fall back to id when we
+                // we pass is purely cosmetic -- fall back to id when we
                 // don't have a separately-cached display name.
                 if (!hs.last_room_id.empty()) {
                     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
@@ -236,7 +236,7 @@ void LauncherUI::HandleHubEvent(const fm2k::HubEvent& ev) {
                 for (auto& u : ev.users) hs.users[u.id] = u;
                 // Auto-select the installed game matching this room and
                 // ALSO fire on_game_selected so the launcher's
-                // FM2KLauncher::selected_game_ record is populated —
+                // FM2KLauncher::selected_game_ record is populated --
                 // not just our local UI mirror selected_game_index_.
                 // Without this, StartOnlineSession bails on
                 // selected_game_.exe_path.empty() even though the UI
@@ -251,13 +251,13 @@ void LauncherUI::HandleHubEvent(const fm2k::HubEvent& ev) {
                                 fm2k::utf8path::Utf8ToWide(games_[idx].exe_path)));
                 } else {
                     hs.status_line = "joined room '" + hs.current_room_id +
-                        "' — game not in your library, install it before challenging";
+                        "' -- game not in your library, install it before challenging";
                 }
                 break;
             }
             case K::RoomLeft:
                 hs.current_room_id.clear();
-                // Explicit leave — clear the auto-rejoin snapshot so a
+                // Explicit leave -- clear the auto-rejoin snapshot so a
                 // subsequent hub disconnect doesn't drag us back into
                 // a room we just left.
                 hs.last_room_id.clear();
@@ -280,10 +280,10 @@ void LauncherUI::HandleHubEvent(const fm2k::HubEvent& ev) {
                 // timeout (~5s) before the hook publishes DISCONNECT.
                 //
                 // Two guards stop the spam:
-                //   - Compare against the PREVIOUSLY-cached status —
+                //   - Compare against the PREVIOUSLY-cached status --
                 //     fire only on the in_match → !in_match edge, not
                 //     on every periodic re-broadcast of "idle".
-                //   - hs.match_result_sent — at normal match end the
+                //   - hs.match_result_sent -- at normal match end the
                 //     peer also goes idle, but we already sent our own
                 //     outcome, so don't double-handle that as an abort.
                 std::string prev_status;
@@ -312,7 +312,7 @@ void LauncherUI::HandleHubEvent(const fm2k::HubEvent& ev) {
                     std::snprintf(body, sizeof(body),
                                   T("toast_peer_disconnected_body"),
                                   peer_nick.c_str());
-                    hs.status_line = "peer left match — closing local game";
+                    hs.status_line = "peer left match -- closing local game";
                     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                                 "Hub: %s (peer status=%s)",
                                 hs.status_line.c_str(),
@@ -326,7 +326,7 @@ void LauncherUI::HandleHubEvent(const fm2k::HubEvent& ev) {
                     }
                     // No MatchResult here. This branch fires when the
                     // peer's hub status flipped off in_match WITHOUT us
-                    // having sent our own match_result yet — meaning
+                    // having sent our own match_result yet -- meaning
                     // battle hadn't ended (we'd have already published
                     // and recorded otherwise). CSS-phase aborts must not
                     // count toward W/L/D. The hub's in-flight match
@@ -394,7 +394,7 @@ void LauncherUI::HandleHubEvent(const fm2k::HubEvent& ev) {
                 // respawning the game), so the next outcome publish
                 // would otherwise be sent under the OLD (already-
                 // committed) token and silently dropped by the hub.
-                // Update token + reset match_result_sent. No game spawn —
+                // Update token + reset match_result_sent. No game spawn --
                 // we're just relabeling the in-flight match.
                 //
                 // Critically: do NOT clear last_outcome_seq. The hook's
@@ -409,7 +409,7 @@ void LauncherUI::HandleHubEvent(const fm2k::HubEvent& ev) {
                 hs.current_match_token = ev.match.token;
                 hs.match_result_sent   = false;
                 hs.disconnect_toast_fired = false;
-                // Don't touch last_chars_seq — the same hook (same
+                // Don't touch last_chars_seq -- the same hook (same
                 // PID) keeps incrementing the seq across rotates.
                 // The next Netplay_StartBattleSession will bump it,
                 // PollMatchOutcome will see seq advance, and fire
@@ -429,7 +429,7 @@ void LauncherUI::HandleHubEvent(const fm2k::HubEvent& ev) {
                 // and the GekkoNet session is between matches). Stop
                 // the local session here too so the survivor doesn't
                 // hang on the menu screen waiting for someone who's
-                // gone. Idempotent — second StopSession is a no-op.
+                // gone. Idempotent -- second StopSession is a no-op.
                 const std::string& peer_nick =
                     hs.current_match_peer_nick.empty()
                         ? std::string("Opponent")
@@ -438,7 +438,7 @@ void LauncherUI::HandleHubEvent(const fm2k::HubEvent& ev) {
                 std::snprintf(body, sizeof(body),
                               T("toast_peer_disconnected_body"),
                               peer_nick.c_str());
-                hs.status_line = "peer disconnected — closing match";
+                hs.status_line = "peer disconnected -- closing match";
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                             "Hub: %s", hs.status_line.c_str());
                 if (!hs.disconnect_toast_fired) {
@@ -451,7 +451,7 @@ void LauncherUI::HandleHubEvent(const fm2k::HubEvent& ev) {
                 // Best-effort match_result so the hub closes its
                 // in-flight record. If we never had a current_match_token
                 // (e.g. peer dropped before MatchStart fired), this is
-                // a no-op on the hub side — match_id won't correlate.
+                // a no-op on the hub side -- match_id won't correlate.
                 if (!hs.current_match_token.empty() && !hs.match_result_sent) {
                     hs.client.MatchResult(hs.current_match_token, "disconnect");
                     hs.match_result_sent = true;
@@ -499,13 +499,13 @@ void LauncherUI::HandleHubEvent(const fm2k::HubEvent& ev) {
                 // We're the host of an in-progress match; hub forwarded a
                 // spectator's external UDP+TCP addr. Forward to game-instance
                 // shared mem → hook's TickHostMaintenance fires both:
-                //   * UDP heartbeat burst (existing — opens NAT for the
+                //   * UDP heartbeat burst (existing -- opens NAT for the
                 //     spectator's first SPEC_JOIN_REQ replies)
-                //   * TCP simultaneous-open punch (new in v0.2.35 — opens
+                //   * TCP simultaneous-open punch (new in v0.2.35 -- opens
                 //     NAT for inbound TCP from spec:tcp_port to our
                 //     listener port, the path the INPUT_BATCH stream uses)
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "Hub: spectator_incoming nick=%s addr=%s udp:%d tcp:%d — punching",
+                    "Hub: spectator_incoming nick=%s addr=%s udp:%d tcp:%d -- punching",
                     ev.spectator_incoming.spec_nick.c_str(),
                     ev.spectator_incoming.spec_udp_ip.c_str(),
                     ev.spectator_incoming.spec_udp_port,

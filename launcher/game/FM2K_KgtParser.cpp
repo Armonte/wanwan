@@ -48,7 +48,7 @@ std::string cp932_to_utf8(const char* sjis, size_t cap) {
 
 // Skip the variable-size common-resource block. Mirrors the structure
 // readCommonResourcePart() in 2dfmFileReader.cpp:295 walks, but doesn't
-// allocate or decode any of it — just seeks past.
+// allocate or decode any of it -- just seeks past.
 //
 // Layout (each preceded by a uint32 count):
 //   scripts          (39 bytes each)
@@ -84,7 +84,7 @@ bool skip_common_resource_part(SDL_IOStream* io) {
         if (!kgt_seek_rel(io, payload)) return false;
     }
 
-    // 8 shared palettes — each PALETTE_SIZE bytes + 32-byte trailer
+    // 8 shared palettes -- each PALETTE_SIZE bytes + 32-byte trailer
     // (8 × sizeof(int) per the original reader).
     for (int p = 0; p < 8; ++p) {
         if (!kgt_seek_rel(io, _2dfm::PALETTE_SIZE + 8 * (Sint64)sizeof(int32_t))) {
@@ -111,7 +111,7 @@ bool ParseKgtSummary(const std::filesystem::path& kgt_path, KgtSummary& out) {
 
     std::string path_utf8;
     {
-        // SDL_IOFromFile on Windows accepts UTF-8 — convert from the
+        // SDL_IOFromFile on Windows accepts UTF-8 -- convert from the
         // wide-char filesystem path so JP-named .kgt files work.
         const std::wstring& wide = kgt_path.wstring();
         int u8len = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1,
@@ -141,16 +141,16 @@ bool ParseKgtSummary(const std::filesystem::path& kgt_path, KgtSummary& out) {
     }
     out.project_name = cp932_to_utf8(hdr.name.name, sizeof(hdr.name.name));
 
-    // Signature gate — four known formats, two parser dispatches:
-    //   "2DKGT2K\0"  FM2K (KGT 2nd)         — WW, ReSHUFFLE, most modern
-    //   "2DKGT2G\0"  FM2K (KGT 2 G-variant) — AOB
-    //   "KGTGAME\0"  FM95                    — CPW (cmdline-loader path)
-    //   "2DKGT95\0"  FM95                    — verify_kgt_magic-checked variant
+    // Signature gate -- four known formats, two parser dispatches:
+    //   "2DKGT2K\0"  FM2K (KGT 2nd)         -- WW, ReSHUFFLE, most modern
+    //   "2DKGT2G\0"  FM2K (KGT 2 G-variant) -- AOB
+    //   "KGTGAME\0"  FM95                    -- CPW (cmdline-loader path)
+    //   "2DKGT95\0"  FM95                    -- verify_kgt_magic-checked variant
     //
     // FM95's .kgt layout is fundamentally different from FM2K's: the file
     // is a 0x78D48-byte fixed-size block, not a stream of variable-size
     // sections. Player/stage/demo arrays sit at known fixed offsets
-    // (derived from FM95 IDA — see FM95_Integration.h address mapping).
+    // (derived from FM95 IDA -- see FM95_Integration.h address mapping).
     const char* sig = (const char*)hdr.fileSignature;
     const bool is_fm2k = (std::memcmp(sig, "2DKGT2K", 7) == 0) ||
                          (std::memcmp(sig, "2DKGT2G", 7) == 0);
@@ -170,7 +170,7 @@ bool ParseKgtSummary(const std::filesystem::path& kgt_path, KgtSummary& out) {
     std::vector<_2dfm::NameInfo> demo_slots(_2dfm::maxDemoNum);
 
     if (is_fm2k) {
-        // FM2K layout — variable-size common-resource block, then fixed.
+        // FM2K layout -- variable-size common-resource block, then fixed.
         if (!skip_common_resource_part(io)) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                 "ParseKgtSummary: common-resource skip failed for '%s'",
@@ -200,7 +200,7 @@ bool ParseKgtSummary(const std::filesystem::path& kgt_path, KgtSummary& out) {
             return cleanup(false);
         }
     } else {
-        // FM95 layout — fixed offsets inside the 0x78D48-byte g_kgt_data
+        // FM95 layout -- fixed offsets inside the 0x78D48-byte g_kgt_data
         // block. Derived from CPW IDA (LoadKgtFile @ 0x4072D0,
         // load_kgt_from_cmdline @ 0x406750) cross-referenced with
         // FM95_Integration.h address map:
@@ -210,7 +210,7 @@ bool ParseKgtSummary(const std::filesystem::path& kgt_path, KgtSummary& out) {
         //   g_demo_file_name_array  @ 0x46AD88   → offset 0x71A8
         //
         // Header (272 B) was already consumed above; we're at file offset
-        // 0x110 — exactly where the player array starts.
+        // 0x110 -- exactly where the player array starts.
         constexpr Sint64 kHeaderEnd     = 0x110;   // consumed
         constexpr Sint64 kStageOff      = 0x3FA8;
         constexpr Sint64 kPlayerSize    = 256 * _2dfm::maxPlayerNum;  // 0x3200
@@ -252,7 +252,7 @@ bool ParseKgtSummary(const std::filesystem::path& kgt_path, KgtSummary& out) {
     //
     // Layout of a .player file (mirrors KGT header format):
     //   bytes  0..15  : 16-byte signature (we don't validate)
-    //   bytes 16..271 : NameInfo (256-byte CP932 string — display name)
+    //   bytes 16..271 : NameInfo (256-byte CP932 string -- display name)
     //
     // Failure modes (file missing, header read short, name empty) all
     // fall through to the existing filename, so this enrichment never
@@ -288,7 +288,7 @@ bool ParseKgtSummary(const std::filesystem::path& kgt_path, KgtSummary& out) {
                 // Skip the override when the embedded name STARTS WITH
                 // the filename (case-insensitive). This is the
                 // "filename is already a real name + embedded has junk
-                // appended" case — e.g. filename="Primeape" but
+                // appended" case -- e.g. filename="Primeape" but
                 // embedded="PrimeapeCThrow" (creator's internal
                 // naming convention). Keeping the filename gives the
                 // user the clean "Primeape" they expect. The

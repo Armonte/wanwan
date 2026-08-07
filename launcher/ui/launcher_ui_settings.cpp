@@ -122,10 +122,10 @@ void OpenGamesFolderDialogAsync(HWND hwnd) {
 }
 }  // namespace
 
-// One Settings window with TabBar — bindings, host config, hub server,
+// One Settings window with TabBar -- bindings, host config, hub server,
 // games folders, recent matches. Floats above the dockspace, can't be
 // dragged or resized (popup-style modal feel without actually being a
-// modal — the user can still click around outside it). Replaces the
+// modal -- the user can still click around outside it). Replaces the
 // five separate floating sub-windows. Each tab calls a body-only
 // renderer; click the X to close, settings auto-save on edit.
 void LauncherUI::RenderSettingsWindow() {
@@ -155,7 +155,7 @@ void LauncherUI::RenderSettingsWindow() {
 
     if (ImGui::BeginTabBar("##settings_tabs",
                            ImGuiTabBarFlags_Reorderable)) {
-        // Input Bindings — single tab with a nested P1/P2 sub-tabbar so
+        // Input Bindings -- single tab with a nested P1/P2 sub-tabbar so
         // the player picker doesn't bloat the top-level tabs.
         if (ImGui::BeginTabItem(T("input_bindings"))) {
             if (!input_binder_initialized_) {
@@ -187,7 +187,7 @@ void LauncherUI::RenderSettingsWindow() {
             RenderGamesFoldersBody();
             ImGui::EndTabItem();
         }
-        // Display — every cnc-ddraw [ddraw] setting. Lives here rather
+        // Display -- every cnc-ddraw [ddraw] setting. Lives here rather
         // than in the Debug & Diagnostics → Renderer tab because it's a
         // permanent config surface, not a dev knob.
         if (ImGui::BeginTabItem("Display")) {
@@ -195,7 +195,7 @@ void LauncherUI::RenderSettingsWindow() {
             ImGui::EndTabItem();
         }
         // Recent Matches lives in the Hub panel (collapsing section
-        // beside the room list), not Settings — match-history isn't a
+        // beside the room list), not Settings -- match-history isn't a
         // configuration concern, it's session data.
         ImGui::EndTabBar();
     }
@@ -285,7 +285,7 @@ void LauncherUI::RenderGamesFoldersWindow() {
 // flow in FM2K_DiscordAuth: kicks off /pair/begin, opens the browser,
 // polls /pair/<code> until success/fail. The hub_token is cached in
 // %APPDATA%\FM2K_Rollback\discord_auth.json and read by RenderHubPanel
-// at Connect time. Patron-only access — Tester ($5+) tier required
+// at Connect time. Patron-only access -- Tester ($5+) tier required
 // during testing, mapped via Patreon→Discord role automation.
 void LauncherUI::RenderDiscordAuthWindow() {
     using namespace fm2k::discord_auth;
@@ -326,7 +326,7 @@ void LauncherUI::RenderDiscordAuthWindow() {
         // DO droplet). The old No-IP host 2dfm.sytes.net is fully
         // retired (DNS gone); the sytes.net branch below is dead
         // legacy-compat, kept only so a stale saved hub_host_ resolves
-        // to nothing loudly rather than silently — clear the Hub Server
+        // to nothing loudly rather than silently -- clear the Hub Server
         // host field to fall back to the hub.2dfm.org default.
         std::string base;
         const char* host = hub_host_[0] ? hub_host_ : "hub.2dfm.org";
@@ -364,7 +364,7 @@ void LauncherUI::RenderDiscordAuthWindow() {
                         ImGui::SetClipboardText(url.c_str());
                         s_auto_copied_for_code = pc;
                         s_status =
-                            "Browser didn't open — URL has been COPIED to "
+                            "Browser didn't open -- URL has been COPIED to "
                             "your clipboard. Paste it (Ctrl+V) in your "
                             "browser to authorize Discord.";
                     }
@@ -380,7 +380,7 @@ void LauncherUI::RenderDiscordAuthWindow() {
                     ImGui::TextWrapped("%s", s_status.c_str());
                 }
 
-                // Always surface the URL while pairing is pending —
+                // Always surface the URL while pairing is pending --
                 // browser auto-launch can fail silently for many
                 // reasons (Admin process / no http handler / AV blocking
                 // ShellExecute / other). The Copy + Reopen buttons let
@@ -406,7 +406,7 @@ void LauncherUI::RenderDiscordAuthWindow() {
                     ImGui::SameLine();
                     if (ImGui::Button("Copy")) {
                         ImGui::SetClipboardText(url.c_str());
-                        s_status = "URL copied — paste it in your browser.";
+                        s_status = "URL copied -- paste it in your browser.";
                     }
                     ImGui::SameLine();
                     if (ImGui::Button("Reopen")) {
@@ -423,7 +423,7 @@ void LauncherUI::RenderDiscordAuthWindow() {
                 auto a = s_pairing->result();
                 if (SaveCached(a)) s_cached = a;
                 // Surface the Discord display name (global_name) on the
-                // sign-in confirmation, not the launcher's custom nick —
+                // sign-in confirmation, not the launcher's custom nick --
                 // the user is verifying which Discord account they
                 // bound, not what nick they'll appear as in lobbies.
                 const std::string display = a.discord_global_name.empty()
@@ -475,7 +475,7 @@ void LauncherUI::RenderHostConfigBody() {
         "Per-game match settings. Edits here override the game's "
         "default game.ini for THIS launcher; the host's resolved values "
         "get pushed to the client + spectators on challenge (#54). "
-        "HitJudge / GameInformation are force-zeroed online — saved "
+        "HitJudge / GameInformation are force-zeroed online -- saved "
         "to disk for offline practice but never applied to a hub match.");
     ImGui::Separator();
 
@@ -511,7 +511,7 @@ void LauncherUI::RenderHostConfigBody() {
     // turns non-CP1252 bytes (full-width forms like ＣＰＷ.exe) into
     // '_'. The games list above gets away with TextUnformatted +
     // SameLine; we do the same here for the static prefix and the
-    // dynamic name. ImGui itself decodes UTF-8 just fine — the
+    // dynamic name. ImGui itself decodes UTF-8 just fine -- the
     // mangling is exclusively in printf-style format specifiers.
     ImGui::TextUnformatted("Game: ");
     ImGui::SameLine(0.0f, 0.0f);
@@ -544,7 +544,7 @@ void LauncherUI::RenderHostConfigBody() {
             ini_display += '/';
         }
         ini_display += "game.ini";
-        // TextDisabled has the same printf trap — wrap it manually.
+        // TextDisabled has the same printf trap -- wrap it manually.
         ImGui::PushStyleColor(ImGuiCol_Text,
             ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
         ImGui::TextUnformatted("game.ini: ");
@@ -591,7 +591,7 @@ void LauncherUI::RenderHostConfigBody() {
             ImGui::TableSetColumnIndex(1);
             const int def_val = s_defaults.*r.member;
             if (def_val == fm2k::game_ini::kUnset) {
-                ImGui::TextDisabled("—");
+                ImGui::TextDisabled("--");
             } else {
                 ImGui::Text("%d", def_val);
             }
@@ -633,7 +633,7 @@ void LauncherUI::RenderHostConfigBody() {
     ImGui::Separator();
     if (s_dirty) {
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f),
-                           "Unsaved overrides — apply or reset.");
+                           "Unsaved overrides -- apply or reset.");
     }
     if (ImGui::Button("Apply overrides")) {
         if (fm2k::game_ini::SaveOverride(exe, s_override)) {
@@ -686,7 +686,7 @@ void LauncherUI::RenderHostConfigBody() {
             "count - 1 (FM2K indexes from 0); the hook additionally clamps "
             "to the game's real stage list so an oversized range can never "
             "load a missing stage. Both peers' hooks seed an xorshift PRNG "
-            "with the host's seed, then advance by one per match — "
+            "with the host's seed, then advance by one per match -- "
             "deterministic lockstep, no extra wire traffic per rematch.");
     }
     (void)prev_enable;
@@ -696,7 +696,7 @@ void LauncherUI::RenderHostConfigBody() {
     // optional gameplay tweaks. Each setting is per-game (stored in
     // %APPDATA%\FM2K_Rollback\game_patches\<game_id>.ini) so different
     // FM2K games can opt in/out independently. Restart the game after
-    // toggling — env vars are read at hook init.
+    // toggling -- env vars are read at hook init.
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
@@ -777,7 +777,7 @@ void LauncherUI::RenderHostConfigBody() {
     }
     ImGui::SetItemTooltip(
         "Override g_team_round @ 0x430128. Range [2, 4]; 0 leaves the "
-        "engine's INI-loaded value alone. Hard ceiling is 4 per side — "
+        "engine's INI-loaded value alone. Hard ceiling is 4 per side -- "
         "the engine indexes its 8-slot character data pool as "
         "4*player_idx + round_count, so values >4 stomp the opposite "
         "player's slots.");
@@ -806,12 +806,12 @@ void LauncherUI::RenderHostConfigBody() {
         "at title→CSS).");
     ImGui::Spacing();
 
-    // No mutual exclusion in the UI — the hook resolves combinations in a
+    // No mutual exclusion in the UI -- the hook resolves combinations in a
     // documented fixed precedence (option_mode_selector cycle > cpu_vs_cpu
     // > vs_cpu > training for battle behavior; CSS takeover fires if ANY
     // mode is active). Some users want all three individual flags
     // enableable simultaneously for diagnostics, and the OPTION cycle
-    // requires only its own toggle — over-restricting blocked legitimate
+    // requires only its own toggle -- over-restricting blocked legitimate
     // configurations.
 
     if (ImGui::Checkbox("VS CPU mode (P1 picks both, AI plays P2)",
@@ -856,13 +856,13 @@ void LauncherUI::RenderHostConfigBody() {
         "Bindings) on the title screen to cycle through:\n"
         "  Default → VS CPU → Training → CPU vs CPU → Default\n\n"
         "Badge appears in the top-right of the game viewport showing "
-        "the queued submode (hidden in Default — no overlay clutter). "
+        "the queued submode (hidden in Default -- no overlay clutter). "
         "The chosen submode applies at title→CSS transition; P1's CSS "
         "cursor drives both characters for the three non-default modes. "
         "Returning to title clears the selection so you can pick again "
         "next round.\n\n"
         "You don't need to also enable the individual mode toggles "
-        "above — the cycle controls them at runtime. They DO override "
+        "above -- the cycle controls them at runtime. They DO override "
         "Default when the cycle is at slot 0 (so if you want \"VS CPU "
         "unless I explicitly cycle\", enable VS CPU + OPTION together).");
 }

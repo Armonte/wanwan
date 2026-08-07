@@ -2,7 +2,7 @@
 // See FM2K_UploadQueue.h for the design.
 
 #include "FM2K_UploadQueue.h"
-#include "FM2KHook/src/util/pii_scrub.h"  // fm2k::pii::Scrub — redact OS username etc. from the meta we transmit
+#include "FM2KHook/src/util/pii_scrub.h"  // fm2k::pii::Scrub -- redact OS username etc. from the meta we transmit
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_log.h>
@@ -210,7 +210,7 @@ bool ParseUrl(const std::string& url, bool& https_out, std::wstring& host_out,
 
 std::string MakeBoundary() {
     // 16 bytes of randomness, hex-encoded. boundary must not appear
-    // anywhere in the multipart body — random 32-hex collision odds
+    // anywhere in the multipart body -- random 32-hex collision odds
     // are negligible for our payload sizes.
     static thread_local std::mt19937_64 rng{std::random_device{}()};
     char buf[33] = {};
@@ -296,14 +296,14 @@ bool HttpPostMultipart(const std::string& url,
     }
 
     // SECURITY: X-FM2K-Log-Secret is a SHARED secret compiled into every
-    // client (kLogUploadSecret) — it is OBFUSCATION, NOT authentication. Any
+    // client (kLogUploadSecret) -- it is OBFUSCATION, NOT authentication. Any
     // user can extract it and forge/flood/poison the endpoint. The hub log-
     // ingest MUST therefore: (1) rate-limit + size-cap per source IP, (2) treat
     // every upload as untrusted (never index/execute its contents), and
     // (3) ideally issue a per-session upload token bound to the WS-authed
     // session instead of relying on this. Uploaded logs also carry match
     // tokens + peer IPs, so the secret leaking compounds the relay/STUN
-    // findings — scrub or gate those server-side.
+    // findings -- scrub or gate those server-side.
     std::wstring headers = L"Content-Type: multipart/form-data; boundary=";
     headers.append(boundary.begin(), boundary.end());
     headers += L"\r\nX-FM2K-Log-Secret: ";
@@ -369,13 +369,13 @@ void MoveTo(const fs::path& src, const fs::path& dst_dir) {
 
 // Validate that a string is well-formed UTF-8. We reject manifests
 // containing invalid UTF-8 in any path field, because passing those
-// raw bytes into std::filesystem::path on MinGW can throw — the
+// raw bytes into std::filesystem::path on MinGW can throw -- the
 // resulting unhandled exception propagates through PollUploadQueue
 // (called every render frame from Render) and crashes the launcher
 // at startup before the user can do anything. Confirmed culprit:
 // hook v0.2.41 wrote manifests using GetModuleFileNameA / GetCurrent-
 // DirectoryA, which return Shift-JIS bytes on Japanese-named game
-// directories. Those are not valid UTF-8 — the manifest parses but
+// directories. Those are not valid UTF-8 -- the manifest parses but
 // std::filesystem then throws. Until v0.2.44+ hooks write proper
 // UTF-8, this validation gate stops the bleeding.
 static bool IsValidUtf8(const std::string& s) {
@@ -427,7 +427,7 @@ bool ProcessImpl(const ProcessorConfig& cfg) {
     std::string manifest_text;
     if (!ReadEntireFile(target, manifest_text)) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "UploadQueue: failed to read manifest %s — quarantining",
+            "UploadQueue: failed to read manifest %s -- quarantining",
             target.string().c_str());
         MoveTo(target, queue_dir / "quarantine");
         return true;
@@ -436,13 +436,13 @@ bool ProcessImpl(const ProcessorConfig& cfg) {
     std::vector<std::string> file_paths;
     if (!FindStringArray(manifest_text, "files", file_paths)) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "UploadQueue: manifest %s has no 'files' array — quarantining",
+            "UploadQueue: manifest %s has no 'files' array -- quarantining",
             target.string().c_str());
         MoveTo(target, queue_dir / "quarantine");
         return true;
     }
 
-    // Minimal field validation. We're permissive — the server has its
+    // Minimal field validation. We're permissive -- the server has its
     // own validation, and we don't want a client-side schema drift to
     // black-hole legitimate reports. We just need kind+session_id+
     // player_index for filename construction on the receiving end.
@@ -451,21 +451,21 @@ bool ProcessImpl(const ProcessorConfig& cfg) {
         !FindStringField(manifest_text, "session_id", sid) ||
         !FindNumberField(manifest_text, "player_index", pidx)) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "UploadQueue: manifest %s missing required fields — quarantining",
+            "UploadQueue: manifest %s missing required fields -- quarantining",
             target.string().c_str());
         MoveTo(target, queue_dir / "quarantine");
         return true;
     }
 
     // Validate every path is well-formed UTF-8 BEFORE building any
-    // fs::path — bad bytes will throw on MinGW (see IsValidUtf8 comment).
+    // fs::path -- bad bytes will throw on MinGW (see IsValidUtf8 comment).
     // Quarantine the whole manifest if any path is bad; we can't trust
     // any of them.
     for (const auto& fp : file_paths) {
         if (!IsValidUtf8(fp)) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                 "UploadQueue: manifest %s contains non-UTF-8 path (size=%zu) "
-                "— hook predates v0.2.44 UTF-8 manifest fix, quarantining",
+                "-- hook predates v0.2.44 UTF-8 manifest fix, quarantining",
                 target.filename().string().c_str(), fp.size());
             MoveTo(target, queue_dir / "quarantine");
             return true;
@@ -478,7 +478,7 @@ bool ProcessImpl(const ProcessorConfig& cfg) {
         fs::path p(fp);
         std::string base = p.filename().string();
         if (base.empty()) continue;
-        // Server's filename allow-list is strict — strip anything
+        // Server's filename allow-list is strict -- strip anything
         // non-[A-Za-z0-9_-.]. Names from the hook are already safe
         // (FM2K_PN_Debug.log etc.) but be defensive.
         for (char& c : base) {
@@ -491,7 +491,7 @@ bool ProcessImpl(const ProcessorConfig& cfg) {
         if (base.find("Debug.log") != std::string::npos) {
             body = ReadFileTail(p, MAX_FILE_TAIL_BYTES);
         } else if (!ReadEntireFile(p, body)) {
-            // Missing referenced file isn't fatal — just log and skip.
+            // Missing referenced file isn't fatal -- just log and skip.
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "UploadQueue: referenced file missing, skipping: %s",
                 fp.c_str());
@@ -500,7 +500,7 @@ bool ProcessImpl(const ProcessorConfig& cfg) {
         total += body.size();
         if (total > MAX_BODY_BYTES) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "UploadQueue: bundle exceeded cap (%zu bytes) — truncating",
+                "UploadQueue: bundle exceeded cap (%zu bytes) -- truncating",
                 total);
             break;
         }
@@ -531,11 +531,11 @@ bool ProcessImpl(const ProcessorConfig& cfg) {
     }
 
     if (sent && resp.status >= 400 && resp.status < 500) {
-        // Client-side error from the server — schema mismatch, bad
+        // Client-side error from the server -- schema mismatch, bad
         // filename, etc. Don't retry forever; quarantine so we keep
         // moving on subsequent manifests.
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "UploadQueue: server rejected %s (status=%d body=%s) — quarantining",
+            "UploadQueue: server rejected %s (status=%d body=%s) -- quarantining",
             target.filename().string().c_str(), resp.status,
             resp.body.c_str());
         MoveTo(target, queue_dir / "quarantine");
@@ -545,7 +545,7 @@ bool ProcessImpl(const ProcessorConfig& cfg) {
     // Transient failure (timeout, 5xx, network down). Leave the
     // manifest in place; next Process() call will retry.
     SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
-        "UploadQueue: transient failure %s (status=%d failed_at=%s err=%lu) — will retry",
+        "UploadQueue: transient failure %s (status=%d failed_at=%s err=%lu) -- will retry",
         target.filename().string().c_str(), resp.status,
         resp.failed_at, (unsigned long)resp.last_error);
     return false;
@@ -558,7 +558,7 @@ bool Process(const ProcessorConfig& cfg) {
     // propagate out of Render and abort the launcher BEFORE the user
     // can interact. Ianthina (v0.2.41 → Higurashi vs Touhou Universe 2,
     // Japanese-named game folder, Shift-JIS bytes in a desync manifest)
-    // hit exactly this — launcher unusable until the manifest was
+    // hit exactly this -- launcher unusable until the manifest was
     // deleted by hand.
     //
     // We catch everything here and just return false (= "no progress
@@ -569,14 +569,14 @@ bool Process(const ProcessorConfig& cfg) {
         return ProcessImpl(cfg);
     } catch (const std::exception& e) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-            "UploadQueue: ProcessImpl threw std::exception (%s) — "
+            "UploadQueue: ProcessImpl threw std::exception (%s) -- "
             "swallowing so launcher stays alive; manifest will be "
             "quarantined on next attempt",
             e.what());
         return false;
     } catch (...) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-            "UploadQueue: ProcessImpl threw unknown exception — "
+            "UploadQueue: ProcessImpl threw unknown exception -- "
             "swallowing so launcher stays alive");
         return false;
     }

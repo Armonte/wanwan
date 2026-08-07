@@ -12,7 +12,7 @@
 namespace FM2KInputBinder {
 
 // FM2K's vanilla 11-bit input layout (engine mask 0x7FF) plus 3 additional
-// meta-bits (0x800-0x2000) used only by FM2KHook for its own features —
+// meta-bits (0x800-0x2000) used only by FM2KHook for its own features --
 // the engine itself doesn't see those bits (we mask them off before
 // passing input through).
 //
@@ -33,10 +33,10 @@ enum class Bit : uint8_t {
     D      = 7,   // 0x0080 (button4)
     E      = 8,   // 0x0100 (button5)
     F      = 9,   // 0x0200 (button6)
-    START  = 10,  // 0x0400 (button7 / start) — engine-visible
-    OPTION = 11,  // 0x0800 (FM2KHook meta — submode cycle on title)
-    FN1    = 12,  // 0x1000 (FM2KHook meta — reserved)
-    FN2    = 13,  // 0x2000 (FM2KHook meta — reserved)
+    START  = 10,  // 0x0400 (button7 / start) -- engine-visible
+    OPTION = 11,  // 0x0800 (FM2KHook meta -- submode cycle on title)
+    FN1    = 12,  // 0x1000 (FM2KHook meta -- reserved)
+    FN2    = 13,  // 0x2000 (FM2KHook meta -- reserved)
     COUNT
 };
 
@@ -61,7 +61,7 @@ struct Binding {
 
 struct PlayerBindings {
     // Two parallel slots per FM2K bit. Sample() OR's them together,
-    // so a single bit can fire from EITHER source — typical use cases:
+    // so a single bit can fire from EITHER source -- typical use cases:
     //   primary = keyboard, alt = gamepad (covers most users)
     //   primary = stick axis, alt = dpad button (CXL-style: both
     //   gamepad inputs route to the same in-game direction)
@@ -71,7 +71,7 @@ struct PlayerBindings {
     Binding bits    [static_cast<size_t>(Bit::COUNT)];
     Binding bits_alt[static_cast<size_t>(Bit::COUNT)];
 
-    // Stable device identity for this player's gamepad bindings —
+    // Stable device identity for this player's gamepad bindings --
     // "<SDL GUID string>[#<serial>]". When set, sampling resolves this
     // player's pad BY IDENTITY (ResolvePlayerPads) instead of through
     // the per-binding SDL list index: unplugging the OTHER player's pad
@@ -114,7 +114,7 @@ int ResolvedPadListIndex(int player_slot);
 // any binding was modified this frame (caller may auto-Save).
 bool RenderWindow(int player_slot, bool* p_open = nullptr);
 
-// Body-only variant — caller owns the ImGui window/tab/child container.
+// Body-only variant -- caller owns the ImGui window/tab/child container.
 // Use this to embed the binder inside the launcher's consolidated
 // Settings tab pane. Returns true on any binding change for the frame.
 bool RenderBody(int player_slot);
@@ -122,13 +122,13 @@ bool RenderBody(int player_slot);
 // Sample current state of all bindings for player_slot, returning the
 // 11-bit FM2K input mask. Call once per frame from your input source.
 //
-// Sample()      uses SDL3 — for the LAUNCHER (SDL3 event pump runs).
-// Sample_Win32() uses GetKeyboardState + XInput — for the HOOK DLL where
+// Sample()      uses SDL3 -- for the LAUNCHER (SDL3 event pump runs).
+// Sample_Win32() uses GetKeyboardState + XInput -- for the HOOK DLL where
 //                 SDL3 isn't event-pumped. Both honor the same Bindings()
 //                 config so launcher-bound keys work identically in-game.
 //                 Focus-correct by construction: returns 0 unless this
 //                 process owns the foreground window, and keyboard state
-//                 is queue-synced (never GetAsyncKeyState — that reads
+//                 is queue-synced (never GetAsyncKeyState -- that reads
 //                 the desktop-global key state).
 uint16_t Sample(int player_slot);
 uint16_t Sample_Win32(int player_slot);
@@ -145,7 +145,7 @@ bool Load();
 // %APPDATA%\FM2K_Rollback\. Pass nullptr or "" to revert to the default
 // profile (fm2k_inputs.ini). The new profile takes effect on the next
 // Load(); current in-memory bindings stay until the caller chooses to
-// reload. Idempotent — re-setting the same name is a no-op.
+// reload. Idempotent -- re-setting the same name is a no-op.
 void SetGameProfile(const char* exe_basename);
 
 // Returns true if a per-game override is currently active (i.e.
@@ -161,7 +161,7 @@ bool HasGameProfile();
 bool ForkDefaultToGameProfile();
 
 // Deletes the per-game profile file and reverts the active profile to
-// default. Use case: user clicks "Use default for this game" — drops
+// default. Use case: user clicks "Use default for this game" -- drops
 // the per-game file and re-Loads from default. Returns false if no
 // per-game profile was active.
 bool DeleteGameProfile();

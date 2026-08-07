@@ -1,4 +1,4 @@
-// Input capture — taps FM2K's native input pipeline instead of polling
+// Input capture -- taps FM2K's native input pipeline instead of polling
 // keys with GetAsyncKeyState.
 //
 // Why: 2DFM has its own input binding system (per-player keyboard +
@@ -6,7 +6,7 @@
 // config). Hardcoding a keymap in the hook forces users onto our layout
 // and duplicates the game's polling code. Instead we call the game's
 // own input reader directly through the MinHook trampoline
-// (original_get_player_input) for player index 0 — this returns
+// (original_get_player_input) for player index 0 -- this returns
 // whatever key / joystick mapping FM2K has configured for P1.
 //
 // Every instance uses the P1 mapping regardless of its netplay slot:
@@ -81,7 +81,7 @@ uint16_t Input_CaptureLocal() {
     }
 
     // If the user has set up bindings via the launcher's Input Bindings UI,
-    // use those bindings as the local input source — that's what makes
+    // use those bindings as the local input source -- that's what makes
     // launcher binds actually drive gameplay. The path resolution lives in
     // the binder so launcher and hook agree on it (currently
     // %APPDATA%\FM2K_Rollback\fm2k_inputs.ini, with FM2K_INPUT_CONFIG_PATH
@@ -90,7 +90,7 @@ uint16_t Input_CaptureLocal() {
     // working out of the box.
     //
     // Re-checked on every call (cheap stat) instead of cached-on-first-call,
-    // because the user might Save bindings AFTER the game has started — we
+    // because the user might Save bindings AFTER the game has started -- we
     // want the new binds to take effect without needing to relaunch.
     {
         static int  s_last_check_tick = 0;
@@ -128,19 +128,19 @@ uint16_t Input_CaptureLocal() {
             // shot (gated on g_initialized) so it doesn't refresh
             // bindings on its own; Load() is the actual file-read.
             FM2KInputBinder::Load();
-            // Hot-plug refresh — Suicidal Muffin's bug report:
+            // Hot-plug refresh -- Suicidal Muffin's bug report:
             // unplugging a controller mid-match or plugging one in
             // after the game started required a session restart. We
             // walk SDL_GetGamepads / SDL_GetJoysticks on the same
             // 1-second cadence as Load(), so newly-attached devices
             // start receiving binder input within a second of being
             // plugged in. Cost is one SDL_PumpEvents + a couple of
-            // SDL_GetGamepads — negligible compared to the input poll.
+            // SDL_GetGamepads -- negligible compared to the input poll.
             FM2KInputBinder::RefreshGamepads();
             // Detect "config file present and successfully loaded" by
             // checking whether any binding has a non-NONE source. Defaults
             // also have non-NONE bindings (P1 keyboard arrows + Z/X/C/V/A/S/D/Enter)
-            // so this effectively says "binder is initialized" — which is
+            // so this effectively says "binder is initialized" -- which is
             // exactly when we want to use it.
             const auto& pb = FM2KInputBinder::Bindings(0);
             s_binder_active = false;
@@ -157,7 +157,7 @@ uint16_t Input_CaptureLocal() {
             // the right remote slot). Same convention this file already
             // uses for original_get_player_input(0, 0) below.
             uint16_t bound = FM2KInputBinder::Sample_Win32(0);
-            // Mask out START (0x400) on CSS — pressing it on the
+            // Mask out START (0x400) on CSS -- pressing it on the
             // character-select screen returns the local game to title
             // and desyncs/wedges netplay. We can't safely strip it in
             // battle (it's pause) or on title (it's confirm), so the
@@ -169,7 +169,7 @@ uint16_t Input_CaptureLocal() {
     }
 
     // Ask the game directly for P1's input. original_get_player_input is
-    // MinHook's trampoline to the real get_player_input @ 0x414340 — calling
+    // MinHook's trampoline to the real get_player_input @ 0x414340 -- calling
     // it reads the game's configured keyboard + joystick binding for player 0
     // (the P1 mapping) regardless of which netplay slot this instance occupies.
     //
@@ -178,7 +178,7 @@ uint16_t Input_CaptureLocal() {
     // character is facing the opposite direction). But gekko's job is to
     // deliver RAW inputs, and Hook_GetPlayerInput re-applies the swap
     // during sim. If we forwarded the game's pre-swapped value to gekko,
-    // sim's hook would swap it AGAIN — net effect, directions reversed
+    // sim's hook would swap it AGAIN -- net effect, directions reversed
     // whenever the character faces the non-default direction.
     //
     // Fix: detect the same swap condition Hook_GetPlayerInput uses (slot 0
@@ -190,14 +190,14 @@ uint16_t Input_CaptureLocal() {
     uint16_t input = (uint16_t)(original_get_player_input(0, 0) & 0x7FF);
 
     uint32_t game_mode = *(uint32_t*)FM2K::ADDR_GAME_MODE;
-    // CSS START guard — mirror of the binder path above. Pressing
+    // CSS START guard -- mirror of the binder path above. Pressing
     // START on character select bails to title and breaks netplay.
     if (game_mode == 2000) input &= (uint16_t)~0x400u;
     if (game_mode >= 3000 && game_mode < 4000) {
         constexpr size_t CHAR_ACTIVE_FLAG_OFFSET = 0xDF41;
         constexpr size_t CHAR_STATE_FLAGS_OFFSET = 0x7CA6;
         // input_type=0 matches the first arg original_get_player_input got
-        // above — same slot determines whether the swap was applied.
+        // above -- same slot determines whether the swap was applied.
         uintptr_t slot_base = CHAR_SLOT_BASE + 0 * CHAR_SLOT_SIZE;
         uint8_t char_active = *(uint8_t*)(slot_base + CHAR_ACTIVE_FLAG_OFFSET);
         if (char_active != 0) {
@@ -215,7 +215,7 @@ uint16_t Input_CaptureLocal() {
 }
 
 uint16_t Input_CaptureLocalPlayer(int player) {
-    // Same focus guard as Input_CaptureLocal — no input when we're not the
+    // Same focus guard as Input_CaptureLocal -- no input when we're not the
     // foreground window (prevents cross-instance bleed).
     if (!IsOurWindowFocused()) {
         return 0;

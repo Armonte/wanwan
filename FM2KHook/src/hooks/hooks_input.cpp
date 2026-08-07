@@ -1,6 +1,6 @@
 // hooks_input.cpp -- SOCD cleaning + autoplay (CSS/battle) + capture/battle-diag. Split from hooks.cpp (pure move).
 #include "hooks.h"
-#include "round_events.h"     // C3.5 — vs_round_function detour install
+#include "round_events.h"     // C3.5 -- vs_round_function detour install
 #include "css_autoconfirm.h"  // CSS lock-and-confirm for offline replay playback
 #include "css_fastsound.h"    // FM2K_FPK_CSS_FASTSOUND: lazy DSound buffers (CSS dip fix)
 #include "per_game_patches.h" // damage multiplier MinHook + team-size override
@@ -23,12 +23,12 @@
 #include "imgui_overlay.h"
 #include "shared_mem.h"
 #include "savestate.h"  // CHAR_SLOT_BASE, CHAR_SLOT_SIZE (corrected by Wave C audit)
-#include "../core/main_loop_trampoline.h"  // TrampolineMainLoop — owns the outer loop
+#include "../core/main_loop_trampoline.h"  // TrampolineMainLoop -- owns the outer loop
 #include "../audio/sound_rollback.h"        // Mike Z desired/actual sound layer
 #include "../netplay/spectator_node.h"      // spectator playback queue accessors
 #include "../ui/input_binder.h"             // FM2KInputBinder::Sample_Win32 + Bindings
 #include "../ui/screenshot.h"               // FM2KCapture::SaveScreenshot for the auto-banner pipeline
-#include "../ui/fc_hud.h"                   // IsChatInputActive — gate local input during typing
+#include "../ui/fc_hud.h"                   // IsChatInputActive -- gate local input during typing
 #include "../vfs/fpk_reader.h"              // FM2K_FPK_VFS: inflate a slim .fpk -> original asset bytes
 #include <MinHook.h>
 #include <SDL3/SDL_log.h>
@@ -68,12 +68,12 @@
 // FM2K bits: LEFT=0x001 RIGHT=0x002 UP=0x004 DOWN=0x008.
 //
 // Modes (FM2K_SOCD_MODE env var, default = 1):
-//   0 — Default        L+R held → R wins  | U+D held → U wins
-//   1 — L/R Cancel     L+R held → neutral | U+D held → U wins   <-- DEFAULT (Hitbox-style)
-//   2 — U/D Cancel     L+R held → R wins  | U+D held → neutral
-//   3 — Both Cancel    L+R held → neutral | U+D held → neutral
-//   4 — Up Bias        L+R held → R wins  | U+D held → U wins   (= 0 today)
-//   5 — Hitbox+Up      L+R held → neutral | U+D held → U wins   (= 1 today)
+//   0 -- Default        L+R held → R wins  | U+D held → U wins
+//   1 -- L/R Cancel     L+R held → neutral | U+D held → U wins   <-- DEFAULT (Hitbox-style)
+//   2 -- U/D Cancel     L+R held → R wins  | U+D held → neutral
+//   3 -- Both Cancel    L+R held → neutral | U+D held → neutral
+//   4 -- Up Bias        L+R held → R wins  | U+D held → U wins   (= 0 today)
+//   5 -- Hitbox+Up      L+R held → neutral | U+D held → U wins   (= 1 today)
 //
 // Modes 4/5 are kept for CCCaster compat; behavior currently matches 0/1
 // because FM2K already drops DOWN on U+D (no separate "down-wins" branch
@@ -107,7 +107,7 @@ extern "C" void Hook_SetSOCDMode(int mode) {
     }
 }
 
-// Public accessor for the SOCD mode — needed by netplay.cpp's HOST_CONFIG
+// Public accessor for the SOCD mode -- needed by netplay.cpp's HOST_CONFIG
 // broadcaster which can't reach the static.
 extern "C" int Hook_GetSOCDModePublic() {
     return Hook_GetSOCDMode();
@@ -115,7 +115,7 @@ extern "C" int Hook_GetSOCDModePublic() {
 
 // Public wrapper around Hook_ApplySOCD (declared in hooks.h). Used by
 // netplay.cpp to pre-apply SOCD on the host's confirmed inputs before
-// storing them into the spectator stream / .fm2krep file — eliminates
+// storing them into the spectator stream / .fm2krep file -- eliminates
 // SOCD-mode-mismatch between host and spec (or original-vs-replay) as
 // a source of sim divergence. Defined later in this TU but forward-
 // declared here so the trivial wrapper compiles.
@@ -128,7 +128,7 @@ uint16_t Hook_ApplySOCD_Public(uint16_t input) {
 // FM2K_PARITY_AUTOPLAY_BATTLE block inside Hook_GetPlayerInput so the
 // stress-mode `gekko_add_local_input` call site can feed gekko the
 // same per-player input the engine's Hook_GetPlayerInput would
-// dispatch. Keep these two implementations identical — they are the
+// dispatch. Keep these two implementations identical -- they are the
 // shape of an autoplay determinism contract.
 uint16_t Hook_ComputeAutoplayBattleInput(int player_id) {
     static int s_cache = -1;
@@ -181,7 +181,7 @@ uint16_t Hook_ComputeAutoplayBattleInput(int player_id) {
     return out;
 }
 
-// Dwell anchor state for Hook_ComputeAutoplayCssInput — file scope so
+// Dwell anchor state for Hook_ComputeAutoplayCssInput -- file scope so
 // the netplay CSS-sync path can reset it deterministically (the
 // in-function gap heuristic only covers the offline path).
 static bool g_css_autoplay_in_css = false;
@@ -321,7 +321,7 @@ uint16_t Hook_ApplySOCD(uint16_t input) {
 // at file scope so Hook_FlushPendingCapture can drain it from outside the
 // hook (specifically at CSS→battle transition, before the battle session
 // gates capture_and_return out). Without this drain the trailing CSS frame
-// — the one carrying the confirm input that flips game_mode 2000→3000 —
+// -- the one carrying the confirm input that flips game_mode 2000→3000 --
 // stays trapped in g_capture_p[] and the spectator never receives it.
 uint16_t g_capture_p[2] = {0, 0};
 uint32_t g_capture_recorded_idx = UINT32_MAX;
@@ -358,7 +358,7 @@ extern "C" void Hook_BattleDiag_TickIfActive() {
     uint32_t fr_ms = *(uint32_t*)0x41E2F0;
 
     // Char slot active flags (0xDF41 from each slot base) + state flags
-    // (0x7CA6) — battle init reads these to decide whether to stay in
+    // (0x7CA6) -- battle init reads these to decide whether to stay in
     // battle. Slots 0 and 1 are P1/P2.
     constexpr uintptr_t SLOT_BASE = 0x4D1D90;
     constexpr size_t    SLOT_SZ   = 57407;
@@ -366,7 +366,7 @@ extern "C" void Hook_BattleDiag_TickIfActive() {
     uint8_t s1_active = *(uint8_t*)(SLOT_BASE + SLOT_SZ + 0xDF41);
     uint8_t s0_flags  = *(uint8_t*)(SLOT_BASE + 0x7CA6);
     uint8_t s1_flags  = *(uint8_t*)(SLOT_BASE + SLOT_SZ + 0x7CA6);
-    // The two main_game_loop prologue writes — slot+0xDF75, slot+0xDF79
+    // The two main_game_loop prologue writes -- slot+0xDF75, slot+0xDF79
     uint32_t s0_dF75 = *(uint32_t*)(SLOT_BASE + 0xDF75);
     uint32_t s0_dF79 = *(uint32_t*)(SLOT_BASE + 0xDF79);
 
@@ -380,21 +380,21 @@ extern "C" void Hook_BattleDiag_TickIfActive() {
     uint32_t p1_hp = *(uint32_t*)(HP_BASE);
     uint32_t p2_hp = *(uint32_t*)(HP_BASE + HP_STRIDE);
 
-    // vs_round_function state machine — these decide whether battle
+    // vs_round_function state machine -- these decide whether battle
     // proceeds or bails back to CSS:
-    //   g_score_value @ 0x470050 — countdown timer; case 200 decrements
+    //   g_score_value @ 0x470050 -- countdown timer; case 200 decrements
     //     each frame, reaching -1 routes to case 300 (round end → CSS).
     //     If battle init sets this to a small/negative value, battle
     //     immediately bails. Almost certainly StudioS's bug signature.
-    //   round_state_field — *(g_object_data_ptr + 338) — the case
+    //   round_state_field -- *(g_object_data_ptr + 338) -- the case
     //     selector itself (1 → 100 → 110 → 200 → 300 etc).
-    //   g_round_end_flag @ 0x424718 — case 200 also bails to 300 if
+    //   g_round_end_flag @ 0x424718 -- case 200 also bails to 300 if
     //     this is set.
-    //   g_round_state @ 0x47004C — top-level round phase (0/1/2).
-    //   g_game_mode_flag @ 0x470058 — VS / Story / Team selector that
+    //   g_round_state @ 0x47004C -- top-level round phase (0/1/2).
+    //   g_game_mode_flag @ 0x470058 -- VS / Story / Team selector that
     //     changes which init-path runs in case 1.
-    //   g_round_limit @ 0x470048 — number of rounds to play.
-    //   g_game_timer @ 0x470044 — match clock.
+    //   g_round_limit @ 0x470048 -- number of rounds to play.
+    //   g_game_timer @ 0x470044 -- match clock.
     int32_t score_value     = *(int32_t*)0x470050;
     uint32_t round_end_flag = *(uint32_t*)0x424718;
     uint32_t round_state    = *(uint32_t*)0x47004C;
@@ -406,7 +406,7 @@ extern "C" void Hook_BattleDiag_TickIfActive() {
     // g_match_phase @ 0x4DFC6D (in P1 char slot), g_round_sub_state @ 0x4EDCAC
     uint32_t match_phase    = *(uint32_t*)0x4DFC6D;
     uint32_t round_sub      = *(uint32_t*)0x4EDCAC;
-    // g_round_timer_counter @ 0x424F00 — used by game_state_manager's
+    // g_round_timer_counter @ 0x424F00 -- used by game_state_manager's
     // CSS-confirm timer (counts to 100 then transitions to battle)
     uint32_t round_tick_ctr = *(uint32_t*)0x424F00;
     uint32_t obj0_state338  = 0;
@@ -416,9 +416,9 @@ extern "C" void Hook_BattleDiag_TickIfActive() {
         obj0_state338 = *(uint32_t*)((uint8_t*)obj_data_ptr + 338);
         obj0_state342 = *(int32_t*)((uint8_t*)obj_data_ptr + 342);
     }
-    // lParam @ 0x430114 — case-100 Story-mode score = 100*lParam - 1
+    // lParam @ 0x430114 -- case-100 Story-mode score = 100*lParam - 1
     uint32_t lparam_save = *(uint32_t*)0x430114;
-    // Object pool active type-4 fighter count — case-200 Story-mode bails
+    // Object pool active type-4 fighter count -- case-200 Story-mode bails
     // when this < 2. Replicate the EXACT walk from vs_round_function:
     //   if (entry.type == 4 &&
     //       entry[+4] == 0 &&

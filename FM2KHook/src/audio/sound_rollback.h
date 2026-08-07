@@ -4,7 +4,7 @@
 // ============================================================================
 // Rollback-safe sound layer (Mike Z "desired vs actual" design).
 //
-// FM2K's sound API is single-chokepoint — every SFX play goes through
+// FM2K's sound API is single-chokepoint -- every SFX play goes through
 // DispatchScriptSoundCommand @ 0x403430 → PlaySoundFromBufferArray @ 0x415DF0.
 // The per-channel round-robin cursor at offset +12 of each SoundBufferArray
 // is sim-mutable, which is why naive rollback replay clips sounds (replay
@@ -17,7 +17,7 @@
 //
 //   - If desired was written OUTSIDE the rollback window, rollback didn't
 //     change it.  But if the currently-playing actual was set INSIDE the
-//     window, rollback erased that play — stop it.
+//     window, rollback erased that play -- stop it.
 //   - If desired was written INSIDE the window, play it for real now.
 //
 // Channel identity = slot index in g_sound_channel_table @ 0x430640..0x433240
@@ -37,14 +37,14 @@ struct DesiredState {
     uint8_t  _pad;
 };
 
-// BGM (MIDI cmd_low 2 / CD cmd_low 3 / full-stop cmd_low 0) desired state — a
+// BGM (MIDI cmd_low 2 / CD cmd_low 3 / full-stop cmd_low 0) desired state -- a
 // SINGLE global stream (unlike SFX's per-channel array). Same rollback model as
 // SFX: the dispatcher only records `desired`; SyncAfterAdvance reconciles it to
 // the actually-playing MCI stream once per displayed frame, so the save-ring's
 // forward-replay across a music-trigger frame no longer restarts MCI (the old
 // cutoff), and a rollback that crosses a music start restores the pre-rollback
 // desired from the ring instead of losing it (the old dedup couldn't).
-// Looping-WAV BGM (cmd_low 1 + loop) is NOT here — it rides the per-channel SFX
+// Looping-WAV BGM (cmd_low 1 + loop) is NOT here -- it rides the per-channel SFX
 // layer already; battle-end stop covers it via ControlSoundSystem(0).
 struct DesiredBgm {
     uint32_t script_item_ptr;  // re-invoke the dispatcher at sync time (game plays MCI)
@@ -57,14 +57,14 @@ struct DesiredBgm {
 
 constexpr int MAX_CHANNELS = 2816;  // = (0x433240 - 0x430640) / 4
 
-// Lifecycle — called from Netplay_StartBattle / Netplay_EndBattle.
+// Lifecycle -- called from Netplay_StartBattle / Netplay_EndBattle.
 void Init();
 void OnBattleEnd();
 
 // Hook/sync thunk registration. Called once at MinHook install so the sync
 // step can invoke the original DispatchScriptSoundCommand trampoline for
 // each channel at sync time (which issues the full Stop+Prepare+Play+Volume
-// sequence that DSound actually needs — PlaySoundFromBufferArray alone only
+// sequence that DSound actually needs -- PlaySoundFromBufferArray alone only
 // prepares the buffer, it never calls IDirectSoundBuffer::Play).
 typedef int(__cdecl* OriginalDispatcherFn)(int script_item);
 void SetOriginalDispatcher(OriginalDispatcherFn fn);
@@ -98,11 +98,11 @@ void RefreshMuteFromDisk();
 
 // Called from Hook_DispatchScriptSoundCommand on the SFX branch.
 // `arr` is the SoundBufferArray pointer (script_item + 36).
-// `script_item` is the 42-byte script item — stored in desired[] so the sync
+// `script_item` is the 42-byte script item -- stored in desired[] so the sync
 // step can replay the full original dispatcher for this channel.
 // Returns true if the channel was recognised (caller should skip the real play);
 // false means the caller MUST fall through to the original dispatcher so the
-// sound still plays — unknown channels just aren't rollback-tracked.
+// sound still plays -- unknown channels just aren't rollback-tracked.
 bool RecordDesired(void* arr, int script_item, uint32_t current_frame);
 
 // Called once per displayed frame from Netplay_ProcessBattleInputPhase,
@@ -111,7 +111,7 @@ bool RecordDesired(void* arr, int script_item, uint32_t current_frame);
 // the original PlaySoundFromBufferArray / StopAllSoundsInBufferArray.
 void SyncAfterAdvance(uint32_t earliest_frame, uint32_t current_frame);
 
-// Savestate integration — called from SaveState_Save / SaveState_Load.
+// Savestate integration -- called from SaveState_Save / SaveState_Load.
 void CaptureDesired(DesiredState* out);
 void RestoreDesired(const DesiredState* in);
 void CaptureBgm(DesiredBgm* out);

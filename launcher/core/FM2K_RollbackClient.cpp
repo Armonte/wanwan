@@ -118,7 +118,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
     // Hide the console window for release. The launcher EXE is currently
     // console-subsystem (so it gets a console handle inherited by the
     // game subprocesses we spawn) but the user-facing window is the SDL
-    // ImGui app — the black console alongside is purely visual noise +
+    // ImGui app -- the black console alongside is purely visual noise +
     // the synchronous WriteFile pacing on a Windows console actively
     // lags printf-heavy code paths.
     //
@@ -137,7 +137,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
                 ShowWindow(con, SW_HIDE);
             }
             // Detach our own stdio from the (now hidden) console. Child
-            // processes still have their own handles via inheritance —
+            // processes still have their own handles via inheritance --
             // this only affects the launcher's printf/cout. Redirect to
             // NUL so any leftover prints don't block.
             FILE* dummy = nullptr;
@@ -193,7 +193,7 @@ SDL_AppResult SDL_AppInit(void **appstate, int argc, char **argv) {
 
     // Pin the AppUserModelID for this process. Without an explicit AUMID
     // Windows derives one from the EXE path and caches the displayed
-    // name from whichever VERSIONINFO it sees first — and once cached,
+    // name from whichever VERSIONINFO it sees first -- and once cached,
     // toasts (Action Center), the taskbar grouping, and the "right-click
     // → app name" surface keep showing the cached entry even after we
     // ship a fixed VERSIONINFO. Setting our own AUMID gives Windows a
@@ -490,7 +490,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event) {
         event->type == SDL_EVENT_GAMEPAD_REMOVED) {
         FM2KInputBinder::RefreshGamepads();
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "SDL_AppEvent: gamepad %s — binder refreshed",
+            "SDL_AppEvent: gamepad %s -- binder refreshed",
             event->type == SDL_EVENT_GAMEPAD_ADDED ? "ADDED" : "REMOVED");
     }
 

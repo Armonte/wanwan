@@ -34,7 +34,7 @@ namespace Utils {
         return XXH64(buf.data(), buf.size(), /*seed=*/0);
     }
 
-    // Known-clean exe registry — used by discovery to identify the exact
+    // Known-clean exe registry -- used by discovery to identify the exact
     // build of each detected game. Hashes computed via xxhash64 of the full
     // exe file. Add entries here when a new clean build is verified.
     //
@@ -56,7 +56,7 @@ namespace Utils {
         return nullptr;
     }
 
-    // Engine fingerprint — scans the first 256 KB of the exe for the engine
+    // Engine fingerprint -- scans the first 256 KB of the exe for the engine
     // class strings. Reliable for clean FM2K/FM95 builds. Returns a confident
     // Engine when a marker is found, or std::nullopt to fall through to the
     // size heuristic.
@@ -93,7 +93,7 @@ namespace Utils {
     // these bands is probably packed or unrelated.
     FM2K::Engine GuessEngineFromSize(uint64_t size_bytes) {
         if (size_bytes <= 600 * 1024)                    return FM2K::Engine::FM95;
-        return FM2K::Engine::FM2K;  // default — covers the 1.1-1.7 MB FM2K cluster
+        return FM2K::Engine::FM2K;  // default -- covers the 1.1-1.7 MB FM2K cluster
     }
 
     // One-shot engine identification for a single exe. CLI direct-path
@@ -120,7 +120,7 @@ namespace Utils {
     // Detect known PE packers by walking the section table. Returns a label
     // ("Enigma", "UPX", "MoleBox", "ASPack", "Themida", "PECompact") when a
     // packer signature is found, or "" for clean PEs. This is the actual
-    // basis for warning the user — same-size unpacked-FM2K-engine builds
+    // basis for warning the user -- same-size unpacked-FM2K-engine builds
     // (SCWU, vanpri, etc.) just have different hashes, NOT different
     // structure, so they should NOT be flagged.
     //
@@ -131,7 +131,7 @@ namespace Utils {
         if (!io) return "";
 
         // Pull the first 4 KB; section table on a 32-bit FM2K exe sits at
-        // ~0x180-0x300 — well inside this window.
+        // ~0x180-0x300 -- well inside this window.
         unsigned char hdr[4096] = {};
         size_t got = SDL_ReadIO(io, hdr, sizeof(hdr));
         SDL_CloseIO(io);

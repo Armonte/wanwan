@@ -25,6 +25,7 @@ bool InstallVfsHooks();      // hooks_vfs.cpp: CreateFile*/ReadFile/SetFilePoint
 extern "C" void Hook_FlushPendingCapture();               // input cluster
 extern "C" void Hook_BattleDiag_TickIfActive();           // input cluster
 uint16_t Hook_ApplySOCD(uint16_t input);                  // input cluster (was static inline)
+uint16_t Hook_ApplySOCDForSpecConsume(uint16_t input);    // input cluster: spectator/replay pop path
 void CheckGameModeTransition();                            // game_mode cluster (called by Hook_UpdateGameState)
 
 // Cross-cluster file-scope state (definitions in the noted TU; were static).

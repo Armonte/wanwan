@@ -61,7 +61,17 @@ struct FM2KSessionFileHeader {
     uint8_t  round_count;
     uint8_t  reserved0[3];
     uint32_t round_offsets[8];
-    uint8_t  reserved[76];
+    // Provenance block carved out of the old reserved[76] (2026-08). Named
+    // fields only -- no offset above moves, the struct stays 256 bytes and
+    // SESSION_FILE_VERSION stays 2, which is the whole point of putting them
+    // here. 0 means "producer did not record it" for every one of them.
+    uint32_t producer_version;
+    char     producer_version_s[16];
+    uint32_t game_content_tag;
+    uint32_t game_speed_pct;
+    uint8_t  socd_mode_plus1;
+    uint8_t  reserved1[3];
+    uint8_t  reserved[44];
 };
 #pragma pack(pop)
 } // namespace mirror_file
@@ -86,7 +96,15 @@ TEST_CASE("FM2KSessionFileHeader field offsets are stable") {
     CHECK(offsetof(H, session_id)        == 136);
     CHECK(offsetof(H, round_count)       == 144);
     CHECK(offsetof(H, round_offsets)     == 148);
-    CHECK(offsetof(H, reserved)          == 180);
+    // Provenance block. These offsets are what the launcher's replay browser
+    // sniffs by hand (it reads the header by offset rather than casting the
+    // struct), so pinning them here is what stops the two from drifting.
+    CHECK(offsetof(H, producer_version)   == 180);
+    CHECK(offsetof(H, producer_version_s) == 184);
+    CHECK(offsetof(H, game_content_tag)   == 200);
+    CHECK(offsetof(H, game_speed_pct)     == 204);
+    CHECK(offsetof(H, socd_mode_plus1)    == 208);
+    CHECK(offsetof(H, reserved)           == 212);
 }
 
 TEST_CASE("SESSION_FILE_MAGIC is 'FMSS' little-endian (distinct from REPLAY_MAGIC)") {

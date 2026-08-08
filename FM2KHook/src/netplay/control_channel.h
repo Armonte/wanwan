@@ -199,11 +199,16 @@ void ControlChannel_SendBattleEnd(uint32_t swap_frame, uint8_t epoch = 0,
 // limit, game speed, SOCD mode) to client + spectators. Receiver mem-writes
 // the address-mapped fields and adopts SOCD mode locally. Use 0xFFFFFFFF /
 // 0 / 0xFF for "leave at default; don't write" on per-field basis.
+// session_id rides along (0 = not announced) -- it is the only packet that
+// already reaches BOTH the guest peer and every flavour of spectator, which
+// is why the replay-session grouping id is delivered here rather than on a
+// message of its own. Receivers ADOPT it while theirs is 0, never mint.
 void ControlChannel_SendHostConfig(uint32_t selected_stage,
                                    uint32_t round_count,
                                    uint32_t round_time_sec,
                                    uint32_t game_speed_pct,
-                                   uint8_t  socd_mode);
+                                   uint8_t  socd_mode,
+                                   uint64_t session_id);
 
 // Send clean disconnect
 void ControlChannel_SendDisconnect();

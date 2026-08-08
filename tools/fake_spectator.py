@@ -16,7 +16,11 @@ It replicates exactly what a real spectator does on the host side:
                           host's per-subscriber send() keeps flowing (= the load).
 
 Wire layout (verified vs FM2KHook/src/netplay/netplay_state.h, #pragma pack(1)):
-  CtrlPacket = 31 bytes: magic:u8(0xCC) seq:u16 ack:u16 type:u8 player_id:u8 +24B union.
+  CtrlPacket = 7-byte header (magic:u8(0xCC) seq:u16 ack:u16 type:u8 player_id:u8)
+  + the union. The union grew to 28 B when host_config gained session_id (2026-08),
+  so a real packet is 35 bytes; the 31 we send is still accepted, because the hook's
+  receive only requires >= the 7-byte header and zero-fills the tail of its receive
+  buffer -- fields past our payload read as their "not announced" sentinel.
   CtrlMsg ordinals: SPEC_JOIN_REQ=17 SPEC_JOIN_ACK=18 SPEC_HEARTBEAT=20 SPEC_LEAVE=21.
   spec_join_req: mode:u8(off7)=0(FULL_SESSION) reserved[7].
   spec_join_ack: host_session_kind:u8(off7) host_tcp_port:u16(off8, LE) ...
@@ -39,7 +43,7 @@ SPEC_JOIN_ACK = 18
 SPEC_HEARTBEAT = 20
 SPEC_LEAVE = 21
 
-CTRL_SIZE = 31  # 7-byte header + 24-byte union
+CTRL_SIZE = 31  # 7-byte header + 24 B of union -- a short-but-valid control packet
 
 
 def _ctrl_packet(msg_type, payload=b""):

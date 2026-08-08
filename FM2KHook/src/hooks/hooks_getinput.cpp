@@ -382,7 +382,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
             uint16_t right_bit = (input & 0x002);
             input = (input & ~0x003) | (left_bit << 1) | (right_bit >> 1);
         }
-        input = Hook_ApplySOCD(input);
+        input = Hook_ApplySOCDForSpecConsume(input);  // see hooks_input.cpp
         return (int)input;  // spectator path doesn't record
     }
 

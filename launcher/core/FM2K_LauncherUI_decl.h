@@ -553,6 +553,19 @@ public:
         uint8_t     match_index;
         uint64_t    session_id;
         uint8_t     round_count;
+
+        // --- format + provenance (see FM2KSessionFileHeader) --------------
+        // file_version != 2 => the hook's loader hard-refuses it, so the row
+        // is listed DISABLED rather than dropped from the scan: silently
+        // skipping unreadable files is what produced "my replays vanished".
+        uint16_t    file_version;
+        bool        playable;             // file_version == 2
+        uint32_t    producer_version;     // packed maj/min/patch, 0 = pre-provenance
+        char        producer_version_s[16];
+        uint32_t    game_content_tag;     // install fingerprint at record time, 0 = absent
+        uint32_t    local_content_tag;    // same, recomputed now for this file's game dir
+        uint32_t    game_speed_pct;       // 0 = not recorded
+        uint8_t     socd_mode_plus1;      // 0 = not recorded
     };
     std::vector<ReplayMeta> replays_cache_;
     bool                    replays_cache_dirty_ = true;  // first-render rescan
@@ -566,4 +579,11 @@ public:
     // ImGui body for the Replays window. Renders Session → Match tree.
     // Click a row → on_replay_play(path).
     void RenderReplayBrowser();
+
+    // True when the file records an install fingerprint that disagrees with
+    // the one this machine has NOW for that game folder. Both-nonzero-and-
+    // different only: 0 on either side means "unknown", which must allow
+    // playback (every pre-provenance file is 0). A mismatch is refused rather
+    // than played, because the sim garbles from frame 0 with no diagnostic.
+    static bool ReplayContentMismatch(const ReplayMeta& m);
 };

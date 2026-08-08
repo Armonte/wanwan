@@ -619,6 +619,21 @@ struct State {
     uint8_t                   pb_stage_id         = 0;
     uint16_t                  pb_current_p1       = 0;
     uint16_t                  pb_current_p2       = 0;
+    // Session-scoped sim settings decoded from a LOADED FILE's 256-byte
+    // header (SpectatorNode_LoadSessionFile). Deferred rather than applied at
+    // load time: the loader runs from DLL_PROCESS_ATTACH, i.e. BEFORE WinMain,
+    // so anything it writes into an engine global can be overwritten by the
+    // engine's own game.ini load during startup. They are applied at the
+    // MATCH_START drain instead -- the same late timing the round-timer
+    // restore already uses, and the timing at which HOST_CONFIG's write to the
+    // very same address demonstrably sticks.
+    //
+    // Only a file load ever sets these, so they stay 0 on a LIVE spectator
+    // (which never loads a file and gets both settings over HOST_CONFIG). The
+    // apply site is therefore replay-only BY CONSTRUCTION, not by env check.
+    // 0 = the producer did not record it -> no write.
+    uint32_t                  pb_file_game_speed_pct = 0;
+    uint8_t                   pb_file_socd_plus1     = 0;
     // PIN_RNG seed deferred from event drain to battle-entry. The host
     // emitted PIN_RNG at MATCH_START (battle entry). Applying it on the
     // spec side at the first event drain (= title screen) would let the

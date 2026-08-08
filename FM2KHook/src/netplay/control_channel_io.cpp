@@ -135,6 +135,21 @@ void RawReceive() {
 
         if (recv_len == 0) break;
 
+        // SHORT-PACKET HYGIENE. Every 0xCC dispatch below casts the buffer to
+        // a CtrlPacket and reads named fields WITHOUT re-checking the datagram
+        // length past the 7-byte header, so any field appended to the union
+        // (session_id in host_config, 2026-08) would read whatever the PREVIOUS
+        // datagram left in this static buffer when the sender is an older build
+        // whose packet is shorter. Zero the tail so a missing field reads as its
+        // "not announced" sentinel (0) instead of stale bytes. Bounded to one
+        // CtrlPacket past the payload -- this is per-datagram on the poll path,
+        // not per-frame, and 64 bytes of memset is free next to the recvfrom.
+        if (recv_len > 0 && (size_t)recv_len < RECV_BUFFER_SIZE) {
+            const size_t tail = RECV_BUFFER_SIZE - (size_t)recv_len;
+            std::memset(g_recv_buffer + recv_len, 0,
+                        tail < sizeof(CtrlPacket) ? tail : sizeof(CtrlPacket));
+        }
+
         // Normalize the source to a real-family sockaddr_storage BEFORE any
         // compare/stamp/learn/dispatch below. On the dual-stack socket v4 peers
         // arrive v4-mapped (un-mapped to AF_INET here); native v6 peers are now

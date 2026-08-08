@@ -328,6 +328,19 @@ struct CtrlPacket {
         // uint32 fields (0xFF for socd_mode). Note that 0 is a VALID
         // value for round_time_sec (= infinite timer) and round_count
         // (engine reads as 0/special), so we can't use 0 to mean unset.
+        //
+        // session_id (APPENDED, so every field above keeps its offset) is the
+        // host's replay-session grouping id. It rides HOST_CONFIG because that
+        // is the one packet already pushed to BOTH the peer AND every kind of
+        // spectator (handshake broadcast, per-match re-broadcast, the entry
+        // barrier's re-push, and the one-shot Netplay_SendHostConfigToSpec at
+        // subscriber bind) -- so one field reaches the guest and every
+        // late/bounded/deep spectator without a new message type. 0 = "not
+        // announced"; a receiver ADOPTS it only while its own id is still 0,
+        // it never mints one (see SpectatorNode_AdoptSessionId). Adding it
+        // grew CtrlPacket by 8 bytes: RawReceive zero-fills the tail of the
+        // receive buffer past recv_len, so a SHORT packet from a pre-0.2.84
+        // peer reads session_id as 0 (= not announced) instead of stale bytes.
         struct {
             uint32_t selected_stage;    // → FM2K::ADDR_SELECTED_STAGE (0x43010c on FM2K).
             uint32_t round_count;       // → lParam @ 0x430124 (g_default_round, 1v1)
@@ -335,6 +348,7 @@ struct CtrlPacket {
             uint32_t game_speed_pct;    // → uValue @ 0x430104 (loaded from TestPlay.GameSpeed, default 10)
             uint8_t  socd_mode;         // 0..5 per Hook_GetSOCDMode. 0xFF = unset
             uint8_t  reserved[3];
+            uint64_t session_id;        // replay-session grouping id. 0 = unset
         } host_config;
 
         // DELAY_PROPOSAL -- this peer's input-delay candidate. See the
@@ -352,7 +366,10 @@ struct CtrlPacket {
 
 #pragma pack(pop)
 
-// Ensure packet fits in single UDP datagram (plenty of room)
+// Ensure packet fits in single UDP datagram (plenty of room).
+// The union is sized by host_config (28 B) since the session_id append;
+// every other member's field offsets are unchanged, so a peer running an
+// older build reads the prefix it knows and ignores the tail.
 static_assert(sizeof(CtrlPacket) <= 64, "CtrlPacket too large");
 
 // =============================================================================

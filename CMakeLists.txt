@@ -454,7 +454,8 @@ add_executable(FM2K_RollbackLauncher
     launcher/ui/launcher_ui_display.cpp  # cnc-ddraw display settings panel (split from LauncherUI)
     launcher/ui/launcher_ui_menubar.cpp  # top menu bar (split from LauncherUI)
     launcher/ui/launcher_ui_settings.cpp  # settings/host-config/discord/games-folders windows (split from LauncherUI)
-    launcher/ui/launcher_ui_gameselect.cpp  # game picker + replay browser + direct-spectate (split from LauncherUI)
+    launcher/ui/launcher_ui_gameselect.cpp  # game picker + direct-spectate (split from LauncherUI)
+    launcher/ui/launcher_ui_replaybrowser.cpp  # replay browser: scan/classify/group/render (split from gameselect)
     launcher/ui/launcher_ui_netcfg.cpp  # network config + connection status + session controls (split from LauncherUI)
     launcher/ui/launcher_ui_input.cpp  # input-bindings tab + SOCD/random-stage state (split from LauncherUI)
     launcher/ui/launcher_ui_notify.cpp  # notifications + audio-mute state (split from LauncherUI)
@@ -504,6 +505,7 @@ add_executable(FM2K_RollbackLauncher
     # also compiled into FM2KHook for the producer side. Different
     # binaries, isolated function symbols, no link-time clash.
     FM2KHook/src/netplay/spec_relay_queue.cpp
+    FM2KHook/src/netplay/content_tag.cpp  # install fingerprint: launcher recomputes it to gate replay playback
     # DLL injection approach - hooks are in FM2KHook DLL
 )
 

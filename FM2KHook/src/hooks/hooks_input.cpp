@@ -317,6 +317,45 @@ uint16_t Hook_ApplySOCD(uint16_t input) {
     return input;
 }
 
+// SOCD for the SPECTATOR/REPLAY consume path (hooks_getinput.cpp's
+// g_spectator_mode branch, the ONLY caller). Lives here so the comment does
+// not push hooks_getinput.cpp past the 1000-line cap.
+//
+// WHAT THIS PATH FEEDS: inputs popped from pb_queue, i.e. values the HOST's
+// engine already consumed. They were SOCD-resolved at capture on the host
+// (Hook_ApplySOCD_Public in netplay_battle_events.cpp:524/804), so re-cleaning
+// them here is a second application on top of a resolved value.
+//
+// THAT DOUBLE-APPLY IS NOT A DESYNC SOURCE, and this change does not claim to
+// fix one. Hook_ApplySOCD is a pure conflict-STRIP: after one pass no L+R and
+// no U+D remain, so a second pass is the identity function for EVERY mode --
+// which is exactly the property netplay_battle_events.cpp:796-804 already
+// relies on ("Spec's later SOCD-application becomes idempotent ... so it
+// doesn't matter what mode the spec is in"). The facing swap applied just
+// before it exchanges L and R, which cannot create a conflict either.
+//
+// So why guard it at all: a mode that needs HISTORY rather than a pure strip
+// (the "last direction wins" families people keep asking for) would NOT be
+// idempotent, and the second application would then silently rewrite recorded
+// input using the VIEWER's setting. Skipping it on the replay path -- where
+// the viewer's setting has nothing to do with the recording -- removes that
+// trapdoor before someone falls through it.
+//
+// SCOPE, deliberately narrow: offline replay only (FM2K_REPLAY_FILE set on
+// this process, i.e. LaunchReplayPlayer). A LIVE spectator keeps re-applying,
+// so its sim stays byte-identical to today; live netplay and local play never
+// reach this function at all (they take the Netplay_IsActive / CSS / binder /
+// vanilla branches, each with its own Hook_ApplySOCD call, all untouched).
+uint16_t Hook_ApplySOCDForSpecConsume(uint16_t input) {
+    static int s_offline_replay = -1;
+    if (s_offline_replay < 0) {
+        const char* v = std::getenv("FM2K_REPLAY_FILE");
+        s_offline_replay = (v && v[0]) ? 1 : 0;
+    }
+    if (s_offline_replay == 1) return input;   // already resolved by the recorder
+    return Hook_ApplySOCD(input);
+}
+
 // Pending input pair captured by Hook_GetPlayerInput's capture_and_return,
 // at file scope so Hook_FlushPendingCapture can drain it from outside the
 // hook (specifically at CSS→battle transition, before the battle session

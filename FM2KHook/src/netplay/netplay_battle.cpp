@@ -10,6 +10,7 @@
 #include "../hooks/hooks.h"   // Hook_ApplySOCD_Public for SOCD-pre-apply on spec capture
 #include "../hooks/css_autoconfirm.h"  // CssAutoConfirm_OnReplayMatchStart (TEST_CSS_CHAR pin)
 #include "control_channel.h"
+#include "content_tag.h"      // install fingerprint stamped into MATCH_START
 #include "game_hash.h"
 #include "input.h"
 #include "savestate.h"
@@ -373,12 +374,14 @@ bool Netplay_StartBattle() {
     const uint32_t initial_state_hash =
         SaveState_GetRegionChecksums().gameplay_fingerprint;
 
-    // C7 -- emit the host's session_id once at the very first match of the
-    // connection. Generated lazily on first call: high 32 bits = unix epoch
-    // seconds (so files sort chronologically + collisions are bounded to
-    // intra-second), low 32 bits = a random nonce for uniqueness even within
-    // the same second across machines. Subsequent matches in the same
-    // session reuse the cached value via SpectatorNode_GetSessionId().
+    // C7 -- FALLBACK mint for the host's session_id. The primary mint moved to
+    // CheckFullyConnected (netplay_control.cpp) so the id exists before the
+    // FIRST HOST_CONFIG leaves and the guest can adopt it: minting only here
+    // meant the id was born AFTER the entry barrier, so the single
+    // Netplay_BroadcastHostConfig below was its only delivery attempt before
+    // the guest wrote its first .fm2krep. This site remains for any path that
+    // reaches battle without completing the 0xCC handshake, and is a no-op
+    // (sid already non-zero) on the normal netplay flow.
     if (g_player_index == 0 && SpectatorNode_GetSessionId() == 0) {
         const uint64_t epoch = (uint64_t)std::time(nullptr);
         std::random_device rd;
@@ -415,8 +418,14 @@ bool Netplay_StartBattle() {
             *(const uint32_t*)(FM2K::ADDR_CHARSLOT0_COLOR_PICK + FM2K::CHARSLOT_STRIDE));
     }
     const uint8_t mstage_id = static_cast<uint8_t>(mstage_id_applied);
+    // game_hash was hardcoded 0 here since C6, so h+16 of every MATCH_START
+    // ever recorded is zero and no replay could be checked against the install
+    // it was recorded on. fm2k::game_hash::Compute() is the wrong source (it
+    // returns 0 unless FM2K_HASH_CHECK is set -- see content_tag.h); the
+    // always-on install tag is. Cached after the first call, and the first
+    // call is a directory enumeration with no file reads.
     SpectatorNode_OnMatchStart(
-        /*game_hash*/         0,
+        /*game_hash*/         fm2k::content_tag::ComputeLocal(),
         /*initial_rng_seed*/  initial_seed,
         /*initial_state_hash*/initial_state_hash,
         /*p1_char*/mp1_char, /*p1_color*/mp1_color,

@@ -16,7 +16,10 @@
 #include "../hooks/css_autoconfirm.h" // Replay-mode CSS lock-and-confirm
 #include "../hooks/per_game_patches.h" // PerGamePatches_SetRuntimeBtbOverrides
 #include "../ui/shared_mem.h"         // C10: SharedMem_PublishMatchSession / RoundResult
+#include "content_tag.h"              // provenance: cheap install fingerprint
+#include "globals.h"                  // FM2K::kIsFM2K -- engine-gated writes
 #include "gekkonet.h"
+#include "version_local.h"            // fm2k::kAppVersion -- producer stamp
 
 #include <SDL3/SDL_log.h>
 #include <winsock2.h>
@@ -43,6 +46,13 @@ using namespace specnode;
 // Events are self-describing (1-byte tag + variant payload), so no
 // separate side table is needed -- MATCH_START's 96-byte ReplayHeader is
 // inline in the encoded byte stream.
+
+// SOCD mode read lives in the hooks cluster (definition in hooks_input.cpp).
+// Declared here rather than pulling netplay_internal.h -- that header is the
+// netplay_*.cpp TUs' private state surface, not a spectator-file dependency.
+// (The matching SETTER is NOT needed here: the restore-on-playback write lives
+// at the MATCH_START drain in spec_playback.cpp, not at file-load time.)
+extern "C" int  Hook_GetSOCDModePublic();
 
 namespace {
 
@@ -92,12 +102,50 @@ struct FM2KSessionFileHeader {
     uint8_t  reserved0[3];
     uint32_t round_offsets[8];
 
-    // future-proofing -- all zeros for v2 readers
-    uint8_t  reserved[76];
+    // ---- PROVENANCE (carved out of the old reserved[76], 2026-08) ---------
+    //
+    // APPEND-ONLY INSIDE A FIXED-SIZE HEADER. These bytes were already part of
+    // the 256-byte v2 header and were documented as "all zeros for v2 readers",
+    // so naming them moves NO existing offset, changes NO struct size, and is
+    // invisible to every reader that shipped before them -- the launcher's
+    // browser reads fields by explicit offset and the loader below only
+    // validates magic + version. That is exactly why SESSION_FILE_VERSION
+    // STAYS 2: bumping it would make the loader's `version != 2` hard refuse
+    // (see SpectatorNode_LoadSessionFile) reject every new file on every
+    // already-shipped build, and make new files unopenable on stable 0.2.83,
+    // in exchange for information a zero-valued field already conveys.
+    //
+    // EVERY field's 0 means "not recorded by the producer". A reader must
+    // never treat 0 as a value -- that is what makes an old file readable
+    // rather than wrong.
+    uint32_t producer_version;   // (major<<16)|(minor<<8)|patch, 0 = pre-provenance
+    char     producer_version_s[16];  // "0.2.83" NUL-padded, display only
+    uint32_t game_content_tag;   // fm2k::content_tag (0 = not recorded)
+    uint32_t game_speed_pct;     // 0x430104 at write time (0 = not recorded)
+    uint8_t  socd_mode_plus1;    // SOCD mode + 1; 0 = not recorded (mode 0 is valid)
+    uint8_t  reserved1[3];
+    uint8_t  reserved[44];       // still-unused tail -- all zeros
 };
 static_assert(sizeof(FM2KSessionFileHeader) == 256,
               "FM2KSessionFileHeader must be 256 bytes");
 #pragma pack(pop)
+
+// Packed build identity of the process WRITING the file. This is the field an
+// honest classifier keys on: before it existed there was no way at all to tell
+// which build produced a replay, which is why the browser fell back to
+// "session_id == 0" and mislabelled every guest recording as legacy.
+//
+// Parsed from fm2k::kAppVersion (version_local.h, single-sourced by
+// scripts/make_version.sh) rather than version_rc.h's macros -- only the .rc
+// files include that, and pulling its bare #defines into C++ would put
+// FM2K_VER_MAJOR etc. in every TU that transitively sees this one. Runs once.
+uint32_t ProducerVersionPacked() {
+    unsigned maj = 0, min = 0, pat = 0;
+    if (std::sscanf(fm2k::kAppVersion, "%u.%u.%u", &maj, &min, &pat) != 3) {
+        return 0;   // unparseable -> "not recorded", never a bogus number
+    }
+    return ((maj & 0xFFu) << 16) | ((min & 0xFFu) << 8) | (pat & 0xFFu);
+}
 
 // Encode events[first..last) into a vector<uint8_t> of packed wire bytes.
 // MATCH_START events look up their 96-byte header from the host's
@@ -216,8 +264,42 @@ bool WriteSessionFileImpl(const char* path,
 
     hdr.match_count  = is_battle_slice ? 1
                                        : CountMatchesInSlice(events, first, last);
-    hdr.match_index  = is_battle_slice ? 1 : 0;
+    // Real per-session match index, not the constant 1 this used to write --
+    // that made every row in the browser's tree render "Match 1", made the
+    // in-group ordering (match_index, then finished_at) degenerate into
+    // timestamp-only, and made "watch set from here" seek to match 1 no matter
+    // which row was clicked. The counter is bumped at AppendMatchStart and
+    // reset per session, so at battle-end write time it names THIS match; the
+    // ?:1 keeps the browser's `match_index > 0` set-seek predicate true for the
+    // (shouldn't-happen) slice written before any MATCH_START.
+    const uint8_t match_idx = SpectatorNode_GetMatchIndexInSession();
+    hdr.match_index  = is_battle_slice ? (match_idx ? match_idx : (uint8_t)1)
+                                       : (uint8_t)0;
     hdr.session_id   = g_state.session_id;
+
+    // ---- Provenance (see the header struct) ------------------------------
+    // Everything here is read at WRITE time, which is battle end. The three
+    // settings are process/session-scoped rather than per-round (game speed
+    // and SOCD come from game.ini / HOST_CONFIG and do not move during a
+    // match), so end-of-match is the same value the match ran with. The
+    // per-MATCH round timer is deliberately NOT duplicated here -- it already
+    // rides the MATCH_START payload at h+81/h+85, where a .fm2kset can carry a
+    // different one per match.
+    hdr.producer_version = ProducerVersionPacked();
+    std::strncpy(hdr.producer_version_s, fm2k::kAppVersion,
+                 sizeof(hdr.producer_version_s) - 1);
+    hdr.game_content_tag = fm2k::content_tag::ComputeLocal();
+    if constexpr (FM2K::kIsFM2K) {
+        hdr.game_speed_pct = *(uint32_t*)0x430104;   // uValue (GameSpeed)
+    }
+    // +1 so "not recorded" stays distinguishable from mode 0, which is a real
+    // SOCD mode (R-wins / U-wins). Clamped so a future mode >254 can't wrap
+    // into the sentinel.
+    {
+        const int socd = Hook_GetSOCDModePublic();
+        hdr.socd_mode_plus1 = (socd >= 0 && socd < 255)
+            ? (uint8_t)(socd + 1) : (uint8_t)0;
+    }
 
     // Populate p1_nick / p2_nick / game_id from SharedMem + exe path.
     // Previously these were left at the memset-zeroed default which made
@@ -400,10 +482,28 @@ bool SpectatorNode_LoadSessionFile(const char* path, const SeekTarget& seek) {
 
     const uint32_t reported_event_count = hdr.event_count;
     const uint64_t loaded_session_id    = hdr.session_id;
+    // The producer string is a fixed 16-byte field, so a corrupt/hostile file
+    // can present 16 non-NUL bytes. Terminate before any %s touches it.
+    hdr.producer_version_s[sizeof(hdr.producer_version_s) - 1] = '\0';
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "SpectatorNode: %s loading v2 (events=%u, %u rounds, session=0x%016llX)",
+        "SpectatorNode: %s loading v2 (events=%u, %u rounds, session=0x%016llX,"
+        " producer=%s tag=0x%08X speed=%u socd=%d)",
         path, hdr.event_count, hdr.round_count,
-        (unsigned long long)hdr.session_id);
+        (unsigned long long)hdr.session_id,
+        hdr.producer_version_s[0] ? hdr.producer_version_s : "(pre-provenance)",
+        hdr.game_content_tag, hdr.game_speed_pct,
+        hdr.socd_mode_plus1 ? (int)hdr.socd_mode_plus1 - 1 : -1);
+
+    // NOTE ON THE MATCH'S OWN SIM SETTINGS (game speed, SOCD mode).
+    // They are DECODED here (the log line above prints them) but deliberately
+    // NOT written to engine globals here. This function runs from
+    // DLL_PROCESS_ATTACH -- the injector loads the hook with the game's main
+    // thread suspended, so we execute BEFORE WinMain, and the engine's own
+    // game.ini load during startup can overwrite anything we stamp into
+    // 0x430104. The write therefore happens at the MATCH_START drain
+    // (spec_playback.cpp), next to the round-timer restore this was modelled
+    // on, which is also where HOST_CONFIG's write to the same address
+    // demonstrably sticks. They are carried across in the reset block below.
 
     std::fseek(fp, 0, SEEK_END);
     long total = std::ftell(fp);
@@ -469,6 +569,12 @@ bool SpectatorNode_LoadSessionFile(const char* path, const SeekTarget& seek) {
     g_state.pending_sound_init  = false;
     CssAutoConfirm_SetSeamHold(false);
     if (loaded_session_id != 0) g_state.session_id = loaded_session_id;
+    // Hand the file's session-scoped sim settings to the playback driver; the
+    // MATCH_START drain applies them (see the note above the seek resolution).
+    // Only a file load writes these, so a live spectator leaves them 0 and the
+    // apply site stays replay-only by construction.
+    g_state.pb_file_game_speed_pct = hdr.game_speed_pct;
+    g_state.pb_file_socd_plus1     = hdr.socd_mode_plus1;
 
     auto push_event = [&](SessionEvent& ev, const uint8_t* hdr_buf) {
         if (ev.type == SessionEventType::MATCH_START) {

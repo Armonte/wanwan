@@ -100,6 +100,7 @@ set(FM2KHOOK_SOURCES
     src/netplay/spectator_tcp.cpp
     src/netplay/nat_traversal.cpp
     src/netplay/game_hash.cpp
+    src/netplay/content_tag.cpp     # ungated install fingerprint for replay provenance (also built into the launcher)
     src/netplay/upload_queue.cpp
     src/netplay/spec_relay_queue.cpp
     # Audio — Mike Z rollback-safe sound layer

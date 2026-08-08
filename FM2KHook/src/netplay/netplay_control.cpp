@@ -177,6 +177,11 @@ CtrlPacket BuildHostConfigPacket() {
     pkt.data.host_config.round_count     = 0xFFFFFFFFu;
     pkt.data.host_config.game_speed_pct  = 0xFFFFFFFFu;
     }
+    // Replay-session grouping id. 0 until the host mints it (CheckFullyConnected
+    // for a real netplay session; Netplay_StartBattle as the fallback for paths
+    // that reach battle without a handshake), and 0 forever on a non-host --
+    // BuildHostConfigPacket's callers are all host-gated anyway.
+    pkt.data.host_config.session_id = SpectatorNode_GetSessionId();
     return pkt;
 }
 
@@ -204,7 +209,8 @@ void Netplay_BroadcastHostConfig() {
         /*round_count*/     hc.round_count,
         /*round_time_sec*/  hc.round_time_sec,
         /*game_speed_pct*/  hc.game_speed_pct,
-        /*socd_mode*/       hc.socd_mode);
+        /*socd_mode*/       hc.socd_mode,
+        /*session_id*/      hc.session_id);
 
     // Also push to subscribed spectators on the same multiplex channel.
     auto subs = SpectatorNode_GetSubscriberAddrs();
@@ -226,7 +232,7 @@ void Netplay_ResendHostConfigToPeer() {
     const auto& hc = pkt.data.host_config;
     ControlChannel_SendHostConfig(hc.selected_stage, hc.round_count,
                                   hc.round_time_sec, hc.game_speed_pct,
-                                  hc.socd_mode);
+                                  hc.socd_mode, hc.session_id);
 }
 
 static void CheckFullyConnected() {
@@ -242,6 +248,28 @@ static void CheckFullyConnected() {
             SpectatorNode_AppendPinRng(0x12345678);
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "Netplay: Synced RNG=0x12345678");
+
+            // C7 -- mint the replay session_id HERE, at peer-connect, not at
+            // the first Netplay_StartBattle. Two reasons:
+            //   * it has to exist BEFORE the first HOST_CONFIG leaves, or the
+            //     handshake push (right below) carries 0 and the guest's very
+            //     first .fm2krep is written with no session id;
+            //   * every later HOST_CONFIG -- the per-match re-broadcast, the
+            //     entry barrier's 100 ms re-push, the one-shot push at each
+            //     spectator bind -- then carries a stable value, so a lost
+            //     datagram costs at worst one match's grouping instead of the
+            //     whole session's.
+            // This is the peer-connect-time generation the C7 checklist
+            // originally proposed (docs/replay_hierarchy_status.md:161-163);
+            // shipping it at battle start is what silently excluded the guest.
+            // High 32 bits = unix epoch seconds (chronological file sort, and
+            // collisions bounded to one second), low 32 = a random nonce.
+            if (g_player_index == 0 && SpectatorNode_GetSessionId() == 0) {
+                const uint64_t epoch = (uint64_t)std::time(nullptr);
+                std::random_device rd;
+                const uint64_t nonce = ((uint64_t)rd() << 32) | (uint64_t)rd();
+                SpectatorNode_AppendSessionId((epoch << 32) ^ nonce);
+            }
 
             // Push host's authoritative match config so client adopts the
             // same stage/SOCD/etc settings without manual mirroring.
@@ -553,10 +581,24 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
             ++s_host_config_rx;
             const uint32_t cfg_before = Netplay_MatchSettingsDigest();
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "Netplay: Received HOST_CONFIG #%u (stage=%u rounds=%u time=%u speed=%u socd=%u)",
+                "Netplay: Received HOST_CONFIG #%u (stage=%u rounds=%u time=%u speed=%u socd=%u sid=0x%016llX)",
                 s_host_config_rx,
                 hc.selected_stage, hc.round_count, hc.round_time_sec,
-                hc.game_speed_pct, (unsigned)hc.socd_mode);
+                hc.game_speed_pct, (unsigned)hc.socd_mode,
+                (unsigned long long)hc.session_id);
+
+            // C7 root fix -- the guest peer (and every spectator flavour) gets
+            // the host's replay session_id here. ADOPT-ONLY: AdoptSessionId is
+            // a no-op unless ours is still 0, so this can never fight the host,
+            // never re-number a session mid-flight, and never mint a rival id
+            // that would split one session into two groups in the browser.
+            // Delivery ordering: this lands at the handshake (or, worst case,
+            // at a later match's re-broadcast), which is strictly before
+            // Netplay_EndBattle writes the .fm2krep whose header stamps
+            // g_state.session_id. A pre-0.2.84 host sends a short packet whose
+            // tail RawReceive zero-fills, so hc.session_id reads 0 there and
+            // this is skipped -- old host + new guest behaves exactly as today.
+            SpectatorNode_AdoptSessionId(hc.session_id);
 
             // Stage selection -- direct memcpy to FM2K's selected-stage
             // global (FM2K::ADDR_SELECTED_STAGE; IDA-verified in WW as

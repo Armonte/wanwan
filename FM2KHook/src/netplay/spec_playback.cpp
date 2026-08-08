@@ -39,6 +39,11 @@
 #include <ctime>
 using namespace specnode;
 
+// SOCD mode setter (definition in hooks_input.cpp). Declared here rather than
+// pulling netplay_internal.h -- that header is the netplay_*.cpp TUs' private
+// state surface, not a playback-driver dependency.
+extern "C" void Hook_SetSOCDMode(int mode);
+
 namespace specnode {
 
 void ApplyResetInputState() {
@@ -169,6 +174,53 @@ void ApplySessionEvent(const SessionEvent& ev) {
                     if (rc  && rc  != 0xFFFFFFFFu) *(uint32_t*)0x430124 = rc;   // g_default_round
                     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "SpectatorNode: restored round cfg -- time=%u count=%u", rts, rc);
+
+                    // Session-scoped settings from a LOADED FILE's 256-byte
+                    // header (game speed, SOCD mode). They land HERE, not at
+                    // SpectatorNode_LoadSessionFile, because that function runs
+                    // from DLL_PROCESS_ATTACH -- before WinMain -- where the
+                    // engine's own game.ini load during startup can overwrite
+                    // an engine global we just wrote. This is the same late
+                    // timing the round-cfg restore above uses and the timing at
+                    // which HOST_CONFIG's write to 0x430104 demonstrably works.
+                    //
+                    // REPLAY-ONLY BY CONSTRUCTION, no env check: only
+                    // SpectatorNode_LoadSessionFile sets these fields, and only
+                    // the offline replay path loads a file. A live spectator
+                    // leaves them 0 and gets both settings over HOST_CONFIG.
+                    // 0 = the producer did not record it -> no write.
+                    //
+                    // MODEST CLAIM, deliberately: what is verified is that the
+                    // restore is applied at match start with the values the file
+                    // carries. Field-verification that the write CHANGES
+                    // playback is still pending -- the harness launch modes
+                    // (--stress / --replay with FM2K_BOOT_TO_BATTLE) never route
+                    // Editor.TestPlay.GameSpeed into 0x430104 at all, so a
+                    // deliberate-variant test is structurally inert there and
+                    // proves nothing either way.
+                    if (g_state.pb_file_game_speed_pct != 0 &&
+                        g_state.pb_file_game_speed_pct != 0xFFFFFFFFu) {
+                        *(uint32_t*)0x430104 = g_state.pb_file_game_speed_pct;
+                    }
+                    if (g_state.pb_file_socd_plus1 != 0) {
+                        // Not a sim input on this path: the only consumer was
+                        // the re-clean at hooks_getinput.cpp's spectator branch,
+                        // which the replay path skips (recorded inputs are
+                        // already SOCD-resolved). Restored so the overlay and
+                        // Netplay_MatchSettingsDigest report the MATCH's mode
+                        // rather than the viewer's.
+                        Hook_SetSOCDMode((int)g_state.pb_file_socd_plus1 - 1);
+                    }
+                    if (g_state.pb_file_game_speed_pct != 0 ||
+                        g_state.pb_file_socd_plus1 != 0) {
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                            "SpectatorNode: applied replay file settings at "
+                            "MATCH_START -- game_speed=%u socd=%d "
+                            "(0/-1 = not recorded, left at local value)",
+                            g_state.pb_file_game_speed_pct,
+                            g_state.pb_file_socd_plus1
+                                ? (int)g_state.pb_file_socd_plus1 - 1 : -1);
+                    }
                 }
                 // Mirror the legacy INITIAL_MATCH packet path so the
                 // initial-match cache stays valid for relay-to-sub-spectator.

@@ -168,7 +168,8 @@ void ControlChannel_SendHostConfig(uint32_t selected_stage,
                                    uint32_t round_count,
                                    uint32_t round_time_sec,
                                    uint32_t game_speed_pct,
-                                   uint8_t  socd_mode)
+                                   uint8_t  socd_mode,
+                                   uint64_t session_id)
 {
     CtrlPacket pkt = {};
     pkt.header.type = CtrlMsg::HOST_CONFIG;
@@ -177,12 +178,13 @@ void ControlChannel_SendHostConfig(uint32_t selected_stage,
     pkt.data.host_config.round_time_sec  = round_time_sec;
     pkt.data.host_config.game_speed_pct  = game_speed_pct;
     pkt.data.host_config.socd_mode       = socd_mode;
+    pkt.data.host_config.session_id      = session_id;
     ControlChannel_Send(pkt);
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "ControlChannel: Sent HOST_CONFIG (stage=%u rounds=%u time=%u speed=%u socd=%u)",
+                "ControlChannel: Sent HOST_CONFIG (stage=%u rounds=%u time=%u speed=%u socd=%u sid=0x%016llX)",
                 selected_stage, round_count, round_time_sec, game_speed_pct,
-                (unsigned)socd_mode);
+                (unsigned)socd_mode, (unsigned long long)session_id);
 }
 
 void ControlChannel_SendDisconnect() {

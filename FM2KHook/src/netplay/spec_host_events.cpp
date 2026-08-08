@@ -481,6 +481,33 @@ void SpectatorNode_AppendSessionId(uint64_t session_id) {
     AppendOpAndFlush(ev);
 }
 
+// Adopt an id MINTED ELSEWHERE (the host's, arriving on HOST_CONFIG). Two
+// deliberate differences from AppendSessionId:
+//   * it refuses to overwrite a non-zero id, so a receiver can never fight the
+//     host and the two sides' files can never disagree on the group key;
+//   * it does NOT reset s_match_index_in_session. Adoption is best-effort
+//     delivery: if the handshake push is lost, it can land after match 1 has
+//     already been played, and zeroing the counter there would make this peer
+//     write a second "Match 1" and report a match_index the host disagrees
+//     with (hub reconcile_session logs that as a mismatch).
+void SpectatorNode_AdoptSessionId(uint64_t session_id) {
+    if (session_id == 0) return;
+    if (g_state.session_id != 0) return;
+    g_state.session_id = session_id;
+    SessionEvent ev{};
+    ev.type          = SessionEventType::SESSION_ID;
+    ev.u.session_id  = session_id;
+    AppendOpAndFlush(ev);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "SpectatorNode: adopted session_id=0x%016llX from host (match index "
+        "continues at %u)",
+        (unsigned long long)session_id, (unsigned)s_match_index_in_session);
+}
+
 uint64_t SpectatorNode_GetSessionId() {
     return g_state.session_id;
+}
+
+uint8_t SpectatorNode_GetMatchIndexInSession() {
+    return s_match_index_in_session;
 }

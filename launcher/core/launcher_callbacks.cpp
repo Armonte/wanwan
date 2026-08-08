@@ -11,6 +11,7 @@
 #include "FM2K_Integration.h"
 #include "FM2KHook/src/ui/shared_mem.h"
 #include "FM2KHook/src/netplay/spec_relay_queue.h"
+#include "FM2KHook/src/netplay/content_tag.h"  // replay content gate
 
 #include <string>
 #include <vector>
@@ -18,6 +19,7 @@
 #include <cstdint>
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <system_error>
 #include <windows.h>
 #include <winsock2.h>
@@ -275,6 +277,52 @@ void FM2KLauncher::WireUICallbacks() {
                 game_dir.string().c_str());
             return;
         }
+
+        // Content gate (second line of defence -- the browser already disables
+        // the button for a mismatched row, this covers any other dispatcher).
+        // A replay recorded against a DIFFERENT install of the same game plays
+        // without a single error and garbles from the first frame, because the
+        // recorded input stream drives a sim whose character data no longer
+        // matches. Both-nonzero-and-different only: 0 on either side is
+        // "unknown" and must not block, since every pre-provenance file is 0.
+        {
+            std::ifstream hf(replay_fs, std::ios::binary);
+            uint8_t hbuf[256] = {};
+            if (hf) hf.read(reinterpret_cast<char*>(hbuf), sizeof(hbuf));
+            uint32_t magic = 0, recorded_tag = 0;
+            uint16_t ver = 0;
+            if (hf && hf.gcount() == (std::streamsize)sizeof(hbuf)) {
+                std::memcpy(&magic, hbuf + 0, 4);
+                std::memcpy(&ver,   hbuf + 4, 2);
+                std::memcpy(&recorded_tag, hbuf + 200, 4);   // game_content_tag
+            }
+            if (magic == 0x53534D46u && ver == 2 && recorded_tag != 0) {
+                // Name the exe through the SHARED resolver rather than reusing
+                // game_exe_path's filename, so this gate and the browser's
+                // cannot drift apart in what they hash. It resolves to the same
+                // <kgt stem>.exe we just verified above; if it ever cannot, it
+                // returns empty and ComputeForDir gives 0 = unknown, which
+                // leaves the gate open rather than blocking on a guess.
+                const std::wstring exe_name =
+                    fm2k::content_tag::ResolveGameExeName(
+                        game_dir.wstring().c_str());
+                const uint32_t local_tag = fm2k::content_tag::ComputeForDir(
+                    game_dir.wstring().c_str(), exe_name.c_str());
+                if (local_tag != 0 && local_tag != recorded_tag) {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                        "Replay browser: REFUSING %s -- recorded against a "
+                        "different install of this game (file tag 0x%08X, "
+                        "installed 0x%08X). Playing it would desync from the "
+                        "first frame with no on-screen sign; the .player / "
+                        ".kgt / .exe set under %s has changed since it was "
+                        "recorded.",
+                        replay_path.c_str(), recorded_tag, local_tag,
+                        game_dir.string().c_str());
+                    return;
+                }
+            }
+        }
+
         LaunchReplayPlayer(game_exe_path, replay_path);
     };
 

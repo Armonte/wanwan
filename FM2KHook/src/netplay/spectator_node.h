@@ -475,9 +475,22 @@ void SpectatorNode_GetCachedRoundsWon(uint8_t* p1, uint8_t* p2);
 // emitting .fm2kset / .fm2krep file headers.
 void SpectatorNode_AppendSessionId(uint64_t session_id);
 
+// Adopt an id minted by the HOST, delivered on HOST_CONFIG (guest peer and
+// every spectator flavour). No-op when the argument is 0 or when this node
+// already has an id, so a receiver never mints and never overwrites. Unlike
+// AppendSessionId it leaves the per-session match counter alone -- adoption
+// can legitimately land after match 1 if a datagram was lost.
+void SpectatorNode_AdoptSessionId(uint64_t session_id);
+
 // Read the host's currently-active session_id (0 if none yet established).
 // Used by the file writer to populate FM2KSessionFileHeader.session_id.
 uint64_t SpectatorNode_GetSessionId();
+
+// 1-based index of the match currently being recorded within this session
+// (0 before the first MATCH_START). The file writer stamps it into
+// FM2KSessionFileHeader.match_index so the browser's per-session tree and
+// its "watch set from here" seek address the right match.
+uint8_t SpectatorNode_GetMatchIndexInSession();
 
 // Snapshot capture (task #18 phase 2). Called from Netplay_StartBattle
 // AFTER the existing pin-and-init sequence (PIN_RNG / RESET_INPUT_STATE /

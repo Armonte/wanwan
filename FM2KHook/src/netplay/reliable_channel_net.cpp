@@ -167,6 +167,32 @@ void ReliableChannel_SendTo(const sockaddr_storage& to, uint8_t channel, int cls
         fm2k::rc::Send(peer->ep, channel, static_cast<fm2k::rc::Class>(cls), data, len);
 }
 
+// Contract: g_poll_mutex is ALREADY held (see the header). Every
+// control-message handler is on that path.
+bool ReliableChannel_ResetPeerLocked(const sockaddr_storage& addr) {
+    if (!g_inited) return false;
+    const std::string key = fm2k::Addr_ActorString(addr);
+    auto it = g_peers.find(key);
+    if (it == g_peers.end()) return false;
+    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+        "ReliableChannel: RESETTING endpoint for %s -- tearing down msg_seq / "
+        "unacked / ordered cursors so the stream restarts from a clean slate. "
+        "The peer sees the msg_seq back-jump and resets its own rx cursor",
+        key.c_str());
+    EvictPeer(key);
+    return true;
+}
+
+// Main-thread entry, OUTSIDE any poll. Destroying a reliable.io endpoint while
+// the MM-timer worker is inside PollImplLocked -- iterating g_peers in
+// NetUpdate, or feeding a datagram into the very endpoint being freed -- is a
+// use-after-free, and the timer fires regardless of what the main thread is
+// doing. Serialise on the same mutex the poll path uses.
+bool ReliableChannel_ResetPeer(const sockaddr_storage& addr) {
+    std::lock_guard<std::mutex> lock(g_poll_mutex);
+    return ReliableChannel_ResetPeerLocked(addr);
+}
+
 // From RawReceive's 0xCB branch. Runs under g_poll_mutex (RawReceive contract).
 void ReliableChannel_OnDatagram(const sockaddr_storage& from, const uint8_t* body, int body_len) {
     if (!g_inited) return;

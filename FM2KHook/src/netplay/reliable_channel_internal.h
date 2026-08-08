@@ -52,11 +52,33 @@ constexpr size_t   RC_MAX_PACKET_BYTES = 64 * 1024;
 constexpr size_t   RC_FRAGMENT_ABOVE   = 1024;
 constexpr size_t   RC_FRAGMENT_SIZE    = 1024;
 
-// Ordered-channel stall horizon. Must sit ABOVE the 7s unacked retire below:
-// once the sender has retired a message it will never be sent again, so a
-// receiver that keeps waiting for it waits forever. See the stall sweep in
+// Ordered-channel stall horizon: how long a reliable-ordered channel may
+// deliver NOTHING before the receiver repairs itself. See the stall sweep in
 // Update().
-constexpr double   RC_ORDERED_STALL_SEC = 8.0;
+//
+// WAS 8.0, AND THAT MADE THE REPAIR UNREACHABLE. The old value was chosen to
+// sit ABOVE the 7s unacked retire below, on the reasoning that a message the
+// sender has not yet retired might still arrive. True, but irrelevant: the
+// only consumer of this layer is the spectator stream, and a viewer's
+// host-gone watchdog (FM2K_SPEC_HOST_GONE_MS, trampoline_spectator.cpp) kills
+// the PROCESS on the same clock. At 8.0 vs the old 8000ms budget the repair
+// and the suicide landed on the same tick -- a coin flip -- and the lab's
+// 5000ms override made it a guaranteed loss. `[RC] ordered chan=... SKIPPING`
+// had never executed once, anywhere, at the time this was changed.
+//
+// 3.5s is now the FIRST rung of the spectator recovery ladder and every rung
+// above it is spaced off this number:
+//   3.5s  RC ordered-stall repair (here)
+//   4.0s  gap-fill escalation -> resume-suppressed re-JOIN + RC endpoint reset
+//   8.0s  second escalation
+//  12.0s  host-gone give-up (FM2K_SPEC_HOST_GONE_MS default)
+// Firing below the 7s retire is deliberate and safe in both directions: the
+// hole may still be in flight, but at a <=750ms retransmit cap it has already
+// had 5-40 attempts, and the repair NEVER discards a message that later
+// arrives -- the ooo path skips only to messages we are already holding, and
+// the empty-ooo path just un-anchors (see stall_resync) so a late retransmit
+// of the hole itself still delivers normally.
+constexpr double   RC_ORDERED_STALL_SEC = 3.5;
 
 // A genuine duplicate is always a retransmit of something RECENT: cwnd caps
 // in-flight at ~96 messages and the 7s TTL retires the rest. A msg_seq this far
@@ -141,6 +163,16 @@ struct RxChannel {
     // ordered-stall sweep: a hole the sender has already retired can never
     // fill, and without this the channel pinned forever with no log output.
     double   last_progress_time = -1.0;
+    // Armed by the ordered-stall sweep when the channel has delivered nothing
+    // for RC_ORDERED_STALL_SEC AND `ooo` is EMPTY -- i.e. there is no buffered
+    // successor to skip the hole to, because the sender retired the hole and
+    // its whole tail (a pinned cumulative ack stops the sender clearing
+    // ANYTHING, so nothing behind the hole is ever re-sent either). While
+    // armed, the next message to arrive with seq > next_deliver is ADOPTED as
+    // the new cursor instead of being buffered behind a hole that can never
+    // fill. Never adopts BACKWARD: a seq below next_deliver still takes the
+    // ordinary duplicate path, so a late retransmit cannot re-deliver history.
+    bool     stall_resync = false;
     std::map<uint64_t, std::vector<uint8_t>> ooo; // ordered: buffered out-of-order
     // Reliable-UNORDERED: deliver each msg once on first receipt, but ACK the
     // CONTIGUOUS received prefix (un_next_ack) so a gap is never falsely acked

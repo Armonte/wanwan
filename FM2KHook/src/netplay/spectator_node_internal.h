@@ -134,6 +134,28 @@ constexpr uint64_t SPECTATOR_SNAPSHOT_RESHIP_MS = 6000;
 // bounds the pull rate while the host re-ships the (idempotent) range.
 constexpr uint64_t SPECTATOR_GAP_FILL_STALL_MS     = 250;    // stall before pull
 constexpr uint64_t SPECTATOR_GAP_FILL_THROTTLE_MS  = 500;    // min between pulls
+// ---- mid-stream starve escalation ------------------------------------------
+// The gap-fill pull is SURGICAL and cannot heal a TRANSPORT wedge: the host
+// answers it over the same reliable endpoint, explicitly without resetting
+// that endpoint's state ("live conn -- reliable re-ship, no reset"). When the
+// RC ordered stream head-of-line-blocks, every pull is correctly anchored,
+// correctly ranged, correctly answered -- and delivers nothing. So bound it:
+// after this many consecutive pulls with ZERO cursor movement, escalate to the
+// resume-suppressed re-JOIN that forces the host's destructive-reset branch AND
+// resets the RC endpoint on both sides.
+constexpr uint32_t SPECTATOR_STARVE_PULLS_BEFORE_ESCALATE = 3;
+// ...but never before the RC layer has had its own go. RC_ORDERED_STALL_SEC is
+// 3.5s (reliable_channel_internal.h), and its repair is strictly cheaper than a
+// re-JOIN, so the ladder is ORDERED by making the escalation wait out that
+// horizon. Measured on MsSinceLastAdmit -- the same clock the host-gone
+// watchdog uses -- so the rungs are directly comparable:
+//   3.5s RC ordered-stall repair | 4.0s escalation #1 | 8.0s escalation #2
+//   | 12.0s host-gone give-up (FM2K_SPEC_HOST_GONE_MS default)
+constexpr uint64_t SPECTATOR_STARVE_ESCALATE_MIN_STALL_MS = 4000;
+// Floor between escalations. Must clear BOTH the host's 3s destructive-reset
+// suppression (spec_join.cpp) and the 3.5s re-JOIN cadences (KICK_JOIN /
+// NOADMIT_FIRST), or an escalation lands on a bare re-ACK and re-ships nothing.
+constexpr uint64_t SPECTATOR_STARVE_ESCALATE_FLOOR_MS     = 4000;
 constexpr uint64_t SPECTATOR_SUBSCRIBER_EXPIRY_MS  = 30000;  // upstream-side
                                                              // sweep: drop
                                                              // subscribers
@@ -779,8 +801,28 @@ struct State {
     // Set for exactly ONE RequestJoin so the escalation re-JOIN omits
     // SPEC_JOIN_RESUME. A resume-flagged JOIN_REQ makes the host take the
     // light-resume bind (gap backfill, explicitly NO snapshot), which is the
-    // precise opposite of what an escalation needs.
-    bool                      pb_deep_join_force_full_rejoin = false;
+    // precise opposite of what an escalation needs -- it must reach the host's
+    // DESTRUCTIVE-RESET branch, which is also where the host resets its RC
+    // endpoint for us.
+    //
+    // SHARED (was pb_deep_join_force_full_rejoin, deep-join only). The
+    // mid-stream STARVE escalation needs exactly the same one-shot: a viewer
+    // whose gap-fill pulls are re-shipping over a wedged RC endpoint has to
+    // stop asking for a re-ship and force the reset instead.
+    bool                      spec_force_full_rejoin = false;
+
+    // ─── Mid-stream starve escalation (the RC head-of-line wedge) ────────
+    // Consecutive gap-fill pulls that produced ZERO cursor advancement. The
+    // pull re-ships over the SAME reliable endpoint and explicitly does not
+    // reset it ("live conn -- reliable re-ship, no reset"), so it cannot heal
+    // a transport-level wedge no matter how many times it fires -- the
+    // captures burned 4 and 8 of them against a host that was answering every
+    // single one. Past SPECTATOR_STARVE_PULLS_BEFORE_ESCALATE the ladder stops
+    // pulling and forces the reset. Reset to 0 the moment the cursor moves.
+    uint32_t                  gap_fill_pulls_no_progress = 0;
+    uint32_t                  gap_fill_pull_total        = 0;  // session total, for the exit message
+    uint32_t                  starve_escalations         = 0;  // ditto
+    uint64_t                  last_starve_escalate_ms    = 0;  // escalation floor
 };
 
 // The one definition lives in spectator_node.cpp; sibling TUs see it via this.
@@ -898,6 +940,26 @@ void     DeepJoinOnSnapshotApplied(uint32_t anchor);
 // battle-align hold parks the battle INPUTs at the head until mode >= 3000, and
 // the deep-join hold takes over from there.
 bool     DeepJoinWalkingToAnchor();
+
+// ---- shared recovery mechanism (spec_join_viewer.cpp) ----------------------
+// The resume-suppressed re-JOIN, generalised out of the deep-join hold ladder.
+// Suppresses SPEC_JOIN_RESUME for exactly one JOIN_REQ so the host takes its
+// DESTRUCTIVE-RESET branch (re-pin + fresh bind + re-ship) instead of the
+// light-resume gap bind, AND resets the RC endpoint toward the upstream so a
+// wedged reliable stream is actually cleared rather than re-shipped into.
+// Honours session_ended / no-root and stamps last_reconnect_attempt_ms so it
+// does not race TickHealth's own reconnect cadence. `reason` is a short tag
+// for the log line. Returns true if a re-JOIN was actually issued.
+bool     SpecForceFullReJoin(SpecJoinMode mode, const char* reason);
+
+// The gap-fill ladder's decision point, called from TickHealth once the stall
+// timer + throttle have both elapsed: issue the surgical pull, or -- once the
+// pull has provably failed to move the cursor -- escalate. Owns the log line
+// for whichever it does, so the log never promises a re-ship it did not send.
+// `gap_ahead` is TickHealth's own variant-1/variant-2 discriminator, passed in
+// rather than re-derived so the two can never drift. Lives here rather than
+// inline in TickHealth so spec_health.cpp stays under the 1000-line cap.
+void     SpecGapFillPullOrEscalate(uint64_t now, bool gap_ahead);
 
 // The snapshot applicability rule, as a tri-state so a snapshot that is merely
 // EARLY is not confused with one that is wrong.

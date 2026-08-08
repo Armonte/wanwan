@@ -381,9 +381,36 @@ void RunSpectatorTick() {
     // false-fire during connect/snapshot) and is skipped for offline replay
     // (which has its own drain-exit below). Tunable via FM2K_SPEC_HOST_GONE_MS.
     if (!s_offline_replay_env_active) {
+        // 12000, RAISED FROM 8000. This budget is the LAST rung of the
+        // spectator recovery ladder and it must sit above the whole thing, or
+        // the viewer kills itself while its own repairs are still running --
+        // which is exactly what the 2026-08-07 mid-stream starve was. At 8000
+        // the RC ordered-stall repair also fired at 8000: same tick, coin
+        // flip, and it had in fact never executed once, anywhere. The ladder,
+        // all measured on THIS clock (ms since the last admitted INPUT):
+        //   3500  RC ordered-stall repair    (RC_ORDERED_STALL_SEC)
+        //   4000  starve escalation #1       (re-JOIN + RC endpoint reset)
+        //   8000  starve escalation #2       (SPECTATOR_STARVE_ESCALATE_FLOOR_MS)
+        //  12000  give up (here)             -- two full escalations deep
+        // A genuinely-crashed host therefore costs 4s more before the window
+        // closes; a wedged-but-reachable one now gets two chances at repair
+        // instead of zero.
         static const uint32_t s_gone_ms = []{
             const char* v = std::getenv("FM2K_SPEC_HOST_GONE_MS");
-            return (v && v[0]) ? (uint32_t)std::atoi(v) : 8000u;
+            const uint32_t ms = (v && v[0]) ? (uint32_t)std::atoi(v) : 12000u;
+            // An override BELOW the ladder truncates it. That is legitimate
+            // (the harness deliberately shortens teardown, and
+            // spec_host_gone_test.sh needs to beat the harness cleanup), but
+            // it must never again be a silent reason the repair "never fires":
+            // say so once, at startup, so a truncated run is self-diagnosing.
+            if (ms < 12000u) {
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "SpectatorNode: FM2K_SPEC_HOST_GONE_MS=%u is BELOW the "
+                    "recovery ladder's 12000ms budget (RC stall repair 3500, "
+                    "escalation #1 4000, escalation #2 8000) -- this viewer "
+                    "will exit before the later rungs can run", ms);
+            }
+            return ms;
         }();
         // GRACEFUL stream end: the upstream sent SPEC_SESSION_END (the host
         // quit cleanly). Drain whatever is still queued, then close PROMPTLY
@@ -465,14 +492,43 @@ void RunSpectatorTick() {
         if (since_admit > gone_budget) {
             static std::atomic<bool> s_gone_armed{false};
             if (!s_gone_armed.exchange(true)) {
-                // UNGRACEFUL vanish (crash / network drop / TerminateProcess):
-                // no SESSION_END arrived, we just stopped receiving. The
-                // reconnect path has been backing off (exponential) rather
-                // than storming; give up now and close cleanly.
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: host disconnected -- no new content for %ums "
-                    "(host crashed/left ungracefully or wedged); closing stream",
-                    since_admit);
+                // No SESSION_END arrived, we simply stopped being fed. REPORT
+                // WHAT IS KNOWN, not a guess. The old message said "host
+                // crashed/left ungracefully" unconditionally, and in the
+                // 2026-08-07 mid-stream starve that was flatly false: the
+                // control channel was answering in both directions the whole
+                // time (the viewer's gap-fill JOIN_REQs reached the host on a
+                // metronomic 500ms cadence and the host's JOIN_ACKs came
+                // back) -- only the reliable stream had wedged. A tester who
+                // files "host crashed" about a host that did not crash is an
+                // unattributable report, which is precisely what the last
+                // packet's age can settle. Two distinct verdicts, plus what
+                // the recovery ladder actually tried.
+                const uint32_t pkt_age  = SpectatorNode_MsSinceUpstreamPacket();
+                const uint32_t pulls    = SpectatorNode_GapFillPullCount();
+                const uint32_t escs     = SpectatorNode_StarveEscalationCount();
+                const bool     reachable = pkt_age != 0 && pkt_age < since_admit;
+                if (reachable) {
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "SpectatorNode: STREAM STALLED -- no new content for %ums, "
+                        "but the host is still REACHABLE (last packet from it %ums "
+                        "ago), so this is a wedged stream, NOT a crashed host. "
+                        "Recovery tried: %u gap-fill pull(s), %u re-JOIN "
+                        "escalation(s), and the RC ordered-stall repair; none "
+                        "restored the feed. Closing stream",
+                        since_admit, pkt_age, pulls, escs);
+                } else {
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "SpectatorNode: HOST UNREACHABLE -- no new content for "
+                        "%ums and nothing at all from the upstream %s. It left "
+                        "ungracefully (crash / network drop / TerminateProcess: "
+                        "no SPEC_SESSION_END). Recovery tried: %u gap-fill "
+                        "pull(s), %u re-JOIN escalation(s). Closing stream",
+                        since_admit,
+                        pkt_age == 0 ? "since the session began"
+                                     : "for at least as long",
+                        pulls, escs);
+                }
                 ExitProcess(0);
             }
         }

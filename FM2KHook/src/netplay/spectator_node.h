@@ -783,6 +783,14 @@ bool SpectatorNode_QueueHasPendingOp();
 uint32_t SpectatorNode_MsSinceLastAdmit();
 bool     SpectatorNode_HasEverAdmitted();   // false while still connecting (never admitted)
 bool     SpectatorNode_SessionEnded();      // upstream sent SPEC_SESSION_END (host quit cleanly)
+// Recovery-ladder telemetry for the host-gone exit message. The point is to
+// tell "the host vanished" apart from "the host is right there and the stream
+// is wedged" -- the old message asserted the former unconditionally and was a
+// lie in every RC head-of-line starve (the control channel kept answering
+// throughout). MsSinceUpstreamPacket is 0 when nothing has EVER been heard.
+uint32_t SpectatorNode_MsSinceUpstreamPacket();
+uint32_t SpectatorNode_GapFillPullCount();
+uint32_t SpectatorNode_StarveEscalationCount();
 void SpectatorNode_StampInputAdmit();
 // Layer-2 render pacing: the spectator's outer-tick sleep target in ms, =
 // clamp(measured host production period, 10, 20). Lets the spectator render at

@@ -221,6 +221,19 @@ uint32_t SpectatorNode_MsSinceLastAdmit() {
 // former -- see the watchdog in trampoline_spectator.cpp.
 bool SpectatorNode_HasEverAdmitted() { return g_first_input_admit_ms != 0; }
 
+// Age of the last validated packet from the upstream (heartbeat echo, JOIN_ACK,
+// UDP batch -- anything that proves the host is still answering us). This is
+// what separates "the host vanished" from "the host is reachable and the
+// reliable stream is wedged": in the 2026-08-07 starve the control channel kept
+// working in BOTH directions for the whole 5 s the viewer spent deciding the
+// host had crashed. 0 means nothing was ever heard.
+uint32_t SpectatorNode_MsSinceUpstreamPacket() {
+    if (g_state.last_udp_recv_ms == 0) return 0;
+    return (uint32_t)(GetTickCount64() - g_state.last_udp_recv_ms);
+}
+uint32_t SpectatorNode_GapFillPullCount()      { return g_state.gap_fill_pull_total; }
+uint32_t SpectatorNode_StarveEscalationCount() { return g_state.starve_escalations; }
+
 // True once the upstream told us the whole session is OVER (SPEC_SESSION_END
 // -- the host quit cleanly). Distinguishes a GRACEFUL stream end (drain what's
 // left, then close with "stream ended") from an ungraceful host vanish

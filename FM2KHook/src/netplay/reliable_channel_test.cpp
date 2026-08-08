@@ -4,7 +4,10 @@
 //   1. reliable-ordered messages are delivered in order,
 //   2. FEC reconstructs a dropped data packet WITHOUT a retransmit round-trip
 //      (single loss per K-group), and
-//   3. multi-loss beyond FEC still eventually delivers via retransmit.
+//   3. multi-loss beyond FEC still eventually delivers via retransmit,
+//   4. an ordered channel whose head message the SENDER retired repairs itself
+//      -- including the empty-reassembly-buffer shape that made the repair
+//      unreachable and produced the mid-stream spectator starve (test 10).
 //
 // Build + run on the host (Linux/WSL), not the mingw cross target:
 //   g++ -std=c++17 -DRC_STANDALONE_TEST -I vendored/reliable \
@@ -370,10 +373,87 @@ int main() {
     }
     CHECK(rb9.msgs.size() == 4, "paced bulk still delivers all 4 messages");
 
+    // ---- Test 10: ORDERED STALL WITH AN EMPTY REASSEMBLY BUFFER. The
+    // regression test for the mid-stream spectator starve (2026-08-07). The
+    // ordered-stall repair used to require `!ooo.empty()` -- "skip to the
+    // buffered successor" -- but the failure it was written for produces the
+    // OPPOSITE state: the receiver's pinned cumulative ack is what stops the
+    // SENDER clearing anything, so when the hole ages out at 7s the entire
+    // tail ages out with it and NOTHING is ever buffered behind the hole. With
+    // that precondition the repair was structurally unreachable, the channel
+    // stayed deaf forever, and the viewer's host-gone watchdog killed the
+    // process while the host was still fully reachable.
+    //
+    // The check is deliberately taken with NO Update() between the message
+    // arriving and the assertion: the repair must happen at DELIVERY time, not
+    // at the next stall sweep. (It also makes the test discriminating -- with
+    // the old code the message sits in `ooo` at this instant.) ----
+    printf("[10] ordered stall, EMPTY ooo: retired hole must not deafen the channel\n");
+    Recv rb10; Link a2b10, b2a10;
+    double t10 = 0.0;
+    Endpoint* A10 = Create(18, &LinkSend, &a2b10, &OnDeliver, &ra, t10);
+    Endpoint* B10 = Create(19, &LinkSend, &b2a10, &OnDeliver, &rb10, t10);
+    a2b10.dst = B10; b2a10.dst = A10;
+    for (int i = 0; i < 5; i++) {
+        char buf[32]; int n = snprintf(buf, sizeof(buf), "s-%02d", i);
+        Send(A10, 0, Class::ReliableOrdered, reinterpret_cast<uint8_t*>(buf), n);
+    }
+    for (int tick = 0; tick < 20; tick++) {
+        t10 += 0.02;
+        Update(A10, t10); Update(B10, t10);
+        PumpLink(a2b10); PumpLink(b2a10);
+    }
+    CHECK(rb10.msgs.size() == 5, "stall-resync: 5 clean messages delivered, cursor at 5");
+
+    // Black-hole A->B completely and send msg 5. B receives nothing at all, so
+    // `ooo` stays EMPTY -- the shape the old precondition exempted. Hold it for
+    // 8s: past A's 7s retire (msg 5 can now NEVER be re-sent) and past B's
+    // stall horizon (the resync arms).
+    a2b10.drop_every = 1;   // (n % 1) == 0 for every n -> drop everything
+    {
+        char buf[32]; int n = snprintf(buf, sizeof(buf), "s-05");
+        Send(A10, 0, Class::ReliableOrdered, reinterpret_cast<uint8_t*>(buf), n);
+    }
+    for (int tick = 0; tick < 400; tick++) {   // 400 * 20ms = 8.0s
+        t10 += 0.02;
+        Update(A10, t10); Update(B10, t10);
+        PumpLink(a2b10); PumpLink(b2a10);
+    }
+    CHECK(rb10.msgs.size() == 5, "stall-resync: the black-holed msg 5 never arrived");
+
+    // Link comes back. The very next message is msg 6, one PAST the dead hole.
+    a2b10.drop_every = 0;
+    {
+        char buf[32]; int n = snprintf(buf, sizeof(buf), "s-06");
+        Send(A10, 0, Class::ReliableOrdered, reinterpret_cast<uint8_t*>(buf), n);
+    }
+    t10 += 0.02;
+    Update(A10, t10);    // A puts msg 6 on the wire
+    PumpLink(a2b10);     // B receives it -- deliberately NO Update(B10) here
+    bool adopted10 = false;
+    for (auto& m : rb10.msgs) if (m.second == "s-06") adopted10 = true;
+    CHECK(adopted10,
+          "stall-resync: msg 6 ADOPTED as the new cursor and delivered on arrival "
+          "(old code: ooo was empty, the skip never fired, msg 6 buffers forever)");
+    CHECK(rb10.msgs.size() == 6,
+          "stall-resync: exactly the 5 clean messages + the adopted one, no dups");
+    // And the channel is healthy from there: 7,8,9 flow in order behind it.
+    for (int i = 7; i < 10; i++) {
+        char buf[32]; int n = snprintf(buf, sizeof(buf), "s-%02d", i);
+        Send(A10, 0, Class::ReliableOrdered, reinterpret_cast<uint8_t*>(buf), n);
+    }
+    for (int tick = 0; tick < 20; tick++) {
+        t10 += 0.02;
+        Update(A10, t10); Update(B10, t10);
+        PumpLink(a2b10); PumpLink(b2a10);
+    }
+    CHECK(rb10.msgs.size() == 9,
+          "stall-resync: the channel keeps delivering after the resync (5+1+3)");
+
     Destroy(A); Destroy(B); Destroy(A2); Destroy(B2); Destroy(A3); Destroy(B3);
     Destroy(A4); Destroy(B4); Destroy(A5); Destroy(B5);
     Destroy(A6); Destroy(B6); Destroy(A8b); Destroy(B8);
-    Destroy(A9); Destroy(B9);
+    Destroy(A9); Destroy(B9); Destroy(A10); Destroy(B10);
     printf("%s\n", g_fail == 0 ? "ALL PASS" : "SOME FAILED");
     return g_fail == 0 ? 0 : 1;
 }

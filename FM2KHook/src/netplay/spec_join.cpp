@@ -456,6 +456,34 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
             // IP so the bind path pairs the spectator's FRESH dial instead
             // of an abandoned one (deep-join reconnect-loop fix).
             SpectatorTCP::DropConnectionsFromAddr(sub.addr);
+            // DELIBERATELY NOT the RC endpoint. "Reset bind state" resets
+            // everything the HOST owns, and it is worth writing down that the
+            // reliable transport is not on that list and must not be:
+            //
+            // RC state lives in an address-keyed registry
+            // (reliable_channel_net.cpp) that survives every app-level
+            // re-JOIN, which is why a viewer whose ordered spec stream had
+            // head-of-line-blocked could re-JOIN forever into the SAME wedged
+            // endpoint and starve while this host was fully reachable
+            // (2026-08-07). The repair is real, but it belongs on the VIEWER:
+            // the wedge is a pinned RECEIVE cursor, and the viewer resets its
+            // own endpoint before sending this JOIN_REQ (SpecForceFullReJoin,
+            // spec_join_viewer.cpp). A fresh receiver anchors on whatever
+            // msg_seq we send next and the stream is whole again.
+            //
+            // Resetting the HOST side too would be actively HARMFUL. Our
+            // msg_seq would restart at 0 while the viewer's cursor sits at N,
+            // and DeliverOrdered only reads a back-jump as "sender endpoint
+            // restarted" when it exceeds RC_RESTART_BACKJUMP (256) -- below
+            // that it is indistinguishable from an ordinary retransmit and is
+            // dropped as a duplicate. RC_CHAN_SPEC_SNAPSHOT typically carries
+            // only a few dozen messages per join, so a host-side reset would
+            // silently EAT the first N messages of the very backfill this
+            // branch exists to re-ship.
+            //
+            // What the host must do is exactly what it already does: drop the
+            // bind so the loop re-ships. See ReliableChannel_ResetPeer's
+            // header comment ("resetting ONE side is already correct").
             // Phase 2c: late-arriving spec_user_id backfill. If the
             // first JOIN_REQ raced past our spec_incoming poll (common
             // on loopback where UDP RTT is microseconds), sub.spec_user_id

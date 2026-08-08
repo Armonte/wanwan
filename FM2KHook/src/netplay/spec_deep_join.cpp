@@ -599,15 +599,21 @@ void DeepJoinHoldTick(uint64_t now) {
     // Budget exhausted -> LOUD failure, then a full re-JOIN. Never a silent
     // release into the from-scratch battle path.
     //
-    // The re-JOIN is the real repair, not a gesture: it goes out with
-    // SPEC_JOIN_RESUME suppressed (pb_deep_join_force_full_rejoin), so the host
-    // takes its destructive-reset branch and RE-PINS. With the host inside the
-    // battle we are held at, that re-pin yields a BATTLE grant, the bind's
+    // The re-JOIN is the real repair, not a gesture: it goes out through the
+    // shared SpecForceFullReJoin, i.e. with SPEC_JOIN_RESUME suppressed, so the
+    // host takes its destructive-reset branch and RE-PINS. With the host inside
+    // the battle we are held at, that re-pin yields a BATTLE grant, the bind's
     // use_snapshot fires, and the snapshot arrives through the ordinary
     // mid-battle join path -- whose anchor is exactly our consumed position,
     // so the applicability rule admits it and the hold releases. A
     // resume-flagged JOIN_REQ would instead take the light-resume bind, which
     // explicitly ships NO snapshot: that is why the suppression exists.
+    //
+    // Since the mid-stream starve work the same helper also RESETS THE RC
+    // ENDPOINT on the way out. That is not a courtesy for this path: a hold
+    // that survives its whole budget while the blob "arrives" at 0 bytes/s
+    // has the same possible cause as the starve -- a wedged reliable endpoint
+    // that no amount of re-shipping can clear.
     const uint32_t reqs_this_round = g_state.pb_deep_join_reqs;
     ++g_state.pb_deep_join_escalations;
     g_state.pb_deep_join_hold_since_ms = now;   // fresh budget for the next round
@@ -621,12 +627,7 @@ void DeepJoinHoldTick(uint64_t now) {
         g_state.pb_deep_join_anchor, reqs_this_round,
         (int)inbox.active, inbox.bytes_received,
         (unsigned)inbox.meta.total_bytes, g_state.pb_deep_join_escalations);
-    if (g_state.root_addr.sin_port != 0 && !g_state.session_ended) {
-        g_state.pb_deep_join_force_full_rejoin = true;
-        g_state.last_reconnect_attempt_ms      = now;
-        SpectatorNode_RequestJoin(g_state.root_addr,
-                                  SpecJoinMode::CURRENT_MATCH);
-    }
+    SpecForceFullReJoin(SpecJoinMode::CURRENT_MATCH, "deep-join hold budget");
 }
 
 void DeepJoinOnSnapshotApplied(uint32_t anchor) {

@@ -41,5 +41,37 @@ void ReliableChannel_SendTo(const sockaddr_storage& to, uint8_t channel, int cls
 // Feed a received 0xCB datagram (body AFTER the tag) from `from`. From RawReceive.
 void ReliableChannel_OnDatagram(const sockaddr_storage& from, const uint8_t* body, int body_len);
 
+// Destroy this peer's endpoint so the next send/receive builds a fresh one:
+// tx msg_seq back to 0, unacked map dropped, rx cursors and reassembly buffers
+// gone. THE ONLY WAY to clear a wedged endpoint -- an app-level re-JOIN does
+// not, because the registry is keyed by peer address and survives it, which is
+// why the spectator starve of 2026-08-07 could not be healed by re-JOINing.
+// No-op for an unknown address. Returns true if an endpoint was actually torn
+// down.
+//
+// RESET THE RECEIVER, NOT THE SENDER. The failure this exists for is a pinned
+// ORDERED RECEIVE cursor, so the side that must forget is the one that is
+// stuck: a fresh receiver anchors on whatever msg_seq the (untouched) sender
+// emits next -- DeliverOrdered's documented mid-join anchor -- and the stream
+// is whole immediately. Resetting the SENDER instead restarts its msg_seq at 0
+// under a receiver whose cursor is at N, and DeliverOrdered only reads that as
+// a restart past RC_RESTART_BACKJUMP (256); below it the new stream's head is
+// indistinguishable from a retransmit and is dropped as duplicate. Channels
+// that carry only a few dozen messages per join (RC_CHAN_SPEC_SNAPSHOT) would
+// therefore silently lose the head of the very re-ship the reset provoked. So:
+// the VIEWER resets its endpoint, the host resets nothing.
+//
+// TWO ENTRIES, because the endpoint registry is shared with the MM-timer
+// worker thread that drives ControlChannel_Poll when the main thread stalls:
+//   ...Locked  -- caller ALREADY holds g_poll_mutex. That is the whole
+//                 RawReceive dispatch chain, so any control-message handler
+//                 would use this one; taking the mutex there self-deadlocks.
+//   plain      -- acquires g_poll_mutex itself. For main-thread callers
+//                 outside a poll, i.e. the viewer's TickHealth ladder.
+// Tearing an entry out of the map from an unlocked main thread while the timer
+// worker iterates it is a use-after-free, so this distinction is load-bearing.
+bool ReliableChannel_ResetPeerLocked(const sockaddr_storage& addr);
+bool ReliableChannel_ResetPeer(const sockaddr_storage& addr);
+
 // Pump all endpoints (acks + retransmit + ack-carrier). From PollImplLocked.
 void ReliableChannel_NetUpdate();

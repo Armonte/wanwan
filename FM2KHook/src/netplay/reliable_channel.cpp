@@ -94,6 +94,25 @@ void DeliverOrdered(Endpoint* ep, uint8_t chan, RxChannel& rc,
         rc.next_deliver = seq;
         rc.ooo.clear();
     }
+    if (seq > rc.next_deliver && rc.stall_resync) {
+        // The stall sweep armed a resync: this channel delivered nothing for
+        // RC_ORDERED_STALL_SEC with an EMPTY reassembly buffer, so there was
+        // no buffered successor to skip the hole to and the sweep could only
+        // un-anchor. THIS message is the successor. Adopt it as the cursor
+        // rather than buffer it behind a hole the sender has already retired
+        // and will never send again. Only ever forward (seq > next_deliver);
+        // a lower seq fell into the duplicate path above, so a late
+        // retransmit can never rewind the stream.
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "[RC] ordered chan=%u RESYNC -- adopting msg_seq=%llu as the new "
+            "cursor (was %llu; %llu message(s) permanently lost). The sender "
+            "retired the hole and its tail, so nothing behind it was ever "
+            "coming; consumer must resync from the app-level gap",
+            (unsigned)chan, (unsigned long long)seq,
+            (unsigned long long)rc.next_deliver,
+            (unsigned long long)(seq - rc.next_deliver));
+        rc.next_deliver = seq;
+    }
     if (seq == rc.next_deliver) {
         if (ep->deliver) ep->deliver(ep->deliver_ctx, chan, payload, plen);
         rc.next_deliver++;
@@ -107,6 +126,7 @@ void DeliverOrdered(Endpoint* ep, uint8_t chan, RxChannel& rc,
             it = rc.ooo.find(rc.next_deliver);
         }
         rc.last_progress_time = ep->now_time;
+        rc.stall_resync       = false;   // progress -> the channel is healthy again
     } else if (rc.ooo.size() < RC_OOO_MAX) {
         rc.ooo.emplace(seq, std::vector<uint8_t>(payload, payload + plen));  // buffer, in order
     } else {
@@ -517,15 +537,50 @@ void Update(Endpoint* ep, double now) {
     // 1a3) ordered-channel stall recovery. A message the sender retired at 7s
     // (below) will NEVER be sent again, so a receiver waiting on that hole
     // waits forever: next_deliver pins, every later message piles into `ooo`
-    // until RC_OOO_MAX and is then dropped, and RC state is per-endpoint so no
-    // app-level re-JOIN repairs it. The old retire log promised "a permanent
-    // gap until re-JOIN" that re-JOIN could not actually honour. Past the
-    // retire horizon, skip the hole LOUDLY and drain what we have -- a visible
-    // gap the consumer can resync from beats a silently dead channel.
+    // until RC_OOO_MAX and is then dropped, and RC state is per-endpoint so an
+    // app-level re-JOIN repairs it only if that re-JOIN explicitly resets the
+    // endpoint (ReliableChannel_ResetPeer -- nothing did until the spectator
+    // starve of 2026-08-07 proved the retire log's "permanent gap until
+    // re-JOIN" was a promise re-JOIN could not keep). Past the stall horizon,
+    // repair LOUDLY -- a visible gap the consumer can resync from beats a
+    // silently dead channel.
+    //
+    // TWO SHAPES, and requiring `!ooo.empty()` made the repair unreachable in
+    // exactly the one that motivated it:
+    //   * BUFFERED TAIL -- something behind the hole did arrive, so we know
+    //     where the stream resumes: skip to it and drain.
+    //   * EMPTY TAIL -- nothing behind the hole is buffered. This is NOT the
+    //     rare case: the receiver's pinned cumulative ack is what stops the
+    //     SENDER clearing anything, so once the hole ages out the whole tail
+    //     ages out with it and never re-ships. There is no successor to name,
+    //     so arm stall_resync and let the next message to arrive adopt itself
+    //     as the cursor (DeliverOrdered). Also reached by a merely IDLE
+    //     ordered channel, where the arm is a no-op: the next message arrives
+    //     at exactly next_deliver, takes the ordinary in-order path, and
+    //     clears the arm without ever adopting.
     for (auto& [rxchan, rc] : ep->rx) {
-        if (!rc.cls_ordered || !rc.started || rc.ooo.empty()) continue;
+        if (!rc.cls_ordered || !rc.started) continue;
         if (rc.last_progress_time < 0.0) { rc.last_progress_time = now; continue; }
         if (now - rc.last_progress_time < RC_ORDERED_STALL_SEC) continue;
+        if (rc.ooo.empty()) {
+            // One line per stall episode: the arm latches until a delivery
+            // clears it, and last_progress_time is refreshed so a channel
+            // that stays quiet does not re-log every horizon.
+            if (!rc.stall_resync) {
+                rc.stall_resync = true;
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "[RC] ordered chan=%u delivered nothing for %.1fs at "
+                    "msg_seq=%llu with NOTHING buffered -- the sender retired "
+                    "the hole AND its tail (or the channel is simply idle). "
+                    "UN-ANCHORING: the next message to arrive adopts itself as "
+                    "the cursor instead of waiting on a hole that can never "
+                    "fill",
+                    (unsigned)rxchan, now - rc.last_progress_time,
+                    (unsigned long long)rc.next_deliver);
+            }
+            rc.last_progress_time = now;
+            continue;
+        }
         const uint64_t skip_to = rc.ooo.begin()->first;
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
             "[RC] ordered chan=%u stalled %.1fs at msg_seq=%llu with %zu buffered "
@@ -536,6 +591,7 @@ void Update(Endpoint* ep, double now) {
             (unsigned long long)skip_to);
         rc.next_deliver = skip_to;
         rc.last_progress_time = now;
+        rc.stall_resync       = false;   // we found the successor ourselves
         auto it = rc.ooo.find(rc.next_deliver);
         while (it != rc.ooo.end()) {
             if (ep->deliver) ep->deliver(ep->deliver_ctx, rxchan,
@@ -588,10 +644,13 @@ void Update(Endpoint* ep, double now) {
                     s_last_retire_log = now;
                     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                         "[RC] RETIRED reliable msg seq=%llu chan=%u after 7s "
-                        "undelivered (%zu bytes) -- stream has a permanent gap "
-                        "until re-JOIN",
+                        "undelivered (%zu bytes) -- permanent gap. The RECEIVER "
+                        "repairs it at %.1fs (ordered-stall skip/resync); a bare "
+                        "app-level re-JOIN does NOT, because RC state is "
+                        "per-endpoint and survives it -- only "
+                        "ReliableChannel_ResetPeer clears this endpoint",
                         (unsigned long long)it->first, (unsigned)tkv.first,
-                        u.framed.size());
+                        u.framed.size(), RC_ORDERED_STALL_SEC);
                 }
                 it = un.erase(it);
                 continue;

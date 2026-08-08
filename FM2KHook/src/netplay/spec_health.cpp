@@ -125,48 +125,67 @@ void SpectatorNode_TickHealth() {
         //     cursor (the backfill-end..RC-live-start gap: some live
         //     batches did arrive, keyed past next_expected, but the bridge
         //     never did). pb_reorder is non-empty.
-        //   VARIANT 2 -- a mid-match snapshot applied in an ACTIVE battle
-        //     but the RC live stream delivered NOTHING at all (pb_reorder
-        //     EMPTY, sim starved, cursor frozen at the anchor). Nothing is
-        //     buffered to signal the gap, so variant-1 detection is blind.
+        //   VARIANT 2 -- the live stream delivered NOTHING at all (pb_reorder
+        //     EMPTY, sim starved, cursor frozen). Nothing is buffered to
+        //     signal the gap, so variant-1 detection is blind.
         // Firing when actually caught-up is a host-side no-op
         // (SendSessionBackfillFromFrame ships nothing at-or-after the live
         // edge), so an over-eager pull costs one ACK + empty backfill.
         const bool gap_ahead = !g_state.pb_reorder.empty() &&
             g_state.pb_reorder.begin()->first > g_state.next_expected_frame;
         bool starved_battle = false;
-        if (!gap_ahead && g_state.playing_back &&
-            g_state.pb_snapshot_applied_once &&
+        // "We are mid-stream", NOT "we are inside the one battle a snapshot
+        // landed in". This term used to read pb_snapshot_applied_once ALONE,
+        // which made variant 2 unreachable for most spectators and for ALL of
+        // them after their first match boundary: that flag is cleared at every
+        // battle EXIT (SpectatorNode_ClearSnapshotAppliedForNextBattle, from
+        // the battle->non-battle edge in trampoline_spectator.cpp) because it
+        // also suppresses the battle-entry DoInitialSync. A from-frame-0 /
+        // CSS-joining viewer never satisfied it at all. Measured: across all
+        // seven runs of the 2026-08-07 starve corpus the mid-battle viewers
+        // issued ZERO gap-fill pulls -- one sat at q=0 for five seconds and
+        // then killed itself -- while viewers still inside their snapshot's
+        // battle issued seven or eight. pb_started ("we have popped a real
+        // INPUT this session") is durable and covers every join shape; the
+        // snapshot flag stays as an OR for a viewer that starves before its
+        // first pop.
+        const bool mid_stream =
+            g_state.pb_started || g_state.pb_snapshot_applied_once;
+        if (!gap_ahead && g_state.playing_back && mid_stream &&
             SpectatorNode_PendingFrameCount() == 0) {
             // Gate on battle mode: a starved queue at a match boundary /
             // CSS is NORMAL and must not pull (the pull's JOIN_ACK carries
             // the host's CURRENT kind -- a between-matches kind would abort
-            // the viewer's BTB). game_mode 3000 == in battle, where a live
-            // stream should always be feeding us.
+            // the viewer's BTB). Battle is the RANGE [3000,4000), which is
+            // what every other battle test in this codebase uses
+            // (DeepJoinShouldHold, the SpecSim trace gate); the old `== 3000`
+            // equality would have missed any battle sub-mode.
             const uint32_t gm = *(const uint32_t*)FM2K::ADDR_GAME_MODE;
-            starved_battle = (gm == 3000);
+            starved_battle = (gm >= 3000u && gm < 4000u);
         }
         if (g_state.have_frame_baseline && (gap_ahead || starved_battle)) {
             if (g_state.next_expected_frame != g_state.gap_fill_stall_frame) {
-                // Cursor moved (or first observation) -- (re)start the timer.
-                g_state.gap_fill_stall_frame    = g_state.next_expected_frame;
-                g_state.gap_fill_stall_since_ms = now;
+                // Cursor moved (or first observation) -- (re)start the timer,
+                // and the pull budget with it: a pull that MOVED the cursor is
+                // a pull that worked, and only a run of pulls that changed
+                // nothing may escalate.
+                g_state.gap_fill_stall_frame       = g_state.next_expected_frame;
+                g_state.gap_fill_stall_since_ms    = now;
+                g_state.gap_fill_pulls_no_progress = 0;
             } else if (now - g_state.gap_fill_stall_since_ms >=
                            SPECTATOR_GAP_FILL_STALL_MS &&
                        now - g_state.last_gap_fill_send_ms >=
                            SPECTATOR_GAP_FILL_THROTTLE_MS) {
                 g_state.last_gap_fill_send_ms = now;
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: gap-fill pull -- cursor stalled at "
-                    "INPUT-frame=%u (%s, %zu buffered); requesting reliable "
-                    "re-ship",
-                    g_state.next_expected_frame,
-                    gap_ahead ? "gap ahead" : "live starved",
-                    g_state.pb_reorder.size());
-                SpectatorNode_RequestGapFill();
+                // Pull, or -- once pulling has provably stopped helping --
+                // escalate to the resume-suppressed re-JOIN + RC endpoint
+                // reset. Owns its own logging, so the line always names what
+                // actually happened. See spec_join_viewer.cpp.
+                SpecGapFillPullOrEscalate(now, gap_ahead);
             }
         } else {
-            g_state.gap_fill_stall_frame = 0xFFFFFFFFu;  // no gap / not battle
+            g_state.gap_fill_stall_frame       = 0xFFFFFFFFu;  // no gap / not battle
+            g_state.gap_fill_pulls_no_progress = 0;
         }
 
         // Subscribed, live batches ARE arriving, and NOTHING has anchored the

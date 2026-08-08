@@ -9,6 +9,7 @@
 #include "spec_join_internal.h"       // shared with spec_join.cpp
 #include "spectator_tcp.h"        // TCP transport for INPUT_BATCH stream
 #include "control_channel.h"
+#include "reliable_channel_net.h" // ReliableChannel_ResetPeer -- the starve escalation
 #include "nat_traversal.h"        // GetRelayAddr for the spec-relay fallback (#58)
 #include "netplay.h"
 #include "netplay_state.h"
@@ -108,24 +109,30 @@ bool SpectatorNode_RequestJoin(const sockaddr_in& upstream, SpecJoinMode mode) {
     // Light re-join: mid-stream viewers declare where their admission
     // cursor stands so the host backfills exactly the gap (no snapshot).
     //
-    // SUPPRESSED for exactly one JOIN_REQ when a bounded deep joiner escalates
-    // its battle-entry hold. A resume-flagged request makes the host take the
-    // light-resume bind, which ships the gap and explicitly NO snapshot -- the
-    // precise opposite of what the escalation needs. Without the flag the host
-    // takes its destructive-reset branch and RE-PINS, and with the host inside
-    // the battle we are held at that re-pin yields a BATTLE grant whose
-    // ordinary use_snapshot path delivers the blob the hold is waiting for.
-    const bool force_full = g_state.pb_deep_join_force_full_rejoin;
-    g_state.pb_deep_join_force_full_rejoin = false;
+    // SUPPRESSED for exactly one JOIN_REQ by SpecForceFullReJoin, which BOTH
+    // recovery ladders end in: the bounded deep joiner's battle-entry hold and
+    // the mid-stream starve escalation. A resume-flagged request makes the
+    // host take the light-resume bind, which ships the gap over the existing
+    // reliable path and explicitly NO snapshot -- the precise opposite of what
+    // either escalation needs, since one wants a snapshot and the other wants
+    // the path itself rebuilt. Without the flag the host takes its
+    // destructive-reset branch and RE-PINS: for a held deep joiner with the
+    // host inside the battle, that re-pin yields a BATTLE grant whose ordinary
+    // use_snapshot path delivers the blob; for a starving viewer it is a fresh
+    // bind and a full re-ship onto the endpoint we just reset.
+    const bool force_full = g_state.spec_force_full_rejoin;
+    g_state.spec_force_full_rejoin = false;
     if (!force_full && g_state.have_frame_baseline && g_state.pb_started) {
         req.data.spec_join_req.reserved[0] |= SPEC_JOIN_RESUME;
         const uint32_t resume = g_state.next_expected_frame;
         std::memcpy(&req.data.spec_join_req.reserved[1], &resume, 4);
     } else if (force_full) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "[SPEC-DEEPJOIN] escalation re-JOIN -- omitting SPEC_JOIN_RESUME "
-            "so the host re-pins and re-ships a snapshot instead of taking the "
-            "light-resume gap bind (cursor=%u)", g_state.next_expected_frame);
+            "SpectatorNode: escalation re-JOIN -- omitting SPEC_JOIN_RESUME so "
+            "the host takes its destructive-reset branch (re-pin + fresh bind + "
+            "re-ship) instead of the light-resume gap bind, which explicitly "
+            "re-ships over the same reliable endpoint (cursor=%u)",
+            g_state.next_expected_frame);
     }
     // Version gate advertisement (reserved[5]=minor, reserved[6]=patch).
     req.data.spec_join_req.reserved[0] |= SPEC_JOIN_VERSIONED;
@@ -161,6 +168,109 @@ void SpectatorNode_RequestGapFill() {
                              &req.data.spec_join_req.reserved[6]);
     ControlChannel_SendTo(req, g_state.upstream_addr);
 }
+
+namespace specnode {
+
+// The resume-suppressed re-JOIN, generalised out of the deep-join hold ladder
+// (see spectator_node_internal.h). TWO halves, and the second one is the half
+// that was missing:
+//
+//   1. Suppress SPEC_JOIN_RESUME for one JOIN_REQ so the host lands on its
+//      DESTRUCTIVE-RESET branch (spec_join.cpp) rather than the surgical
+//      gap-fill branch, which re-ships over the very endpoint that is wedged.
+//   2. RESET OUR OWN RC ENDPOINT toward the upstream. RC state is keyed by
+//      peer ADDRESS in reliable_channel_net.cpp's registry and is completely
+//      untouched by any app-level re-JOIN -- the retire log's old promise of
+//      "a permanent gap until re-JOIN" was never something re-JOIN could keep,
+//      and this is the line that finally makes it true. OUR side only: the
+//      wedge is a pinned RECEIVE cursor, so the receiver is what must forget.
+//      The host deliberately does NOT reset its endpoint (see the long note in
+//      spec_join.cpp's destructive-reset branch -- a host-side msg_seq restart
+//      lands inside RC_RESTART_BACKJUMP on a short-lived channel and would eat
+//      the head of the re-ship it just triggered).
+bool SpecForceFullReJoin(SpecJoinMode mode, const char* reason) {
+    if (g_state.session_ended) return false;
+    if (g_state.root_addr.sin_port == 0) return false;
+    const sockaddr_in& peer = (g_state.upstream_addr.sin_port != 0)
+                                  ? g_state.upstream_addr
+                                  : g_state.root_addr;
+    char buf[48] = {}; FormatAddr(peer, buf, sizeof(buf));
+    bool rc_reset = false;
+    if (!g_state.spec_transport_relay && SpecRcEnabled()) {
+        // The LOCKING entry: this runs from TickHealth on the main thread,
+        // outside any poll, and the MM-timer worker can be inside
+        // PollImplLocked touching the very endpoint we are freeing.
+        sockaddr_storage ss{};
+        std::memcpy(&ss, &peer, sizeof(peer));
+        rc_reset = ReliableChannel_ResetPeer(ss);
+    }
+    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+        "SpectatorNode: FORCED FULL RE-JOIN to %s (reason=%s, rc_endpoint_reset=%d) "
+        "-- cursor=%u q=%zu reorder=%zu",
+        buf, reason, (int)rc_reset, g_state.next_expected_frame,
+        g_state.pb_queue.size(), g_state.pb_reorder.size());
+    g_state.spec_force_full_rejoin    = true;
+    g_state.last_reconnect_attempt_ms = GetTickCount64();
+    SpectatorNode_RequestJoin(g_state.root_addr, mode);
+    return true;
+}
+
+// Called from TickHealth once the gap-fill stall timer AND the pull throttle
+// have both elapsed. Either pulls, or -- when pulling has provably stopped
+// helping -- escalates.
+//
+// THE BOUND EXISTS BECAUSE THE PULL CANNOT WIN SOME GAMES. It asks the host to
+// re-ship [cursor..live) over the existing reliable connection and the host
+// obliges, correctly anchored, without resetting anything. Against an ordinary
+// lost range that heals in one round trip. Against a head-of-line-blocked RC
+// ordered channel the re-ship rides the same wedged endpoint and delivers
+// nothing, forever, while the viewer's host-gone watchdog counts down -- the
+// 2026-08-07 starve, where four and eight consecutive pulls were answered by a
+// host that was reachable the entire time and the cursor never moved once.
+void SpecGapFillPullOrEscalate(uint64_t now, bool gap_ahead) {
+    const uint32_t stalled_ms = SpectatorNode_MsSinceLastAdmit();
+    const bool pulls_exhausted =
+        g_state.gap_fill_pulls_no_progress >= SPECTATOR_STARVE_PULLS_BEFORE_ESCALATE;
+    // ORDERING GUARD: never escalate before RC's own ordered-stall repair has
+    // had its horizon. That repair is strictly cheaper (no re-JOIN, no
+    // re-ship, no host work) and it heals the common shape on its own, so
+    // spending a destructive reset first would be pure waste.
+    const bool rc_repair_had_its_turn =
+        stalled_ms >= SPECTATOR_STARVE_ESCALATE_MIN_STALL_MS;
+    const bool floor_clear =
+        g_state.last_starve_escalate_ms == 0 ||
+        now - g_state.last_starve_escalate_ms >= SPECTATOR_STARVE_ESCALATE_FLOOR_MS;
+
+    if (pulls_exhausted && rc_repair_had_its_turn && floor_clear) {
+        g_state.last_starve_escalate_ms = now;
+        ++g_state.starve_escalations;
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+            "SpectatorNode: STARVE ESCALATION #%u -- %u gap-fill pull(s) moved "
+            "the cursor ZERO frames and nothing has been admitted for %ums. The "
+            "pull re-ships over the same reliable endpoint and never resets it, "
+            "so it cannot heal a wedged transport; forcing a full re-JOIN + RC "
+            "endpoint reset instead (cursor=%u q=%zu reorder=%zu)",
+            g_state.starve_escalations,
+            g_state.gap_fill_pulls_no_progress, stalled_ms,
+            g_state.next_expected_frame, g_state.pb_queue.size(),
+            g_state.pb_reorder.size());
+        g_state.gap_fill_pulls_no_progress = 0;   // fresh budget for the next round
+        SpecForceFullReJoin(g_state.last_requested_mode, "mid-stream starve");
+        return;
+    }
+
+    ++g_state.gap_fill_pulls_no_progress;
+    ++g_state.gap_fill_pull_total;
+    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+        "SpectatorNode: gap-fill pull #%u -- cursor stalled at INPUT-frame=%u "
+        "(%s, %zu buffered, %ums since last admit); requesting reliable re-ship",
+        g_state.gap_fill_pulls_no_progress, g_state.next_expected_frame,
+        gap_ahead ? "gap ahead" : "live starved", g_state.pb_reorder.size(),
+        stalled_ms);
+    SpectatorNode_RequestGapFill();
+}
+
+}  // namespace specnode
 
 void SpectatorNode_HandleJoinAck(const sockaddr_in& from, uint8_t host_session_kind,
                                  uint16_t host_tcp_port,
@@ -442,34 +552,37 @@ void SpectatorNode_HandleJoinAck(const sockaddr_in& from, uint8_t host_session_k
     snprintf(host_addr_str, sizeof(host_addr_str), "%s:%u",
              inet_ntoa(from.sin_addr), ntohs(from.sin_port));
 
-    // If a SpectateSession is already alive, only act on a kind CHANGE.
-    // Same-kind re-broadcasts (host re-acks for liveness / new spectator
-    // joining the same session) are no-ops via Netplay_StartSpectateSession's
-    // own idempotency guard.
-    const NetplaySessionKind current = Netplay_GetSessionKind();
-    if (current == NetplaySessionKind::SPECTATE) {
-        // Only a LIVE REFRESH may swap a running mirror's phase. A grant
-        // re-states how THIS subscriber was told to boot, and that answer is
-        // pinned: a viewer granted CSS keeps being told CSS long after the
-        // host reached battle, so letting a grant drive the swap would kick a
-        // battle mirror back out to CSS on any re-ACK (the host's reset-floor
-        // branch re-ACKs on every re-JOIN inside 3s). The stream's
-        // MATCH_START / MATCH_END ops are the primary transition signal
-        // anyway; this path is the robustness backup for them.
-        if (!live_refresh) {
-            SpecReplayPreSubStash();  // task #55: anything that beat this ACK
-            return;
-        }
-        // Wrong-kind alive -- treat as a phase swap. swap_frame=0 fires
-        // immediately on the next AdvanceEvent.
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: host kind changed mid-session, requesting swap to kind=%d",
-                    (int)kind);
-        if (kind == NetplaySessionKind::BATTLE) {
-            Netplay_OnHostBattleEntering(0);
-        } else {
-            Netplay_OnHostBattleEnd(0);
-        }
+    // A SpectateSession is already alive -> this ACK changes nothing about the
+    // mirror. Replay whatever beat it and return.
+    //
+    // A "PHASE SWAP" ARM USED TO LIVE HERE AND IT WAS DEAD CODE THAT COST A
+    // DIAGNOSIS. On a live refresh it called Netplay_OnHostBattleEntering(0) /
+    // Netplay_OnHostBattleEnd(0), logging "host kind changed mid-session" +
+    // "pending CSS->battle swap". Three independent facts retire it:
+    //
+    //   1. Its guard was vacuous. The test it sat behind was "a session of the
+    //      WRONG kind is alive", but a spectator's Netplay_GetSessionKind() is
+    //      ALWAYS SPECTATE -- never CSS, never BATTLE -- so it was true for
+    //      every live refresh ever received, kind change or not.
+    //   2. What it armed can never fire. The arm sets g_pending_swap_kind,
+    //      whose ONLY consumer is MaybeSwapPendingSpectator, whose ONLY caller
+    //      is Netplay_ProcessSpectatorPhase -- which has NO callers at all
+    //      (SpectatorNode viewers are driven by RunSpectatorTick, not by a
+    //      GekkoSession event drain). Corpus-confirmed: "caught up to
+    //      swap_frame=" and "Destroying SpectateSession" appear ZERO times in
+    //      every spectate log we hold.
+    //   3. It actively misled. Because the host answers each gap-fill pull
+    //      with a live-refresh JOIN_ACK, a starving viewer emitted one
+    //      "pending CSS->battle swap" per pull -- which read as a swap LOOP and
+    //      sent the first pass at the 2026-08-07 starve down the wrong road for
+    //      a whole phase. The real fault was one layer down, in RC.
+    //
+    // Deleted rather than gated: a gate would leave a latent path that, if
+    // Netplay_ProcessSpectatorPhase were ever wired up, would tear down and
+    // recreate the SpectateSession under a healthy live mirror on a routine
+    // liveness re-ACK. The stream's own MATCH_START / MATCH_END ops are and
+    // always were the actual phase-transition signal.
+    if (Netplay_GetSessionKind() == NetplaySessionKind::SPECTATE) {
         SpecReplayPreSubStash();  // task #55: anything that beat this ACK
         return;
     }

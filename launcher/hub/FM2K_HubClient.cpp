@@ -61,6 +61,24 @@ bool HubClient::Connect(const std::string& host, uint16_t port,
     if (io_.joinable()) {
         io_.join();
     }
+    // Discard spec-relay frames left over from a previous session. They
+    // describe a match that is over (or a viewer that is gone), so
+    // replaying them into a fresh hub session would ship stale spec data
+    // at whoever subscribes next. JSON control messages are kept -- the
+    // API contract is that they queue until the upgrade completes.
+    // Counted as drops so the RELAY pill still tells the truth.
+    {
+        uint64_t discarded = 0;
+        std::lock_guard<std::mutex> lk(out_mtx_);
+        for (auto it = outbox_.begin(); it != outbox_.end(); ) {
+            if (it->is_binary) { it = outbox_.erase(it); ++discarded; }
+            else               { ++it; }
+        }
+        spec_relay_queued_bytes_ = 0;
+        if (discarded) {
+            spec_relay_dropped_.fetch_add(discarded, std::memory_order_relaxed);
+        }
+    }
     // Stash the token + secure flag for IoThread to read. Member state
     // because std::thread argument forwarding caps at 4 here without
     // pulling in another tuple wrapper.
@@ -105,12 +123,56 @@ void HubClient::EnqueueOut(std::string msg) {
 }
 
 void HubClient::SendSpecRelayFrame(std::vector<uint8_t> frame) {
+    // Two refusals, both counted (see SpecRelayDropped in the header):
+    //
+    //  1. No hub session. Nobody is subscribed, the hub would reject the
+    //     frame anyway, and queueing it only means a later reconnect
+    //     replays stale mid-match spec data at a viewer. Refuse now so
+    //     the caller's ring drain is visible as loss instead of looking
+    //     healthy while bytes pile up in RAM.
+    //  2. Outbox already holding kSpecRelayMaxQueuedBytes of unsent spec
+    //     data -- the WS cannot keep up. Refusing the newest frame keeps
+    //     memory bounded; the viewer's own gap detection handles the hole.
+    const size_t frame_bytes = frame.size();
+    if (!connected_.load(std::memory_order_acquire)) {
+        const uint64_t n =
+            spec_relay_dropped_.fetch_add(1, std::memory_order_relaxed) + 1;
+        // Throttled: a relay-mode host with no hub produces one of these
+        // per drained ring slot, i.e. tens per second during a snapshot.
+        if (n == 1 || (n % 256) == 0) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "HubClient: spec-relay frame dropped -- not connected to hub "
+                "(dropped so far: %llu). Spec data is NOT reaching viewers.",
+                (unsigned long long)n);
+        }
+        return;
+    }
     OutMsg out{};
     out.is_binary = true;
     out.data      = std::move(frame);
+    size_t queued_now = 0;
+    bool   over_cap   = false;
     {
         std::lock_guard<std::mutex> lk(out_mtx_);
-        outbox_.push_back(std::move(out));
+        if (spec_relay_queued_bytes_ + frame_bytes > kSpecRelayMaxQueuedBytes) {
+            over_cap   = true;
+            queued_now = spec_relay_queued_bytes_;
+        } else {
+            spec_relay_queued_bytes_ += frame_bytes;
+            outbox_.push_back(std::move(out));
+        }
+    }
+    // Log outside the lock -- the SDL sink hops into the launcher's UI log.
+    if (over_cap) {
+        const uint64_t n =
+            spec_relay_dropped_.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (n == 1 || (n % 256) == 0) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "HubClient: spec-relay outbox full (%zu bytes queued) -- "
+                "dropping frame (dropped so far: %llu)",
+                queued_now, (unsigned long long)n);
+        }
+        return;
     }
     out_cv_.notify_one();
 }

@@ -305,7 +305,7 @@ void LauncherUI::RenderMenuBar() {
         //   where E = total enqueued (k-suffixed when > 999), D = total
         //   dropped (red if non-zero). Drops are what testers watch
         //   for; they indicate a ring overflow or oversize payload.
-        char relay_pill[80] = {};
+        char relay_pill[96] = {};
         bool show_relay_pill = false;
         ImVec4 relay_col(0.55f, 0.85f, 0.55f, 1.0f);  // muted green = healthy
         if (spec_relay_status_.out_active || spec_relay_status_.in_active) {
@@ -316,18 +316,27 @@ void LauncherUI::RenderMenuBar() {
                     (unsigned long long)((v / 100) % 10));
                 else std::snprintf(buf, n, "%llu", (unsigned long long)v);
             };
-            char oe[16], od[16], ie[16], id[16];
-            fmt_k(spec_relay_status_.out_enqueued, oe, sizeof(oe));
-            fmt_k(spec_relay_status_.out_dropped,  od, sizeof(od));
-            fmt_k(spec_relay_status_.in_enqueued,  ie, sizeof(ie));
-            fmt_k(spec_relay_status_.in_dropped,   id, sizeof(id));
+            char oe[16], od[16], ie[16], id[16], hd[16];
+            fmt_k(spec_relay_status_.out_enqueued,    oe, sizeof(oe));
+            fmt_k(spec_relay_status_.out_dropped,     od, sizeof(od));
+            fmt_k(spec_relay_status_.in_enqueued,     ie, sizeof(ie));
+            fmt_k(spec_relay_status_.in_dropped,      id, sizeof(id));
+            fmt_k(spec_relay_status_.out_hub_dropped, hd, sizeof(hd));
+            // hub: is the post-ring loss count. It is shown ALWAYS, not
+            // only when non-zero, because "hub:0" is the affirmative
+            // evidence a tester needs that the frames the ring says it
+            // dequeued actually left for the hub. A drained ring on its
+            // own proves nothing.
             std::snprintf(relay_pill, sizeof(relay_pill),
-                "  RELAY out:%s/%s in:%s/%s  ", oe, od, ie, id);
+                "  RELAY out:%s/%s hub:%s in:%s/%s  ", oe, od, hd, ie, id);
             // Any drops flip color to red. Even one drop in a real
-            // match means snapshot/event corruption -- worth investigating
-            // immediately.
-            if (spec_relay_status_.out_dropped > 0 ||
-                spec_relay_status_.in_dropped  > 0) {
+            // match means snapshot or event corruption -- worth
+            // investigating immediately. hub drops are the same class of
+            // problem one layer further out: the bytes never reached the
+            // hub at all (usually: not signed in / WS down).
+            if (spec_relay_status_.out_dropped    > 0 ||
+                spec_relay_status_.in_dropped     > 0 ||
+                spec_relay_status_.out_hub_dropped > 0) {
                 relay_col = ImVec4(0.95f, 0.40f, 0.40f, 1.0f);
             }
         }
@@ -358,9 +367,14 @@ void LauncherUI::RenderMenuBar() {
                 ImGui::SetTooltip(
                     "Spec hub-relay status (Phase 4 surface).\n"
                     "out: hook -> launcher -> hub (host shipping spec data)\n"
+                    "hub: frames the hub client refused AFTER the ring "
+                    "handed them over -- not connected to the hub, send "
+                    "backlog over cap, or discarded at reconnect.\n"
                     "in:  hub -> launcher -> hook (spec receiving data)\n"
                     "Format: enqueued/dropped. Red = drops happened "
-                    "(snapshot or event corruption -- investigate).");
+                    "(snapshot or event corruption -- investigate).\n"
+                    "hub: climbing with out: healthy means spec data is "
+                    "being produced but never leaves this machine.");
             }
             ImGui::PopStyleColor();
         }

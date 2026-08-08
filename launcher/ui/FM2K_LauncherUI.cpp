@@ -589,6 +589,11 @@ void LauncherUI::SetSpecRelayStatus(const SpecRelayStatus& st) {
     spec_relay_status_ = st;
 }
 
+uint64_t LauncherUI::HubSpecRelayDropped() const {
+    if (!hub_state_) return 0;
+    return hub_state_->client.SpecRelayDropped();
+}
+
 void LauncherUI::SetFramesAhead(float frames_ahead) {
     frames_ahead_ = frames_ahead;
 }

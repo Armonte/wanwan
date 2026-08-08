@@ -133,12 +133,14 @@ void FM2KLauncher::WireUICallbacks() {
     // pattern to the outbound drain in Update). The hook's TickHealth
     // drains the ring and dispatches each Slot through HandleSpecData.
     ui_->on_spec_relay_bytes = [this](const std::vector<uint8_t>& bytes) {
-        DWORD target_pid = 0;
-        if (game_instance_ && game_instance_->IsRunning()) {
-            target_pid = game_instance_->GetProcessId();
-        } else if (client1_instance_ && client1_instance_->IsRunning()) {
-            target_pid = client1_instance_->GetProcessId();
-        }
+        // Spectator slot FIRST -- inbound relay bytes are spec data for a
+        // VIEWER, and a viewer's game is spawned into spectator_instance_,
+        // never into game_instance_. Resolving player-slots-only here (the
+        // pre-fix code) meant target_pid stayed 0 on every viewer launcher
+        // and EVERY inbound frame was dropped before the ring was opened,
+        // i.e. relay spectate could not work at all. Shared with the
+        // outbound drain via SpecRelayInboundPid() so the two can't drift.
+        const uint32_t target_pid = SpecRelayInboundPid();
         if (target_pid == 0) {
             // Game not running -- nothing to deliver to. Frames arriving
             // before spec game boots are normal at the very start; drop.

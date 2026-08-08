@@ -439,7 +439,26 @@ public:
     // Queued on the same outbox as JSON control messages so cross-
     // message ordering is preserved per MSDN's "serialize sends per
     // handle" guidance.
+    //
+    // Unlike the JSON helpers this does NOT queue-before-connect: a spec
+    // frame is only meaningful to a hub that has us registered as a match
+    // host, and buffering them means shipping stale mid-match data on a
+    // later reconnect. Frames offered while disconnected -- and frames
+    // offered once the outbox is already holding kSpecRelayMaxQueuedBytes
+    // -- are refused and counted in SpecRelayDropped(). Before that
+    // counter existed, an unconnected launcher drained the hook's ring
+    // into an unbounded deque with total_dropped == 0 and a green RELAY
+    // pill, so "the ring is draining" looked like proof relay worked.
     void SendSpecRelayFrame(std::vector<uint8_t> frame);
+
+    // Cumulative spec-relay frames this client refused: not connected, or
+    // the outbox was already at its byte cap, or they were still queued
+    // when the session ended and got discarded rather than replayed into
+    // a fresh one. Surfaced by the launcher's RELAY status pill; monotonic
+    // for the lifetime of the HubClient. Safe from any thread.
+    uint64_t SpecRelayDropped() const {
+        return spec_relay_dropped_.load(std::memory_order_relaxed);
+    }
 
     // Report end-of-match outcome to the hub for stats tracking. `match_id`
     // is the token from the `match_start` event we received (== relay
@@ -572,6 +591,17 @@ private:
     std::mutex out_mtx_;
     std::condition_variable out_cv_;
     std::deque<OutMsg> outbox_;
+    // Bound on unsent spec-relay bytes sitting in outbox_. 4 MB == one
+    // full hook-side ring (QUEUE_CAPACITY 128 * SLOT_PAYLOAD_MAX 32 KB),
+    // so the launcher never buffers more than the producer could have
+    // handed it in the first place. Past that the WS is not keeping up
+    // and the oldest data is already worthless to a live viewer, so we
+    // refuse the NEWEST frame and count it rather than grow without
+    // limit. JSON control messages are never capped -- they are tiny and
+    // order-critical.
+    static constexpr size_t kSpecRelayMaxQueuedBytes = 4u * 1024u * 1024u;
+    size_t spec_relay_queued_bytes_ = 0;   // guarded by out_mtx_
+    std::atomic<uint64_t> spec_relay_dropped_{0};
 
     std::mutex in_mtx_;
     std::deque<HubEvent> inbox_;

@@ -214,8 +214,18 @@ public:
         uint64_t in_enqueued  = 0;
         uint64_t in_dropped   = 0;
         uint64_t in_dequeued  = 0;
+        // Frames the HubClient refused after we popped them off the ring:
+        // no hub connection, outbox over its byte cap, or discarded at
+        // reconnect. The ring counters above cannot see these -- from the
+        // ring's point of view the frame was dequeued successfully -- so
+        // without this the pill stays green while nothing reaches a viewer.
+        uint64_t out_hub_dropped = 0;
     };
     void SetSpecRelayStatus(const SpecRelayStatus& st);
+
+    // HubClient::SpecRelayDropped() passthrough (the hub client type is
+    // only visible inside the UI TUs). 0 when no hub state exists.
+    uint64_t HubSpecRelayDropped() const;
 
     // Forward the hook's current session_kind (menu/CSS/battle) to the
     // hub via a `session_kind` WS message. Called from FM2KLauncher::Update

@@ -199,6 +199,14 @@ void HubClient::IoThread(std::string host, uint16_t port,
                 if (!running_.load()) return;
                 msg = std::move(outbox_.front());
                 outbox_.pop_front();
+                // Release this frame's share of the spec-relay byte
+                // budget (SendSpecRelayFrame charges it on enqueue).
+                if (msg.is_binary) {
+                    const size_t n = msg.data.size();
+                    spec_relay_queued_bytes_ =
+                        (spec_relay_queued_bytes_ > n)
+                            ? (spec_relay_queued_bytes_ - n) : 0;
+                }
             }
             const WINHTTP_WEB_SOCKET_BUFFER_TYPE bt = msg.is_binary
                 ? WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE

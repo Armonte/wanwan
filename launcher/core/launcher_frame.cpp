@@ -101,6 +101,45 @@ void FM2KLauncher::HandleEvent(SDL_Event* event) {
     }
 }
 
+// ----- spec hub-relay pid resolution (see FM2K_Launcher_decl.h) -----
+//
+// Deliberately NOT one shared helper with a direction flag: the two
+// precedences are different, and writing them out makes the asymmetry
+// legible at both call sites.
+uint32_t FM2KLauncher::SpecRelayOutboundPid() const {
+    // Host-produced ring. Player slots first; spectator last-resort so a
+    // relaying/daisy-chain viewer (which also creates an outbound ring at
+    // SpectatorNode_Init) is still serviced when no player game exists.
+    if (game_instance_ && game_instance_->IsRunning()) {
+        return (uint32_t)game_instance_->GetProcessId();
+    }
+    if (client1_instance_ && client1_instance_->IsRunning()) {
+        // Dev-mode dual-clients fallback -- local-test spectator path.
+        return (uint32_t)client1_instance_->GetProcessId();
+    }
+    if (spectator_instance_ && spectator_instance_->IsRunning()) {
+        return (uint32_t)spectator_instance_->GetProcessId();
+    }
+    return 0;
+}
+
+uint32_t FM2KLauncher::SpecRelayInboundPid() const {
+    // Viewer-consumed ring. spectator_instance_ is where --spectate /
+    // the lobby Spectate button / LaunchLocalSpectator put the game, so
+    // it wins; the player slots stay as a fallback purely so a launcher
+    // that somehow has only a player game still behaves as it did.
+    if (spectator_instance_ && spectator_instance_->IsRunning()) {
+        return (uint32_t)spectator_instance_->GetProcessId();
+    }
+    if (game_instance_ && game_instance_->IsRunning()) {
+        return (uint32_t)game_instance_->GetProcessId();
+    }
+    if (client1_instance_ && client1_instance_->IsRunning()) {
+        return (uint32_t)client1_instance_->GetProcessId();
+    }
+    return 0;
+}
+
 void FM2KLauncher::Update(float delta_time SDL_UNUSED) {
     if (!running_) {
         // If the main loop is not running, trigger a clean shutdown
@@ -194,12 +233,11 @@ void FM2KLauncher::Update(float delta_time SDL_UNUSED) {
     // mode detection needed on the launcher side -- existence of the
     // mapping IS the signal.
     {
-        DWORD target_pid = 0;
-        if (game_instance_ && game_instance_->IsRunning()) {
-            target_pid = game_instance_->GetProcessId();
-        } else if (client1_instance_ && client1_instance_->IsRunning()) {
-            target_pid = client1_instance_->GetProcessId();
-        }
+        // Player slots first, spectator last -- SpecRelayOutboundPid()
+        // documents why. The spectator slot used to be missing here AND
+        // in the inbound callback, which is what made relay spectate
+        // unreachable on a viewer launcher.
+        const uint32_t target_pid = SpecRelayOutboundPid();
 
         // Outbound ring cached as class member (was lambda static)
         // for the same reason as inbound -- menu-bar status pill needs
@@ -293,6 +331,24 @@ void FM2KLauncher::Update(float delta_time SDL_UNUSED) {
             }
         }
 
+        // Inbound ring lifecycle. WireUICallbacks' on_spec_relay_bytes
+        // opens it, but that only runs when a WS binary frame actually
+        // arrives -- so a spec game that exits (or a launcher that flips
+        // from viewer to player) would leave the dead pid's mapping
+        // cached and its frozen counters on the status pill forever.
+        // Reconcile here, where we tick regardless of hub traffic, using
+        // the same resolver the callback uses. Mirrors what the outbound
+        // block above already does for its own pid.
+        const uint32_t in_pid = SpecRelayInboundPid();
+        if (in_pid != spec_relay_in_pid_) {
+            if (spec_relay_in_ring_) {
+                fm2k::spec_relay::Close(
+                    static_cast<fm2k::spec_relay::Ring*>(spec_relay_in_ring_));
+                spec_relay_in_ring_ = nullptr;
+            }
+            spec_relay_in_pid_ = in_pid;
+        }
+
         // Phase 4: surface the latest ring counters to the menu-bar
         // status pill. Both outbound (host produces -> launcher drains)
         // and inbound (launcher fills -> hook drains) read from class
@@ -312,7 +368,16 @@ void FM2KLauncher::Update(float delta_time SDL_UNUSED) {
             st.in_dropped  = in_ring_status->total_dropped;
             st.in_dequeued = in_ring_status->total_dequeued;
         }
-        if (ui_) ui_->SetSpecRelayStatus(st);
+        if (ui_) {
+            // Post-ring losses. A frame we popped and handed to the
+            // HubClient can still die there (no hub connection, outbox at
+            // its cap, discarded at reconnect) and the ring counters would
+            // never show it -- from the ring's side the slot was dequeued
+            // just fine. Without this the pill reads healthy while the
+            // spec data never leaves the machine.
+            st.out_hub_dropped = ui_->HubSpecRelayDropped();
+            ui_->SetSpecRelayStatus(st);
+        }
     }
 
     // Check for game termination. Players run under game_instance_; the

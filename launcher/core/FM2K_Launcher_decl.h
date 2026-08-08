@@ -102,6 +102,30 @@ private:
     // Validates that a relay node correctly forwards confirmed-input frames
     // it received from upstream to its own subscribers.
     std::unique_ptr<FM2KGameInstance> spectator2_instance_;
+    // Spec hub-relay pid resolution. ONE definition each (in
+    // launcher_frame.cpp), called by BOTH the outbound drain (Update)
+    // and the inbound delivery callback (WireUICallbacks) so the two
+    // sites can never drift apart again -- they did, and a viewer
+    // launcher dropped every inbound relay frame because the inbound
+    // site only knew about the player slots.
+    //
+    // Split by direction because one launcher can hold a player game AND
+    // a spectator game at the same time (dev-mode dual clients + the
+    // "Launch Spectator" button; nothing forbids the lobby combination
+    // either):
+    //   outbound = hook -> launcher -> hub. Only a HOST enqueues into
+    //              FM2K_SpecRelayOut_<pid> (spec_transport.cpp's
+    //              OutboundBroadcast / OutboundSendTo), so player slots
+    //              win and a spectator is only the last-resort fallback.
+    //   inbound  = hub -> launcher -> hook. Only a VIEWER drains
+    //              FM2K_SpecRelayIn_<pid> (spec_health.cpp), and a
+    //              viewer's game ALWAYS lives in spectator_instance_
+    //              (process_manager.cpp LaunchRemoteSpectator /
+    //              LaunchLocalSpectator), so the spectator wins.
+    // 0 = no candidate process running.
+    uint32_t SpecRelayOutboundPid() const;
+    uint32_t SpecRelayInboundPid() const;
+
     // Phase 4: spec hub-relay ring caches. Promoted from lambda-local
     // statics so the menu-bar status pill can read live counters from
     // BOTH directions. Lifetimes: opened lazily when a game with a

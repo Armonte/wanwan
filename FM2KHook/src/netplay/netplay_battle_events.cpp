@@ -24,6 +24,7 @@
 #include "globals.h"            // FM2K::ADDR_*, FM2K::kIsFM95, original_*, g_sim_step_count
 #include "gekkonet.h"
 #include "../parity/parity_recorder.h"  // ParityRecorder::Capture/Close
+#include "../parity/parity_pool.h"      // player-slot resolution + pool-topology fencepost term
 #include <SDL3/SDL_log.h>
 #include <windows.h>
 #include <cstdlib>
@@ -81,10 +82,13 @@ void Netplay_HandleSaveEvent(GekkoGameEvent* update) {
     }
     (void)SaveState_GetLastChecksum(frame);  // updates RegionChecksums via side effect
     // Use the gameplay fingerprint as GekkoNet's desync checksum.
-    // If both peers see the same HP/pos/rng/timer values at this
-    // frame, fingerprints match and GekkoNet stays happy even when
-    // per-process memory residue differs. Full combined hash is
-    // still computed and available for the diagnostic dump.
+    // If both peers see the same rng / HP / round+game timer / current
+    // input values at this frame, fingerprints match and GekkoNet stays
+    // happy even when per-process memory residue differs. Full combined
+    // hash is still computed and available for the diagnostic dump.
+    // NB: there are NO POSITION FIELDS in the fingerprint (see
+    // SaveState_CalculateFingerprint) -- this comment used to say "HP/pos/
+    // rng/timer" and that was wrong.
     // Frame 0 is the battle-entry PRE-INIT frame: HP/pos/timer are init-race
     // garbage there (wild false desync-kill 2026-07-18: the "local" and
     // "remote" f=0 CRCs both existed on ONE machine as its own forward-vs-
@@ -100,17 +104,35 @@ void Netplay_HandleSaveEvent(GekkoGameEvent* update) {
     memcpy(update->data.save.state, &frame, sizeof(uint32_t));
 
     // [CHECKSUM] -- FULL-STATE FENCEPOST (GDC GAP #1). The gameplay_fingerprint is
-    // the DETERMINISTIC HP/pos/rng/timer hash GekkoNet uses for P1-vs-P2 desync
-    // detection, computed at the SAVE event = re-emitted on every re-sim, so the
-    // harness's dedupe-by-frame-last yields the CONFIRMED state (positions
-    // included). The players are already cross-checked by gekko; logging it lets
+    // the DETERMINISTIC rng / HP / round+game timer / current-input hash GekkoNet
+    // uses for P1-vs-P2 desync detection, computed at the SAVE event = re-emitted
+    // on every re-sim, so the harness's dedupe-by-frame-last yields the CONFIRMED
+    // state. It contains NO POSITION FIELDS and no object-pool term -- this
+    // comment used to say "HP/pos/rng/timer ... (positions included)" and that
+    // was never true of the code (see SaveState_CalculateFingerprint); the
+    // top=/nobj= topology term below exists precisely because of that gap.
+    // The players are already cross-checked by gekko; logging it lets
     // the harness extend the same check to the SPECTATORS (not in the gekko
     // session). Gated FM2K_CINPUT.
     {
         static int s_ck = -1;
         if (s_ck < 0) { const char* v = std::getenv("FM2K_CINPUT"); s_ck = (v && v[0] == '1') ? 1 : 0; }
-        if (s_ck == 1)
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[CHECKSUM] f=%d crc=0x%08X", frame, checksum);
+        if (s_ck == 1) {
+            // top=/nobj= -- POOL-TOPOLOGY term, emitted ALONGSIDE crc and
+            // deliberately NOT folded into it: `checksum` above is the value
+            // handed to GekkoNet as the live P1-vs-P2 desync hash, and adding
+            // terms to it would change netplay behaviour (and could kill a
+            // session on a benign difference). The crc covers
+            // rng/HP/timers/ring-inputs only; the digest covers slot occupancy,
+            // object type, entity kind and player/parent linkage -- carry-state
+            // family A1, which the fencepost was blind to. Process-independent
+            // by construction (parity_pool.h): no pointer or pointer-derived
+            // value is hashed.
+            const ParityPool::Topology host_top = ParityPool::ComputeTopology();
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "[CHECKSUM] f=%d crc=0x%08X top=0x%08X nobj=%u",
+                frame, checksum, host_top.digest, host_top.active_count);
+        }
     }
 }
 
@@ -725,12 +747,12 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
         }
         if (s_host_trace_enabled &&
             g_netplay_frame > 0 && g_netplay_frame <= 5000) {
-            constexpr uintptr_t POOL = 0x4701E0;
-            constexpr size_t    SLOT = 382;
-            const int32_t p1_x = *(int32_t*)(POOL + 0 * SLOT + 0x08);
-            const int32_t p2_x = *(int32_t*)(POOL + 1 * SLOT + 0x08);
-            const int32_t p1_script = *(int32_t*)(POOL + 0 * SLOT + 0x30);
-            const int32_t p2_script = *(int32_t*)(POOL + 1 * SLOT + 0x30);
+            // Same scan-not-fixed-slot resolution as [HOST-FP] below.
+            // Nothing gates on this line's position fields today (the
+            // harness TRACE check keys on rng_post + inputs), but leaving
+            // one fixed-index reader in place is how the artifact comes back.
+            const ParityPool::PlayerView t1v = ParityPool::ReadPlayer(0);
+            const ParityPool::PlayerView t2v = ParityPool::ReadPlayer(1);
             const uint32_t p1_hp = *(uint32_t*)0x4DFC85;
             const uint32_t p2_hp = *(uint32_t*)0x4EDCC4;
             SDL_LogInfo(SDL_LOG_CATEGORY_CUSTOM,
@@ -740,7 +762,7 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
                 g_netplay_frame - 1u, rng_pre_advance,
                 *(uint32_t*)0x41FB1C,
                 g_p1_input, g_p2_input,
-                p1_x, p2_x, p1_script, p2_script,
+                t1v.pos_x, t2v.pos_x, t1v.script, t2v.script,
                 p1_hp, p2_hp);
         }
 
@@ -821,29 +843,29 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
             const uint32_t p1_hp   = *(uint32_t*)0x4DFC85;
             const uint32_t p2_hp   = *(uint32_t*)0x4EDCC4;
             const uint32_t timer   = *(uint32_t*)0x470044;
-            // World positions live in the object pool: slot 0 +0x08
-            // = pos_x, slot 1 = slot 0 + 382. (0x470020 was the
-            // CSS character-slot index, not the in-battle x --
-            // earlier logs were comparing useless data.)
-            constexpr uintptr_t POOL = 0x4701E0;
-            constexpr size_t    SLOT = 382;
-            const int32_t p1_x = *(int32_t*)(POOL + 0 * SLOT + 0x08);
-            const int32_t p1_y = *(int32_t*)(POOL + 0 * SLOT + 0x0C);
-            const int32_t p2_x = *(int32_t*)(POOL + 1 * SLOT + 0x08);
-            const int32_t p2_y = *(int32_t*)(POOL + 1 * SLOT + 0x0C);
-            const int32_t p1_script = *(int32_t*)(POOL + 0 * SLOT + 0x30);
-            const int32_t p2_script = *(int32_t*)(POOL + 1 * SLOT + 0x30);
+            // World positions live in the object pool, but NOT at fixed slots
+            // 0/1: create_game_object allocates first-free, so a fighter sits
+            // wherever the allocator put it and slot 1 is routinely a system
+            // object (the fixed-index read is what made a spectator print
+            // p2_pos=(320,150) p2_script=0 for a whole match). Resolve by the
+            // same scan the engine uses; the spectator side of this pair does
+            // the same, so [HOST-FP] and [SPEC-FP] stay comparable field for
+            // field. slots=(a,b) is appended for self-diagnosis; -1 = no
+            // character object resolved (pos (0,0), script -1).
+            const ParityPool::PlayerView p1v = ParityPool::ReadPlayer(0);
+            const ParityPool::PlayerView p2v = ParityPool::ReadPlayer(1);
             SDL_LogInfo(SDL_LOG_CATEGORY_CUSTOM,
                 "[HOST-FP] bf=%u rng=0x%08X buf=%u "
                 "p1_hp=%u p2_hp=%u timer=%u "
                 "p1_pos=(%d,%d) p2_pos=(%d,%d) "
                 "p1_script=%d p2_script=%d "
-                "p1_in=0x%03X p2_in=0x%03X",
+                "p1_in=0x%03X p2_in=0x%03X slots=(%d,%d)",
                 g_netplay_frame, rng, buf_idx,
                 p1_hp, p2_hp, timer,
-                p1_x, p1_y, p2_x, p2_y,
-                p1_script, p2_script,
-                g_p1_input, g_p2_input);
+                p1v.pos_x, p1v.pos_y, p2v.pos_x, p2v.pos_y,
+                p1v.script, p2v.script,
+                g_p1_input, g_p2_input,
+                p1v.slot, p2v.slot);
         }
 
         // C9: append FINGERPRINT op every 30 confirmed INPUTs.

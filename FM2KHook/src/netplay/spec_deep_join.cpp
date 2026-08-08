@@ -43,6 +43,38 @@
 // (FM2K_SPEC_DEEP_JOIN=1) on the host, and of the SPEC_ACK_DEEP_JOIN grant bit
 // on the viewer. With the gate off the host never marks a sub eligible, so no
 // push is ever armed and no viewer is ever told to hold.
+//
+// ---------------------------------------------------------------------------
+// TELEMETRY CONTRACT -- the viewer-side ladder's outcomes, one line each.
+// ---------------------------------------------------------------------------
+// The rollout plan (docs/dev/spectate_deep_join_rollout.md, Phase 1.3 and
+// Phase 3) counts these out of uploaded logs, so each terminal outcome emits
+// EXACTLY ONE line per occurrence and the substrings below are the stable
+// contract. Do NOT reword them without updating the analysers that grep them:
+//
+//   applied           "[SPEC-DEEPJOIN] snapshot APPLIED at anchor="
+//                     the deep join completed; viewer is bit-exact from here.
+//   re-requested      "[SPEC-DEEPJOIN] re-requesting the battle snapshot"
+//                     one per SPEC_SNAPSHOT_REQ (progress-gated, ~1.5s apart).
+//   escalated         "[SPEC-DEEPJOIN] hold budget"
+//                     one per budget exhaustion -> loud full re-JOIN.
+//   held-battle-ended "[SPEC-DEEPJOIN] OUTCOME=held-battle-ended"
+//                     ONE per hold episode, on the first 1Hz scan that sees the
+//                     held battle's MATCH_END queued behind us. The prose
+//                     "the battle we are holding for has ENDED" line keeps
+//                     repeating at 1Hz after it -- that one is the live
+//                     diagnostic, this one is the countable event.
+//   refused-stale     "[SPEC-DEEPJOIN] OUTCOME=refused-stale"
+//                     one per discarded blob, with reason=backward (a re-ship
+//                     for a frame we are already past) or reason=missed-battle
+//                     (a push for a battle that started after our hold armed).
+//                     Both used to be SILENT -- the only trace was the generic
+//                     "discarding re-join snapshot" line, which cannot tell a
+//                     deep-join refusal from any other re-join discard.
+//
+// The char-mismatch refusal keeps its own existing "refusing snapshot at
+// anchor=" line (the 0x40CD47 AV guard); it is loud already and the analysers
+// count it separately as `charguard`.
 #include "spectator_node.h"
 #include "spectator_node_internal.h"  // shared State model + g_state
 #include "control_channel.h"
@@ -82,6 +114,14 @@ bool QueueHasMatchEnd() {
     }
     return false;
 }
+
+// One-shot latch for the held-battle-ended OUTCOME line. The prose diagnostic
+// it sits next to is deliberately 1Hz-repeating (it is the "this is still
+// broken" heartbeat), which makes it useless for COUNTING the corner across a
+// soak -- one wedged viewer would contribute hundreds of hits. Cleared when a
+// hold arms and when one completes, so the count is "hold episodes that saw
+// their battle end", which is exactly the number Phase 1.3 wants.
+bool g_held_battle_ended_reported = false;
 
 }  // namespace
 
@@ -298,7 +338,21 @@ DeepJoinVerdict DeepJoinSnapshotVerdict(const State::SnapshotInbox& inbox) {
     // depending on whether we can still reach them, so the 0x40CD47
     // forward-jump AV is unreachable either way. It is STRICTLY NARROWER than
     // the !pb_started proxy it stands in for on this path, never wider.
-    if (inbox.anchor_frame < consumed) return DeepJoinVerdict::REFUSE;
+    if (inbox.anchor_frame < consumed) {
+        // Was SILENT. The caller discards the inbox right after this, so the
+        // only trace of a backward re-ship was the generic "discarding re-join
+        // snapshot" line, which every other join shape also produces -- a soak
+        // could not tell "the host re-shipped an old blob at me" from an
+        // ordinary re-join discard. One line per discarded blob.
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "[SPEC-DEEPJOIN] OUTCOME=refused-stale reason=backward anchor=%u "
+            "consumed=%u match=%u hold=%d -- this blob is for a frame we are "
+            "already past; applying it would rewind the sim under a live-edge "
+            "queue. Discarding; the per-battle re-arm serves us the current one",
+            inbox.anchor_frame, consumed, inbox.meta.match_index,
+            (int)g_state.pb_deep_join_await);
+        return DeepJoinVerdict::REFUSE;
+    }
     if (inbox.anchor_frame > consumed) {
         // Ahead of us. If we are still mirroring the anchored char-select, this
         // is simply the snapshot for the battle we are walking INTO: the host
@@ -309,8 +363,19 @@ DeepJoinVerdict DeepJoinSnapshotVerdict(const State::SnapshotInbox& inbox) {
         // If we are ALREADY held at a battle entry, a forward anchor means the
         // host has moved on to a battle we missed entirely. It can never become
         // applicable, so refuse it rather than wedge the inbox on it.
-        return g_state.pb_deep_join_await ? DeepJoinVerdict::REFUSE
-                                          : DeepJoinVerdict::WAIT;
+        if (!g_state.pb_deep_join_await) return DeepJoinVerdict::WAIT;
+        // Was SILENT, and this is the interesting half of the pair: it is the
+        // exact fingerprint of the held-battle-ended corner (our hold is on
+        // battle N, the blob is battle N+1's). Counting it is how Phase 1.3
+        // decides whether the self-healing variant is needed at all.
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "[SPEC-DEEPJOIN] OUTCOME=refused-stale reason=missed-battle "
+            "anchor=%u consumed=%u match=%u -- the host has entered a battle we "
+            "never reached; our sim is frozen at an earlier battle's frame 0 and "
+            "can never consume forward to this anchor. Discarding; the hold "
+            "stays armed and the escalation ladder keeps working",
+            inbox.anchor_frame, consumed, inbox.meta.match_index);
+        return DeepJoinVerdict::REFUSE;
     }
 
     // anchor == consumed. The phase gate downstream would hold this anyway;
@@ -434,6 +499,7 @@ bool DeepJoinShouldHold() {
         g_state.pb_deep_join_last_bytes    = 0;
         g_state.pb_deep_join_reqs          = 0;
         g_state.pb_deep_join_scan_ms       = g_state.pb_deep_join_hold_since_ms;
+        g_held_battle_ended_reported       = false;  // per-episode telemetry
         const auto& inbox = g_state.pb_snapshot_inbox;
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
             "[SPEC-DEEPJOIN] HOLDING at battle entry -- consumed "
@@ -475,6 +541,22 @@ void DeepJoinHoldTick(uint64_t now) {
     if (now - g_state.pb_deep_join_scan_ms >= 1000) {
         g_state.pb_deep_join_scan_ms = now;
         if (QueueHasMatchEnd()) {
+            // COUNTABLE EVENT, one per hold episode -- see the telemetry
+            // contract at the top of this file. Emitted BEFORE the prose line
+            // below so a log reader meets the summary first; the prose line's
+            // 1Hz cadence (and its exact wording, which the analysers grep as
+            // `ended`) is untouched.
+            if (!g_held_battle_ended_reported) {
+                g_held_battle_ended_reported = true;
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                    "[SPEC-DEEPJOIN] OUTCOME=held-battle-ended anchor=%u "
+                    "held=%llums reqs=%u escalations=%u q=%zu inbox=%zu/%u B",
+                    g_state.pb_deep_join_anchor,
+                    (unsigned long long)(now - g_state.pb_deep_join_hold_since_ms),
+                    g_state.pb_deep_join_reqs, g_state.pb_deep_join_escalations,
+                    g_state.pb_queue.size(), inbox.bytes_received,
+                    (unsigned)inbox.meta.total_bytes);
+            }
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                 "[SPEC-DEEPJOIN] the battle we are holding for has ENDED on the "
                 "host (MATCH_END is queued behind %zu event(s) we cannot drain) "
@@ -564,6 +646,7 @@ void DeepJoinOnSnapshotApplied(uint32_t anchor) {
         g_state.pb_deep_join_escalations);
     g_state.pb_deep_join_await = false;
     g_state.spec_deep_join     = false;
+    g_held_battle_ended_reported = false;
     // Tell the host to stop pushing. Repeated 3x like SESSION_END because the
     // control channel is unreliable. If all three are lost the host keeps
     // pushing one snapshot per battle entry to a viewer that no longer needs

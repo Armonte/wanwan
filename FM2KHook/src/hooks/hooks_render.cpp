@@ -265,8 +265,17 @@ extern "C" void Hook_RenderDiagnostics_Tick() {
                     // transport churn even though playback never stopped,
                     // which read as a full drop to the user).
                     const bool sub = SpectatorNode_IsSubscribedUpstream();
+                    // A hold or a catch-up drain names ITSELF (snapshot %,
+                    // frames behind) instead of showing a healthy-looking
+                    // "Subscribed" over a frozen picture -- see
+                    // SpectatorNode_ResyncStatus, which returns false in every
+                    // other state so the labels below are unchanged.
+                    char resync[64] = {};
+                    const bool resyncing =
+                        sub && SpectatorNode_ResyncStatus(resync, sizeof(resync));
                     const char* status =
                         !sub                                   ? "Connecting..."
+                        : resyncing                            ? resync
                         : SpectatorNode_IsTcpRejoinPending()   ? "Resyncing..."
                                                                : "Subscribed";
                     snprintf(title, sizeof(title),

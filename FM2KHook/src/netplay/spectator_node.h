@@ -158,51 +158,6 @@ constexpr uint8_t SPEC_JOIN_RESUME = 0x02;  // viewer accepts UDP_INPUT_BATCH + 
 // version bytes are absent or differ from its own.
 constexpr uint8_t SPEC_JOIN_VERSIONED = 0x04;
 
-// SPEC_JOIN_ACK host_session_kind encoding. Low 2 bits are the session kind
-// (NONE / CSS / BATTLE, mirroring NetplaySessionKind). Bit 2 flags the packet
-// as a LIVE REFRESH rather than a per-subscriber GRANT.
-//
-// GRANT (bit clear) -- "this is the shape of the stream I have pinned for YOU;
-// boot accordingly". Emitted only where the host pins or re-states a specific
-// subscriber's join_mode, and always from that subscriber's pinned_ack_kind.
-//
-// LIVE REFRESH (bit set) -- "here is where the host is right now". Emitted by
-// the battle-entry re-broadcast (one packet to every subscriber at once, so it
-// cannot be per-subscriber) and by the re-ACKs that intentionally change
-// nothing. It is authoritative about the host's CURRENT phase and nothing else.
-//
-// The split is load-bearing in both directions:
-//  * A refresh must never complete a FIRST-TIME handshake. The battle-entry
-//    broadcast reads live state and knows nothing about what any individual
-//    subscriber was pinned to, so if it is the first ACK a viewer manages to
-//    process (accept ACK lost, or the two datagrams reordered -- both plain
-//    unreliable UDP), a FULL_SESSION-granted viewer would read BATTLE, /F-boot
-//    into battle, and then replay the from-frame-0 CSS stream it was actually
-//    assigned as battle input from uninitialised state. Deterministic desync,
-//    observed at 2/16 under 20% loss.
-//  * A grant must never drive a PHASE SWAP on an already-mirroring viewer. A
-//    CSS-era grant re-stated while the host is now in battle would otherwise
-//    swap a battle mirror back out to CSS.
-//
-// Safe without a wire version bump: the version gate in
-// SpectatorNode_HandleJoinReq rejects any joiner whose minor.patch differs from
-// the host's, so both ends of a spectate session are always the same build.
-// netplay_control.cpp forwards this field verbatim, so no dispatch change is
-// needed either.
-constexpr uint8_t SPEC_ACK_KIND_NONE    = 0;
-constexpr uint8_t SPEC_ACK_KIND_CSS     = 1;
-constexpr uint8_t SPEC_ACK_KIND_BATTLE  = 2;
-constexpr uint8_t SPEC_ACK_KIND_MASK    = 0x03;
-constexpr uint8_t SPEC_ACK_LIVE_REFRESH = 0x04;
-// Bit 3 -- BOUNDED DEEP JOIN (Wave 4). Set only on a GRANT, only for a
-// subscriber the host decided (at pin time, from the same single read the kind
-// comes from) to serve with a bounded backfill anchored at the current
-// char-select. It tells the viewer that it is skipping prior matches'
-// SIMULATION, so it must HOLD at battle entry for the host's battle savestate
-// instead of entering from scratch. The live-refresh builder never sets it, so
-// no broadcast can arm a hold on a viewer that is bit-exact by simulation.
-constexpr uint8_t SPEC_ACK_DEEP_JOIN    = 0x08;
-
 // SPEC_SNAPSHOT_REQ flags (viewer -> host, bounded deep join only).
 constexpr uint8_t SPEC_SNAPREQ_WANT = 0x01;  // re-request for anchor_frame
 constexpr uint8_t SPEC_SNAPREQ_DONE = 0x02;  // applied -- stop pushing to me
@@ -671,73 +626,6 @@ uint32_t SpectatorFingerprint_Compute();
 // Daisy-chain is the failure case, not the design.
 constexpr size_t SPECTATOR_DEFAULT_CAPACITY = 32;
 
-// Failover timing.
-constexpr uint64_t SPECTATOR_HEARTBEAT_INTERVAL_MS = 1000;   // 1 s outbound
-// 15s: with UDP datagrams + heartbeat echoes as the liveness clock,
-// silence this long means the host is GONE or frozen solid -- and a
-// re-join against a frozen host only churns (the 5s budget flipped the
-// overlay to "connecting" during the players' own rollback stalls).
-constexpr uint64_t SPECTATOR_SILENCE_FAILOVER_MS   = 15000;  // 15 s with no
-                                                             // inbound from
-                                                             // current
-                                                             // upstream → fall
-                                                             // back to root
-constexpr uint64_t SPECTATOR_RECONNECT_BACKOFF_MS  = 2000;   // throttle JOIN_REQ
-// Cap for the exponential reconnect backoff (base doubled per consecutive
-// failure). A genuinely-gone host is retried at most this often, so the
-// spectator stops storming it while it waits out the host-gone watchdog.
-constexpr uint64_t SPECTATOR_RECONNECT_MAX_BACKOFF_MS = 4000;
-// RC full-transport handshake watchdog (task #70). Once JOIN_ACK lands,
-// subscribed_upstream latches true and the reconnect loop shuts off; if the
-// host's one-shot OP_BASELINE+snapshot+backfill burst is then lost beyond RC's
-// 7s message retirement, nothing re-JOINs (silence-failover + op-gap need a TCP
-// recv stamp that's 0 in RC mode; gap-fill needs have_frame_baseline) and the
-// viewer sits subscribed-but-never-admitted until the 30s process-exit. Re-JOIN
-// after this long with no admit to force the host to reset bind state and
-// re-ship. > the 7s RC retirement (don't reset an in-flight transfer) and > the
-// host's 3s reset-suppression (so the re-JOIN actually re-ships).
-constexpr uint64_t SPECTATOR_NOADMIT_REJOIN_MS = 8000;
-// FIRST no-admit recovery attempt. 8s is most of the 30s connect deadline and
-// a viewer stares at nothing for the whole interval, so the first retry fires
-// fast; only REPEATS fall back to the 8s cadence above (by then we know one
-// fast retry did not fix it, and the RC-retransmit-window rationale applies).
-// 3500ms is picked to clear the host's 3s destructive-reset floor
-// (spec_join.cpp HandleJoinReq) with margin, so the re-JOIN always provokes a
-// real re-ship instead of a bare re-ACK -- same reason SPECTATOR_KICK_JOIN_
-// INTERVAL_MS below uses it. Each fast retry stays cheap because the host-side
-// snapshot re-ship floor turns it into a backfill-only burst.
-constexpr uint64_t SPECTATOR_NOADMIT_FIRST_REJOIN_MS = 3500;
-// /F-dispatch-hold join kick cadence (SpectatorNode_KickJoin). MUST stay above
-// the host's 3s destructive-reset floor: at the old 1Hz the viewer re-JOINed
-// three times per host re-ship window, so a JOIN_ACK that finally landed could
-// arrive on a SUPPRESSED re-ship (re-ACK only, no data) -- half of the
-// stash-destruction race that produced the total=0 freeze. The other half is
-// the address-gated pre_sub_stash clear in SpectatorNode_RequestJoin; either
-// fix alone leaves the race open.
-constexpr uint64_t SPECTATOR_KICK_JOIN_INTERVAL_MS = 3500;
-// Host-side snapshot re-ship floor. A destructive reset re-runs the bind path,
-// which used to re-ship the FULL snapshot (tens of KB when the zero-RLE wins,
-// ~1MB when it does not) on every single re-JOIN -- congestion on the link
-// whose loss caused the
-// re-JOIN, and the viewer discards a re-join snapshot anyway once it has
-// started. The backfill (the ONLY thing besides an applied snapshot that can
-// set have_frame_baseline) still ships on every rebind. Above the 3500ms
-// re-JOIN cadences so the fast retry is cheap, below the 8s repeat cadence so
-// a genuinely-lost snapshot is always re-shipped on the second attempt.
-constexpr uint64_t SPECTATOR_SNAPSHOT_RESHIP_MS = 6000;
-// Surgical gap-fill (mid-match snapshot join under loss). When the
-// admission cursor stalls behind buffered future batches for this long,
-// pull the missing range over the reliable conn. Kept small so the gap
-// heals in well under a second -- far below the 15s silence-failover that
-// would otherwise tear down and loop on a full re-snapshot. Throttle
-// bounds the pull rate while the host re-ships the (idempotent) range.
-constexpr uint64_t SPECTATOR_GAP_FILL_STALL_MS     = 250;    // stall before pull
-constexpr uint64_t SPECTATOR_GAP_FILL_THROTTLE_MS  = 500;    // min between pulls
-constexpr uint64_t SPECTATOR_SUBSCRIBER_EXPIRY_MS  = 30000;  // upstream-side
-                                                             // sweep: drop
-                                                             // subscribers
-                                                             // silent >30 s
-
 // Set the direct-subscriber cap. 0 disables accepting (node still relays if
 // it already has subscribers).
 void SpectatorNode_SetCapacity(size_t max_direct);
@@ -927,6 +815,20 @@ bool SpectatorNode_IsSubscribedUpstream();
 // Upstream TCP died but the subscription is riding on UDP with a
 // background re-JOIN in flight (window title shows "Resyncing...").
 bool SpectatorNode_IsTcpRejoinPending();
+
+// Viewer-visible state for the paths that deliberately stop (or fast-forward)
+// playback: the bounded deep-join battle-entry hold, the parked / downloading
+// snapshot holds, and the catch-up drain. Fills `out` with a short label --
+// "Resyncing (snapshot 43%)", "Resyncing (applying snapshot)",
+// "Catching up (312 frames behind)" -- and returns true ONLY while one of those
+// states is active; returns false and writes nothing otherwise, so the caller
+// keeps whatever label it already had. Without this every one of those states
+// looked exactly like a frozen window from the outside.
+//
+// Cheap and self-gating: no allocation, no per-frame work, early-outs on
+// !g_spectator_mode and on offline replay. The intended (and only) call site is
+// the 500ms window-title refresh in hooks_render.cpp, on its spectator branch.
+bool SpectatorNode_ResyncStatus(char* out, size_t cap);
 
 // Periodic health tick. Called from the trampoline once per iteration
 // (cheap -- internally rate-limited). Drives:

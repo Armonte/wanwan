@@ -96,6 +96,7 @@ set(FM2KHOOK_SOURCES
     src/netplay/spec_session_file.cpp # .fm2kset/.fm2krep write + load/seek (split from spectator_node)
     src/netplay/spec_playback.cpp     # op-apply + PopFrameInputs driver (split from spectator_node)
     src/netplay/spec_playback_state.cpp # admission pacing + adaptive delay bank + state accessors (split from spec_playback)
+    src/netplay/spec_playback_seam.cpp  # match-boundary (SEAM/PINNING) state machine (split from spec_playback)
     src/netplay/spectator_tcp.cpp
     src/netplay/nat_traversal.cpp
     src/netplay/game_hash.cpp

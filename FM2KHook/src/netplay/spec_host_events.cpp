@@ -3,6 +3,7 @@
 // from spectator_node.cpp. Public API (decls in spectator_node.h) + the internal
 // AppendOpAndFlush helper; reaches specnode helpers via using.
 #include "spectator_node.h"
+#include "../parity/parity_pool.h"  // ParityPool::ReadPlayer -- scan, not fixed slots 0/1
 #include "spectator_node_internal.h"  // shared State model + g_state (split for sibling TUs)
 #include "spec_wire.h"            // zero-RLE codec (SessionEvent_* live in spectator_node.h)
 #include "spec_relay_queue.h"     // hub-relay outbound queue (Phase 2c)
@@ -339,8 +340,16 @@ uint32_t SpectatorFingerprint_Compute() {
     // Same fields the [HOST-FP]/[SPEC-FP] logs already pin. If we ever add
     // fields, both sides update together -- divergent samples would yield
     // a hash mismatch that the spectator catches at runtime.
-    constexpr uintptr_t POOL = 0x4701E0;
-    constexpr size_t    SLOT = 382;
+    //
+    // Player world state is resolved by SCAN (ParityPool::ReadPlayer), not
+    // by fixed pool slots 0/1 -- the fixed-index read samples whatever the
+    // first-free allocator happened to leave in slot 1, which for a whole
+    // match can be a non-player object. That made this hash mismatch on a
+    // pool displacement that was not a sim divergence. Both peers run the
+    // same build and compute this the same way, so the change is symmetric;
+    // it does change the VALUE of the wire fingerprint, which is safe
+    // because FINGERPRINT ops are only ever compared inside one session
+    // (and this whole path is off unless FM2K_SPEC_FINGERPRINT=1).
     struct Sample {
         uint32_t rng;
         uint32_t buf_idx;
@@ -349,17 +358,19 @@ uint32_t SpectatorFingerprint_Compute() {
         int32_t  p1_x, p1_y, p2_x, p2_y;
         int32_t  p1_script, p2_script;
     } s;
+    const ParityPool::PlayerView p1v = ParityPool::ReadPlayer(0);
+    const ParityPool::PlayerView p2v = ParityPool::ReadPlayer(1);
     s.rng       = *(uint32_t*)0x41FB1C;
     s.buf_idx   = *(uint32_t*)0x447EE0;
     s.p1_hp     = *(uint32_t*)0x4DFC85;
     s.p2_hp     = *(uint32_t*)0x4EDCC4;
     s.timer     = *(uint32_t*)0x470044;
-    s.p1_x      = *(int32_t*)(POOL + 0 * SLOT + 0x08);
-    s.p1_y      = *(int32_t*)(POOL + 0 * SLOT + 0x0C);
-    s.p2_x      = *(int32_t*)(POOL + 1 * SLOT + 0x08);
-    s.p2_y      = *(int32_t*)(POOL + 1 * SLOT + 0x0C);
-    s.p1_script = *(int32_t*)(POOL + 0 * SLOT + 0x30);
-    s.p2_script = *(int32_t*)(POOL + 1 * SLOT + 0x30);
+    s.p1_x      = p1v.pos_x;
+    s.p1_y      = p1v.pos_y;
+    s.p2_x      = p2v.pos_x;
+    s.p2_y      = p2v.pos_y;
+    s.p1_script = p1v.script;
+    s.p2_script = p2v.script;
 
     return Fletcher32(reinterpret_cast<const uint8_t*>(&s), sizeof(s));
 }

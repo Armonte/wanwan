@@ -235,6 +235,117 @@ bool SpectatorNode_IsSubscribedUpstream() { return g_state.subscribed_upstream; 
 // subscription at all) and from a healthy "Subscribed".
 bool SpectatorNode_IsTcpRejoinPending() { return g_state.tcp_rejoin_pending; }
 
+// ---------------------------------------------------------------------------
+// RESYNC STATUS (window-title text for the states where the picture is FROZEN
+// or fast-forwarding, so the viewer never stares at a silent stall)
+// ---------------------------------------------------------------------------
+//
+// Three of the spectator's paths deliberately stop advancing the sim, and until
+// now every one of them looked identical to a crash from the outside:
+//
+//   1. the bounded deep-join battle-entry hold (spec_deep_join.cpp) -- the
+//      viewer is frozen at battle frame 0 waiting for the host's savestate,
+//      normally for a few ms but for up to the 15s escalation budget under loss;
+//   2. the parked / downloading snapshot holds in PopFrameInputs -- a validated
+//      blob waiting on the engine's capture phase, or an in-flight blob at
+//      battle entry (the bounded ~2.4s hold);
+//   3. the catch-up drain -- the sim IS advancing, very fast, but with render
+//      skipped 63 ticks out of 64, so the picture only refreshes a few times a
+//      second and reads as a stutter rather than as progress.
+//
+// The lightest mechanism that already exists on this window is the title bar:
+// hooks_render.cpp's Hook_RenderDiagnostics_Tick composes it every 500ms from
+// spectator-side accessors and already carries a three-state Connecting... /
+// Resyncing... / Subscribed label. This adds no new machinery, no overlay
+// surface and no per-frame work -- it is one more accessor read inside that
+// same 500ms throttle, on the spectator branch only.
+//
+// ZERO COST OUTSIDE THOSE STATES BY CONSTRUCTION:
+//   * the only call site is inside hooks_render's `if (g_spectator_mode)`
+//     branch, so netplay and offline play never reach it;
+//   * this function early-outs on !g_spectator_mode and on FM2K_REPLAY_FILE, so
+//     the replay path is untouched even if a future caller forgets;
+//   * every state it reports is keyed off flags that only a LIVE spectator can
+//     set (pb_deep_join_await needs the SPEC_ACK_DEEP_JOIN grant; the inbox
+//     needs a host snapshot transfer; catch-up is hard-disabled for replay in
+//     trampoline_spectator.cpp), so it returns false and writes nothing during
+//     normal playback.
+//
+// Returns false when nothing is wrong (caller keeps its existing label).
+bool SpectatorNode_ResyncStatus(char* out, size_t cap) {
+    if (!out || cap == 0) return false;
+    if (!g_spectator_mode) return false;
+    static int s_is_replay = -1;
+    if (s_is_replay < 0) {
+        const char* rf = std::getenv("FM2K_REPLAY_FILE");
+        s_is_replay = (rf && rf[0]) ? 1 : 0;
+    }
+    if (s_is_replay == 1) return false;
+
+    const auto& inbox = g_state.pb_snapshot_inbox;
+    // Wire byte count, computed exactly the way spec_recv.cpp's finalize test
+    // does -- the chunks carry compressed bytes when the zero-RLE won, so
+    // measuring progress against total_bytes would peg a completed ~35 KB
+    // transfer at "3%" of its 1 MB uncompressed size.
+    const uint32_t wire_bytes =
+        (inbox.meta.flags & SNAPSHOT_FLAG_ZERO_RLE) ? inbox.meta.compressed_bytes
+                                                    : inbox.meta.total_bytes;
+    const bool receiving = inbox.active && wire_bytes > 0;
+    const int  pct = receiving
+        ? (int)((inbox.bytes_received >= (size_t)wire_bytes)
+                    ? 100u
+                    : (inbox.bytes_received * 100u / wire_bytes))
+        : 0;
+
+    // 1. Deep-join hold: the loudest state, and the one with a retry ladder
+    //    worth showing (a viewer that has escalated is in a genuinely long
+    //    wait, not a hiccup).
+    if (g_state.pb_deep_join_await) {
+        const uint32_t tries = g_state.pb_deep_join_reqs +
+                               g_state.pb_deep_join_escalations;
+        if (receiving) {
+            if (tries > 0) {
+                std::snprintf(out, cap, "Resyncing (snapshot %d%%, retry %u)",
+                              pct, tries);
+            } else {
+                std::snprintf(out, cap, "Resyncing (snapshot %d%%)", pct);
+            }
+        } else if (inbox.pending_apply) {
+            std::snprintf(out, cap, "Resyncing (applying snapshot)");
+        } else if (tries > 0) {
+            std::snprintf(out, cap, "Resyncing (waiting for host, retry %u)",
+                          tries);
+        } else {
+            std::snprintf(out, cap, "Resyncing (waiting for host)");
+        }
+        return true;
+    }
+
+    // 2. The PopFrameInputs snapshot holds. pending_apply freezes the sim
+    //    unless a deep joiner is still walking to its anchor (that walk is the
+    //    sim advancing normally, so it must NOT read as a stall); the download
+    //    window freezes it at battle entry while the blob is still arriving.
+    if (inbox.pending_apply && !specnode::DeepJoinWalkingToAnchor()) {
+        std::snprintf(out, cap, "Resyncing (applying snapshot)");
+        return true;
+    }
+    if (receiving && !g_state.pb_snapshot_applied_once && !g_state.pb_started &&
+        *(uint32_t*)FM2K::ADDR_GAME_MODE >= 3000u) {
+        std::snprintf(out, cap, "Resyncing (snapshot %d%%)", pct);
+        return true;
+    }
+
+    // 3. Catch-up drain. Not a freeze -- the sim is running far above 1x with
+    //    sparse renders -- but the queue depth IS how far behind the host we
+    //    are, and saying so turns a stuttery picture into visible progress.
+    if (g_spectator_catchup) {
+        std::snprintf(out, cap, "Catching up (%zu frames behind)",
+                      g_state.pb_queue.size());
+        return true;
+    }
+    return false;
+}
+
 // Natural-boot title/menu walk in progress: the synthetic title presses
 // live inside PopFrameInputs, so the jitter floor must not gate the tick
 // on queue depth while the local game is still pre-CSS (q=0 at boot is

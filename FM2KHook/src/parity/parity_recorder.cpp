@@ -25,7 +25,11 @@
  * Address derivation (all from /mnt/c/dev/wanwan/FM2KHook/src/core/globals.h
  * and IDA inspection of WonderfulWorld_ver_0946.exe):
  *   - Object pool @ 0x4701E0, 1024 slots × 382 bytes each
- *   - Slot 0 = P1 main fighter, slot 1 = P2 main fighter (after spawn)
+ *   - Player fighters are NOT at fixed slots 0/1. That was the original
+ *     assumption and it is false: create_game_object @ 0x406570 allocates by
+ *     first-free scan, so a fighter lands wherever the allocator put it and
+ *     slot 1 routinely holds a system object. Resolve via
+ *     ParityPool::FindPlayerObjectSlot (parity_pool.h).
  *   - Per-slot offsets:
  *       +0   type (4 = player)
  *       +4   facing
@@ -46,6 +50,7 @@
  *   - Match phase: TODO map from FM2K's game_state struct (0x470020+0x220) */
 
 #include "parity_recorder.h"
+#include "parity_pool.h"      // shared process-independent pool facts (player slots + topology digest)
 #include "../core/globals.h"  // Fm2k_BuildLogPath
 #include "../netplay/savestate.h"  // SaveState_CalculateFullChecksum / RegionChecksums ([FULLFP] tracer)
 
@@ -125,26 +130,11 @@ constexpr size_t SLOT_TASK_VARS_OFFSET  = 0x131u;
 constexpr int    BOX_SLOT_COUNT         = 20;
 constexpr int    TASK_VAR_COUNT         = 16;
 
-/* Locate player_idx's CHARACTER object in the pool. The old code
- * hardcoded pool slots 0/1, but P2's char object does NOT live in slot 1
- * (verified 2026-06-11: stress-mode players[1] captured a static system
- * object -- pos=(320,150), script=0/0 -- so every P2-side divergence was
- * invisible to parity_diff). Match the engine's own player scans
- * (camera_manager @ 0x40AF30, hit_detection_system @ 0x40F010): object
- * type dword == 4 AND char index at +0x156 == player_idx. Ascending scan
- * returns the first match; char objects are created at battle init in
- * low slots, well below the BG-handler objects whose +0x156 accumulators
- * could transiently equal 0/1. */
-int FindPlayerObjectSlot(int player_idx) {
-    for (int i = 0; i < 1024; ++i) {
-        const uintptr_t a = ADDR_OBJECT_POOL_BASE +
-                            static_cast<uintptr_t>(i) * OBJECT_SLOT_SIZE;
-        if (Read32(a) != 4u) continue;
-        if (Read32S(a + 0x156) != player_idx) continue;
-        return i;
-    }
-    return -1;
-}
+/* Player-object resolution moved to ParityPool::FindPlayerObjectSlot (see
+ * parity_pool.h; implemented just below this anonymous namespace) so the
+ * .pty recorder, the [SPEC-FP]/[HOST-FP] traces and the [CHECKSUM] fencepost
+ * all resolve the fighters the SAME way. It is the identical scan this file
+ * has used since 2026-06-11, just no longer private to the recorder. */
 
 void FillPlayerSnapshot(KgtParityPlayer& dst, int slot_idx) {
     if (slot_idx < 0 || slot_idx >= 1024) {
@@ -247,6 +237,204 @@ void FillPlayerSnapshot(KgtParityPlayer& dst, int slot_idx) {
 }
 
 }  /* anonymous namespace */
+
+/* ==========================================================================
+ * ParityPool -- process-INDEPENDENT object-pool facts (see parity_pool.h)
+ *
+ * DIAGNOSTIC-ONLY, BY CONSTRUCTION. Every memory access below is a read
+ * through a const pointer; nothing here writes engine memory, consumes an
+ * RNG draw, allocates, or calls into the engine. The only mutable state is a
+ * function-local `static int` env cache, written once. Compiling this in or
+ * out cannot change simulation results.
+ * ========================================================================== */
+namespace ParityPool {
+
+namespace {
+
+/* FNV-1a, one 32-bit word at a time. Chosen over the Fletcher-style
+ * accumulator the [POOLSET] fingerprint uses because Fletcher needs two
+ * `% 65535` divisions per half-word, and this digest runs on EVERY captured
+ * frame rather than only when a deep diagnostic env is set. Multiplicative
+ * mixing is order-sensitive, which is the property that matters here: a pool
+ * where the same objects sit at permuted slot indices must NOT hash equal.
+ *
+ * The seed carries a field-set version tag. Bump it whenever the tuple below
+ * changes, so a digest from an old build can never accidentally compare equal
+ * to one from a new build. */
+constexpr uint32_t kFnvPrime  = 16777619u;
+constexpr uint32_t kTopoSeed  = 0x811C9DC5u ^ 0x50544F31u;  /* 'PTO1' */
+
+inline uint32_t Mix(uint32_t h, uint32_t v) {
+    return (h ^ v) * kFnvPrime;
+}
+
+/* parent_object_ptr @ +0x17A is the one pointer-typed field the topology
+ * tuple cares about (docs/game/pointer_audit.md classifies it Class A --
+ * self-referential into the object pool). It is converted to a SLOT INDEX
+ * and never hashed as a pointer:
+ *   null              -> kParentNone
+ *   slot-aligned, in  -> the slot index 0..1023
+ *   anything else     -> kParentForeign (stale/garbage/heap: the raw value is
+ *                        discarded so a per-process address cannot reach the
+ *                        digest even in a corrupted state)
+ * Both sentinels are >= 0xFFFFFFFE, so they can never collide with a real
+ * slot index. */
+constexpr uint32_t kParentNone    = 0xFFFFFFFFu;
+constexpr uint32_t kParentForeign = 0xFFFFFFFEu;
+
+inline uint32_t ParentSlotToken(uint32_t raw) {
+    if (raw == 0u) return kParentNone;
+    const uintptr_t off = static_cast<uintptr_t>(raw) - kPoolBase;
+    /* Unsigned wrap makes "below the pool" fail this same bound check. */
+    if (off >= kSlotCount * kSlotStride) return kParentForeign;
+    const uint32_t k = static_cast<uint32_t>(off / kSlotStride);
+    if (static_cast<uintptr_t>(k) * kSlotStride != off) return kParentForeign;
+    return k;
+}
+
+}  /* anonymous namespace */
+
+bool TopologyEnabled() {
+    if constexpr (!FM2K::kIsFM2K) {
+        return false;
+    }
+    /* Escape hatch only. The topology term rides the fencepost's OWN gate
+     * (the [CHECKSUM] call sites are already behind FM2K_CINPUT=1), so a
+     * normal build never pays for it; within a parity run it is deliberately
+     * always-on, because the blind spot it closes bit in exactly the runs
+     * where nobody thought to enable an extra tracer. FM2K_CK_TOPOLOGY=0
+     * turns it off without rebuilding if it ever proves too costly. */
+    static int s_on = -1;
+    if (s_on < 0) {
+        const char* v = std::getenv("FM2K_CK_TOPOLOGY");
+        s_on = (v && v[0] == '0' && v[1] == '\0') ? 0 : 1;
+    }
+    return s_on != 0;
+}
+
+int FindPlayerObjectSlot(int player_idx) {
+    if constexpr (!FM2K::kIsFM2K) {
+        return -1;
+    }
+    /* The old convention "slot 0 = P1, slot 1 = P2" is FALSE for P2 (verified
+     * 2026-06-11: stress-mode players[1] captured a static system object --
+     * pos=(320,150), script=0/0 -- so every P2-side divergence was invisible
+     * to parity_diff; the same artifact flipped a Wave 4.1 harness verdict via
+     * [SPEC-FP]). Match the engine's own player scans (camera_manager @
+     * 0x40AF30, hit_detection_system @ 0x40F010): object type dword == 4 AND
+     * player slot id at +0x156 == player_idx. Ascending scan returns the first
+     * match; char objects are created at battle init in low slots, well below
+     * the BG-handler objects whose +0x156 accumulators could transiently equal
+     * 0/1.
+     *
+     * The +0x156 compare stays a 32-bit read on purpose. playerSlotId is a
+     * u16 followed by two unmapped bytes, so the dword compare is STRICTER
+     * than a u16 compare (it also requires +0x158..+0x159 == 0) -- which is
+     * what has been validated on this predicate since 2026-06-11. The
+     * topology digest below reads the u16 instead; see the note there. */
+    for (int i = 0; i < static_cast<int>(kSlotCount); ++i) {
+        const uintptr_t a = kPoolBase + static_cast<uintptr_t>(i) * kSlotStride;
+        if (Read32(a + kOffType) != kTypePlayerChar) continue;
+        if (Read32S(a + kOffPlayerSlot) != player_idx) continue;
+        return i;
+    }
+    return -1;
+}
+
+PlayerView ReadPlayer(int player_idx) {
+    PlayerView v{-1, 0, 0, -1};
+    if constexpr (!FM2K::kIsFM2K) {
+        return v;
+    }
+    const int slot = FindPlayerObjectSlot(player_idx);
+    if (slot < 0) return v;   /* pre-spawn / non-battle: sentinel block */
+    const uintptr_t a = kPoolBase + static_cast<uintptr_t>(slot) * kSlotStride;
+    v.slot   = slot;
+    v.pos_x  = Read32S(a + kOffPosX);
+    v.pos_y  = Read32S(a + kOffPosY);
+    v.script = Read32S(a + kOffScriptId);
+    return v;
+}
+
+Scan ScanPool(bool want_legacy_fp, char* active_list, size_t list_cap) {
+    Scan out{0u, 0u, 0u};
+    if (active_list && list_cap) active_list[0] = '\0';
+    if constexpr (!FM2K::kIsFM2K) {
+        return out;
+    }
+
+    uint32_t topo = kTopoSeed;
+    /* Legacy [POOLSET] accumulator -- kept bit-for-bit identical to the
+     * original inline form (Fletcher-style over (slot, type, owner, posX,
+     * posY), low half-word then high half-word) so fingerprints from this
+     * build still line up with the ones in the Wave 3.1/4.x reports. */
+    uint32_t s1 = 0xFFFF, s2 = 0xFFFF;
+    auto legacy_mix = [&](uint32_t v) {
+        s1 = (s1 + (v & 0xFFFF)) % 65535; s2 = (s2 + s1) % 65535;
+        s1 = (s1 + (v >> 16))    % 65535; s2 = (s2 + s1) % 65535;
+    };
+
+    size_t lp = 0;
+    for (size_t i = 0; i < kSlotCount; ++i) {
+        const uintptr_t a = kPoolBase + static_cast<uintptr_t>(i) * kSlotStride;
+        const uint32_t type = Read32(a + kOffType);
+        if (type == 0u) continue;          /* free slot: one dword touched */
+        ++out.active_count;
+
+        /* TOPOLOGY tuple. Occupancy is implied by being here; the slot index
+         * is what makes a pure re-INDEXING of the same object set (carry-state
+         * family A1) visible. Every member is an integer the pointer audit
+         * classifies as a non-pointer, except parent which is normalised to a
+         * slot index above. Deliberately NOT included: positions, velocities,
+         * script cursors, HP -- those are gameplay STATE and belong to the crc
+         * term, and keeping them out is what lets a `top=` mismatch mean
+         * exactly one thing ("different objects, or same objects at different
+         * indices/bindings"). */
+        const uint32_t owner  = Read32(a + kOffOwner);
+        const uint32_t player = *reinterpret_cast<const uint16_t*>(a + kOffPlayerSlot);
+        const uint32_t kind   = Read32(a + kOffEntityKind);
+        const uint32_t parent = ParentSlotToken(Read32(a + kOffParentPtr));
+        /* u16 read, unlike the finder's dword compare above: +0x158..+0x159
+         * is an unmapped field in docs/editor/runtime_entity.md, and hashing
+         * bytes nobody has reverse-engineered is how a fencepost earns a
+         * reputation for false positives. */
+        topo = Mix(topo, static_cast<uint32_t>(i));
+        topo = Mix(topo, type);
+        topo = Mix(topo, owner);
+        topo = Mix(topo, player);
+        topo = Mix(topo, kind);
+        topo = Mix(topo, parent);
+
+        if (want_legacy_fp) {
+            legacy_mix(static_cast<uint32_t>(i));
+            legacy_mix(type);
+            legacy_mix(owner);
+            legacy_mix(Read32(a + kOffPosX));
+            legacy_mix(Read32(a + kOffPosY));
+        }
+        if (active_list && list_cap > 20u && lp < list_cap - 20u) {
+            lp += static_cast<size_t>(std::snprintf(active_list + lp, list_cap - lp,
+                                                    "%u:%u ", (unsigned)i, type));
+        }
+    }
+    /* Fold the population count in last: a pool that gained an object AND
+     * lost one at the same index would otherwise have to rely on the field
+     * tuple alone. The |1 on a zero result keeps 0 reserved as the documented
+     * "not computed" value -- a 1-in-2^32 collision is not worth an ambiguous
+     * sentinel. */
+    const uint32_t folded = Mix(topo, out.active_count);
+    out.topology       = folded ? folded : 1u;
+    out.legacy_poolset = want_legacy_fp ? ((s2 << 16) | s1) : 0u;
+    return out;
+}
+
+Topology ComputeTopology() {
+    if (!TopologyEnabled()) return Topology{0u, 0u};
+    const Scan s = ScanPool(/*want_legacy_fp=*/false, nullptr, 0u);
+    return Topology{s.topology, s.active_count};
+}
+
+}  /* namespace ParityPool */
 
 namespace ParityRecorder {
 
@@ -377,33 +565,19 @@ void Capture() {
             s_poolset = (v && v[0] && v[0] != '0') ? 1 : 0;
         }
         if (s_poolset == 1) {
-            constexpr uintptr_t POOL_BASE = 0x4701E0;
-            constexpr size_t POOL_STRIDE  = 382;
-            constexpr size_t POOL_COUNT   = 1024;
-            uint32_t s1 = 0xFFFF, s2 = 0xFFFF;
-            auto mix = [&](uint32_t v) {
-                s1 = (s1 + (v & 0xFFFF)) % 65535; s2 = (s2 + s1) % 65535;
-                s1 = (s1 + (v >> 16))    % 65535; s2 = (s2 + s1) % 65535;
-            };
-            unsigned cnt = 0;
-            char list[512]; size_t lp = 0; list[0] = 0;
-            for (size_t i = 0; i < POOL_COUNT; i++) {
-                const uint8_t* obj = (const uint8_t*)(POOL_BASE + i * POOL_STRIDE);
-                const uint32_t type = *(const uint32_t*)(obj + 0x0);
-                if (type == 0) continue;
-                cnt++;
-                mix((uint32_t)i); mix(type);
-                mix(*(const uint32_t*)(obj + 0x4));   // owner
-                mix(*(const uint32_t*)(obj + 0x8));   // posX
-                mix(*(const uint32_t*)(obj + 0xC));   // posY
-                if (lp < sizeof(list) - 20)
-                    lp += (size_t)std::snprintf(list + lp, sizeof(list) - lp,
-                                                "%u:%u ", (unsigned)i, type);
-            }
-            const uint32_t fp = (s2 << 16) | s1;
+            // The scan itself now lives in ParityPool::ScanPool so the
+            // [CHECKSUM] topology term and this diagnostic can never drift
+            // apart. fp= is bit-for-bit the historical value (same tuple, same
+            // Fletcher-style accumulator); top= is the NEW topology digest,
+            // printed here as well so a POOLSET investigation and a fencepost
+            // mismatch can be read against each other in one log.
+            char list[512];
+            const ParityPool::Scan sc =
+                ParityPool::ScanPool(/*want_legacy_fp=*/true, list, sizeof(list));
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "[POOLSET] seq=%u cnt=%u fp=0x%08X active=%s",
-                g_active_recorder->frames_written, cnt, fp, list);
+                "[POOLSET] seq=%u cnt=%u fp=0x%08X top=0x%08X active=%s",
+                g_active_recorder->frames_written, sc.active_count,
+                sc.legacy_poolset, sc.topology, list);
         }
     }
 
@@ -545,8 +719,8 @@ void Capture() {
      * a different slot; pool slot 1 holds a system object). Not-found
      * (-1, pre-battle) produces the same zeroed/script=-1 block the old
      * empty-slot path did, so parity_diff alignment is unchanged. */
-    FillPlayerSnapshot(snap.players[0], FindPlayerObjectSlot(0));
-    FillPlayerSnapshot(snap.players[1], FindPlayerObjectSlot(1));
+    FillPlayerSnapshot(snap.players[0], ParityPool::FindPlayerObjectSlot(0));
+    FillPlayerSnapshot(snap.players[1], ParityPool::FindPlayerObjectSlot(1));
 
     /* v2 match-level fields. rng_after_frame mirrors rng (we capture
      * post-update so they're identical). system_vars maps to FM2K's

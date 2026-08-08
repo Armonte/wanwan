@@ -9,6 +9,7 @@
 #include "../netplay/spectator_node.h"
 #include "../ui/shared_mem.h"
 #include "../parity/parity_recorder.h"
+#include "../parity/parity_pool.h"    // player-slot resolution + pool-topology fencepost term
 #include "../netplay/savestate.h"   // RegionChecksums + gameplay_fingerprint (GAP #1 fencepost)
 // SaveState_CalculateFingerprint is engine-internal (savestate_internal.h) but has
 // external linkage; forward-declare it so the spectator can RECOMPUTE the fingerprint
@@ -232,8 +233,21 @@ static bool SpectatorSimOneFrame() {
                 // so this is always the CONFIRMED state -> compared against the host's
                 // dedupe-by-last confirmed CRC catches ANY divergence.
                 uint32_t spec_fp = SaveState_CalculateFingerprint();
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[CHECKSUM] f=%u crc=0x%08X",
-                    bf, spec_fp);
+                // top=/nobj= -- POOL-TOPOLOGY term. The crc above covers
+                // rng/HP/timers/ring-inputs and is structurally blind to WHICH
+                // objects exist, of what kind, bound to whom, at which slot
+                // indices -- carry-state family A1, the class the deep-join work
+                // uncovered, and the reason a "FULL-STATE IDENTICAL" verdict could
+                // coexist with a whole-match pool-slot displacement. Emitted
+                // ALONGSIDE crc and never folded into it: on the player side the
+                // same fingerprint value is handed to GekkoNet as the P1-vs-P2
+                // desync checksum, so folding would change netplay behaviour.
+                // Process-independent by construction (parity_pool.h); top=0 means
+                // not computed (FM95, or FM2K_CK_TOPOLOGY=0).
+                const ParityPool::Topology spec_top = ParityPool::ComputeTopology();
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "[CHECKSUM] f=%u crc=0x%08X top=0x%08X nobj=%u",
+                    bf, spec_fp, spec_top.digest, spec_top.active_count);
             }
             // [SPEC-FP] every 30 battle frames (~3 lines/sec). Routed
             // through SDL_LOG_CATEGORY_CUSTOM so LogOutputFunction puts
@@ -252,25 +266,30 @@ static bool SpectatorSimOneFrame() {
                 const uint32_t p1_hp   = *(uint32_t*)0x4DFC85;  // FM2K P1 HP scalar
                 const uint32_t p2_hp   = *(uint32_t*)0x4EDCC4;  // FM2K P2 HP scalar
                 const uint32_t timer   = *(uint32_t*)FM2K::ADDR_GAME_TIMER;
-                constexpr uintptr_t POOL = FM2K::ADDR_OBJECT_POOL;
-                constexpr size_t    SLOT = FM2K::OBJECT_POOL_STRIDE;
-                const int32_t p1_x = *(int32_t*)(POOL + 0 * SLOT + 0x08);
-                const int32_t p1_y = *(int32_t*)(POOL + 0 * SLOT + 0x0C);
-                const int32_t p2_x = *(int32_t*)(POOL + 1 * SLOT + 0x08);
-                const int32_t p2_y = *(int32_t*)(POOL + 1 * SLOT + 0x0C);
-                const int32_t p1_script = *(int32_t*)(POOL + 0 * SLOT + 0x30);
-                const int32_t p2_script = *(int32_t*)(POOL + 1 * SLOT + 0x30);
+                // Resolve the fighters by SCAN, not by fixed pool slot.
+                // create_game_object allocates first-free, so slot 1 is
+                // routinely a system object: the fixed-index read produced 37+
+                // consecutive bogus p2_pos=(320,150) p2_script=0 samples for a
+                // whole match in the Wave 4.1 sweep and flipped the harness
+                // verdict to FAIL while every one of those frames was
+                // full-state identical by CRC. slots=(a,b) is appended so any
+                // future resolution artifact is self-diagnosing; -1 = no
+                // character object for that player right now (pre-spawn), in
+                // which case pos reads (0,0) and script reads -1.
+                const ParityPool::PlayerView p1v = ParityPool::ReadPlayer(0);
+                const ParityPool::PlayerView p2v = ParityPool::ReadPlayer(1);
                 SDL_LogInfo(SDL_LOG_CATEGORY_CUSTOM,
                     "[SPEC-FP] bf=%u (pop=%u) rng=0x%08X buf=%u "
                     "p1_hp=%u p2_hp=%u timer=%u "
                     "p1_pos=(%d,%d) p2_pos=(%d,%d) "
                     "p1_script=%d p2_script=%d "
-                    "p1_in=0x%03X p2_in=0x%03X catchup=%d",
+                    "p1_in=0x%03X p2_in=0x%03X catchup=%d slots=(%d,%d)",
                     bf, s_pop_count, rng, buf_idx,
                     p1_hp, p2_hp, timer,
-                    p1_x, p1_y, p2_x, p2_y,
-                    p1_script, p2_script,
-                    p1, p2, (int)g_spectator_catchup);
+                    p1v.pos_x, p1v.pos_y, p2v.pos_x, p2v.pos_y,
+                    p1v.script, p2v.script,
+                    p1, p2, (int)g_spectator_catchup,
+                    p1v.slot, p2v.slot);
             }
         } else {
             s_in_battle = false;

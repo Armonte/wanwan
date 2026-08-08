@@ -244,7 +244,13 @@ def wait_ports_free(ports, timeout=20.0):
 #     true progression badly (observed 226 admitted while the spectator actually
 #     reached bf 1499). Parsed here ONLY for the flatline/stall diagnostic.
 # ---------------------------------------------------------------------------
-LIVE_EDGE_TOLERANCE = 100   # battle frames the spectator may legitimately trail
+# Battle frames the spectator may legitimately trail -- and, symmetrically, may
+# appear AHEAD by (see spectator_liveness for why the bound is two-sided).
+# Overridable so a profile whose host hard-terminates while a viewer is still
+# draining a legitimately deep delay bank can be gated at a looser bound
+# (the deep-join stage of run_all_tests does exactly that) without every other
+# caller losing the tight default.
+LIVE_EDGE_TOLERANCE = int(os.environ.get("FM2K_LIVE_EDGE_TOLERANCE", "100"))
 
 
 def _cinput_seg_maxbf(log_path, min_seg=5):
@@ -304,8 +310,37 @@ def _spec_udp_admitted_series(log_path):
     return out
 
 
-def spectator_liveness(host_log, spec_log, tolerance=LIVE_EDGE_TOLERANCE):
+def spectator_liveness(host_log, spec_log, tolerance=LIVE_EDGE_TOLERANCE,
+                       first_host_match=0):
     """Did the spectator reach & HOLD near the host's final battle frame?
+
+    `first_host_match` = index of the EARLIEST host match this viewer could
+    possibly have observed (0 = it was in the session from the start). It exists
+    for the BOUNDED deep join (FM2K_SPEC_DEEP_JOIN): a viewer that dials in
+    BETWEEN matches is served a backfill anchored at the CURRENT char-select and
+    therefore has legitimately FEWER battle segments than the host -- that is the
+    entire point of the feature. The old rule
+    `len(spec_segs) >= len(host_segs)` failed such a viewer BY CONSTRUCTION
+    whatever its measured gap (wave-3 report 5.1: gap 8/12/8 against a tolerance
+    of 100, all three marked FAIL), which made --assert-spectator-live unusable
+    on the very path it most needs to watch. A bounded joiner is judged instead
+    on the segments it could observe: host matches [first_host_match ..].
+
+    The "fell a whole match behind" case that `followed_all` used to catch is now
+    caught by an AHEAD bound. A viewer one match behind is sitting on an EARLIER
+    host match, whose length is unrelated to (and in practice much larger than)
+    the host's final match, so its bf OVERSHOOTS the host's final bf: measured
+    gap -883..-891 for the from-frame-0 joiner that never reached the match it
+    was sent to watch, vs +7..+141 for a bounded joiner riding the live edge.
+
+    That bound is applied ONLY when being a match behind is actually possible --
+    the viewer produced FEWER segments than the host. Over 222 archived
+    spectator logs, 6 legitimately-passing single-match runs sit 182-193 frames
+    "ahead" because the host's debug log was truncated mid-flush by
+    TerminateProcess while the viewer had already applied the frames it was fed;
+    with one host match there is no earlier match to be stuck on, so those must
+    not fail. (The existing re-preserve-and-re-parse backstop in main() is the
+    other half of that defence.)
 
     Returns a dict; `reached` (bool) is the pass condition. Also imported and
     called by tools/desync_seed_sweep.py, so it must stay side-effect free."""
@@ -314,17 +349,24 @@ def spectator_liveness(host_log, spec_log, tolerance=LIVE_EDGE_TOLERANCE):
     # Host's final battle frame = furthest bf in its LAST match (fallback: the
     # single-match BATTLE STATUS max when [CINPUT] is absent).
     host_final = host_segs[-1] if host_segs else _battle_status_maxframe(host_log)
-    # A spectator with FEWER battle segments than the host fell a whole match
-    # behind = did not hold the live edge.
-    followed_all = bool(spec_segs) and len(spec_segs) >= max(1, len(host_segs))
-    if spec_segs:
-        idx = (len(host_segs) - 1) if host_segs else -1
-        spec_max = spec_segs[idx] if followed_all else spec_segs[-1]
-    else:
-        spec_max = 0
+    # Clamp the baseline: it is derived from host-log markers at dial-in time and
+    # can overshoot (the host may enter the next match while the viewer boots).
+    # Never demand fewer than one segment, and never more than the host produced.
+    base = max(0, min(int(first_host_match), max(0, len(host_segs) - 1)))
+    expected_segs = max(1, len(host_segs) - base)
+    followed_all = bool(spec_segs) and len(spec_segs) >= expected_segs
+    # Align from the END: the viewer watched a contiguous SUFFIX of the host's
+    # matches, so its LAST segment pairs with the host's LAST match. Identical to
+    # the old front-indexed choice whenever the counts agree, i.e. for every
+    # full-session joiner the gate's stages 2/2b run.
+    spec_max = spec_segs[-1] if spec_segs else 0
     gap = (host_final - spec_max) if host_final is not None else None
-    reached = bool(followed_all and host_final is not None
-                   and spec_max >= host_final - tolerance)
+    # Behind by more than the tolerance = did not hold the live edge. AHEAD of
+    # the host's final bf only matters when the viewer has fewer segments than
+    # the host, i.e. when its last segment could be an EARLIER, longer match.
+    could_be_a_match_behind = len(spec_segs) < len(host_segs)
+    reached = bool(followed_all and gap is not None and gap <= tolerance
+                   and (gap >= -tolerance or not could_be_a_match_behind))
     adm = _spec_udp_admitted_series(spec_log)
     spec_udp_admitted = adm[-1] if adm else 0
     # Flatlined = the UDP admit counter plateaued at the tail (diagnostic only;
@@ -335,7 +377,77 @@ def spectator_liveness(host_log, spec_log, tolerance=LIVE_EDGE_TOLERANCE):
                 followed_all=followed_all, host_matches=len(host_segs),
                 spec_matches=len(spec_segs), spec_udp_admitted=spec_udp_admitted,
                 admitted_flatlined=admitted_flatlined, stall_frame=stall_frame,
-                tolerance=tolerance)
+                tolerance=tolerance, expected_segs=expected_segs,
+                first_host_match=base)
+
+
+# ---------------------------------------------------------------------------
+# CATCHUP metric -- wall clock from a spectator process's first log line to the
+# first frame it actually PLAYS. This is the number the deep-join rollout
+# reports to humans ("I clicked spectate and I was watching in N seconds",
+# docs/dev/spectate_deep_join_rollout.md phases 2/3), and it is deliberately
+# NOT the live-edge gap: the gap says how far behind live the viewer settles,
+# this says how long the user stared at a black window first.
+#
+# first played frame = the first [SPEC-Q] 1 Hz heartbeat carrying total>0 (the
+# cumulative pop counter -- the viewer has applied at least one event). That
+# heartbeat is unconditional (trampoline_spectator.cpp), so the metric needs no
+# extra env. Fallback when it is absent: the first [CINPUT] line, which is
+# BATTLE-only and therefore reads much later (a deep joiner measured 2.3s to
+# first played frame but 13.1s to battle) -- reported as source="cinput" and
+# NOT gated, so a threshold is never silently applied to the wrong metric.
+# ---------------------------------------------------------------------------
+DEEP_JOIN_CATCHUP_SECS = 10.0   # lenient default: measured deep joins are 2.0-3.1s
+
+
+def spectator_catchup(spec_log):
+    """boot -> first-played-frame wall clock for one spectator log.
+
+    Returns dict(boot, first_frame, seconds, source, applied_seconds); every
+    value is None when the log does not carry the corresponding marker. Side-
+    effect free (same contract as spectator_liveness)."""
+    import re
+    ts_pat = re.compile(r'^\[(\d+):(\d+):(\d+)\.(\d+)\]')
+    q_pat  = re.compile(r'\[SPEC-Q\] .*total=(\d+)')
+
+    def _ts(ln):
+        m = ts_pat.match(ln)
+        if not m:
+            return None
+        h, mi, sc, ms = (int(x) for x in m.groups())
+        return h * 3600 + mi * 60 + sc + ms / 1000.0
+
+    boot = first = applied = first_cinput = None
+    source = None
+    try:
+        fh = open(spec_log, errors="ignore")
+    except OSError:
+        return dict(boot=None, first_frame=None, seconds=None, source=None,
+                    applied_seconds=None)
+    for ln in fh:
+        t = _ts(ln)
+        if t is None:
+            continue                      # the log's un-timestamped banner
+        if boot is None:
+            boot = t
+        if first is None:
+            m = q_pat.search(ln)
+            if m and int(m.group(1)) > 0:
+                first, source = t, "spec-q"
+        if first_cinput is None and "[CINPUT] bf=" in ln:
+            first_cinput = t
+        if applied is None and "[SPEC-DEEPJOIN] snapshot APPLIED at anchor=" in ln:
+            applied = t
+    if first is None and first_cinput is not None:
+        first, source = first_cinput, "cinput"
+
+    def _delta(t):
+        if t is None or boot is None:
+            return None
+        d = t - boot
+        return d + 86400.0 if d < 0 else d        # midnight wrap
+    return dict(boot=boot, first_frame=first, seconds=_delta(first),
+                source=source, applied_seconds=_delta(applied))
 
 
 def _css_parity_gate(out_dir, specs):
@@ -461,6 +573,353 @@ def _css_parity_gate(out_dir, specs):
     return fail, lines
 
 
+def _parity_gates(out_dir, specs):
+    """The three correctness gates, over the PRESERVED live_ logs only.
+
+    CINPUT (primary, frame-keyed input identity), CHECKSUM (the full-state
+    fencepost) and the rng/hp trace GATE. Returns (cin_fail, ck_fail) and sets
+    `gate`/`ok` on each spec dict; prints its verdict lines as it goes.
+
+    Module-level (like _css_parity_gate, which tools/test_css_gate.py re-runs
+    offline) for two reasons: main() must be able to call it BEFORE any early
+    return -- a run that bails on liveness or a missing stream used to produce
+    no correctness verdict in either direction -- and a --keep log set can be
+    re-gated offline without launching a game.
+    """
+    # AUTHORITATIVE GATE: host-vs-spec per-frame trace pairing (SAME run, same
+    # match = ground truth). Both the host and spectator here watch the
+    # identical match, so bit-for-bit (rng, inputs, scripts) at every paired
+    # battle frame proves the spectator stayed in sync. Needs FM2K_HOST_TRACE=1
+    # + FM2K_SPECTATOR_DEBUG=1 (set in common_env). [SPEC-TRACE] is dense over
+    # bf 0..99; [SPEC-FP]/[HOST-FP] checkpoint every 30 frames to match end.
+    # rng-keyed (NOT bf-keyed): the spectator's per-frame rng_post is a strong
+    # state fingerprint. We assert every spectator frame's rng appears in the
+    # HOST's rng set with matching inputs/scripts. This is robust to: a frame
+    # offset (mid-battle CURRENT_MATCH snapshot join starts at host frame N,
+    # not 0), per-match bf RESETS (multi-match: each battle restarts bf at 0,
+    # so bf-keying would cross-contaminate matches), and catch-up cadence. A
+    # spectator that desyncs computes an rng the host never produced -> the
+    # frame's rng is "not in host" = hard fail.
+    import re as _ret
+    # CRITICAL: read the PRESERVED spectator log, not game_dir/logs/FM2K_P3.
+    # The REPLAY process (launched after the spec, with ALWAYS_CATCHUP=1)
+    # overwrites game_dir/logs/FM2K_P3_Debug.log -- so the live game_dir P3
+    # holds the replay's traces, which re-sim the host's CONFIRMED inputs and
+    # match the host BY CONSTRUCTION (0 misses = guaranteed false PASS). The
+    # live_ copies are snapshotted before the replay runs and hold the ACTUAL
+    # spectator's traces. (2026-06-23: this masked a real bf=77 spectator
+    # desync under loss -- the spec computed an rng no player ever produced.)
+    # Since 2026-08 main() calls this BEFORE the replay phase too, so the trap
+    # is structurally out of reach rather than merely avoided by convention.
+    host_dbg = out_dir / "live_FM2K_P1_Debug.log"
+    # group(1)=bf, group(2)=rng, group(3+)=comparison fields.
+    TRC = (r'(?:HOST|SPEC)-TRACE\] bf=(\d+) rng_pre=0x[0-9A-F]+ '
+           r'rng_post=0x([0-9A-F]+) p1=0x([0-9A-F]+) p2=0x([0-9A-F]+)')
+    FP  = (r'(?:HOST|SPEC)-FP\] bf=(\d+).*?p1_hp=(\d+) p2_hp=(\d+).*?'
+           r'p1_pos=\(([-\d]+),[-\d]+\) p2_pos=\(([-\d]+),[-\d]+\) '
+           r'p1_script=(-?\d+) p2_script=(-?\d+)')
+    def _rows2(path, pat):
+        out = []
+        try:
+            for ln in open(path, errors="ignore"):
+                m = _ret.search(pat, ln)
+                if m:
+                    g = m.groups()
+                    # Skip the battle-entry frame (bf==0): hp/timer/pos aren't
+                    # loaded yet and rng is pre-pin -- a transitional, not a
+                    # settled gameplay state. Host and spectator hit it at
+                    # slightly different init timing (esp. during catch-up), so
+                    # comparing it is a false mismatch. Each match has one.
+                    if int(g[0]) == 0:
+                        continue
+                    out.append((g[1], tuple(g[2:])))  # (rng, fields)
+        except OSError:
+            pass
+        return out
+    # TRACE: rng-PRESENCE only. The p1/p2 input fields are capture-noise
+    # (predicted-vs-confirmed + different capture points on host vs spec -- the
+    # same reason parity_diff excludes inputs). rng_post IS the post-frame state
+    # fingerprint: if every spectator rng appears in the host's set, the sims
+    # produced identical state. Comparing inputs here gave false mismatches on a
+    # snapshot-join (31 of them) while rng+scripts were bit-exact.
+    # FP checkpoint: gate on GAMEPLAY STATE (hp + positions + scripts), NOT the
+    # FP rng field. The host logs [HOST-FP] rng at a different sub-frame point
+    # (netplay_battle_events.cpp) than the spectator's [SPEC-FP]
+    # (trampoline_spectator.cpp), and the spectator's capture point is also
+    # catchup-dependent -- so FP rng differs host-vs-spec even when the sim is
+    # bit-exact (it false-FAILED a verified-correct mid-battle snapshot-join,
+    # 2026-06-23). hp/pos/scripts are aligned and a strong fingerprint; the dense
+    # aligned TRACE rng_post (bf 0-99) remains the authoritative rng check.
+    def fp_states(path):
+        out = []
+        try:
+            for ln in open(path, errors="ignore"):
+                m = _ret.search(FP, ln)
+                if m and int(m.group(1)) != 0:   # skip bf=0 (pre-pin transitional)
+                    # (hp1,hp2,s1,s2) -- POSITIONS dropped: they're captured at
+                    # different sub-frame points host-vs-spec (a moving player is
+                    # off by ~1 frame of travel at the termination tail) even when
+                    # bit-exact. hp + scripts are capture-stable (matched the whole
+                    # battle including the tail) and a real desync diverges in them.
+                    out.append((m.group(2), m.group(3), m.group(6), m.group(7)))
+        except OSError:
+            pass
+        return out
+    # Host sets are shared; gate EACH spectator against them independently.
+    host_trc_rng = {rng for rng, _ in _rows2(host_dbg, TRC)}
+    host_fp_set  = set(fp_states(host_dbg))
+
+    def gate_one(spec_live):
+        trc_spec = _rows2(spec_live, TRC)
+        ct = len(trc_spec)
+        mt = sum(1 for rng, _ in trc_spec if rng not in host_trc_rng)
+        first_t = next(((rng,) for rng, _ in trc_spec if rng not in host_trc_rng), None)
+        sfp = fp_states(spec_live)   # ordered by bf
+        cf = len(sfp)
+        miss = [st not in host_fp_set for st in sfp]
+        mf_total = sum(miss)
+        # A no-rollback spectator's sim is a one-way forward replay: a REAL desync
+        # NEVER re-converges, so its FP misses form a persistent TAIL reaching the
+        # LAST FP frame. A BOUNDED interior run that re-syncs (later frames match)
+        # is a capture artifact -- a small frame-offset in a TRANSITIONING value
+        # (a round-start hp-fill animation, hp during a hit, a move-start) sampled
+        # against the host's every-30-frame FP grid; the values land back on the
+        # grid once the value stabilizes. (vanpri under loss: hp-fill +3 frames
+        # ahead, bf 270-360, re-syncs at 390 -- 2026-06-23.) Fail only on a
+        # PERSISTENT tail (last FP frame misses) or a massive >40% divergence. The
+        # aligned TRACE rng_post (mt) stays the authoritative per-frame check.
+        trailing = 0
+        for f in reversed(miss):
+            if f:
+                trailing += 1
+            else:
+                break
+        massive = cf > 0 and mf_total > 0.40 * cf
+        # A BOUNDED trailing run (<= RECONVERGE_WINDOW) is the SAME rollback
+        # speculative-capture artifact we already tolerate mid-stream, just landing
+        # at the tail because loss cut the spectator's stream off ON a transitioning
+        # value (hp mid-hit, move-start) that hasn't re-landed on the host's 30-frame
+        # FP grid. A REAL desync is rng-driven -> it shows up in `mt` (the
+        # authoritative aligned rng_post check, which stays a hard FAIL) AND persists
+        # far past the window. So fail on the FP side only for a PERSISTENT tail
+        # (> RECONVERGE_WINDOW) or a massive (>40%) divergence. (Observed: RC spec at
+        # 15% loss, seeds 42/99 -> trailing=1, mt=0, 1184 frames full-state IDENTICAL
+        # -- a single trailing speculative frame, not a desync. 2026-07-06.)
+        RECONVERGE_WINDOW = int(os.environ.get('FM2K_PARITY_RECONVERGE_WINDOW', '32'))
+        mf = mf_total if (trailing > RECONVERGE_WINDOW or massive) else 0
+        run = mx = 0                      # longest run -- advisory only now
+        for f in miss:
+            run = run + 1 if f else 0
+            if run > mx:
+                mx = run
+        first_f = next((st for st, f in zip(sfp, miss) if f), None)
+        return dict(ct=ct, cf=cf, mt=mt, mf=mf, mf_total=mf_total, mx=mx,
+                    trailing=trailing,
+                    checked=ct + cf, bad=mt + mf,
+                    first_t=first_t, first_f=first_f)
+
+    # ---- PRIMARY: ground-truth frame-keyed input desync detector --------------
+    # Compare the every-frame [CINPUT] (confirmed input on the players, applied
+    # input on the spectators) per (match, bf): P1 is truth, P2 must match P1
+    # (players in lockstep), every spectator must match P1 at the aligned bf. This
+    # catches frame-misaligned inputs -> in-battle position desyncs the rng/hp gate
+    # is structurally blind to. Authoritative; the rng/hp gate below is secondary.
+    import re as _cre
+    _cpat = _cre.compile(r'\[CINPUT\] bf=(\d+) p1=0x([0-9A-Fa-f]+) p2=0x([0-9A-Fa-f]+)')
+    def _cin_parse(path):
+        segs = []; cur = {}; last = -1
+        try: fh = open(path, errors="ignore")
+        except OSError: return segs
+        for ln in fh:
+            m = _cpat.search(ln)
+            if not m: continue
+            bf = int(m.group(1)); pv = (int(m.group(2), 16), int(m.group(3), 16))
+            if bf <= last and cur: segs.append(cur); cur = {}
+            cur[bf] = pv; last = bf
+        if cur: segs.append(cur)
+        return segs
+    def _cin_align(sseg, hseg):
+        # (full_mismatches, offset, overlap, longest_run). Offset = MODE of all
+        # press-deltas -- robust to stray boundary inputs and the autoplay's
+        # identical match openings (a single-press anchor mis-aligns). longest_run
+        # = longest consecutive-mismatch streak; isolated 1-frame artifacts (off-by-
+        # one boundary, a stray transition press) don't count as a desync, a
+        # SUSTAINED run does.
+        spress = [(bf, sseg[bf]) for bf in sorted(sseg) if sseg[bf] != (0, 0)]
+        if not spress: return (0, 0, 0, 0)
+        hbi = {}
+        for hb in hseg:
+            if hseg[hb] != (0, 0): hbi.setdefault(hseg[hb], []).append(hb)
+        deltas = {}
+        for sb, si in spress:
+            for hb in hbi.get(si, ()):
+                deltas[hb - sb] = deltas.get(hb - sb, 0) + 1
+        if not deltas: return (len(spress), 0, 0, len(spress))
+        O = max(deltas, key=deltas.get)
+        bfs = sorted(bf for bf in sseg if (bf + O) in hseg)
+        run = mx = fmm = 0
+        for bf in bfs:
+            if hseg[bf + O] != sseg[bf]:
+                fmm += 1; run += 1; mx = max(mx, run)
+            else:
+                run = 0
+        return (fmm, O, len(bfs), mx)
+    cin_H = _cin_parse(out_dir / "live_FM2K_P1_Debug.log")
+    cin_fail = False
+    if not cin_H:
+        print("[harness] CINPUT: no host [CINPUT] -- detector inactive (need FM2K_CINPUT=1 + a battle)")
+    else:
+        cin_G = _cin_parse(out_dir / "live_FM2K_P2_Debug.log")
+        for i, hseg in enumerate(cin_H):
+            if i >= len(cin_G): break
+            gseg = cin_G[i]
+            n = sum(1 for bf in hseg if bf in gseg)
+            mm = sum(1 for bf in hseg if bf in gseg and hseg[bf] != gseg[bf])
+            if mm:
+                cin_fail = True
+                fb = next(bf for bf in sorted(hseg) if bf in gseg and hseg[bf] != gseg[bf])
+                print(f"[harness] CINPUT P1-vs-P2 match{i}: {mm}/{n} mismatches -- PLAYERS DESYNCED "
+                      f"(first bf={fb}: p1={hseg[fb]} vs p2={gseg[fb]})")
+            else:
+                print(f"[harness] CINPUT P1-vs-P2 match{i}: {n} frames IDENTICAL (players lockstep)")
+        for s in specs:
+            for si, sseg in enumerate(_cin_parse(s["live"])):
+                best = None
+                for hi, hseg in enumerate(cin_H):
+                    fmm, O, n, mx = _cin_align(sseg, hseg)
+                    key = (mx, fmm, -n)
+                    if best is None or key < best[0]: best = (key, fmm, O, n, mx, hi)
+                _, fmm, O, n, mx, hi = best
+                if mx > 3:   # sustained mismatch run = real input-frame desync
+                    cin_fail = True
+                    hseg = cin_H[hi]
+                    fb = next((bf for bf in sorted(sseg) if (bf + O) in hseg and hseg[bf + O] != sseg[bf]), None)
+                    print(f"[harness] CINPUT {s['tag']} seg{si}: vs host-match{hi} off{O}: {fmm} mismatches "
+                          f"(longest run {mx}) -> DESYNC (first spec-bf={fb} host-bf={fb + O if fb is not None else '?'}: "
+                          f"spec={sseg.get(fb)} host={hseg.get(fb + O) if fb is not None else '?'})")
+                else:
+                    extra = f" ({fmm} isolated boundary artifact{'s' if fmm != 1 else ''})" if fmm else ""
+                    print(f"[harness] CINPUT {s['tag']} seg{si}: vs host-match{hi} off{O}: "
+                          f"{n} frames input-frame IDENTICAL{extra}")
+
+    # ---- FULL-STATE FENCEPOST: [CHECKSUM] gameplay_fingerprint (GDC GAP #1) ----
+    # The host logs the gameplay_fingerprint (HP/pos/rng/timer -- gekko's own
+    # P1-vs-P2 desync hash) at every SAVE event; the spectator RECOMPUTES the same
+    # fingerprint from its live memory each applied frame (never rolls back ->
+    # always confirmed). Aligning the spec's CRC sequence to the host's catches
+    # POSITION/full-state desyncs the subset rng/hp gate is structurally blind to.
+    # Host f resets per match + re-emits per re-sim -> segment on f=-1, dedupe
+    # frame-LAST. Spec bf resets per battle -> segment on bf reset.
+    _ckpat = _cre.compile(r'\[CHECKSUM\] f=(-?\d+) crc=0x([0-9A-Fa-f]+)')
+    def _ck_host(path):
+        # per-MATCH segments [{frame: crc}]; split on f=-1 (battle-entry marker),
+        # dedupe frame-LAST within a segment (re-sim re-emits; last = confirmed).
+        segs, cur = [], {}
+        try: fh = open(path, errors="ignore")
+        except OSError: return segs
+        for ln in fh:
+            m = _ckpat.search(ln)
+            if not m: continue
+            f = int(m.group(1)); crc = int(m.group(2), 16)
+            if f < 0:
+                if cur: segs.append(cur); cur = {}
+                continue
+            cur[f] = crc
+        if cur: segs.append(cur)
+        return segs
+    def _ck_spec(path):
+        segs, cur, last = [], {}, -1
+        try: fh = open(path, errors="ignore")
+        except OSError: return segs
+        for ln in fh:
+            m = _ckpat.search(ln)
+            if not m: continue
+            bf = int(m.group(1))
+            if bf < 0: continue
+            crc = int(m.group(2), 16)
+            if bf <= last and cur: segs.append(cur); cur = {}
+            cur[bf] = crc; last = bf
+        if cur: segs.append(cur)
+        return segs
+    def _ck_align(sseg, hseg):
+        # offset O (host_f = spec_bf + O) maximizing CRC matches via distinctive
+        # non-zero CRC anchors. Returns (mismatches, O, overlap, longest_run, first).
+        sanchor = [(bf, sseg[bf]) for bf in sorted(sseg) if sseg[bf] != 0]
+        if not sanchor: return (0, 0, 0, 0, None)
+        hbi = {}
+        for hf, hc in hseg.items():
+            if hc != 0: hbi.setdefault(hc, []).append(hf)
+        deltas = {}
+        for sb, sc in sanchor:
+            for hf in hbi.get(sc, ()):
+                deltas[hf - sb] = deltas.get(hf - sb, 0) + 1
+        if not deltas: return (len(sanchor), 0, 0, len(sanchor), sanchor[0][0])
+        O = max(deltas, key=deltas.get)
+        bfs = sorted(bf for bf in sseg if sseg[bf] != 0 and (bf + O) in hseg)
+        run = mx = mm = 0; first = None
+        for bf in bfs:
+            if hseg[bf + O] != sseg[bf]:
+                mm += 1; run += 1; mx = max(mx, run)
+                if first is None: first = bf
+            else:
+                run = 0
+        return (mm, O, len(bfs), mx, first)
+    ck_H = _ck_host(out_dir / "live_FM2K_P1_Debug.log")
+    ck_fail = False
+    if not ck_H:
+        print("[harness] CHECKSUM: no host [CHECKSUM] -- full-state fencepost "
+              "inactive (need FM2K_CINPUT=1 + a battle)")
+    else:
+        for s in specs:
+            for si, sseg in enumerate(_ck_spec(s["live"])):
+                nz = sum(1 for c in sseg.values() if c)
+                if nz == 0:
+                    ck_fail = True
+                    print(f"[harness] CHECKSUM {s['tag']} seg{si}: ALL-ZERO CRCs "
+                          f"(stale spec fingerprint -- recompute regressed) -> FAIL")
+                    continue
+                best = None
+                for hi, hseg in enumerate(ck_H):
+                    mm, O, n, mx, fb = _ck_align(sseg, hseg)
+                    key = (mx, mm, -n)
+                    if best is None or key < best[0]: best = (key, mm, O, n, mx, fb, hi)
+                _, mm, O, n, mx, fb, hi = best
+                if n == 0:
+                    ck_fail = True
+                    print(f"[harness] CHECKSUM {s['tag']} seg{si}: NO OVERLAP with "
+                          f"any host match -> FULL-STATE DESYNC")
+                elif mx > 3:
+                    ck_fail = True
+                    hseg = ck_H[hi]
+                    print(f"[harness] CHECKSUM {s['tag']} seg{si}: vs host-match{hi} "
+                          f"off{O} {mm}/{n} CRC mismatches (longest run {mx}) -> "
+                          f"FULL-STATE DESYNC (first spec-bf={fb} host-f={fb + O}: "
+                          f"spec=0x{sseg[fb]:08X} host=0x{hseg[fb + O]:08X})")
+                else:
+                    extra = f" ({mm} tail/predicted artifact)" if mm else ""
+                    print(f"[harness] CHECKSUM {s['tag']} seg{si}: vs host-match{hi} "
+                          f"off{O} {n} frames FULL-STATE IDENTICAL{extra}")
+
+    for s in specs:
+        r = gate_one(s["live"])
+        s["gate"] = r
+        s["ok"] = r["checked"] > 0 and r["bad"] == 0
+        verdict = "PASS" if s["ok"] else ("INCONCLUSIVE" if r["checked"] == 0 else "FAIL")
+        print(f"[harness] GATE {s['tag']} ({s['phase']}): "
+              f"checked {r['checked']} (TRACE {r['ct']} rng + FP {r['cf']} hp/scripts); "
+              f"{r['mt']} TRACE-rng + {r['mf']} FP-state not-in-host "
+              f"(FP raw {r['mf_total']}, max-run {r['mx']}, tail {r['trailing']}) -> {verdict}")
+        if r["first_t"]:
+            print(f"    TRACE rng-not-in-host (REAL divergence): {r['first_t']}")
+        if r["mf_total"] and r["mf"] == 0:
+            print(f"    (advisory) {r['mf_total']} FP miss(es) but they RE-SYNC "
+                  f"(tail={r['trailing']}, max-run {r['mx']}) -- bounded capture-"
+                  f"timing offset on a transitioning hp/script, not a desync")
+        if r["mf"]:
+            print(f"    FP hp/scripts PERSISTENT divergence (tail={r['trailing']}): {r['first_f']}")
+    return cin_fail, ck_fail
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--frames", type=int, default=1500,
@@ -527,7 +986,22 @@ def main():
                     help="exit nonzero if any spectator's applied battle-frame "
                          "progression did NOT reach/hold near the host's final "
                          "battle frame (the 'held the live edge' pass condition). "
-                         "Always computed + printed; this flag makes it a gate.")
+                         "Always computed + printed; this flag makes it a gate. "
+                         "Bounded-deep-join aware: a between-matches joiner is "
+                         "judged on the host matches it could observe. The "
+                         "verdict is DEFERRED to the OVERALL line so it can no "
+                         "longer short-circuit the parity gates.")
+    ap.add_argument("--assert-spectator-catchup", action="store_true",
+                    help="exit nonzero if a spectator's boot -> first-played-"
+                         "frame wall clock exceeds --catchup-secs (or if it "
+                         "never played a frame). Always computed + printed; "
+                         "this flag makes it a gate.")
+    ap.add_argument("--catchup-secs", type=float, default=DEEP_JOIN_CATCHUP_SECS,
+                    help="threshold in seconds for --assert-spectator-catchup "
+                         "(default 10, deliberately lenient: measured deep joins "
+                         "are 2.0-3.1s, with a 5.9s outlier when the first "
+                         "SPEC_JOIN_REQ is lost and the 3500ms re-JOIN cadence "
+                         "recovers it)")
     args = ap.parse_args()
     min_coverage = args.min_coverage if args.min_coverage >= 0 else args.frames - 100
     # Measure host pacing when fakes are present OR when explicitly asked (so the
@@ -552,6 +1026,40 @@ def main():
     kill_strays()
     time.sleep(1.0)
     wait_ports_free([P1_PORT, P2_PORT] + [SPEC_PORT + k for k in range(len(spec_phases))])
+
+    # ---- log lifecycle -------------------------------------------------------
+    # The game's per-role debug logs live in the GAME dir and SURVIVE across
+    # runs (each new process truncates its own on open -- eventually). Two
+    # harness mechanisms read them, and a stale file corrupts BOTH:
+    #   * count_marker() below decides WHEN a css[N]/battle[N] spectator dials
+    #     in. Against a previous run's markers it fires instantly, so the run
+    #     silently tests a DIFFERENT SCENARIO and says nothing: wave-4.1
+    #     rematch seed 83 dialled both spectators in at session start, turning a
+    #     "join between matches 2 and 3" run into a session-start join.
+    #   * the live_ preservation step feeds every parity gate; if a spectator
+    #     never launches, the copy would be the PREVIOUS run's spectator log.
+    # Clear them here (kill_strays already ran, so nothing holds a handle) and,
+    # for the case where Windows still refuses the unlink, remember the current
+    # size so counting can start past it.
+    log_dir = game_dir / "logs"
+    stale_bases = {}
+    for _lf in (["FM2K_P1_Debug.log", "FM2K_P2_Debug.log"]
+                + [f"FM2K_S{k + 1}_Debug.log" for k in range(len(spec_phases))]):
+        _p = log_dir / _lf
+        try:
+            _p.unlink()
+            stale_bases[_p] = 0
+        except FileNotFoundError:
+            stale_bases[_p] = 0
+        except OSError as e:
+            try:
+                stale_bases[_p] = _p.stat().st_size
+            except OSError:
+                stale_bases[_p] = 0
+            print(f"[harness] (warn) could not clear stale {_lf} ({e}) -- "
+                  f"markers will be counted past byte {stale_bases[_p]}")
+    print(f"[harness] cleared {len(stale_bases)} stale game-dir debug log(s) "
+          f"under {log_dir}")
 
     common_env = {
         "FM2K_PARITY_AUTOPLAY": "1",
@@ -699,6 +1207,12 @@ def main():
                       "pty": pty, "env": env, "args": sargs,
                       "log": f"FM2K_S{k+1}_Debug.log",
                       "live": OUT_DIR / f"live_FM2K_S{k+1}_Debug.log",
+                      # Index of the earliest host match this viewer can
+                      # possibly observe; filled in at dial-in (schedule_spec)
+                      # and consumed by spectator_liveness. 0 = present from the
+                      # session start, which is what every full-session joiner
+                      # is and what the pre-2026-08 behaviour assumed for all.
+                      "first_host_match": 0,
                       "rc": None})
     spec_pty = specs[0]["pty"]   # alias for the single-spec parity/replay code below
 
@@ -789,10 +1303,24 @@ def main():
         spawn_fakes()
 
     def count_marker(marker):
+        """Occurrences of `marker` in the host's LIVE debug log, counting ONLY
+        what THIS run wrote. Defence in depth with the log-lifecycle block
+        above: the baseline is normally 0 (the file was deleted), but when the
+        unlink was refused we count past the recorded size, and if the file ever
+        SHRINKS -- the new host truncating it -- the baseline drops back to 0 so
+        this run's own markers can never be skipped."""
+        base = stale_bases.get(host_live, 0)
         try:
-            return open(host_live, errors="ignore").read().count(marker)
+            with open(host_live, "rb") as fh:
+                fh.seek(0, 2)
+                if fh.tell() < base:      # truncated => the new host owns it all
+                    base = 0
+                    stale_bases[host_live] = 0
+                fh.seek(base)
+                data = fh.read()
         except OSError:
             return 0
+        return data.decode("utf-8", "replace").count(marker)
 
     def schedule_spec(s):
         # phase = "css[N]" or "battle[N]": dial in during the host's Nth CSS / Nth
@@ -811,7 +1339,19 @@ def main():
         # Settle: a css spec waits spec_join_delay into the CSS; a battle spec waits
         # battle_join_offset so the Nth battle session exists before the snapshot.
         time.sleep(args.spec_join_delay if kind == "css" else args.battle_join_offset)
-        print(f"[harness] {s['tag']} ({phase}) dialing in -- host reached {kind} #{n}")
+        # Liveness baseline (--assert-spectator-live): the earliest host match
+        # this viewer can possibly observe. A css[N] joiner dials in AFTER the
+        # host's first N-1 battles, so its first observable match index is that
+        # battle count; a battle[N] joiner dials into battle N itself, index
+        # count-1. For a BOUNDED deep joiner (css[N>1] with
+        # FM2K_SPEC_DEEP_JOIN=1) this is exactly the set of matches it is
+        # designed never to replay.
+        battles_seen = count_marker("GekkoNet battle session created")
+        s["first_host_match"] = (battles_seen if kind == "css"
+                                 else max(0, battles_seen - 1))
+        print(f"[harness] {s['tag']} ({phase}) dialing in -- host reached {kind} "
+              f"#{n} (host battles so far: {battles_seen}; liveness baseline: "
+              f"first observable host match = {s['first_host_match']})")
         launch_spec(s)
 
     for s in specs:
@@ -855,7 +1395,8 @@ def main():
     host_p1_log = OUT_DIR / "live_FM2K_P1_Debug.log"
     live_edge_fail = False
     for s in specs:
-        lv = spectator_liveness(host_p1_log, s["live"])
+        lv = spectator_liveness(host_p1_log, s["live"],
+                                first_host_match=s.get("first_host_match", 0))
         # Flush-race backstop: the host hard-terminates at --total-frames while
         # a spectator under loss is legitimately a few frames behind (still
         # HOLDING the live edge). kill_strays can truncate its debug log mid-
@@ -873,7 +1414,8 @@ def main():
                         shutil.copy2(src, OUT_DIR / f"live_{lf}")
                     except OSError:
                         pass
-            lv2 = spectator_liveness(host_p1_log, s["live"])
+            lv2 = spectator_liveness(host_p1_log, s["live"],
+                                     first_host_match=s.get("first_host_match", 0))
             if lv2["reached"]:
                 print(f"[harness] LIVE-EDGE {s['tag']}: first parse read a "
                       f"mid-flush log (spec_max={lv['spec_max']}); re-parse of "
@@ -887,11 +1429,41 @@ def main():
               f"gap={lv['gap']} (tol {lv['tolerance']}) -> "
               f"spectator_reached_live={lv['reached']} [{verdict}]")
         print(f"    matches host={lv['host_matches']} spec={lv['spec_matches']} "
-              f"followed_all={lv['followed_all']}; SPEC-UDP admitted_max="
-              f"{lv['spec_udp_admitted']} flatlined={lv['admitted_flatlined']}; "
-              f"stall_frame={lv['stall_frame']}")
+              f"(needed >= {lv['expected_segs']}, from first observable host "
+              f"match {lv['first_host_match']}) followed_all={lv['followed_all']}; "
+              f"SPEC-UDP admitted_max={lv['spec_udp_admitted']} "
+              f"flatlined={lv['admitted_flatlined']}; stall_frame={lv['stall_frame']}")
         if not lv["reached"]:
             live_edge_fail = True
+
+    # ---- CATCHUP metric (boot -> first played frame) --------------------------
+    # Always printed; gated only under --assert-spectator-catchup. The rollout's
+    # phase 2/3 soak reports this per deep join, so the harness owns it rather
+    # than every sweep driver re-deriving it from log timestamps.
+    catchup_fail = False
+    for s in specs:
+        cu = spectator_catchup(s["live"])
+        s["catchup"] = cu
+        secs = cu["seconds"]
+        applied = cu["applied_seconds"]
+        extra = "" if applied is None else f" boot->deep-join-APPLIED={applied:.1f}s"
+        if secs is None:
+            print(f"[harness] CATCHUP {s['tag']} ({s['phase']}): NO played frame "
+                  f"observed (no [SPEC-Q] total>0 and no [CINPUT]){extra}")
+        else:
+            print(f"[harness] CATCHUP {s['tag']} ({s['phase']}): "
+                  f"boot->first_played_frame={secs:.1f}s (source={cu['source']}, "
+                  f"threshold {args.catchup_secs:.1f}s){extra}")
+        if args.assert_spectator_catchup:
+            if secs is None:
+                catchup_fail = True
+            elif cu["source"] == "spec-q" and secs > args.catchup_secs:
+                catchup_fail = True
+            elif cu["source"] != "spec-q":
+                # The [CINPUT] fallback measures boot->first BATTLE frame, a much
+                # larger number on the same run -- never fail a run on it.
+                print(f"    (not gated: fallback source {cu['source']} measures "
+                      "boot->first BATTLE frame, not boot->first played frame)")
 
     # CSS-phase parity (#66 Phase 1) -- computed HERE, before the liveness early-
     # return, so host==guest CSS determinism (the load-bearing rollback check,
@@ -901,21 +1473,50 @@ def main():
     for _l in _css_lines:
         print(_l)
 
-    if args.assert_spectator_live and live_edge_fail:
-        print("[harness] OVERALL FAIL: --assert-spectator-live: a spectator did NOT "
-              "reach/hold the host's live edge (fell behind / stalled -- see "
-              "LIVE-EDGE above). This is a spectator liveness failure, NOT an "
-              "engine desync and NOT a match-completion failure.")
+    # ---- CORRECTNESS GATES: CINPUT + CHECKSUM + rng/hp trace -----------------
+    # Run HERE -- after preservation, before EVERY early return. Until 2026-08
+    # they ran at the very end, so any earlier bail (most often
+    # --assert-spectator-live, which returned immediately) produced a run with
+    # NO correctness verdict in either direction: 4 of 12 runs in the wave-4.1
+    # sweep A round returned nothing at all. They read only the preserved live_
+    # logs, so running them before the replay phase is also strictly safer (the
+    # replay process overwrites the game-dir logs it would otherwise race).
+    cin_fail, ck_fail = _parity_gates(OUT_DIR, specs)
+    real_fail = (cin_fail or ck_fail or css_fail
+                 or any(s["gate"]["checked"] > 0 and not s["ok"] for s in specs))
+    checked_any = any(s["gate"]["checked"] > 0 for s in specs)
+
+    def _struct_fail(msg):
+        """A STRUCTURAL failure (missing stream, missing coverage, missing
+        replay file) reported after the correctness gates above have already
+        printed their verdict, so the two are never confused."""
+        print(msg)
+        print("[harness] (correctness verdict from the gates above: "
+              + ("DESYNC DETECTED" if real_fail else
+                 "no desync detected" if checked_any else
+                 "INCONCLUSIVE -- no spectator trace frames")
+              + " -- the FAIL above is structural, not a desync.)")
         return 1
 
+    if args.assert_spectator_live and live_edge_fail:
+        print("[harness] --assert-spectator-live: FAILED -- a spectator did NOT "
+              "reach/hold the host's live edge (fell behind / stalled -- see "
+              "LIVE-EDGE above). This is a spectator liveness failure, NOT an "
+              "engine desync and NOT a match-completion failure. Deferred to the "
+              "OVERALL verdict; the run CONTINUES so the parity gates still "
+              "produce a correctness verdict.")
+    if args.assert_spectator_catchup and catchup_fail:
+        print(f"[harness] --assert-spectator-catchup: FAILED -- a spectator took "
+              f"longer than {args.catchup_secs:.1f}s from boot to its first played "
+              "frame (or never played one). Deferred to the OVERALL verdict.")
+
     if not p1_pty.exists():
-        print("[harness] FAIL: host parity missing")
-        return 1
+        return _struct_fail("[harness] FAIL: host parity missing")
     if not spec_pty.exists():
-        print("[harness] FAIL: spectator parity missing -- spectator never "
-              f"joined or never captured (check .spec_selftest/spec0.log and "
-              f"logs/{specs[0]['log']})")
-        return 1
+        return _struct_fail(
+            "[harness] FAIL: spectator parity missing -- spectator never "
+            f"joined or never captured (check .spec_selftest/spec0.log and "
+            f"logs/{specs[0]['log']})")
 
     host_n, spec_n = pty_snapshots(p1_pty), pty_snapshots(spec_pty)
     print(f"[harness] host parity: {host_n} snapshots; spec parity: {spec_n}")
@@ -945,9 +1546,9 @@ def main():
     except OSError:
         pass
     if spec_n < min_coverage:
-        print(f"[harness] FAIL: spectator covered only {spec_n} frames "
-              f"(< required {min_coverage}) -- stream stalled or join failed")
-        return 1
+        return _struct_fail(
+            f"[harness] FAIL: spectator covered only {spec_n} frames "
+            f"(< required {min_coverage}) -- stream stalled or join failed")
 
     # Informational: host-vs-spec. Valid on clean loopback; under loss the
     # HOST predicts and its parity captures SPECULATIVE states, producing
@@ -993,10 +1594,10 @@ def main():
             p0_rep = (find_latest_fm2krep(game_dir, start_ts, suffix="_p0_harness")
                       or find_latest_fm2krep(game_dir, start_ts, suffix="_p1_harness"))
         if not p0_rep:
-            print("[harness] FAIL: no match-1 .fm2krep (neither a no-suffix "
-                  "canonical nor a fresh *_p{0,1}_harness) -- did match 1 "
-                  "actually complete?")
-            return 1
+            return _struct_fail(
+                "[harness] FAIL: no match-1 .fm2krep (neither a no-suffix "
+                "canonical nor a fresh *_p{0,1}_harness) -- did match 1 "
+                "actually complete?")
         print(f"[harness] match-1 replay file: {p0_rep.name}")
 
         # Multi-match liveness assertions.
@@ -1111,8 +1712,8 @@ def main():
                 break
             time.sleep(0.5)
         if not p0_rep:
-            print("[harness] FAIL: no p0 harness .fm2krep for the replay gate")
-            return 1
+            return _struct_fail(
+                "[harness] FAIL: no p0 harness .fm2krep for the replay gate")
     replay_pty = OUT_DIR / "replay_parity.pty"
     replay_pty.unlink(missing_ok=True)
     kill_strays()
@@ -1163,364 +1764,25 @@ def main():
                                    str(spec_pty), str(replay_pty),
                                    "spec-vs-replay ADVISORY (segment-aligned)"])
 
-    # AUTHORITATIVE GATE: host-vs-spec per-frame trace pairing (SAME run, same
-    # match = ground truth). Both the host and spectator here watch the
-    # identical match, so bit-for-bit (rng, inputs, scripts) at every paired
-    # battle frame proves the spectator stayed in sync. Needs FM2K_HOST_TRACE=1
-    # + FM2K_SPECTATOR_DEBUG=1 (set in common_env). [SPEC-TRACE] is dense over
-    # bf 0..99; [SPEC-FP]/[HOST-FP] checkpoint every 30 frames to match end.
-    # rng-keyed (NOT bf-keyed): the spectator's per-frame rng_post is a strong
-    # state fingerprint. We assert every spectator frame's rng appears in the
-    # HOST's rng set with matching inputs/scripts. This is robust to: a frame
-    # offset (mid-battle CURRENT_MATCH snapshot join starts at host frame N,
-    # not 0), per-match bf RESETS (multi-match: each battle restarts bf at 0,
-    # so bf-keying would cross-contaminate matches), and catch-up cadence. A
-    # spectator that desyncs computes an rng the host never produced -> the
-    # frame's rng is "not in host" = hard fail.
-    import re as _ret
-    # CRITICAL: read the PRESERVED spectator log, not game_dir/logs/FM2K_P3.
-    # The REPLAY process (launched after the spec, with ALWAYS_CATCHUP=1)
-    # overwrites game_dir/logs/FM2K_P3_Debug.log -- so the live game_dir P3
-    # holds the replay's traces, which re-sim the host's CONFIRMED inputs and
-    # match the host BY CONSTRUCTION (0 misses = guaranteed false PASS). The
-    # live_ copies are snapshotted before the replay runs and hold the ACTUAL
-    # spectator's traces. (2026-06-23: this masked a real bf=77 spectator
-    # desync under loss -- the spec computed an rng no player ever produced.)
-    host_dbg = OUT_DIR / "live_FM2K_P1_Debug.log"
-    # group(1)=bf, group(2)=rng, group(3+)=comparison fields.
-    TRC = (r'(?:HOST|SPEC)-TRACE\] bf=(\d+) rng_pre=0x[0-9A-F]+ '
-           r'rng_post=0x([0-9A-F]+) p1=0x([0-9A-F]+) p2=0x([0-9A-F]+)')
-    FP  = (r'(?:HOST|SPEC)-FP\] bf=(\d+).*?p1_hp=(\d+) p2_hp=(\d+).*?'
-           r'p1_pos=\(([-\d]+),[-\d]+\) p2_pos=\(([-\d]+),[-\d]+\) '
-           r'p1_script=(-?\d+) p2_script=(-?\d+)')
-    def _rows2(path, pat):
-        out = []
-        try:
-            for ln in open(path, errors="ignore"):
-                m = _ret.search(pat, ln)
-                if m:
-                    g = m.groups()
-                    # Skip the battle-entry frame (bf==0): hp/timer/pos aren't
-                    # loaded yet and rng is pre-pin -- a transitional, not a
-                    # settled gameplay state. Host and spectator hit it at
-                    # slightly different init timing (esp. during catch-up), so
-                    # comparing it is a false mismatch. Each match has one.
-                    if int(g[0]) == 0:
-                        continue
-                    out.append((g[1], tuple(g[2:])))  # (rng, fields)
-        except OSError:
-            pass
-        return out
-    def _check(host_rows, spec_rows):
-        hmap = {}
-        for rng, fields in host_rows:
-            hmap.setdefault(rng, set()).add(fields)
-        not_found = field_mm = 0
-        first = None
-        for rng, fields in spec_rows:
-            if rng not in hmap:
-                not_found += 1
-                if first is None:
-                    first = ("rng-NOT-in-host (real desync)", rng, fields)
-            elif fields not in hmap[rng]:
-                field_mm += 1
-                if first is None:
-                    first = ("field-mismatch @rng", rng, "spec", fields,
-                             "host", hmap[rng])
-        return len(spec_rows), not_found, field_mm, first
-    # TRACE: rng-PRESENCE only. The p1/p2 input fields are capture-noise
-    # (predicted-vs-confirmed + different capture points on host vs spec -- the
-    # same reason parity_diff excludes inputs). rng_post IS the post-frame state
-    # fingerprint: if every spectator rng appears in the host's set, the sims
-    # produced identical state. Comparing inputs here gave false mismatches on a
-    # snapshot-join (31 of them) while rng+scripts were bit-exact.
-    # FP checkpoint: gate on GAMEPLAY STATE (hp + positions + scripts), NOT the
-    # FP rng field. The host logs [HOST-FP] rng at a different sub-frame point
-    # (netplay_battle_events.cpp) than the spectator's [SPEC-FP]
-    # (trampoline_spectator.cpp), and the spectator's capture point is also
-    # catchup-dependent -- so FP rng differs host-vs-spec even when the sim is
-    # bit-exact (it false-FAILED a verified-correct mid-battle snapshot-join,
-    # 2026-06-23). hp/pos/scripts are aligned and a strong fingerprint; the dense
-    # aligned TRACE rng_post (bf 0-99) remains the authoritative rng check.
-    def fp_states(path):
-        out = []
-        try:
-            for ln in open(path, errors="ignore"):
-                m = _ret.search(FP, ln)
-                if m and int(m.group(1)) != 0:   # skip bf=0 (pre-pin transitional)
-                    # (hp1,hp2,s1,s2) -- POSITIONS dropped: they're captured at
-                    # different sub-frame points host-vs-spec (a moving player is
-                    # off by ~1 frame of travel at the termination tail) even when
-                    # bit-exact. hp + scripts are capture-stable (matched the whole
-                    # battle including the tail) and a real desync diverges in them.
-                    out.append((m.group(2), m.group(3), m.group(6), m.group(7)))
-        except OSError:
-            pass
-        return out
-    # Host sets are shared; gate EACH spectator against them independently.
-    host_trc_rng = {rng for rng, _ in _rows2(host_dbg, TRC)}
-    host_fp_set  = set(fp_states(host_dbg))
-
-    def gate_one(spec_live):
-        trc_spec = _rows2(spec_live, TRC)
-        ct = len(trc_spec)
-        mt = sum(1 for rng, _ in trc_spec if rng not in host_trc_rng)
-        first_t = next(((rng,) for rng, _ in trc_spec if rng not in host_trc_rng), None)
-        sfp = fp_states(spec_live)   # ordered by bf
-        cf = len(sfp)
-        miss = [st not in host_fp_set for st in sfp]
-        mf_total = sum(miss)
-        # A no-rollback spectator's sim is a one-way forward replay: a REAL desync
-        # NEVER re-converges, so its FP misses form a persistent TAIL reaching the
-        # LAST FP frame. A BOUNDED interior run that re-syncs (later frames match)
-        # is a capture artifact -- a small frame-offset in a TRANSITIONING value
-        # (a round-start hp-fill animation, hp during a hit, a move-start) sampled
-        # against the host's every-30-frame FP grid; the values land back on the
-        # grid once the value stabilizes. (vanpri under loss: hp-fill +3 frames
-        # ahead, bf 270-360, re-syncs at 390 -- 2026-06-23.) Fail only on a
-        # PERSISTENT tail (last FP frame misses) or a massive >40% divergence. The
-        # aligned TRACE rng_post (mt) stays the authoritative per-frame check.
-        trailing = 0
-        for f in reversed(miss):
-            if f:
-                trailing += 1
-            else:
-                break
-        massive = cf > 0 and mf_total > 0.40 * cf
-        # A BOUNDED trailing run (<= RECONVERGE_WINDOW) is the SAME rollback
-        # speculative-capture artifact we already tolerate mid-stream, just landing
-        # at the tail because loss cut the spectator's stream off ON a transitioning
-        # value (hp mid-hit, move-start) that hasn't re-landed on the host's 30-frame
-        # FP grid. A REAL desync is rng-driven -> it shows up in `mt` (the
-        # authoritative aligned rng_post check, which stays a hard FAIL) AND persists
-        # far past the window. So fail on the FP side only for a PERSISTENT tail
-        # (> RECONVERGE_WINDOW) or a massive (>40%) divergence. (Observed: RC spec at
-        # 15% loss, seeds 42/99 -> trailing=1, mt=0, 1184 frames full-state IDENTICAL
-        # -- a single trailing speculative frame, not a desync. 2026-07-06.)
-        RECONVERGE_WINDOW = int(os.environ.get('FM2K_PARITY_RECONVERGE_WINDOW', '32'))
-        mf = mf_total if (trailing > RECONVERGE_WINDOW or massive) else 0
-        run = mx = 0                      # longest run -- advisory only now
-        for f in miss:
-            run = run + 1 if f else 0
-            if run > mx:
-                mx = run
-        first_f = next((st for st, f in zip(sfp, miss) if f), None)
-        return dict(ct=ct, cf=cf, mt=mt, mf=mf, mf_total=mf_total, mx=mx,
-                    trailing=trailing,
-                    checked=ct + cf, bad=mt + mf,
-                    first_t=first_t, first_f=first_f)
-
-    # ---- PRIMARY: ground-truth frame-keyed input desync detector --------------
-    # Compare the every-frame [CINPUT] (confirmed input on the players, applied
-    # input on the spectators) per (match, bf): P1 is truth, P2 must match P1
-    # (players in lockstep), every spectator must match P1 at the aligned bf. This
-    # catches frame-misaligned inputs -> in-battle position desyncs the rng/hp gate
-    # is structurally blind to. Authoritative; the rng/hp gate below is secondary.
-    import re as _cre
-    _cpat = _cre.compile(r'\[CINPUT\] bf=(\d+) p1=0x([0-9A-Fa-f]+) p2=0x([0-9A-Fa-f]+)')
-    def _cin_parse(path):
-        segs = []; cur = {}; last = -1
-        try: fh = open(path, errors="ignore")
-        except OSError: return segs
-        for ln in fh:
-            m = _cpat.search(ln)
-            if not m: continue
-            bf = int(m.group(1)); pv = (int(m.group(2), 16), int(m.group(3), 16))
-            if bf <= last and cur: segs.append(cur); cur = {}
-            cur[bf] = pv; last = bf
-        if cur: segs.append(cur)
-        return segs
-    def _cin_align(sseg, hseg):
-        # (full_mismatches, offset, overlap, longest_run). Offset = MODE of all
-        # press-deltas -- robust to stray boundary inputs and the autoplay's
-        # identical match openings (a single-press anchor mis-aligns). longest_run
-        # = longest consecutive-mismatch streak; isolated 1-frame artifacts (off-by-
-        # one boundary, a stray transition press) don't count as a desync, a
-        # SUSTAINED run does.
-        spress = [(bf, sseg[bf]) for bf in sorted(sseg) if sseg[bf] != (0, 0)]
-        if not spress: return (0, 0, 0, 0)
-        hbi = {}
-        for hb in hseg:
-            if hseg[hb] != (0, 0): hbi.setdefault(hseg[hb], []).append(hb)
-        deltas = {}
-        for sb, si in spress:
-            for hb in hbi.get(si, ()):
-                deltas[hb - sb] = deltas.get(hb - sb, 0) + 1
-        if not deltas: return (len(spress), 0, 0, len(spress))
-        O = max(deltas, key=deltas.get)
-        bfs = sorted(bf for bf in sseg if (bf + O) in hseg)
-        run = mx = fmm = 0
-        for bf in bfs:
-            if hseg[bf + O] != sseg[bf]:
-                fmm += 1; run += 1; mx = max(mx, run)
-            else:
-                run = 0
-        return (fmm, O, len(bfs), mx)
-    cin_H = _cin_parse(OUT_DIR / "live_FM2K_P1_Debug.log")
-    cin_fail = False
-    if not cin_H:
-        print("[harness] CINPUT: no host [CINPUT] -- detector inactive (need FM2K_CINPUT=1 + a battle)")
-    else:
-        cin_G = _cin_parse(OUT_DIR / "live_FM2K_P2_Debug.log")
-        for i, hseg in enumerate(cin_H):
-            if i >= len(cin_G): break
-            gseg = cin_G[i]
-            n = sum(1 for bf in hseg if bf in gseg)
-            mm = sum(1 for bf in hseg if bf in gseg and hseg[bf] != gseg[bf])
-            if mm:
-                cin_fail = True
-                fb = next(bf for bf in sorted(hseg) if bf in gseg and hseg[bf] != gseg[bf])
-                print(f"[harness] CINPUT P1-vs-P2 match{i}: {mm}/{n} mismatches -- PLAYERS DESYNCED "
-                      f"(first bf={fb}: p1={hseg[fb]} vs p2={gseg[fb]})")
-            else:
-                print(f"[harness] CINPUT P1-vs-P2 match{i}: {n} frames IDENTICAL (players lockstep)")
-        for s in specs:
-            for si, sseg in enumerate(_cin_parse(s["live"])):
-                best = None
-                for hi, hseg in enumerate(cin_H):
-                    fmm, O, n, mx = _cin_align(sseg, hseg)
-                    key = (mx, fmm, -n)
-                    if best is None or key < best[0]: best = (key, fmm, O, n, mx, hi)
-                _, fmm, O, n, mx, hi = best
-                if mx > 3:   # sustained mismatch run = real input-frame desync
-                    cin_fail = True
-                    hseg = cin_H[hi]
-                    fb = next((bf for bf in sorted(sseg) if (bf + O) in hseg and hseg[bf + O] != sseg[bf]), None)
-                    print(f"[harness] CINPUT {s['tag']} seg{si}: vs host-match{hi} off{O}: {fmm} mismatches "
-                          f"(longest run {mx}) -> DESYNC (first spec-bf={fb} host-bf={fb + O if fb is not None else '?'}: "
-                          f"spec={sseg.get(fb)} host={hseg.get(fb + O) if fb is not None else '?'})")
-                else:
-                    extra = f" ({fmm} isolated boundary artifact{'s' if fmm != 1 else ''})" if fmm else ""
-                    print(f"[harness] CINPUT {s['tag']} seg{si}: vs host-match{hi} off{O}: "
-                          f"{n} frames input-frame IDENTICAL{extra}")
-
-    # ---- FULL-STATE FENCEPOST: [CHECKSUM] gameplay_fingerprint (GDC GAP #1) ----
-    # The host logs the gameplay_fingerprint (HP/pos/rng/timer -- gekko's own
-    # P1-vs-P2 desync hash) at every SAVE event; the spectator RECOMPUTES the same
-    # fingerprint from its live memory each applied frame (never rolls back ->
-    # always confirmed). Aligning the spec's CRC sequence to the host's catches
-    # POSITION/full-state desyncs the subset rng/hp gate is structurally blind to.
-    # Host f resets per match + re-emits per re-sim -> segment on f=-1, dedupe
-    # frame-LAST. Spec bf resets per battle -> segment on bf reset.
-    _ckpat = _cre.compile(r'\[CHECKSUM\] f=(-?\d+) crc=0x([0-9A-Fa-f]+)')
-    def _ck_host(path):
-        # per-MATCH segments [{frame: crc}]; split on f=-1 (battle-entry marker),
-        # dedupe frame-LAST within a segment (re-sim re-emits; last = confirmed).
-        segs, cur = [], {}
-        try: fh = open(path, errors="ignore")
-        except OSError: return segs
-        for ln in fh:
-            m = _ckpat.search(ln)
-            if not m: continue
-            f = int(m.group(1)); crc = int(m.group(2), 16)
-            if f < 0:
-                if cur: segs.append(cur); cur = {}
-                continue
-            cur[f] = crc
-        if cur: segs.append(cur)
-        return segs
-    def _ck_spec(path):
-        segs, cur, last = [], {}, -1
-        try: fh = open(path, errors="ignore")
-        except OSError: return segs
-        for ln in fh:
-            m = _ckpat.search(ln)
-            if not m: continue
-            bf = int(m.group(1))
-            if bf < 0: continue
-            crc = int(m.group(2), 16)
-            if bf <= last and cur: segs.append(cur); cur = {}
-            cur[bf] = crc; last = bf
-        if cur: segs.append(cur)
-        return segs
-    def _ck_align(sseg, hseg):
-        # offset O (host_f = spec_bf + O) maximizing CRC matches via distinctive
-        # non-zero CRC anchors. Returns (mismatches, O, overlap, longest_run, first).
-        sanchor = [(bf, sseg[bf]) for bf in sorted(sseg) if sseg[bf] != 0]
-        if not sanchor: return (0, 0, 0, 0, None)
-        hbi = {}
-        for hf, hc in hseg.items():
-            if hc != 0: hbi.setdefault(hc, []).append(hf)
-        deltas = {}
-        for sb, sc in sanchor:
-            for hf in hbi.get(sc, ()):
-                deltas[hf - sb] = deltas.get(hf - sb, 0) + 1
-        if not deltas: return (len(sanchor), 0, 0, len(sanchor), sanchor[0][0])
-        O = max(deltas, key=deltas.get)
-        bfs = sorted(bf for bf in sseg if sseg[bf] != 0 and (bf + O) in hseg)
-        run = mx = mm = 0; first = None
-        for bf in bfs:
-            if hseg[bf + O] != sseg[bf]:
-                mm += 1; run += 1; mx = max(mx, run)
-                if first is None: first = bf
-            else:
-                run = 0
-        return (mm, O, len(bfs), mx, first)
-    ck_H = _ck_host(OUT_DIR / "live_FM2K_P1_Debug.log")
-    ck_fail = False
-    if not ck_H:
-        print("[harness] CHECKSUM: no host [CHECKSUM] -- full-state fencepost "
-              "inactive (need FM2K_CINPUT=1 + a battle)")
-    else:
-        for s in specs:
-            for si, sseg in enumerate(_ck_spec(s["live"])):
-                nz = sum(1 for c in sseg.values() if c)
-                if nz == 0:
-                    ck_fail = True
-                    print(f"[harness] CHECKSUM {s['tag']} seg{si}: ALL-ZERO CRCs "
-                          f"(stale spec fingerprint -- recompute regressed) -> FAIL")
-                    continue
-                best = None
-                for hi, hseg in enumerate(ck_H):
-                    mm, O, n, mx, fb = _ck_align(sseg, hseg)
-                    key = (mx, mm, -n)
-                    if best is None or key < best[0]: best = (key, mm, O, n, mx, fb, hi)
-                _, mm, O, n, mx, fb, hi = best
-                if n == 0:
-                    ck_fail = True
-                    print(f"[harness] CHECKSUM {s['tag']} seg{si}: NO OVERLAP with "
-                          f"any host match -> FULL-STATE DESYNC")
-                elif mx > 3:
-                    ck_fail = True
-                    hseg = ck_H[hi]
-                    print(f"[harness] CHECKSUM {s['tag']} seg{si}: vs host-match{hi} "
-                          f"off{O} {mm}/{n} CRC mismatches (longest run {mx}) -> "
-                          f"FULL-STATE DESYNC (first spec-bf={fb} host-f={fb + O}: "
-                          f"spec=0x{sseg[fb]:08X} host=0x{hseg[fb + O]:08X})")
-                else:
-                    extra = f" ({mm} tail/predicted artifact)" if mm else ""
-                    print(f"[harness] CHECKSUM {s['tag']} seg{si}: vs host-match{hi} "
-                          f"off{O} {n} frames FULL-STATE IDENTICAL{extra}")
-
-    for s in specs:
-        r = gate_one(s["live"])
-        s["gate"] = r
-        s["ok"] = r["checked"] > 0 and r["bad"] == 0
-        verdict = "PASS" if s["ok"] else ("INCONCLUSIVE" if r["checked"] == 0 else "FAIL")
-        print(f"[harness] GATE {s['tag']} ({s['phase']}): "
-              f"checked {r['checked']} (TRACE {r['ct']} rng + FP {r['cf']} hp/scripts); "
-              f"{r['mt']} TRACE-rng + {r['mf']} FP-state not-in-host "
-              f"(FP raw {r['mf_total']}, max-run {r['mx']}, tail {r['trailing']}) -> {verdict}")
-        if r["first_t"]:
-            print(f"    TRACE rng-not-in-host (REAL divergence): {r['first_t']}")
-        if r["mf_total"] and r["mf"] == 0:
-            print(f"    (advisory) {r['mf_total']} FP miss(es) but they RE-SYNC "
-                  f"(tail={r['trailing']}, max-run {r['mx']}) -- bounded capture-"
-                  f"timing offset on a transitioning hp/script, not a desync")
-        if r["mf"]:
-            print(f"    FP hp/scripts PERSISTENT divergence (tail={r['trailing']}): {r['first_f']}")
-
-    # (CSS-phase parity gate [CSS-FP] ran earlier -- see _css_parity_gate call
-    #  before the liveness early-return; css_fail feeds the verdict below.)
+    # (The CSS-FP gate and the CINPUT/CHECKSUM/rng-hp gates BOTH ran earlier --
+    #  see the _css_parity_gate + _parity_gates calls before the first early
+    #  return. real_fail / checked_any were computed there.)
 
     # Phase 3: host-no-hiccup report (host ran with FM2K_PERF_PROFILE on).
     if measure_host:
         report_host_pacing(OUT_DIR / "live_FM2K_P1_Debug.log", args.fake_spectators)
 
-    real_fail   = cin_fail or ck_fail or css_fail or any(s["gate"]["checked"] > 0 and not s["ok"] for s in specs)
-    checked_any = any(s["gate"]["checked"] > 0 for s in specs)
+    # LIVENESS gates, folded in HERE rather than returning early: they are not
+    # correctness verdicts and must never suppress one (see _parity_gates).
+    liveness_fail = []
+    if args.assert_spectator_live and live_edge_fail:
+        liveness_fail.append("--assert-spectator-live (a spectator did not "
+                             "reach/hold the host's live edge)")
+    if args.assert_spectator_catchup and catchup_fail:
+        liveness_fail.append(f"--assert-spectator-catchup (> {args.catchup_secs:.1f}s "
+                             "from boot to first played frame)")
 
-    if not args.keep and not real_fail and checked_any:
+    if not args.keep and not real_fail and not liveness_fail and checked_any:
         cleanup = [p1_pty, replay_pty, OUT_DIR / "p1.log", OUT_DIR / "p2.log",
                    OUT_DIR / "replay.log"]
         cleanup += [s["pty"] for s in specs]
@@ -1533,6 +1795,16 @@ def main():
                "CINPUT input-frame desync (see above)" if cin_fail else
                "CSS-FP cursor/selection desync (see above)" if css_fail else "rng/hp gate")
         print(f"[harness] OVERALL FAIL: a spectator desynced from host -- {why}.")
+        if liveness_fail:
+            print(f"[harness]   (also failed: {'; '.join(liveness_fail)})")
+        return 1
+    if liveness_fail:
+        verdict = ("no desync detected" if checked_any else
+                   "INCONCLUSIVE -- no spectator trace frames")
+        print(f"[harness] OVERALL FAIL: {'; '.join(liveness_fail)}. This is a "
+              "spectator LIVENESS failure, NOT an engine desync and NOT a "
+              f"match-completion failure -- the correctness gates ran and said: "
+              f"{verdict}.")
         return 1
     if not checked_any:
         print("[harness] GATE INCONCLUSIVE: no spectator trace frames -- need "

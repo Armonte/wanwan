@@ -122,18 +122,22 @@ void ControlChannel_SendBattleAck() {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ControlChannel: Sent BATTLE_ACK");
 }
 
+// cfg_digest is supplied by the caller (the netplay layer) rather than read
+// here, so this TU stays ENGINE-AGNOSTIC -- the digest is computed from FM2K
+// engine globals and must not be reachable from the transport code.
 void ControlChannel_SendBattleEntering(uint32_t swap_frame, uint8_t epoch,
-                                       uint8_t flags) {
+                                       uint8_t flags, uint32_t cfg_digest) {
     CtrlPacket pkt = {};
     pkt.header.type = CtrlMsg::BATTLE_ENTERING;
     pkt.data.sync.frame = swap_frame;
     pkt.data.sync.epoch = epoch;
     pkt.data.sync.flags = flags;
+    pkt.data.sync.cfg_digest = cfg_digest;
     ControlChannel_Send(pkt);
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "ControlChannel: Sent BATTLE_ENTERING (swap_frame=%u epoch=%u flags=0x%02X)",
-                swap_frame, epoch, flags);
+                "ControlChannel: Sent BATTLE_ENTERING (swap_frame=%u epoch=%u flags=0x%02X cfg=0x%08X)",
+                swap_frame, epoch, flags, cfg_digest);
 }
 
 void ControlChannel_SendBattleStart(uint32_t start_frame) {

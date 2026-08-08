@@ -20,8 +20,14 @@
 #include "MinHook.h"
 
 #include "../core/globals.h"           // g_is_rolling_back, g_player_index
+#include "../netplay/netplay.h"        // Netplay_MatchSettingsDigest / HostConfigRxCount
 #include "../netplay/spectator_node.h" // SpectatorNode_AppendRound{Start,End}
 #include "per_game_patches.h"          // PerGamePatches_OnBattleInitComplete
+
+// SOCD mode accessor (defined in hooks_input.cpp). Declared here rather than
+// pulled from a header for the same reason netplay.cpp declares it locally --
+// there is no public hooks header for it yet.
+extern "C" int Hook_GetSOCDModePublic();
 
 // vs_round_function dispatcher (FM2K)
 constexpr uintptr_t ADDR_VS_ROUND_FUNCTION = 0x004086A0;
@@ -508,9 +514,26 @@ static char __cdecl Hook_vs_round_function() {
             : (uint16_t)0;
         SpectatorNode_AppendRoundStart(
             s_round_idx_counter, p1_hp_max, p2_hp_max, timer_seconds);
+        // PER-BATTLE SETTINGS STAMP. `timer=` alone has always been here and
+        // is the decisive cross-peer check for the lost-HOST_CONFIG class
+        // (host 15s vs guest 60s => g_score_value 1499 vs 5999 => the peers
+        // run an entire battle on divergent round state). The rest of the
+        // settings that RSS_BATTLE_INIT / process_game_inputs consume are just
+        // as capable of diverging silently, so stamp all of them plus the
+        // digest the entry barrier agreed on and the count of HOST_CONFIG
+        // packets this node ever applied (0 on a guest = smoking gun).
+        // Diffing this ONE line between the two peers' logs decides the whole
+        // question -- see the triage card in the Phase 1 diagnosis.
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "[ROUND-START] round=%u p1_hp_max=%u p2_hp_max=%u timer=%us",
-            s_round_idx_counter, p1_hp_max, p2_hp_max, timer_seconds);
+            "[ROUND-START] round=%u p1_hp_max=%u p2_hp_max=%u timer=%us "
+            "rounds=%u speed=%u socd=%d stage=%u cfg=0x%08X cfg_rx=%u",
+            s_round_idx_counter, p1_hp_max, p2_hp_max, timer_seconds,
+            *(uint32_t*)0x430124,                  // g_default_round
+            *(uint32_t*)0x430104,                  // uValue (GameSpeed)
+            Hook_GetSOCDModePublic(),
+            *(uint32_t*)FM2K::ADDR_SELECTED_STAGE,
+            Netplay_MatchSettingsDigest(),
+            Netplay_HostConfigRxCount());
     }
 
     // ROUND_END -- substate just transitioned to RSS_ROUND_END_BANNER from

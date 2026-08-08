@@ -80,6 +80,39 @@ const RegionChecksums& SaveState_GetRegionChecksums() {
 
 // Cheap path: gameplay fingerprint only -- what GekkoNet actually compares
 // for desync detection. Called on every save. ~44 B of hashing.
+//
+// WHAT IS IN IT (and what is NOT): exactly seven scalars -- rng, p1_hp, p2_hp,
+// round_timer (0x470060), game_timer (0x470044), p1_input, p2_input. There are
+// NO POSITION FIELDS, no object pool, no list topology, no afterimage pool.
+// Several comments elsewhere used to call this an "HP/pos/rng/timer" hash; they
+// were wrong and have been corrected. This is GDC tooling gap #1.
+//
+// WHY POSITIONS ARE NOT ADDED HERE (deliberate, 2026-08-08):
+//   * This value is SESSION-KILLING. A mismatch reaches HandleDesyncDetected,
+//     which dumps and then TerminateProcess()es BOTH peers' games. Every field
+//     added here becomes a new way for a live match to die.
+//   * The comparison itself is safe against rollback transients -- gekko's
+//     SendSessionHealthCheck only ever exchanges the checksum of
+//     `current - prediction_window - 1`, a CONFIRMED frame -- so the risk is
+//     not "benign prediction noise". The risk is a field that is legitimately
+//     NOT part of the rolled-back contract. Positions live in the object pool,
+//     which is exactly where that hazard is known to exist today:
+//     trampoline_render.cpp does not revert render-written object-pool state,
+//     and savestate_fm2k_load.cpp skips slot +68..+84 on restore. Promoting a
+//     region with a live, unresolved "is this actually rolled back" question
+//     into the kill-the-match term is the wrong order of operations.
+//   * It would not have caught the bug that prompted this review: in the
+//     analysed capture the positions were IDENTICAL on both peers at the
+//     divergent frame (the divergence was a settings mismatch stamped at
+//     RSS_BATTLE_INIT, now gated at the battle-entry barrier).
+//   * The coverage gap is already being closed OUT OF BAND and non-fatally:
+//     the [CHECKSUM] line in netplay_battle_events.cpp emits a
+//     process-independent pool-topology term (top=/nobj=) alongside the
+//     checksum, deliberately NOT folded into it.
+// REVISIT WHEN: the topology/POOLSET term has soaked across a large corpus
+// with zero cross-peer differences on confirmed frames, and the render-written
+// object-pool question in savestate_fm2k_load.cpp is settled. Then positions
+// can be promoted with evidence instead of hope.
 uint32_t SaveState_CalculateFingerprint() {
     g_region_checksums.rng = *(uint32_t*)ADDR_RNG_SEED;
 
@@ -123,14 +156,44 @@ uint32_t SaveState_CalculateFullChecksum() {
     // SaveState_CalculateFingerprint() above instead.
     g_region_checksums.rng = *(uint32_t*)ADDR_RNG_SEED;
 
-    // Game state CRC: split to EXCLUDE known per-process/CSS-residue fields:
-    //   0x470050 (4 bytes): g_score_value - CSS frame counter residue, used for battle transition
-    //   0x4701CC (4 bytes): g_hInstance - different per process
-    // Region 1: 0x470020 to 0x470050 (0x30 bytes)
-    // Region 2: 0x470054 to 0x4701CC (0x178 bytes)
-    uint32_t gs1 = Fletcher32((uint8_t*)ADDR_GAME_STATE, 0x470050 - ADDR_GAME_STATE);
-    uint32_t gs2 = Fletcher32((uint8_t*)0x470054, 0x4701CC - 0x470054);
-    g_region_checksums.game_state = gs1 ^ gs2;
+    // Game state CRC. Only ONE field is legitimately excluded:
+    //   0x4701CC (4 bytes): g_hInstance -- different per process, never sim state.
+    //
+    // 0x470050 USED TO BE EXCLUDED TOO, mislabelled "g_score_value - CSS frame
+    // counter residue". It is not residue: g_score_value is the ROUND-TIMER
+    // COUNTDOWN (docs/c3.5_round_events_ida_handoff.md -- RSS_BATTLE_INIT sets
+    // it to 100 * stage_timer - 1, substate 200 decrements it once per frame,
+    // and round_events.cpp derives the [ROUND-START]/[ROUND-END] `timer=` from
+    // it). It sits inside the saved region (ADDR_GAME_STATE + SIZE_GAME_STATE)
+    // so it IS rolled back, and it is the value that decides WHEN the round
+    // ends -- yet it was in neither fencepost nor GekkoNet's fingerprint. That
+    // is precisely why the lost-HOST_CONFIG desync (host on a 15s timer, guest
+    // silently on its own 60s) looked bit-identical for ~1500 frames before
+    // surfacing in the round-end tail. Hashing it makes that divergence trip at
+    // battle frame 0, where it is actually caused.
+    //
+    // Scoped to battle mode, which is the ONE part of the old carve-out that
+    // might have had a basis: out of battle nothing maintains this counter, so
+    // whatever the previous match left there is genuinely uninteresting and
+    // could differ across peers for benign reasons (a peer that spent a
+    // different number of frames in the round-end tail). In battle both peers
+    // stamp it from the same settings at RSS_BATTLE_INIT and decrement it in
+    // lockstep, so any difference is real. `combined` is a DIAGNOSTIC term
+    // (FULLFP / the replay-diff scan / the desync dump) -- GekkoNet's live
+    // desync compare uses gameplay_fingerprint, which this does not touch --
+    // so widening it cannot kill a session.
+    const uint32_t game_mode_now = *(uint32_t*)FM2K::ADDR_GAME_MODE;
+    if (game_mode_now >= 3000 && game_mode_now < 4000) {
+        // Contiguous 0x470020..0x4701CC: g_score_value included.
+        g_region_checksums.game_state =
+            Fletcher32((uint8_t*)ADDR_GAME_STATE, 0x4701CC - ADDR_GAME_STATE);
+    } else {
+        // Region 1: 0x470020 to 0x470050 (0x30 bytes)
+        // Region 2: 0x470054 to 0x4701CC (0x178 bytes)
+        uint32_t gs1 = Fletcher32((uint8_t*)ADDR_GAME_STATE, 0x470050 - ADDR_GAME_STATE);
+        uint32_t gs2 = Fletcher32((uint8_t*)0x470054, 0x4701CC - 0x470054);
+        g_region_checksums.game_state = gs1 ^ gs2;
+    }
 
     // Object pool: hash the FULL pool, not just the first 4KB.
     // Previous 4 KB covered only ~10 objects; stress-mode desync at frame 273

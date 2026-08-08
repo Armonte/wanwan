@@ -176,8 +176,13 @@ void ControlChannel_SendBattleAck();
 // + SWAP_FRAME_BUFFER and exchange; receiver takes max(local, remote).
 // epoch = barrier instance counter (0 for legacy peers); flags bit0 =
 // sender has completed this barrier (see CtrlPacket.sync).
+// cfg_digest = the sender's live match-settings digest, which the receiving
+// peer compares against its own before letting the entry barrier complete
+// (see CtrlPacket.sync). Pass Netplay_MatchSettingsDigest() from the netplay
+// layer; 0 means "not announced" and disables the gate on the receiver.
 void ControlChannel_SendBattleEntering(uint32_t swap_frame, uint8_t epoch = 0,
-                                       uint8_t flags = 0);
+                                       uint8_t flags = 0,
+                                       uint32_t cfg_digest = 0);
 
 // Send battle start (both sides ready)
 void ControlChannel_SendBattleStart(uint32_t start_frame);

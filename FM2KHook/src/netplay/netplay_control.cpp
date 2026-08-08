@@ -34,6 +34,121 @@
 #include <cstring>
 #include <atomic>
 
+// =============================================================================
+// MATCH SETTINGS: host-authoritative delivery + the barrier digest
+// =============================================================================
+//
+// WHY THERE IS A DIGEST AT ALL
+// ----------------------------
+// HOST_CONFIG carries the five settings that decide how the SIM runs (round
+// time, round count, game speed, selected stage, SOCD mode). It used to be a
+// fire-and-forget broadcast with no ack and no retry: when both datagrams were
+// lost the guest silently kept its own game.ini values, RSS_BATTLE_INIT stamped
+// g_score_value = 100 * round_time - 1 with a DIFFERENT round time on each peer,
+// and the two sims ran ~1500 frames of a battle holding divergent round-timer
+// state before diverging observably in the round-end tail.
+//
+// The fix is not "send it more times" -- it is to make agreement a PRECONDITION
+// of entering battle. Both peers announce this digest of their LIVE engine
+// globals in every BATTLE_ENTERING, and the entry barrier (netplay_barriers.cpp)
+// refuses to complete until the two announcements are equal. Because neither
+// peer runs a single battle sim frame until its barrier completes (both call
+// sites -- trampoline_battle.cpp and hooks_update.cpp -- return early), agreement
+// is ordered strictly BEFORE the first vs_round_function call, i.e. before
+// RSS_BATTLE_INIT stamps anything.
+//
+// Hashing the LIVE globals rather than the packet contents is deliberate: it
+// verifies that the settings were APPLIED, not merely transmitted.
+namespace {
+
+// Host-only test-harness overrides. Idempotent (writes a constant), and kept
+// HOST-ONLY on purpose even though the harness exports the env var to both
+// processes: the guest must reach the same round time through HOST_CONFIG, so
+// the harness keeps exercising the real delivery path instead of masking it.
+// (FM2K_TEST_ROUNDS is separately forced on every peer every frame from
+// hooks_update.cpp -- that predates this and is left alone.)
+void HostApplyMatchSettingOverrides() {
+    if constexpr (FM2K::kIsFM2K) {
+        if (g_player_index != 0) return;
+        // FM2K_TEST_ROUNDS=N: force N-round matches. g_default_round (0x430124)
+        // is loaded from game.ini at boot and persists, so writing it here --
+        // before sampling it -- makes the host's own game AND the
+        // HOST_CONFIG-synced client run N-round matches. 1 => fast
+        // css->battle->css cycles for the multi-match-under-loss e2e harness.
+        static const int s_test_rounds = []{
+            const char* v = std::getenv("FM2K_TEST_ROUNDS");
+            return (v && v[0]) ? std::atoi(v) : 0;
+        }();
+        if (s_test_rounds > 0) *(uint32_t*)0x430124 = (uint32_t)s_test_rounds;
+        // FM2K_TEST_ROUND_TIME=S: force an S-second round timer (g_round_time @
+        // 0x430114, from TestPlay.time). The autoplay rarely KOs, so a short
+        // timer makes rounds TIMEOUT fast -> with --rounds 1, matches end in
+        // seconds -> many fast css->battle->css cycles for the harness.
+        // -1 = unset (leave game default); >= 0 forces. 0 = OFF/infinite timer
+        // -- wanwan needs this: a non-zero custom timer leaves the round-timer
+        // counter at 0 on subsequent battles (they start at 0 time), so 1-round
+        // matches there end on KO with the timer off rather than the buggy
+        // short timer.
+        static const int s_test_round_time = []{
+            const char* v = std::getenv("FM2K_TEST_ROUND_TIME");
+            return (v && v[0]) ? std::atoi(v) : -1;
+        }();
+        if (s_test_round_time >= 0) *(uint32_t*)0x430114 = (uint32_t)s_test_round_time;
+    }
+}
+
+// Count of HOST_CONFIG packets this node has APPLIED. Surfaced in the
+// per-round settings line so "did the guest ever get the config" is one grep
+// (the triage card in the Phase 1 diagnosis depends on it).
+uint32_t s_host_config_rx = 0;
+
+}  // namespace
+
+// Digest of the five sim-relevant match settings, read from the LIVE engine
+// globals -- the same words RSS_BATTLE_INIT and process_game_inputs consume.
+// Never returns 0 for a real reading: 0 is the wire sentinel for "not
+// announced" and must stay distinguishable.
+//
+// FM95 returns 0 (gate disabled): round time / round count / game speed have no
+// mapped globals there (RE-3 in docs/FM95_Support_Status.md), the HOST_CONFIG
+// receiver is already a no-op, and ADDR_SELECTED_STAGE is 0 -- so there is
+// nothing to agree on and nothing to read without inventing addresses.
+//
+// PURE READ. It deliberately does NOT apply the host's test-harness overrides:
+// this is called from inside vs_round_function's detour (the [ROUND-START]
+// stamp) and from the barrier, and a function that quietly writes engine
+// globals from either of those places is a trap. The host applies its overrides
+// in BuildHostConfigPacket, which always runs first -- at CheckFullyConnected
+// (handshake) and again at the top of Netplay_SignalBattleEntry, both strictly
+// before any digest is announced.
+uint32_t Netplay_MatchSettingsDigest() {
+    if constexpr (!FM2K::kIsFM2K) {
+        return 0;
+    } else {
+        struct __attribute__((packed)) Settings {
+            uint32_t selected_stage;
+            uint32_t round_count;
+            uint32_t round_time_sec;
+            uint32_t game_speed_pct;
+            uint32_t socd_mode;
+        } s = {
+            *(uint32_t*)FM2K::ADDR_SELECTED_STAGE,
+            *(uint32_t*)0x430124,
+            *(uint32_t*)0x430114,
+            *(uint32_t*)0x430104,
+            (uint32_t)Hook_GetSOCDModePublic(),
+        };
+        // FNV-1a over 20 bytes -- cheap, and this runs at most a few times per
+        // frame during a barrier wait (never inside the sim loop).
+        uint32_t h = 0x811C9DC5u;
+        const uint8_t* p = (const uint8_t*)&s;
+        for (size_t i = 0; i < sizeof(s); ++i) { h ^= p[i]; h *= 0x01000193u; }
+        return h ? h : 1u;  // 0 is reserved for "not announced"
+    }
+}
+
+uint32_t Netplay_HostConfigRxCount() { return s_host_config_rx; }
+
 // Build the current HOST_CONFIG packet from live engine state. Shared
 // by Netplay_BroadcastHostConfig (fans to peer + all subs at battle-
 // start moments) and Netplay_SendHostConfigToSpec (one-shot push when a
@@ -50,29 +165,7 @@ CtrlPacket BuildHostConfigPacket() {
     // get wrong timer / round count (pkmncc default time=60, host had
     // time=0 / infinite, spec ended up running with 60s rounds).
     if constexpr (FM2K::kIsFM2K) {
-    // FM2K_TEST_ROUNDS=N (test harness): force N-round matches. g_default_round
-    // (0x430124) is loaded from game.ini at boot and persists, so writing it
-    // here -- before sampling it for the broadcast -- makes the host's own game
-    // AND the HOST_CONFIG-synced client run N-round matches. 1 => fast
-    // css->battle->css cycles for the multi-match-under-loss e2e harness.
-    static const int s_test_rounds = []{
-        const char* v = std::getenv("FM2K_TEST_ROUNDS");
-        return (v && v[0]) ? std::atoi(v) : 0;
-    }();
-    if (s_test_rounds > 0) *(uint32_t*)0x430124 = (uint32_t)s_test_rounds;
-    // FM2K_TEST_ROUND_TIME=S: force an S-second round timer (g_round_time @
-    // 0x430114, from TestPlay.time). The autoplay rarely KOs, so a short timer
-    // makes rounds TIMEOUT fast -> with --rounds 1, matches end in seconds ->
-    // many fast css->battle->css cycles for the multi-match-under-loss harness.
-    // -1 = unset (leave game default); >= 0 forces. 0 = OFF/infinite timer --
-    // wanwan needs this: a non-zero custom timer leaves the round-timer counter
-    // at 0 on subsequent battles (they start at 0 time), so 1-round matches there
-    // end on KO with the timer off rather than the buggy short timer.
-    static const int s_test_round_time = []{
-        const char* v = std::getenv("FM2K_TEST_ROUND_TIME");
-        return (v && v[0]) ? std::atoi(v) : -1;
-    }();
-    if (s_test_round_time >= 0) *(uint32_t*)0x430114 = (uint32_t)s_test_round_time;
+    HostApplyMatchSettingOverrides();
     pkt.data.host_config.round_time_sec  = *(uint32_t*)0x430114; // lParam
     pkt.data.host_config.round_count     = *(uint32_t*)0x430124; // g_default_round
     pkt.data.host_config.game_speed_pct  = *(uint32_t*)0x430104; // uValue
@@ -118,6 +211,22 @@ void Netplay_BroadcastHostConfig() {
     for (const auto& s : subs) {
         ControlChannel_SendTo(pkt, s);
     }
+}
+
+// Peer-only re-push, driven by the battle-entry barrier while the two peers'
+// settings digests disagree. This is the retry-until-acked HOST_CONFIG never
+// had: the "ack" is the guest's next BATTLE_ENTERING, which announces the
+// digest of what it actually applied, so the loop terminates on APPLICATION
+// rather than on delivery. Deliberately skips the spectator fan-out --
+// subscribers already got the copy from Netplay_BroadcastHostConfig and this
+// runs on a 100ms cadence, so fanning out would be pure chatter.
+void Netplay_ResendHostConfigToPeer() {
+    if (g_player_index != 0) return;
+    CtrlPacket pkt = BuildHostConfigPacket();
+    const auto& hc = pkt.data.host_config;
+    ControlChannel_SendHostConfig(hc.selected_stage, hc.round_count,
+                                  hc.round_time_sec, hc.game_speed_pct,
+                                  hc.socd_mode);
 }
 
 static void CheckFullyConnected() {
@@ -291,8 +400,13 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
                         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                             "Netplay: answering completed entry-barrier retry "
                             "(epoch=%u swap=%u)", remote_epoch, remote_proposal);
+                        // Carry our live settings digest here too: a peer that
+                        // is still holding on config agreement (see
+                        // netplay_barriers.cpp) learns our value from this
+                        // answer even though we already disarmed.
                         ControlChannel_SendBattleEntering(
-                            remote_proposal, g_entry_done_epoch, 0x1);
+                            remote_proposal, g_entry_done_epoch, 0x1,
+                            Netplay_MatchSettingsDigest());
                         s_last_answer_ms = now_ms;
                     }
                 } else {
@@ -315,10 +429,16 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
             }
             g_remote_battle_entered = true;
             g_entry_remote_proposal = remote_proposal;
+            // Match-settings agreement term. 0 = peer did not announce (BTB /
+            // a build without the field) and leaves the gate open; anything
+            // else is compared against our own live digest by
+            // Netplay_IsBattleSynced before the barrier may complete.
+            g_entry_remote_cfg_digest = packet->data.sync.cfg_digest;
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "Netplay: Received BATTLE_ENTERING (remote_swap=%u, prev_agreed=%u, agreed=%u, epoch=%u, done=%d)",
+                "Netplay: Received BATTLE_ENTERING (remote_swap=%u, prev_agreed=%u, agreed=%u, epoch=%u, done=%d, cfg=0x%08X local_cfg=0x%08X)",
                 remote_proposal, prev_agreed, g_battle_entry_swap_frame,
-                remote_epoch, (int)remote_done);
+                remote_epoch, (int)remote_done,
+                g_entry_remote_cfg_digest, Netplay_MatchSettingsDigest());
 
             // Echo our own BATTLE_ENTERING back if we've already signaled
             // locally -- needed for the lossy-network case where remote
@@ -336,7 +456,8 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
                 if (now_ms - last_echo_ms >= 100) {
                     ControlChannel_SendBattleEntering(
                         g_battle_entry_swap_frame, g_entry_epoch,
-                        g_battle_synced ? 0x1 : 0x0);
+                        g_battle_synced ? 0x1 : 0x0,
+                        Netplay_MatchSettingsDigest());
                     last_echo_ms = now_ms;
                 }
             }
@@ -429,8 +550,11 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
             // Per-field "unset" sentinels: 0xFFFFFFFF for selected_stage,
             // 0 for the count/time/speed fields, 0xFF for socd_mode.
             const auto& hc = packet->data.host_config;
+            ++s_host_config_rx;
+            const uint32_t cfg_before = Netplay_MatchSettingsDigest();
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "Netplay: Received HOST_CONFIG (stage=%u rounds=%u time=%u speed=%u socd=%u)",
+                "Netplay: Received HOST_CONFIG #%u (stage=%u rounds=%u time=%u speed=%u socd=%u)",
+                s_host_config_rx,
                 hc.selected_stage, hc.round_count, hc.round_time_sec,
                 hc.game_speed_pct, (unsigned)hc.socd_mode);
 
@@ -476,6 +600,30 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
                     s_re3_logged = true;
                     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "FM95: host-config apply pending RE-3");
+                }
+            }
+
+            // Announce the post-apply digest whenever it MOVED. The battle-entry
+            // barrier compares digests, so a config that lands mid-barrier must
+            // reach the host promptly or the host keeps retrying on its 100ms
+            // cadence for no reason. The barrier's own resend loop would also
+            // carry it, but only while WE are still un-agreed -- applying the
+            // config can make us agreed in the same instant, and then this is
+            // the packet that tells the host.
+            const uint32_t cfg_after = Netplay_MatchSettingsDigest();
+            if (cfg_after != cfg_before) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Netplay: match settings adopted from host "
+                    "(cfg 0x%08X -> 0x%08X)", cfg_before, cfg_after);
+                // g_player_index <= 1 keeps a spectator (index 2, and it
+                // receives HOST_CONFIG too) from ever emitting a player-side
+                // barrier packet. The armed/entered pair is already false
+                // there; this is belt and braces.
+                if (g_player_index <= 1 &&
+                    g_battle_entry_armed && g_local_battle_entered) {
+                    ControlChannel_SendBattleEntering(
+                        g_battle_entry_swap_frame, g_entry_epoch,
+                        g_battle_synced ? 0x1 : 0x0, cfg_after);
                 }
             }
             break;

@@ -306,6 +306,11 @@ void Netplay_EndBattle() {
     g_battle_synced           = false;
     g_battle_entry_swap_frame = 0;
     g_battle_entry_armed      = false;
+    // Rematch: the NEXT match must re-agree its settings from scratch (the
+    // host may have changed the stage / round count between matches, and the
+    // random-stage roll moves 0x43010c every match). Carrying the previous
+    // battle's digest here would let a stale agreement satisfy the new gate.
+    g_entry_remote_cfg_digest = 0;
 
     // Reset battle-end sync state -- fresh for the rematch's next return.
     g_local_battle_end_signaled  = false;

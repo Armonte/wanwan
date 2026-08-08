@@ -279,6 +279,11 @@ uint32_t g_end_done_ms          = 0;
 // Proposal pair captured for the divergence diagnostic at completion.
 uint32_t g_entry_local_proposal  = 0;
 uint32_t g_entry_remote_proposal = 0;
+// Peer's last-announced match-settings digest (BATTLE_ENTERING.cfg_digest).
+// 0 = never announced -> the settings gate stays open. Cleared wherever the
+// entry barrier is armed or reset so one match's agreement can never satisfy
+// the next match's gate.
+uint32_t g_entry_remote_cfg_digest = 0;
 
 uint8_t NextBarrierEpoch() {
     ++g_barrier_epoch;
@@ -358,6 +363,7 @@ bool Netplay_Init(int player_index, uint16_t local_port, const char* remote_addr
     g_battle_synced           = false;
     g_battle_entry_swap_frame = 0;
     g_battle_entry_armed      = false;
+    g_entry_remote_cfg_digest = 0;
 
     // Reset battle sync state (exit direction, for next return-to-CSS)
     g_local_battle_end_signaled  = false;

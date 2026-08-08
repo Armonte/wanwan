@@ -79,10 +79,17 @@ void HandleDesyncDetected(int frame, uint32_t local_chk,
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
             "  UNSAVED: eff1=0x%08X eff2=0x%08X shake=0x%08X",
             rc.effect_sys1, rc.effect_sys2, rc.shake_effects);
+        // NOTE: this line used to claim "HP/pos/rng/timer". There are NO
+        // POSITION FIELDS in the fingerprint -- SaveState_CalculateFingerprint
+        // hashes exactly rng, p1_hp, p2_hp, round_timer(0x470060),
+        // game_timer(0x470044), p1_input, p2_input. Anyone reasoning "positions
+        // are covered so a position desync would have tripped this" was
+        // reasoning from a comment that did not match the code (GDC tooling
+        // gap #1).
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-            "  FINGERPRINT: gameplay=0x%08X (HP/pos/rng/timer only -- "
-            "if this MATCHES across peers the desync is a memory-residue "
-            "false positive)",
+            "  FINGERPRINT: gameplay=0x%08X (rng/HP/round+game timer/current "
+            "input ONLY -- no positions, no object pool -- if this MATCHES "
+            "across peers the desync is a memory-residue false positive)",
             rc.gameplay_fingerprint);
     } else if (now_tick - g_last_desync_log_tick > 1000) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,

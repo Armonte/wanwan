@@ -257,9 +257,12 @@ bool Netplay_ProcessBattleInputPhase() {
             if (now_ms - s_last_entry_resend_ms > 100) {
                 // We're past the barrier (battle session exists), so this
                 // is a completed-flag announce: peer latches remote=true
-                // and won't echo back.
+                // and won't echo back. Carries our settings digest -- a peer
+                // still holding on the match-settings gate needs it to
+                // complete, and this resend may be the only packet it gets.
                 ControlChannel_SendBattleEntering(g_battle_entry_swap_frame,
-                                                  g_entry_done_epoch, 0x1);
+                                                  g_entry_done_epoch, 0x1,
+                                                  Netplay_MatchSettingsDigest());
                 s_last_entry_resend_ms = now_ms;
             }
             ControlChannel_Poll();

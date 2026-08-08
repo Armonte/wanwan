@@ -377,6 +377,7 @@ bool Netplay_ProcessCSS() {
         g_entry_epoch = NextBarrierEpoch();
         g_entry_local_proposal  = 0;
         g_entry_remote_proposal = 0;
+        g_entry_remote_cfg_digest = 0;  // per-barrier settings agreement
 
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
             "CSS SYNCED: Both ready, GekkoNet CSS session up, RNG reseeded");

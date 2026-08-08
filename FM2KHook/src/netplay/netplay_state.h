@@ -214,11 +214,24 @@ struct CtrlPacket {
         //          signals). A completed sender answers retries from a
         //          lagging peer; nobody echoes back to a completed
         //          sender (storm termination).
+        //   cfg_digest: BATTLE_ENTERING only -- the sender's MATCH-SETTINGS
+        //          digest (Netplay_MatchSettingsDigest: round time, round
+        //          count, game speed, selected stage, SOCD mode, read from
+        //          the LIVE engine globals). The entry barrier will not
+        //          complete until both peers announce the SAME value, which
+        //          is what makes HOST_CONFIG delivery reliable-by-
+        //          construction: a lost config packet holds the barrier
+        //          instead of silently letting the two sims stamp different
+        //          round timers at RSS_BATTLE_INIT. 0 = "not announced"
+        //          (spectator swap broadcasts, BATTLE_START/BATTLE_END, or a
+        //          peer that predates this field) and disables the gate; the
+        //          digest itself is never 0 by construction.
         struct {
             uint32_t frame;     // Frame number / proposed swap frame
             uint8_t  epoch;
             uint8_t  flags;
             uint8_t  pad[2];
+            uint32_t cfg_digest;
         } sync;
 
         // PING / PONG timing. send_ms overlaps sync.frame (same offset-0 uint32)

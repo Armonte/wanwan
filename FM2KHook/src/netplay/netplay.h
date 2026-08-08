@@ -99,6 +99,20 @@ void Netplay_ProcessMenu();
 // BATTLE MODE SYNC BARRIER
 // =============================================================================
 
+// Digest of this node's LIVE match settings -- selected stage, round count,
+// round time, game speed, SOCD mode -- read from the engine globals that
+// RSS_BATTLE_INIT and process_game_inputs actually consume. Announced in every
+// BATTLE_ENTERING; the entry barrier refuses to complete until both peers
+// report the same value, which is what makes host-config delivery reliable
+// (a lost HOST_CONFIG now HOLDS battle entry instead of silently letting the
+// two sims run different round timers). Never 0 for a real reading; returns 0
+// on FM95, where the settings globals are unmapped and the gate is disabled.
+uint32_t Netplay_MatchSettingsDigest();
+
+// Number of HOST_CONFIG packets this node has applied. Logged per round so
+// "did the guest ever receive the host's settings" is a single grep.
+uint32_t Netplay_HostConfigRxCount();
+
 // Signal that we're entering battle mode (game_mode changed to 3000+).
 // Sends BATTLE_ENTERING with a proposed swap_frame = current CSS frame +
 // SWAP_FRAME_BUFFER; resender keeps the latest agreed (max(local, remote))

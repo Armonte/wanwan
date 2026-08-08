@@ -154,8 +154,9 @@ bool SaveState_Save(int frame) {
                             || (fwd_crcs.char_dynamic    != cur_char_dyn);
 
         // Gekko-authoritative verdict: recompute the gameplay fingerprint
-        // (HP/pos/rng/timer/current-input -- the SAME hash gekko uses as the
-        // save checksum) from live (replay) memory and compare to the forward
+        // (rng/HP/round+game timer/current-input -- the SAME hash gekko uses as
+        // the save checksum; NO positions, despite what this comment used to
+        // say) from live (replay) memory and compare to the forward
         // save's fingerprint. This is the ONLY divergence that constitutes a
         // REAL desync. A region CRC can differ while the fingerprint matches --
         // that's NON-AUTHORITATIVE noise (e.g. g_processed_input recomputed

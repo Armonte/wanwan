@@ -86,6 +86,10 @@ extern uint8_t  g_end_done_epoch;  // last COMPLETED end instance
 extern uint32_t g_end_done_ms;
 extern uint32_t g_entry_local_proposal;
 extern uint32_t g_entry_remote_proposal;
+// Match-settings digest last ANNOUNCED by the peer in a BATTLE_ENTERING.
+// 0 = not announced. The entry barrier will not complete while this
+// disagrees with Netplay_MatchSettingsDigest() -- see netplay_barriers.cpp.
+extern uint32_t g_entry_remote_cfg_digest;
 extern bool g_received_hello;
 extern bool g_received_hello_ack;
 extern uint32_t g_pending_random_stage;
@@ -124,6 +128,9 @@ void PerfMaybeReport();
 // control channel (netplay_control.cpp), called from the lifecycle/battle code:
 CtrlPacket BuildHostConfigPacket();
 void       Netplay_BroadcastHostConfig();
+// Host-only peer re-push, driven by the battle-entry barrier's retry loop
+// while the two peers' settings digests disagree. No spectator fan-out.
+void       Netplay_ResendHostConfigToPeer();
 void       OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from);
 // SOCD accessors (defined in hooks/input; used by control-channel host-config):
 extern "C" int  Hook_GetSOCDModePublic();

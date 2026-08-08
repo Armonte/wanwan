@@ -107,10 +107,25 @@ bool SpectatorNode_RequestJoin(const sockaddr_in& upstream, SpecJoinMode mode) {
     }
     // Light re-join: mid-stream viewers declare where their admission
     // cursor stands so the host backfills exactly the gap (no snapshot).
-    if (g_state.have_frame_baseline && g_state.pb_started) {
+    //
+    // SUPPRESSED for exactly one JOIN_REQ when a bounded deep joiner escalates
+    // its battle-entry hold. A resume-flagged request makes the host take the
+    // light-resume bind, which ships the gap and explicitly NO snapshot -- the
+    // precise opposite of what the escalation needs. Without the flag the host
+    // takes its destructive-reset branch and RE-PINS, and with the host inside
+    // the battle we are held at that re-pin yields a BATTLE grant whose
+    // ordinary use_snapshot path delivers the blob the hold is waiting for.
+    const bool force_full = g_state.pb_deep_join_force_full_rejoin;
+    g_state.pb_deep_join_force_full_rejoin = false;
+    if (!force_full && g_state.have_frame_baseline && g_state.pb_started) {
         req.data.spec_join_req.reserved[0] |= SPEC_JOIN_RESUME;
         const uint32_t resume = g_state.next_expected_frame;
         std::memcpy(&req.data.spec_join_req.reserved[1], &resume, 4);
+    } else if (force_full) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "[SPEC-DEEPJOIN] escalation re-JOIN -- omitting SPEC_JOIN_RESUME "
+            "so the host re-pins and re-ships a snapshot instead of taking the "
+            "light-resume gap bind (cursor=%u)", g_state.next_expected_frame);
     }
     // Version gate advertisement (reserved[5]=minor, reserved[6]=patch).
     req.data.spec_join_req.reserved[0] |= SPEC_JOIN_VERSIONED;
@@ -209,6 +224,28 @@ void SpectatorNode_HandleJoinAck(const sockaddr_in& from, uint8_t host_session_k
     // mid-stream re-JOIN would silently kill every later snapshot). Same
     // "truly fresh viewer" test the RNG pin below already uses.
     const bool fresh_boot = first_time && !g_state.have_frame_baseline;
+
+    // Wave 4: bounded deep-join grant. The host decided this at pin time, from
+    // the same read as the kind, and the live-refresh builder never sets the
+    // bit -- so, exactly like natural_boot and the BTB seeding, only a GRANT
+    // can change this viewer's boot posture and no broadcast can arm a hold on
+    // a viewer that is bit-exact by simulation.
+    //
+    // Deliberately NOT cleared by a grant that LACKS the bit. The escalation
+    // re-JOIN below lands while the host is in battle and correctly comes back
+    // as a BATTLE grant (not deep-join-eligible any more), and that grant's
+    // snapshot is exactly what releases the hold -- clearing here would drop
+    // the hold one tick before its repair arrived. The only clears are a
+    // successful deep-join apply and teardown.
+    if (!live_refresh && (host_session_kind & SPEC_ACK_DEEP_JOIN) != 0 &&
+        !g_state.spec_deep_join) {
+        g_state.spec_deep_join = true;
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "SpectatorNode: grant carries SPEC_ACK_DEEP_JOIN -- BOUNDED DEEP "
+            "JOIN. We mirror this char-select live but skip every prior "
+            "match's simulation, so we HOLD at battle entry for the host's "
+            "battle savestate rather than entering from scratch");
+    }
 
     // If host advertised real chars (in-battle), forward to the BTB
     // runtime-override channel so the slot-0 /F dispatcher loads the

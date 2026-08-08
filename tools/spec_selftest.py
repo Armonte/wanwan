@@ -608,7 +608,10 @@ def main():
               # #66 CSS rollback opt-in + prediction window
               "FM2K_CSS_ROLLBACK", "FM2K_CSS_PREDICTION",
               # mid-join spectate desync hunt: per-region full-state fingerprint
-              "FM2K_FULLFP", "FM2K_POOLSET"):
+              "FM2K_FULLFP", "FM2K_POOLSET",
+              # Wave 4 bounded deep join (host decides eligibility, viewer obeys
+              # the grant) -- BOTH sides need it, see the spectator list below.
+              "FM2K_SPEC_DEEP_JOIN"):
         if os.environ.get(k):
             common_env[k] = os.environ[k]
 
@@ -678,7 +681,10 @@ def main():
                    "FM2K_RC_FEC", "FM2K_RC_FEC_K",
                    "FM2K_TEST_SPEC_TCP_BLACKHOLE",
                    # mid-join spectate desync hunt: per-region full-state fingerprint
-                   "FM2K_FULLFP", "FM2K_POOLSET"):
+                   "FM2K_FULLFP", "FM2K_POOLSET",
+                   # Wave 4 bounded deep join -- the viewer only obeys the
+                   # grant, but it must be able to obey it.
+                   "FM2K_SPEC_DEEP_JOIN"):
             if os.environ.get(kk):
                 env[kk] = os.environ[kk]
         # The spectator MUST run the same round count as the host, else a 1-round

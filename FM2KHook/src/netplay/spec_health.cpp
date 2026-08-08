@@ -271,6 +271,13 @@ void SpectatorNode_TickHealth() {
             }
         }
 
+        // Bounded deep-join hold supervision (Wave 4). No-op unless this viewer
+        // is actually holding at battle entry for a snapshot. Progress-gated
+        // re-request on SPECTATOR_DEEPJOIN_REQ_INTERVAL_MS, then a loud
+        // escalation to a resume-suppressed re-JOIN at the budget -- never a
+        // silent release into the from-scratch battle path.
+        DeepJoinHoldTick(now);
+
         // Silence-based failover. TCP receive activity is the only
         // liveness signal -- the bulk stream lives entirely there.
         //
@@ -728,20 +735,17 @@ void SpectatorNode_TickHostMaintenance() {
             // default this on again without a full-state fencepost run
             // (CHECKSUM, not the subset GATE -- the subset gate passed all 7
             // failing runs).
-            static int s_deep_join = -1;
-            if (s_deep_join < 0) {
-                const char* e = std::getenv("FM2K_SPEC_DEEP_JOIN");
-                s_deep_join = (e && e[0] == '1') ? 1 : 0;
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: deep-join bounded anchor %s "
-                    "(FM2K_SPEC_DEEP_JOIN)",
-                    s_deep_join ? "ENABLED -- known full-state desync, "
-                                  "measurement only"
-                                : "disabled (default; from-frame-0 backfill)");
-            }
-            const bool use_recent_anchor = s_deep_join == 1 &&
-                !resume_bind && !use_snapshot &&
-                sub.join_mode == SpecJoinMode::CURRENT_MATCH;
+            //
+            // Wave 4 closes that desync by shipping the battle savestate to a
+            // held deep joiner at the host's next battle entry, and moves the
+            // decision to sub.deep_join_eligible -- pinned at JOIN time from
+            // the same read as the grant kind, so the SPEC_ACK_DEEP_JOIN bit
+            // the viewer booted on and the payload shipped here are the same
+            // decision rather than two derivations against state that moved in
+            // between. The env gate now lives in DeepJoinEnabled(), consulted
+            // at pin time; a sub can only be eligible if it was on.
+            const bool use_recent_anchor = sub.deep_join_eligible &&
+                !resume_bind && !use_snapshot;
             // Re-ship floor: this sub already got THIS match's snapshot very
             // recently, so this rebind is a re-JOIN retry, not a fresh join.
             // Ship the tail only. use_snapshot itself is NOT cleared -- the
@@ -854,13 +858,27 @@ void SpectatorNode_TickHostMaintenance() {
                         "snapshot; mirrors this CSS and enters the next battle "
                         "with the stream)", xport, buf);
                 } else {
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                        "SpectatorNode: %s bound for %s -- CURRENT_MATCH with "
-                        "no bounded anchor yet (first char-select of the "
-                        "session) -- full from-frame-0 backfill",
+                    // Since Wave 4 this is UNREACHABLE, and deliberately kept:
+                    // eligibility already required HaveBoundedAnchor() at pin
+                    // time, and both terms behind it (have_prior_match,
+                    // have_css_anchor) are monotonic false -> true with no
+                    // trimming, so an anchor that existed at the pin still
+                    // exists at the bind. If it ever fires, the grant told a
+                    // viewer to hold for a snapshot while shipping it a
+                    // from-frame-0 stream -- log it loudly rather than let it
+                    // be a silent freeze.
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                        "SpectatorNode: %s bound for %s -- deep-join grant but "
+                        "NO bounded anchor at bind time (should be impossible: "
+                        "anchors are monotonic) -- full from-frame-0 backfill",
                         xport, buf);
                 }
                 SendSessionBackfillFromRecentAnchor(sub.addr);
+                // Wave 4: this viewer is skipping prior matches' SIMULATION, so
+                // it owes a battle savestate before it may enter a battle.
+                // Arm/defer the push (never ships the PREVIOUS battle's cached
+                // blob -- see DeepJoinOnBind).
+                DeepJoinOnBind(sub);
             } else {
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "SpectatorNode: %s bound for %s%s%s -- %s "
@@ -897,6 +915,14 @@ void SpectatorNode_TickHostMaintenance() {
             break;
         }
     }
+
+    // ---- Upstream-side: bounded deep-join snapshot push ------------------
+    // Drains the arm set StashSnapshot refreshes at every battle entry, ONE sub
+    // per maintenance tick -- the same pacing (and the same reason) as the bind
+    // loop above. Only subs flagged deep_join_eligible are ever in that set:
+    // a continuing viewer and a from-frame-0 viewer are bit-exact by simulation
+    // and a pushed snapshot would be pure risk for them.
+    DeepJoinPushTick(now);
 
     // ---- Upstream-side: expire silent subscribers -----------------------
     for (auto it = g_state.subscribers.begin(); it != g_state.subscribers.end(); ) {

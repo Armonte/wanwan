@@ -544,6 +544,17 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
             SpectatorNode_HandleSessionEnd(from);
             break;
 
+        case CtrlMsg::SPEC_SNAPSHOT_REQ:
+            // Host-side only in practice: the handler walks g_state.subscribers,
+            // which is empty in any process that is not hosting spectators, so
+            // a stray packet is a no-op rather than a state change.
+            SpectatorNode_HandleSnapshotReq(
+                from,
+                packet->data.spec_snapshot_req.anchor_frame,
+                packet->data.spec_snapshot_req.match_index,
+                packet->data.spec_snapshot_req.flags);
+            break;
+
         default:
             break;
     }

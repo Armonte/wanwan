@@ -358,7 +358,50 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
             // the placeholder drive). Under the old unconditional-restart
             // semantics every BEGIN was a fresh start, so this is behavior-
             // preserving for every case that existed before.
-            if (fresh_start && g_spectator_mode && meta.captured_game_mode == 3000u) {
+            // ...and NEVER for a bounded deep joiner (Wave 4.1). Every premise
+            // above is inverted for that viewer, and arming anyway was the
+            // single defect behind Wave 4's 0/7 full-state result:
+            //
+            //  * "the pb_queue contains no CSS-confirm inputs" -- it does. The
+            //    bounded backfill anchors at CSS_ENTERED, so the queue holds
+            //    the host's ENTIRE char-select (~940 INPUT-frames measured),
+            //    and the viewer is already mirroring it.
+            //  * "targets are arbitrary because the apply overwrites them" --
+            //    it does not get that far. A deep joiner's grant is CSS-kind
+            //    (eligibility requires pinned_kind != BATTLE), so it took the
+            //    natural-boot path and NO BTB char seeding happened; the
+            //    placeholder drive therefore locks chars 0/0 for real, loads
+            //    char-0 .player files, and the snapshot's own char-identity
+            //    guard then correctly refuses to apply a blob describing the
+            //    host's actual matchup over them -- forever (6/7), or worse,
+            //    passes on a stale 0/0-vs-0/0 comparison and applies over a
+            //    from-scratch battle (1/7, seed 75).
+            //  * it also RACES the engine to game_mode 3000 ahead of the
+            //    queue, which is what let that stale comparison happen at all.
+            //
+            // Suppressed, the deep joiner reaches battle the way it is designed
+            // to: its own mirrored char-select plus the MATCH_START pin. The
+            // scoped experiment behind this took the same 6 seeds from 0/6 to
+            // 6/6 FULL-STATE IDENTICAL with the latency win intact.
+            //
+            // PREDICATE. g_state.spec_deep_join is set ONLY by a grant carrying
+            // SPEC_ACK_DEEP_JOIN, and BuildJoinAckPacketFor derives that bit
+            // from deep_join_eligible, which requires pinned_kind != BATTLE.
+            // So the mid-battle snapshot joiner this arm exists for -- whose
+            // grant is BATTLE by definition -- can never have the flag set, and
+            // its arming is untouched by construction rather than by argument.
+            // The flag is also set before any snapshot can be processed: the
+            // grant precedes the push by the whole char-select, and on the
+            // pre-subscribe-stash path HandleJoinAck latches it before
+            // SpecReplayPreSubStash replays anything.
+            //
+            // NOT used: !natural_boot, which is the more general statement of
+            // "this viewer can walk its own CSS". It would also suppress the
+            // arm for a from-frame-0 viewer that receives a snapshot through
+            // the re-JOIN two-bind hybrid -- plausibly correct, entirely
+            // untested, and not this wave's business.
+            if (fresh_start && g_spectator_mode && meta.captured_game_mode == 3000u &&
+                !g_state.spec_deep_join) {
                 CssAutoConfirm_OnReplayMatchStart(
                     /*p1_char=*/0, /*p1_color=*/0,
                     /*p2_char=*/0, /*p2_color=*/0,
@@ -368,6 +411,15 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
                     "(battle snapshot -- drive CSS forward to game_mode "
                     "3000 with placeholder chars; snapshot apply will "
                     "overwrite)");
+            } else if (fresh_start && g_spectator_mode &&
+                       meta.captured_game_mode == 3000u) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "[SPEC-DEEPJOIN] NOT arming the CssAutoConfirm placeholder "
+                    "drive -- this viewer is a bounded deep joiner already "
+                    "mirroring the host's real char-select (q=%zu). Driving it "
+                    "to 0/0 here would load the wrong .player files and make "
+                    "the snapshot unapplyable",
+                    g_state.pb_queue.size());
             }
             break;
         }

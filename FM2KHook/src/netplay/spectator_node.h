@@ -194,6 +194,22 @@ constexpr uint8_t SPEC_ACK_KIND_CSS     = 1;
 constexpr uint8_t SPEC_ACK_KIND_BATTLE  = 2;
 constexpr uint8_t SPEC_ACK_KIND_MASK    = 0x03;
 constexpr uint8_t SPEC_ACK_LIVE_REFRESH = 0x04;
+// Bit 3 -- BOUNDED DEEP JOIN (Wave 4). Set only on a GRANT, only for a
+// subscriber the host decided (at pin time, from the same single read the kind
+// comes from) to serve with a bounded backfill anchored at the current
+// char-select. It tells the viewer that it is skipping prior matches'
+// SIMULATION, so it must HOLD at battle entry for the host's battle savestate
+// instead of entering from scratch. The live-refresh builder never sets it, so
+// no broadcast can arm a hold on a viewer that is bit-exact by simulation.
+constexpr uint8_t SPEC_ACK_DEEP_JOIN    = 0x08;
+
+// SPEC_SNAPSHOT_REQ flags (viewer -> host, bounded deep join only).
+constexpr uint8_t SPEC_SNAPREQ_WANT = 0x01;  // re-request for anchor_frame
+constexpr uint8_t SPEC_SNAPREQ_DONE = 0x02;  // applied -- stop pushing to me
+void SpectatorNode_HandleSnapshotReq(const sockaddr_in& from,
+                                     uint32_t anchor_frame,
+                                     uint32_t match_index,
+                                     uint8_t  flags);
 
 // Spectator's preferred backfill mode, declared in SPEC_JOIN_REQ payload.
 // Default at the wire level (zero-init) is FULL_SESSION so an older host

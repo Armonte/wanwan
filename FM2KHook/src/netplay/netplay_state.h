@@ -112,6 +112,16 @@ enum class CtrlMsg : uint8_t {
     // Appended at the end so existing wire values don't renumber; older peers
     // hit the dispatch default and ignore it harmlessly.
     SPEC_SESSION_END,
+
+    // SPEC_SNAPSHOT_REQ -- viewer -> host, bounded deep-join only (Wave 4).
+    // A deep joiner skipped every prior match's SIMULATION, so it cannot enter
+    // a battle from scratch; it HOLDS at battle entry until the host's battle
+    // savestate applies. This message is the lightweight supervision of that
+    // hold: WANT re-requests the snapshot for a named anchor, DONE reports that
+    // one applied so the host stops pushing. Appended at the end for the same
+    // no-renumber reason; the spectate version gate keeps both ends on the same
+    // build so no back-compat handling is needed.
+    SPEC_SNAPSHOT_REQ,
 };
 
 // Convert message type to string for logging
@@ -142,6 +152,7 @@ inline const char* CtrlMsgToString(CtrlMsg msg) {
         case CtrlMsg::HOST_CONFIG:       return "HOST_CONFIG";
         case CtrlMsg::DELAY_PROPOSAL:    return "DELAY_PROPOSAL";
         case CtrlMsg::SPEC_SESSION_END:  return "SPEC_SESSION_END";
+        case CtrlMsg::SPEC_SNAPSHOT_REQ: return "SPEC_SNAPSHOT_REQ";
         default:                         return "UNKNOWN";
     }
 }
@@ -277,6 +288,23 @@ struct CtrlPacket {
             uint8_t mode;          // SpecJoinMode value
             uint8_t reserved[7];
         } spec_join_req;
+
+        // SPEC_SNAPSHOT_REQ -- bounded deep-join hold supervision (Wave 4).
+        //   anchor_frame: the viewer's CONSUMED INPUT position, i.e. the
+        //                 anchor a snapshot must carry to be applicable at
+        //                 all (see the applicability rule in
+        //                 SpectatorNode_ApplyPendingSnapshot). The host
+        //                 re-ships only when its cached snapshot is keyed to
+        //                 exactly this frame; otherwise it arms the push so
+        //                 the NEXT battle entry serves the viewer, and never
+        //                 ships a stale blob.
+        //   match_index:  advisory, for logs only.
+        //   flags:        SPEC_SNAPREQ_WANT / SPEC_SNAPREQ_DONE.
+        struct {
+            uint32_t anchor_frame;
+            uint32_t match_index;
+            uint8_t  flags;
+        } spec_snapshot_req;
 
         // HOST_CONFIG -- host's authoritative match settings, mirrored to
         // client + spectators so everyone runs with identical rules.

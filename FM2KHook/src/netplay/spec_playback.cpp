@@ -393,7 +393,17 @@ bool SpectatorNode_PopFrameInputs(uint16_t* p1_input, uint16_t* p2_input) {
     // cursor past the anchor, which made the rewind guard discard the
     // FIRST snapshot (join-during-CSS run, 2026-06-11: spec played the
     // live stream on a fresh BTB battle, P2 never initialized).
-    if (g_state.pb_snapshot_inbox.pending_apply) return false;
+    //
+    // EXEMPT: a bounded deep joiner still SIMULATING toward its battle-entry
+    // anchor (Wave 4). Its snapshot legitimately parks here while it still has
+    // anchored char-select to mirror -- the host pushes at ITS battle entry,
+    // ~a second before this viewer's pin walk finishes -- and freezing then is
+    // the 2026-06-11 circular deadlock in a new dress. The queued pops ARE that
+    // CSS mirror; they move the cursor TOWARD the anchor and cannot overshoot,
+    // because the battle-align hold parks the battle INPUTs at the head until
+    // mode >= 3000 and DeepJoinShouldHold takes over there.
+    if (g_state.pb_snapshot_inbox.pending_apply &&
+        !DeepJoinWalkingToAnchor()) return false;
 
     // ...and hold the SAME way while the snapshot is still DOWNLOADING (active,
     // pre-finalize) once we've reached the captured battle phase. A mid-battle
@@ -673,6 +683,17 @@ bool SpectatorNode_PopFrameInputs(uint16_t* p1_input, uint16_t* p2_input) {
             }
         }
     }
+
+    // Bounded deep-join battle-entry hold (Wave 4). AFTER the battle-align and
+    // boundary releases, so the mode>=3000 crossing is already processed and
+    // the consumed cursor is exactly the host's snapshot anchor. A bounded deep
+    // joiner skipped prior matches' SIMULATION, so it lacks the engine residue
+    // that simulation leaves and entering from scratch is the Wave 3.1 desync.
+    // Holds like the download-window hold above (return false: no sim advance,
+    // no pop) until the host's battle savestate applies. Supervision lives in
+    // TickHealth; this path never releases into from-scratch. Rationale and the
+    // five state families are documented in spec_deep_join.cpp's header.
+    if (DeepJoinShouldHold()) return false;
 
     // Results-tail guard: the local game can reach CSS a few frames
     // before the stream's MATCH_END applies (our results screens run

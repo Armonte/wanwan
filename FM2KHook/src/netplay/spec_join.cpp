@@ -158,7 +158,16 @@ CtrlPacket BuildJoinAckPacket() {
 CtrlPacket BuildJoinAckPacketFor(const Subscriber& sub) {
     // No SPEC_ACK_LIVE_REFRESH bit: this IS the grant. Chars only for a BATTLE
     // grant -- handing /F-boot seeds to a from-frame-0 mirror is the defect.
-    return BuildJoinAckWithKind(sub.pinned_ack_kind,
+    //
+    // SPEC_ACK_DEEP_JOIN rides ONLY here, never on BuildJoinAckPacket's live
+    // refresh, so a viewer's battle-entry hold is a function of its own grant
+    // and nothing the host broadcasts can arm one on a viewer that is bit-exact
+    // by simulation. pinned_ack_kind itself is left PURE (kind only) so the
+    // three `== SPEC_ACK_KIND_BATTLE` tests in the bind path keep working
+    // unmasked; the flag lives on its own Subscriber field.
+    uint8_t advertised = sub.pinned_ack_kind;
+    if (sub.deep_join_eligible) advertised |= SPEC_ACK_DEEP_JOIN;
+    return BuildJoinAckWithKind(advertised,
                                 sub.pinned_ack_kind == SPEC_ACK_KIND_BATTLE);
 }
 
@@ -245,6 +254,23 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
             : (kind_at_pin == NetplaySessionKind::BATTLE
                    ? SPEC_ACK_KIND_CSS
                    : static_cast<uint8_t>(kind_at_pin));
+    // Wave 4: the bounded deep-join decision, taken HERE, in the same block and
+    // from the same single Netplay_GetSessionKind() read as the mode pin and
+    // the grant kind. The bind used to re-derive it a few ticks later against
+    // moved state, so the grant a viewer booted on and the payload it was
+    // actually shipped could disagree; keying the bind on this field removes
+    // that class entirely (it is the same lesson as pinned_ack_kind).
+    //
+    // Requires all four: the feature gate, a CURRENT_MATCH request, a NON-battle
+    // grant (a BATTLE grant already means "a snapshot is coming" through the
+    // ordinary bind path), and an actual CSS anchor -- HaveBoundedAnchor() is
+    // false for a fresh session-start join, which therefore keeps taking the
+    // from-frame-0 path byte for byte and can never be told to hold.
+    const bool deep_join_eligible =
+        DeepJoinEnabled() &&
+        mode == SpecJoinMode::CURRENT_MATCH &&
+        pinned_kind != SPEC_ACK_KIND_BATTLE &&
+        HaveBoundedAnchor();
     char addr_buf[48] = {};
     FormatAddr(from, addr_buf, sizeof(addr_buf));
 
@@ -413,6 +439,15 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
             // Deliberate re-pin: the grant is being recomputed, so the kind
             // advertised from here on must move with it, never independently.
             sub.pinned_ack_kind = pinned_kind;
+            // ...and so must the deep-join grant. This is the branch a
+            // deep-join escalation re-JOIN lands on (it suppresses
+            // SPEC_JOIN_RESUME precisely to reach here): with the host now in
+            // battle, pinned_kind is BATTLE, eligibility drops to false, and
+            // the bind's ordinary use_snapshot path ships the blob the held
+            // viewer is waiting for. The viewer does NOT clear its hold on a
+            // grant that lacks the bit -- that snapshot is what releases it.
+            sub.deep_join_eligible = deep_join_eligible;
+            sub.deep_join_pending  = false;
             sub.udp_ok       = udp_ok;
             sub.resume_frame = resume_frame;
             sub.last_seen_ms = GetTickCount64();
@@ -453,6 +488,7 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
         sub.tcp_bound    = false;
         sub.join_mode    = mode;
         sub.pinned_ack_kind = pinned_kind;
+        sub.deep_join_eligible = deep_join_eligible;
         sub.udp_ok       = udp_ok;
         sub.resume_frame = resume_frame;
         // Phase 2c: pop the cached spec_user_id (if any) for this addr.

@@ -92,6 +92,7 @@ set(FM2KHOOK_SOURCES
     src/netplay/spec_host_events.cpp # host-side event recording + fingerprint (split from spectator_node)
     src/netplay/spec_join.cpp        # join/redirect protocol + GekkoSpectator dedup (split from spectator_node)
     src/netplay/spec_join_viewer.cpp # viewer-side JOIN_REQ/ACK/redirect/kick (split from spec_join)
+    src/netplay/spec_deep_join.cpp   # bounded deep-join snapshot push + battle-entry hold (Wave 4)
     src/netplay/spec_session_file.cpp # .fm2kset/.fm2krep write + load/seek (split from spectator_node)
     src/netplay/spec_playback.cpp     # op-apply + PopFrameInputs driver (split from spectator_node)
     src/netplay/spec_playback_state.cpp # admission pacing + adaptive delay bank + state accessors (split from spec_playback)

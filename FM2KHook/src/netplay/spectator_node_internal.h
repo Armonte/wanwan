@@ -102,6 +102,33 @@ struct Subscriber {
     // (deterministic ~205-frame desync, 2/16 at 20% loss). Changes ONLY when
     // the host deliberately re-pins join_mode. SPEC_ACK_KIND_* values.
     uint8_t      pinned_ack_kind         = SPEC_ACK_KIND_NONE;
+
+    // ─── Wave 4: bounded deep-join snapshot push ────────────────────────
+    // deep_join_eligible -- this sub was granted the bounded deep-join path
+    // (CURRENT_MATCH, a NON-battle grant, FM2K_SPEC_DEEP_JOIN=1, and a CSS
+    // anchor exists). Decided ONCE at pin time in the same block as join_mode
+    // and pinned_ack_kind, so the grant the viewer boots on and the payload the
+    // bind ships can never disagree -- the bind now KEYS on this field instead
+    // of re-deriving the decision a few ticks later against moved state.
+    //
+    // Sticky until the viewer reports SPEC_SNAPREQ_DONE. That is what makes the
+    // per-battle re-arm work: a bounded joiner whose FIRST battle ended before
+    // its snapshot landed is still eligible, so the next StashSnapshot arms it
+    // again and the next battle entry serves it without any new handshake.
+    bool         deep_join_eligible      = false;
+    // Armed at the bounded bind (only when the host is ALREADY in the battle
+    // this viewer is about to walk into) and re-armed by StashSnapshot at every
+    // battle entry while eligible. Drained one sub per maintenance tick, the
+    // same pacing the bind loop uses.
+    bool         deep_join_pending       = false;
+    // current_snapshot.input_frame of the last blob pushed to this sub on the
+    // deep-join path. Dedups repeat pushes within one battle and makes a stale
+    // arm (cache unchanged since the last push) a no-op instead of a re-ship.
+    uint32_t     deep_join_push_anchor   = 0xFFFFFFFFu;
+    // SPEC_SNAPSHOT_REQ response floor -- one reply per sub per
+    // SPECTATOR_DEEPJOIN_REPLY_FLOOR_MS, so a starved viewer's 1.5 s request
+    // cadence can never turn into a host-side re-ship storm.
+    uint64_t     deep_join_last_reply_ms = 0;
 };
 
 // Cached initial-match metadata so new joiners get a consistent handoff.
@@ -602,6 +629,35 @@ struct State {
     // match's inputs into the old results screen and let CssAutoConfirm
     // disengage before CSS even opened (wrong characters at UDP speed).
     bool                      pb_boundary_left_battle = false;
+
+    // ─── Wave 4: bounded deep-join viewer state ─────────────────────────
+    // spec_deep_join -- latched from a GRANT carrying SPEC_ACK_DEEP_JOIN. Same
+    // "only a GRANT changes boot posture" rule that owns natural_boot and the
+    // BTB seeding: the live-refresh builder never sets the bit, so no
+    // broadcast can arm a hold. Deliberately NOT cleared by a later grant that
+    // lacks the bit -- the escalation re-JOIN below lands while the host is in
+    // battle and correctly comes back as a BATTLE grant, and that grant's
+    // snapshot is exactly what releases the hold. Cleared only when a deep-join
+    // snapshot APPLIES (this viewer is then bit-exact and is an ordinary
+    // continuing viewer) or at teardown.
+    bool                      spec_deep_join            = false;
+    // Armed by PopFrameInputs the first tick the local engine is in battle with
+    // this battle's snapshot still missing. While set, PopFrameInputs returns
+    // false: the sim does not advance, nothing is popped, pb_started cannot
+    // move, and the consumed cursor stays exactly on the snapshot's anchor.
+    bool                      pb_deep_join_await        = false;
+    uint32_t                  pb_deep_join_anchor       = 0;  // consumed pos at hold start
+    uint64_t                  pb_deep_join_hold_since_ms = 0;
+    uint64_t                  pb_deep_join_last_req_ms  = 0;
+    size_t                    pb_deep_join_last_bytes   = 0;  // inbox progress watermark
+    uint32_t                  pb_deep_join_reqs         = 0;
+    uint32_t                  pb_deep_join_escalations  = 0;
+    uint64_t                  pb_deep_join_scan_ms      = 0;  // 1 Hz MATCH_END scan
+    // Set for exactly ONE RequestJoin so the escalation re-JOIN omits
+    // SPEC_JOIN_RESUME. A resume-flagged JOIN_REQ makes the host take the
+    // light-resume bind (gap backfill, explicitly NO snapshot), which is the
+    // precise opposite of what an escalation needs.
+    bool                      pb_deep_join_force_full_rejoin = false;
 };
 
 // The one definition lives in spectator_node.cpp; sibling TUs see it via this.
@@ -668,7 +724,84 @@ bool     HaveBoundedAnchor();
 void     SendSessionBackfillFromRecentAnchor(const sockaddr_in& to);
 void     SendSnapshotTo(const sockaddr_in& to);
 
+// ---- bounded deep join (spec_deep_join.cpp) ----
+// FM2K_SPEC_DEEP_JOIN gate, read once and logged once. Default OFF in this
+// wave: validation flips it, the default-flip is a separate decision.
+bool     DeepJoinEnabled();
+// The viewer's CONSUMED INPUT position: next_expected_frame minus the INPUT
+// events still sitting in pb_queue. ONE definition, shared by the Wave 2.1
+// pre-anchor trim (which calls it "head_frame") and by the Wave 4 snapshot
+// applicability rule, so the two can never drift apart -- after a deep-join
+// apply the trim is a no-op by construction because head_frame == anchor.
+//
+// INVARIANT: every writer that pushes an INPUT onto pb_queue advances
+// next_expected_frame by exactly one in the same step, and non-INPUT ops never
+// touch it (spec_recv.cpp's EVENT_BATCH path and its UDP accelerator path are
+// the only two). Do not add a third INPUT writer without keeping the cursor in
+// step, or every caller of this loses its frame reference.
+uint32_t ConsumedInputPos();
+
+// HOST. DeepJoinOnBind is called from the bind path the moment the bounded
+// backfill is actually shipped; DeepJoinArmSubscribers from StashSnapshot AFTER
+// the cache is refreshed (so the arm always names the NEW battle);
+// DeepJoinPushTick from TickHostMaintenance (one sub per tick).
+void     DeepJoinOnBind(Subscriber& sub);
+void     DeepJoinArmSubscribers();
+void     DeepJoinPushTick(uint64_t now);
+// SPEC_SNAPSHOT_REQ body. The public SpectatorNode_HandleSnapshotReq (declared
+// in spectator_node.h for netplay_control.cpp's dispatch) is a thin forwarder.
+void     SpectatorNode_HandleSnapshotReq_Impl(const sockaddr_in& from,
+                                              uint32_t anchor_frame,
+                                              uint32_t match_index,
+                                              uint8_t  flags);
+
+// VIEWER. DeepJoinShouldHold is the PopFrameInputs battle-entry hook;
+// DeepJoinHoldTick is the supervision (progress-gated re-request, then loud
+// escalation) called from TickHealth; DeepJoinOnSnapshotApplied closes the deep
+// join out.
+bool     DeepJoinShouldHold();
+void     DeepJoinHoldTick(uint64_t now);
+void     DeepJoinOnSnapshotApplied(uint32_t anchor);
+
+// True while a bounded deep joiner is still SIMULATING toward its battle-entry
+// anchor (mirroring the anchored char-select) rather than held at it. Used by
+// PopFrameInputs to exempt this path from the "a validated snapshot is parked,
+// freeze the sim" early-return: for every other join shape that early return is
+// correct, but here the snapshot legitimately arrives BEFORE the local engine
+// has walked the remaining char-select, and freezing then is the 2026-06-11
+// circular deadlock in a new dress (apply waits for mode 3000, mode 3000 needs
+// the CSS walk, the walk needs the sim). Consuming the queued CSS INPUTs is
+// exactly how the cursor reaches the anchor, and it CANNOT overshoot: the
+// battle-align hold parks the battle INPUTs at the head until mode >= 3000, and
+// the deep-join hold takes over from there.
+bool     DeepJoinWalkingToAnchor();
+
+// The snapshot applicability rule, as a tri-state so a snapshot that is merely
+// EARLY is not confused with one that is wrong.
+//   APPLY  -- anchor == our consumed INPUT position, local phase has reached
+//             the capture phase, and the engine's chars match the MATCH_START
+//             header (the 0x40CD47 AV guard). Nothing is rewound: our sim sits
+//             on the snapshot's logical frame having consumed nothing past it.
+//   WAIT   -- correct snapshot, too early. Keep the inbox and retry next tick.
+//   REFUSE -- backward (stale), or a battle we already missed, or mismatched
+//             chars. Discard.
+enum class DeepJoinVerdict : uint8_t { REFUSE, WAIT, APPLY };
+DeepJoinVerdict DeepJoinSnapshotVerdict(const State::SnapshotInbox& inbox);
+
 }  // namespace specnode
+
+// Bounded deep-join tunables. Grouped here rather than in spectator_node.h --
+// nothing outside the spec_*.cpp set needs them and that header is near its cap.
+//
+// REQ_INTERVAL: minimum spacing between SPEC_SNAPSHOT_REQ datagrams, and the
+//   interval is RESET by any observed inbox progress, so a healthy (merely
+//   slow) transfer is never prodded.
+// BUDGET: total hold time without an applied snapshot before the ladder
+//   escalates from "re-request" to "loud failure + full re-JOIN". ~10 requests.
+// REPLY_FLOOR: host-side one-response-per-sub floor for SPEC_SNAPSHOT_REQ.
+constexpr uint64_t SPECTATOR_DEEPJOIN_REQ_INTERVAL_MS  = 1500;
+constexpr uint64_t SPECTATOR_DEEPJOIN_BUDGET_MS        = 15000;
+constexpr uint64_t SPECTATOR_DEEPJOIN_REPLY_FLOOR_MS   = 500;
 
 // ---- snapshot inbox staleness sweep (spec_recv.cpp) ----
 // Global scope (spec_recv.cpp has no namespace block). Called once per

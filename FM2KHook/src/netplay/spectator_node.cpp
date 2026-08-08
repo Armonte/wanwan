@@ -376,6 +376,15 @@ void SpectatorNode_StashSnapshot() {
         SPECTATOR_SNAPSHOT_CHUNK_BYTES,
         cache.input_frame, cache.checksum, cache.captured_game_mode);
 
+    // Wave 4: arm the bounded deep-join push for every subscriber that is still
+    // uncorrected. Must run AFTER the cache refresh above so the arm names the
+    // NEW battle, and it deliberately re-arms on EVERY battle entry -- that is
+    // what serves a joiner whose first battle ended before its snapshot landed,
+    // and what serves a viewer that joined between matches 2 and 3 with battle
+    // 3's blob. The actual ship is paced one sub per maintenance tick by
+    // DeepJoinPushTick; nothing is sent from here.
+    DeepJoinArmSubscribers();
+
     // Session-kind-change re-broadcast: battle just started, so the
     // chars/stage in a JOIN_ACK are now real. Viewers that joined during
     // CSS hold their /F boot until this arrives (their first ACK said
@@ -471,21 +480,76 @@ void SpectatorNode_ApplyPendingSnapshot() {
     // NEXT match) also applies.
     if (g_state.pb_snapshot_applied_once || g_state.pb_started ||
         g_state.natural_boot) {
-        // Re-join snapshots NEVER re-apply. Backward anchors would rewind
-        // the sim under a live-edge queue; forward anchors (re-join lands
-        // in a LATER match) would overwrite the char slots with the new
-        // match's dynamic data while the locally loaded .player files are
-        // still the old characters -- the sprite renderer reads mismatched
-        // image descriptors and AVs (observed 2026-06-11, 0x40CD47, 100ms
-        // after a fast-forward apply). Proper forward-jump support needs a
-        // re-BTB (reload files for the announced chars) -- future work.
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "SpectatorNode: discarding re-join snapshot (anchor=%u, "
-            "already initialized this session) -- continuing on the "
-            "event stream",
-            inbox.anchor_frame);
-        inbox = State::SnapshotInbox{};
-        return;
+        // WAVE 4 NARROWING -- the bounded deep-join path, and only it.
+        //
+        // A bounded deep joiner is natural_boot AND pb_started BY
+        // CONSTRUCTION: it aborts /F, walks the anchored char-select live and
+        // pops those CSS INPUTs. So the guard above rejects the one snapshot
+        // that path exists to receive, which is why Wave 3.1 had to gate the
+        // whole feature off.
+        //
+        // The exact test the guard was approximating is anchor equality:
+        // applicable iff the snapshot's anchor == our CONSUMED INPUT position
+        // (next_expected_frame minus the INPUTs still queued -- the same
+        // arithmetic the pre-anchor trim below calls head_frame, now literally
+        // the same function). That is true exactly when our sim sits at the
+        // snapshot's logical frame having consumed nothing past it, i.e. the
+        // battle-entry hold. It refuses backward rewinds (anchor < consumed --
+        // the 2026-06-11 "battle restarted mid-stream") outright and can never
+        // let a forward jump land (anchor > consumed -- the 0x40CD47
+        // mismatched-char AV), so it is STRICTLY NARROWER than !pb_started
+        // here, never wider. DeepJoinSnapshotVerdict also asserts char identity
+        // against the MATCH_START header rather than trusting it.
+        //
+        // spec_deep_join is an ADDITIONAL belt, not the guarantee: it is set
+        // only by a GRANT carrying SPEC_ACK_DEEP_JOIN, i.e. only for a viewer
+        // the HOST decided to serve a bounded backfill. A from-frame-0 or
+        // continuing viewer therefore cannot reach the admit even in the one
+        // case where the rule alone would have said yes -- a stale re-ship
+        // landing exactly on its cursor at a rematch boundary, which is a green
+        // path today and must not start taking snapshots.
+        //
+        // WAIT is the third answer and it is load-bearing: the host pushes at
+        // ITS battle entry, typically a second or two before our engine
+        // finishes the pin walk, so the common case is a CORRECT snapshot that
+        // is merely early. Keeping the inbox (rather than discarding and making
+        // the viewer re-request) is what makes the healthy path cost one
+        // transfer. PopFrameInputs' parked-snapshot freeze is exempted for this
+        // walk (DeepJoinWalkingToAnchor) so keeping it cannot deadlock.
+        const uint32_t consumed = ConsumedInputPos();
+        const DeepJoinVerdict verdict =
+            g_state.spec_deep_join ? DeepJoinSnapshotVerdict(inbox)
+                                   : DeepJoinVerdict::REFUSE;
+        if (verdict == DeepJoinVerdict::WAIT) return;   // keep the inbox
+        if (verdict != DeepJoinVerdict::APPLY) {
+            // Re-join snapshots NEVER re-apply. Backward anchors would rewind
+            // the sim under a live-edge queue; forward anchors (re-join lands
+            // in a LATER match) would overwrite the char slots with the new
+            // match's dynamic data while the locally loaded .player files are
+            // still the old characters -- the sprite renderer reads mismatched
+            // image descriptors and AVs (observed 2026-06-11, 0x40CD47, 100ms
+            // after a fast-forward apply). Proper forward-jump support needs a
+            // re-BTB (reload files for the announced chars) -- future work.
+            //
+            // A held deep joiner landing here is a STALE push (its battle moved
+            // on, or the host re-armed for the next one): the inbox is dropped
+            // but pb_deep_join_await stays set, so the hold survives and the
+            // host's per-battle re-arm gets another chance.
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "SpectatorNode: discarding re-join snapshot (anchor=%u, "
+                "already initialized this session) -- continuing on the "
+                "event stream (consumed=%u deep_join=%d hold=%d)",
+                inbox.anchor_frame, consumed,
+                (int)g_state.spec_deep_join, (int)g_state.pb_deep_join_await);
+            inbox = State::SnapshotInbox{};
+            return;
+        }
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "[SPEC-DEEPJOIN] admitting snapshot past the re-join guard -- "
+            "anchor=%u == consumed=%u and chars match, so this rewinds nothing "
+            "(natural_boot=%d pb_started=%d applied_once=%d)",
+            inbox.anchor_frame, consumed, (int)g_state.natural_boot,
+            (int)g_state.pb_started, (int)g_state.pb_snapshot_applied_once);
     }
 
     const uint32_t game_mode = *(uint32_t*)FM2K::ADDR_GAME_MODE;
@@ -572,7 +636,10 @@ void SpectatorNode_ApplyPendingSnapshot() {
         // step, and non-INPUT ops never touch it. Maintained at the two live
         // admit sites, spec_recv.cpp's EVENT_BATCH path and its UDP
         // accelerator path. Do not add a third INPUT writer without keeping
-        // the cursor in step, or this trim loses its frame reference.
+        // the cursor in step, or this trim loses its frame reference. (The
+        // invariant is now recorded once, on ConsumedInputPos in
+        // spectator_node_internal.h, because Wave 4's applicability rule rests
+        // on exactly the same arithmetic and the two must never drift.)
         //
         // We cut after the Nth INPUT where N = anchor - head_frame, which leaves the
         // anchor's own INPUT and every event after it untouched. Ops sitting
@@ -580,14 +647,12 @@ void SpectatorNode_ApplyPendingSnapshot() {
         // cut stops at the INPUT count, never past it), so the error direction
         // is always "keep", never "lose". Nothing at or after the anchor can
         // be dropped by construction.
-        size_t queued_inputs = 0;
-        for (const auto& ev : g_state.pb_queue) {
-            if (ev.type == SessionEventType::INPUT) ++queued_inputs;
-        }
-        const uint32_t head_frame =
-            (g_state.next_expected_frame >= (uint32_t)queued_inputs)
-                ? (uint32_t)(g_state.next_expected_frame - (uint32_t)queued_inputs)
-                : 0u;
+        //
+        // COMPOSITION WITH THE DEEP-JOIN APPLY: that apply requires
+        // head_frame == anchor, so `head_frame < anchor` is false and this trim
+        // is a no-op there. The two are the same arithmetic reaching the same
+        // answer, not two policies that have to be reconciled.
+        const uint32_t head_frame = ConsumedInputPos();
         if (head_frame < anchor) {
             const uint32_t skip = anchor - head_frame;
             size_t cut = 0, seen = 0;
@@ -641,6 +706,11 @@ void SpectatorNode_ApplyPendingSnapshot() {
         "anchor INPUT-frame=%u, local game_mode=%u",
         inbox.meta.match_index, inbox.blob.size(),
         anchor, game_mode);
+
+    // Wave 4: releases the battle-entry hold, clears the deep-join latch (this
+    // viewer is bit-exact from here and continues by simulation) and tells the
+    // host to stop pushing. No-op for every other join shape.
+    DeepJoinOnSnapshotApplied(anchor);
 
     inbox = State::SnapshotInbox{};
 }

@@ -19,12 +19,14 @@
 #                    rematch (match 2), a CSS-join spectator AND a mid-match
 #                    snapshot joiner, gating the rematch boundary + match-2
 #                    coverage (no vacuous match-1-only pass).
-#   2d. deep-join    spec_selftest FM2K_SPEC_DEEP_JOIN=1 --spectators battle1,css2
-#                    — the BOUNDED between-matches join: a viewer that dials in
-#                    between matches is backfilled from the CURRENT char-select
-#                    and handed a battle-entry snapshot instead of replaying the
+#   2d. deep-join    spec_selftest --spectators battle1,css2 -- the BOUNDED
+#                    between-matches join: a viewer that dials in between
+#                    matches is backfilled from the CURRENT char-select and
+#                    handed a battle-entry snapshot instead of replaying the
 #                    whole session. Until 2026-08 NO stage exercised that path,
-#                    so gate-green was zero evidence for it.
+#                    so gate-green was zero evidence for it. Now DEFAULT ON, so
+#                    the stage also runs a KILL-SWITCH check
+#                    (FM2K_SPEC_DEEP_JOIN=0 -> the legacy from-frame-0 path).
 #   3. ddraw         ddraw_redirect_test.sh — cnc-ddraw redirect applied.
 #   4. multigame     multigame_determinism_sweep.sh (FULL only) — byte-identical
 #                    engine determinism across the real FM2K game library.
@@ -46,7 +48,7 @@
 # Env: FRAMES(1500) LOSS(0.15) SPEC_RUNS(4) FM2K_CHECK_DISTANCE(10) FULL(0)
 #      MM_RUNS(1) MM_TOTAL(3200) MM_LOSS(0.06)  — stage 2b multi-match E2E
 #      DJ_TOTAL(3200) DJ_LOSS(0.10) DJ_TOL(250) DJ_TIMEOUT(400) DJ_SKIP(0)
-#                                               — stage 2d deep join
+#      KS_SKIP(0)                               -- stage 2d deep join (+kill-switch)
 #      CPW_EXE(/mnt/c/dev/fm95/CPW/ＣＰＷ.exe) FM95_NETPLAY(0)  — stage 5
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -145,11 +147,19 @@ done
 CMD="python3 '$ROOT/tools/test_css_gate.py'"
 stage "css-gate-selftest" "$OUT/2c_css_gate.log"
 
-# Stage 2d — BOUNDED DEEP JOIN (FM2K_SPEC_DEEP_JOIN=1). Every other spectator
-# stage joins early enough to watch match 1, so none of them can reach the
-# bounded between-matches path: "ALL GREEN" was, until this stage existed, no
-# evidence whatsoever for the deep-join feature
-# (docs/dev/spectate_deep_join_rollout.md, Phase 1 item 4).
+# Stage 2d -- BOUNDED DEEP JOIN. Every other spectator stage joins early enough
+# to watch match 1, so none of them can reach the bounded between-matches path
+# (a css1 joiner has no prior match, so HaveBoundedAnchor() is false; a battle1
+# joiner gets a BATTLE grant, which is ineligible by definition). "ALL GREEN"
+# was, until this stage existed, no evidence whatsoever for the deep-join
+# feature (docs/dev/spectate_deep_join_rollout.md, Phase 1 item 4). That same
+# fact is why flipping the default ON did not change any other stage's path.
+#
+# FM2K_SPEC_DEEP_JOIN=1 is still passed explicitly below even though it is now
+# the DEFAULT. It is REDUNDANT ON PURPOSE: the stage's job is to gate the
+# bounded path, not to gate whatever the default happens to be this month, and
+# assert (a) below would otherwise be silently testing the default instead of
+# the feature. The default is gated by the kill-switch check that follows.
 #
 # The profile is the one the Wave 3/4/4.1 validation rounds used: a 2-match host
 # under 10% loss / 100ms / 30ms jitter with TWO spectators --
@@ -272,6 +282,93 @@ else
     else
         echo "[run_all] deep-join: FAIL (both attempts) -- evidence: $OUT/2d_deepjoin_att*_evidence.txt"
         fail+=("deep-join")
+    fi
+fi
+
+# Stage 2d-ks -- THE KILL-SWITCH. The bounded deep join is DEFAULT ON since the
+# bleeding flip, which inverts what FM2K_SPEC_DEEP_JOIN is FOR: its only
+# load-bearing direction is now OFF, the lever a triager pulls to ask "does this
+# still happen on the legacy from-frame-0 path?". A kill-switch nobody exercises
+# rots silently -- and it rots in the worst possible way, because the failure
+# mode is a reporter who BELIEVES they tested the legacy path while actually
+# measuring the default, which makes every conclusion drawn from that run wrong.
+# So it is gated on every run, at the same cost as one more spectator profile.
+#
+# Same shape as stage 2d (the css2 joiner is eligibility-shaped: prior match +
+# CSS anchor + CURRENT_MATCH + non-battle grant, i.e. it is exactly the viewer
+# that WOULD deep-join), minus the impairment and minus the second spectator --
+# the asserts here are all log-shape, not parity-rate, so loss buys nothing.
+#
+# Five asserts, all deterministic once the viewer dials in:
+#   k1. host logged "bounded deep join disabled"  -> the strict parse saw the 0
+#   k2. host did NOT log "...ENABLED"             -> and did not also take the on
+#                                                    path (catches a log-only flip)
+#   k3. no "bounded backfill from CSS anchor"     -> the HOST really shipped the
+#                                                    legacy from-frame-0 stream
+#   k4. viewer logged no [SPEC-DEEPJOIN] hold or APPLIED -> and the VIEWER ran
+#                                                    none of the ladder
+#   k5. no FULL-STATE DESYNC in the run           -> the legacy path still works
+#                                                    (it is what the switch buys)
+# NOT asserted, and this is the load-bearing design choice of the stage: the
+# harness's own OVERALL verdict, and --assert-spectator-live. A from-frame-0
+# joiner dialing in at the second char-select is LEGITIMATELY hundreds of frames
+# behind at host termination -- the first live run of this stage measured
+# gap=-874 (Wave 3 measured -883..-891 for the same shape), i.e. it is still
+# replaying match 1 when the host finishes match 2. Two harness verdicts follow
+# from that lag and NEITHER is a defect here:
+#   * LIVE-EDGE ... [FAIL] (printed as a metric; ungated because the flag is off)
+#   * CSS-SPEC sess1 -> CSS DESYNC (LOCKED CHAR host=10/7 spec=None) -- the
+#     viewer never reached the host's SECOND char-select to lock anything
+# and together they make the harness print OVERALL FAIL. That lag is the entire
+# reason the bounded path exists, so gating the kill-switch on it would gate the
+# escape hatch on the very defect it is an escape from. DO NOT "fix" this stage
+# by adding an OVERALL assert -- it will go permanently red and the kill-switch
+# will lose its only coverage. What IS asserted about correctness is k5: over
+# the frames the viewer DID reach it must be bit-exact (the first run: 2035
+# frames FULL-STATE IDENTICAL), i.e. identical-though-behind.
+KS_TIMEOUT="${KS_TIMEOUT:-320}"
+if [ "${DJ_SKIP:-0}" = 1 ] || [ "${KS_SKIP:-0}" = 1 ]; then
+    echo "[run_all] deep-join-killswitch: SKIPPED (DJ_SKIP/KS_SKIP=1)"
+else
+    echo "======================================================================"
+    echo "[run_all] STAGE: deep-join-killswitch (FM2K_SPEC_DEEP_JOIN=0 -> legacy)"
+    echo "======================================================================"
+    kill_games; sleep 0.6
+    rm -f "$SPEC_LIVE"/live_FM2K_*_Debug.log
+    ks_log="$OUT/2dks_killswitch.log"; ks_ev="$OUT/2dks_killswitch_evidence.txt"
+    FM2K_SPEC_DEEP_JOIN=0 FM2K_SPEC_RC=1 \
+      timeout "$KS_TIMEOUT" python3 "$ROOT/tools/spec_selftest.py" \
+        --rounds 1 --round-time 15 --total-frames "$DJ_TOTAL" \
+        --spectators css2 --keep \
+        > "$ks_log" 2>&1
+    ks_host="$SPEC_LIVE/live_FM2K_P1_Debug.log"
+    ks_s1="$SPEC_LIVE/live_FM2K_S1_Debug.log"
+    {   echo "== host: gate verdict + backfill path =="
+        grep -aE "\[SPEC-DEEPJOIN\]|bounded backfill from CSS anchor|from-frame-0" "$ks_host" 2>/dev/null | head -20
+        echo "== viewer css2 (S1): any deep-join machinery at all =="
+        grep -a "\[SPEC-DEEPJOIN\]" "$ks_s1" 2>/dev/null | head -20
+        echo "== harness verdicts =="
+        grep -aE "CHECKSUM S|CINPUT S|GATE S|CSS-SPEC|OVERALL" "$ks_log" 2>/dev/null
+    } > "$ks_ev" 2>&1
+    ks_why=""
+    grep -qa "bounded deep join disabled" "$ks_host" 2>/dev/null \
+        || ks_why="$ks_why; host never logged 'bounded deep join disabled' (kill-switch not parsed, not forwarded, or the viewer never dialled in)"
+    grep -qa "bounded deep join ENABLED" "$ks_host" 2>/dev/null \
+        && ks_why="$ks_why; host ALSO logged 'bounded deep join ENABLED' -- the kill-switch did not take"
+    grep -qa "bounded backfill from CSS anchor" "$ks_host" 2>/dev/null \
+        && ks_why="$ks_why; host shipped the BOUNDED backfill anyway (the switch is log-only)"
+    grep -qaE "\[SPEC-DEEPJOIN\] (snapshot APPLIED at anchor=|HOLDING)" "$ks_s1" 2>/dev/null \
+        && ks_why="$ks_why; viewer ran the deep-join ladder with the switch off"
+    grep -qa "FULL-STATE DESYNC" "$ks_log" 2>/dev/null \
+        && ks_why="$ks_why; the LEGACY path desynced (the escape hatch is not an escape)"
+    if [ -n "$ks_why" ]; then
+        echo "[run_all] deep-join-killswitch: FAIL --${ks_why#;}"
+        echo "[run_all]   evidence: $ks_ev"
+        fail+=("deep-join-killswitch")
+    else
+        echo "[run_all] deep-join-killswitch: PASS (legacy from-frame-0 path restored)"
+        grep -a "bounded deep join disabled" "$ks_host" 2>/dev/null | head -1 | sed 's/^.*\[SPEC-DEEPJOIN\]/      [SPEC-DEEPJOIN]/'
+        pass+=("deep-join-killswitch")
     fi
 fi
 

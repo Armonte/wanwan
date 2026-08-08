@@ -250,11 +250,11 @@ struct Subscriber {
 
     // ─── Wave 4: bounded deep-join snapshot push ────────────────────────
     // deep_join_eligible -- this sub was granted the bounded deep-join path
-    // (CURRENT_MATCH, a NON-battle grant, FM2K_SPEC_DEEP_JOIN=1, and a CSS
-    // anchor exists). Decided ONCE at pin time in the same block as join_mode
-    // and pinned_ack_kind, so the grant the viewer boots on and the payload the
-    // bind ships can never disagree -- the bind now KEYS on this field instead
-    // of re-deriving the decision a few ticks later against moved state.
+    // (CURRENT_MATCH, a NON-battle grant, DeepJoinEnabled() -- on unless the
+    // kill-switch is thrown -- and a CSS anchor). Decided ONCE at pin time in
+    // the same block as join_mode and pinned_ack_kind, so the grant the viewer
+    // boots on and the payload the bind ships can never disagree -- the bind
+    // KEYS on this field instead of re-deriving it later against moved state.
     //
     // Sticky until the viewer reports SPEC_SNAPREQ_DONE. That is what makes the
     // per-battle re-arm work: a bounded joiner whose FIRST battle ended before
@@ -890,8 +890,8 @@ void     SendSessionBackfillFromRecentAnchor(const sockaddr_in& to);
 void     SendSnapshotTo(const sockaddr_in& to);
 
 // ---- bounded deep join (spec_deep_join.cpp) ----
-// FM2K_SPEC_DEEP_JOIN gate, read once and logged once. Default OFF in this
-// wave: validation flips it, the default-flip is a separate decision.
+// FM2K_SPEC_DEEP_JOIN gate, read once and logged once. DEFAULT ON: the var is
+// a KILL-SWITCH (=0 -> legacy path); an unrecognised value fails SAFE to OFF.
 bool     DeepJoinEnabled();
 // The viewer's CONSUMED INPUT position: next_expected_frame minus the INPUT
 // events still sitting in pb_queue. ONE definition, shared by the Wave 2.1

@@ -738,31 +738,33 @@ void SpectatorNode_TickHostMaintenance() {
             // MATCH_START, exactly like a continuing spectator at a rematch
             // seam -- so it only needs the stream from the current
             // CSS_ENTERED, not from frame 0.
-            // GATED OFF BY DEFAULT (Wave 3.1). The bounded anchor's latency
-            // win is proven (2.0-2.9s boot-to-play, 90.6-92.9% of events
-            // skipped, 7/7) but the deep joiner then DESYNCS: at an identical
-            // logical frame -- same rng, hp, timer and script ids -- its
-            // character positions sit at spawn while a continuing spectator's
-            // have moved. Skipping match 1's simulation leaves engine state
-            // that battle-entry init does not reset and that the event stream
-            // does not carry, and OP_BASELINE fixes the op COUNT for the
-            // skipped prefix but cannot supply state that prefix's simulation
-            // would have produced. Until that state is transported, the
-            // default must be the proven-correct from-frame-0 path.
+            // DEFAULT ON since the bleeding flip; FM2K_SPEC_DEEP_JOIN=0 is the
+            // kill-switch back to the from-frame-0 path. The history matters
+            // for anyone touching this, so it stays recorded:
             //
-            // FM2K_SPEC_DEEP_JOIN=1 re-enables it for measurement. Do NOT
-            // default this on again without a full-state fencepost run
-            // (CHECKSUM, not the subset GATE -- the subset gate passed all 7
-            // failing runs).
+            // Wave 3.1 gated this OFF. The bounded anchor's latency win was
+            // proven (2.0-2.9s boot-to-play, 90.6-92.9% of events skipped, 7/7)
+            // but the deep joiner then DESYNCED: at an identical logical frame
+            // -- same rng, hp, timer and script ids -- its character positions
+            // sat at spawn while a continuing spectator's had moved. Skipping
+            // match 1's simulation leaves engine state that battle-entry init
+            // does not reset and that the event stream does not carry, and
+            // OP_BASELINE fixes the op COUNT for the skipped prefix but cannot
+            // supply state that prefix's simulation would have produced.
             //
-            // Wave 4 closes that desync by shipping the battle savestate to a
-            // held deep joiner at the host's next battle entry, and moves the
+            // Wave 4 closed that desync by shipping the battle savestate to a
+            // held deep joiner at the host's next battle entry, and moved the
             // decision to sub.deep_join_eligible -- pinned at JOIN time from
             // the same read as the grant kind, so the SPEC_ACK_DEEP_JOIN bit
             // the viewer booted on and the payload shipped here are the same
             // decision rather than two derivations against state that moved in
-            // between. The env gate now lives in DeepJoinEnabled(), consulted
-            // at pin time; a sub can only be eligible if it was on.
+            // between. The env gate lives in DeepJoinEnabled(), consulted at
+            // pin time; a sub can only be eligible if it was on.
+            //
+            // The bar that let the default flip, and the bar for keeping it:
+            // full-state fencepost identity (CHECKSUM, NOT the subset GATE --
+            // the subset gate passed all 7 of the Wave 3.1 failing runs), which
+            // run_all_tests stage 2d now asserts on every gate run.
             const bool use_recent_anchor = sub.deep_join_eligible &&
                 !resume_bind && !use_snapshot;
             // Re-ship floor: this sub already got THIS match's snapshot very

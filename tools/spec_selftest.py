@@ -1116,12 +1116,22 @@ def main():
               # #66 CSS rollback opt-in + prediction window
               "FM2K_CSS_ROLLBACK", "FM2K_CSS_PREDICTION",
               # mid-join spectate desync hunt: per-region full-state fingerprint
-              "FM2K_FULLFP", "FM2K_POOLSET",
-              # Wave 4 bounded deep join (host decides eligibility, viewer obeys
-              # the grant) -- BOTH sides need it, see the spectator list below.
-              "FM2K_SPEC_DEEP_JOIN"):
+              "FM2K_FULLFP", "FM2K_POOLSET"):
         if os.environ.get(k):
             common_env[k] = os.environ[k]
+    # FM2K_SPEC_DEEP_JOIN is forwarded SEPARATELY and by presence, not by
+    # truthiness. The hook now defaults the bounded deep join ON and this
+    # variable is the KILL-SWITCH, so the value that matters most is "0" --
+    # which does survive the `if os.environ.get(k)` filter above (the STRING
+    # "0" is truthy in Python) but only by accident, and one refactor to
+    # `int(...)`/`== "1"` would silently stop forwarding the OFF direction,
+    # making every "kill-switch" run measure the default and reach the exact
+    # wrong triage conclusion. The empty string is forwarded too: the hook
+    # treats empty/whitespace as unset, so it round-trips faithfully.
+    # BOTH sides need it (host decides eligibility, viewer obeys the grant) --
+    # see the spectator list below for the other half.
+    if os.environ.get("FM2K_SPEC_DEEP_JOIN") is not None:
+        common_env["FM2K_SPEC_DEEP_JOIN"] = os.environ["FM2K_SPEC_DEEP_JOIN"]
 
     p1_env = {**common_env,
               "FM2K_LOCAL_PORT": str(P1_PORT),
@@ -1189,12 +1199,15 @@ def main():
                    "FM2K_RC_FEC", "FM2K_RC_FEC_K",
                    "FM2K_TEST_SPEC_TCP_BLACKHOLE",
                    # mid-join spectate desync hunt: per-region full-state fingerprint
-                   "FM2K_FULLFP", "FM2K_POOLSET",
-                   # Wave 4 bounded deep join -- the viewer only obeys the
-                   # grant, but it must be able to obey it.
-                   "FM2K_SPEC_DEEP_JOIN"):
+                   "FM2K_FULLFP", "FM2K_POOLSET"):
             if os.environ.get(kk):
                 env[kk] = os.environ[kk]
+        # Bounded deep join -- the viewer only obeys the grant, but it must be
+        # able to obey it. Presence-forwarded for the same kill-switch reason as
+        # the host side above; "0" must reach BOTH ends or a kill-switch run is
+        # a split-brain run.
+        if os.environ.get("FM2K_SPEC_DEEP_JOIN") is not None:
+            env["FM2K_SPEC_DEEP_JOIN"] = os.environ["FM2K_SPEC_DEEP_JOIN"]
         # The spectator MUST run the same round count as the host, else a 1-round
         # host vs best-of-3 spectator diverges at the host's round-1 match-end.
         if args.rounds > 0:

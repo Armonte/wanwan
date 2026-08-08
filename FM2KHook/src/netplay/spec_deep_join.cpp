@@ -39,10 +39,13 @@
 //     savestate_fm2k_load.cpp:447-457 names the layout explicitly and RESTORES
 //     offsets 0x00..0x20, i.e. exactly the 32-byte 0x4456B0..0x4456CF array.
 //
-// GATED OFF: everything here is downstream of DeepJoinEnabled()
-// (FM2K_SPEC_DEEP_JOIN=1) on the host, and of the SPEC_ACK_DEEP_JOIN grant bit
-// on the viewer. With the gate off the host never marks a sub eligible, so no
-// push is ever armed and no viewer is ever told to hold.
+// DEFAULT ON (bleeding), KILL-SWITCHED BY FM2K_SPEC_DEEP_JOIN=0: everything
+// here is downstream of DeepJoinEnabled() on the host, and of the
+// SPEC_ACK_DEEP_JOIN grant bit on the viewer. With the kill-switch thrown the
+// host never marks a sub eligible, so no push is ever armed and no viewer is
+// ever told to hold -- the legacy from-frame-0 path is restored whole, which is
+// what makes "does it still happen with FM2K_SPEC_DEEP_JOIN=0?" a real triage
+// question. See DeepJoinEnabled() for the parse and its fail-safe direction.
 //
 // ---------------------------------------------------------------------------
 // TELEMETRY CONTRACT -- the viewer-side ladder's outcomes, one line each.
@@ -84,9 +87,11 @@
 
 #include <SDL3/SDL_log.h>
 #include <winsock2.h>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
+#include <string>
 using namespace specnode;
 
 namespace {
@@ -127,17 +132,68 @@ bool g_held_battle_ended_reported = false;
 
 namespace specnode {
 
+// FM2K_SPEC_DEEP_JOIN -- DEFAULT ON since the bleeding flip (rollout plan
+// Phase 3). The variable is now a KILL-SWITCH, not an opt-in: its only
+// load-bearing direction is OFF, which restores the legacy from-frame-0
+// backfill for triage ("does this reproduce with deep join off?"). That
+// inversion is why the parse below is strict instead of the old
+// `e[0] == '1'`:
+//
+//   * A kill-switch that misses because the value carried a trailing space,
+//     or because the user wrote `false` instead of `0`, is worse than no
+//     kill-switch -- the reporter believes they tested the legacy path and
+//     the triage conclusion is wrong. So the value is trimmed, lower-cased,
+//     and both spelling families are accepted.
+//   * An UNRECOGNISED value fails SAFE, i.e. OFF, and says so at Error
+//     severity. Failing to the default would silently keep the experimental
+//     path on for exactly the user who was trying to turn it off; failing to
+//     the legacy path costs that user only join latency, and the loud line
+//     tells them why.
+//   * Unset or whitespace-only means "no opinion" -> the default (ON).
+//
+// Read once, logged EXACTLY once (one line, whichever branch). The
+// "bounded deep join ENABLED" / "bounded deep join disabled" substrings are a
+// harness contract -- run_all_tests stage 2d asserts the first and the
+// kill-switch check asserts the second. Do not reword them.
 bool DeepJoinEnabled() {
     static int s_enabled = -1;
-    if (s_enabled < 0) {
-        const char* e = std::getenv("FM2K_SPEC_DEEP_JOIN");
-        s_enabled = (e && e[0] == '1') ? 1 : 0;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "[SPEC-DEEPJOIN] bounded deep join %s (FM2K_SPEC_DEEP_JOIN)",
-            s_enabled ? "ENABLED -- bounded backfill from the current "
-                        "char-select + mandatory battle-entry snapshot"
-                      : "disabled (default; from-frame-0 backfill)");
+    if (s_enabled >= 0) return s_enabled == 1;
+
+    const char* raw = std::getenv("FM2K_SPEC_DEEP_JOIN");
+    std::string v = raw ? raw : "";
+    const size_t b = v.find_first_not_of(" \t\r\n");
+    const size_t e = v.find_last_not_of(" \t\r\n");
+    v = (b == std::string::npos) ? std::string() : v.substr(b, e - b + 1);
+    for (char& c : v) c = (char)std::tolower((unsigned char)c);
+
+    const char* why = nullptr;
+    if (v.empty()) {
+        s_enabled = 1;
+        why = "default; FM2K_SPEC_DEEP_JOIN unset";
+    } else if (v == "0" || v == "false" || v == "off" || v == "no" ||
+               v == "disabled") {
+        s_enabled = 0;
+        why = "FM2K_SPEC_DEEP_JOIN kill-switch";
+    } else if (v == "1" || v == "true" || v == "on" || v == "yes" ||
+               v == "enabled") {
+        s_enabled = 1;
+        why = "FM2K_SPEC_DEEP_JOIN set explicitly";
+    } else {
+        s_enabled = 0;
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+            "[SPEC-DEEPJOIN] bounded deep join disabled -- "
+            "FM2K_SPEC_DEEP_JOIN=\"%s\" is not a recognised value (accepted: "
+            "1/true/on/yes/enabled, 0/false/off/no/disabled). Failing SAFE to "
+            "the legacy from-frame-0 backfill; UNSET the variable to get the "
+            "default (ON)", raw ? raw : "");
+        return false;
     }
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "[SPEC-DEEPJOIN] bounded deep join %s (%s)",
+        s_enabled ? "ENABLED -- bounded backfill from the current "
+                    "char-select + mandatory battle-entry snapshot"
+                  : "disabled -- legacy from-frame-0 backfill",
+        why);
     return s_enabled == 1;
 }
 

@@ -235,6 +235,17 @@ void SpectatorNode_Shutdown() {
     g_state.flushed_input_count    = 0;
     g_state.total_input_count      = 0;
     g_state.total_op_count         = 0;
+    // The CSS/deep-join anchors are INDICES INTO session_events, which the
+    // clear() above just emptied, and nothing here ever reset them. Every
+    // existing consumer happened to bounds-check its way out of the stale
+    // pair, but the gap-fill scan-start hints added for candidate A1 read
+    // css_anchor_input_frame as a scan CURSOR, so a stale one has to be
+    // impossible rather than merely usually-caught.
+    g_state.have_css_anchor        = false;
+    g_state.css_anchor_event_idx   = 0;
+    g_state.css_anchor_input_frame = 0;
+    g_state.css_anchor_op_count    = 0;
+    g_state.have_prior_match       = false;
     g_state.ops_seen               = 0;
     g_state.udp_epoch_armed        = false;
     g_state.udp_highest_op_seq     = 0;

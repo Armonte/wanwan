@@ -91,30 +91,73 @@ void SaveState_PushRngTrace(int frame, uint32_t rng, uint32_t fp) {
     if (g_rngtrace_count < RNGTRACE_CAPACITY) g_rngtrace_count++;
 }
 
-void SaveState_FlushRngTrace(int player_index, const char* reason) {
+void SaveState_ResetRngTrace() {
+    g_rngtrace_head  = 0;
+    g_rngtrace_count = 0;
+}
+
+// FM2K_RNGTRACE: write the CSV on a routine flush. DEFAULT OFF -- this is a
+// desync-forensics dump, not telemetry, and it is not free. The ring holds up
+// to RNGTRACE_CAPACITY entries and the dump is ONE fprintf per entry into a
+// stdio stream, ~1.4 MB, on the GAME THREAD at the match-end seam. On an SSD
+// that is tens of ms; on a spinning disk, an encrypted volume, or with a
+// real-time AV scanner inspecting a freshly created .csv, it is seconds -- and
+// it used to be paid at the end of EVERY match, on a ring that was never
+// cleared between them, so match five of a set dumped ten minutes of history.
+// The forced call sites (desync handler, harness auto-terminate) ignore this
+// gate: both are already tearing the process down, so the cost is not a hitch
+// in anyone's match.
+static bool RngTraceDumpEnabled() {
+    static int s_cached = -1;
+    if (s_cached < 0) {
+        const char* v = std::getenv("FM2K_RNGTRACE");
+        s_cached = (v && v[0] && v[0] != '0') ? 1 : 0;
+    }
+    return s_cached == 1;
+}
+
+void SaveState_FlushRngTrace(int player_index, const char* reason, bool force) {
+    const size_t count = g_rngtrace_count;
+    // Always-on summary: counts, never contents. One line per flush (i.e. per
+    // match boundary), so the ring's behaviour stays visible in a default
+    // build without anyone paying for the dump.
+    if (!force && !RngTraceDumpEnabled()) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "rngtrace: %zu entries buffered, dump SKIPPED (%s) -- "
+                    "set FM2K_RNGTRACE=1 to write FM2K_P%d_rngtrace.csv",
+                    count, reason ? reason : "", player_index + 1);
+        SaveState_ResetRngTrace();
+        return;
+    }
+
     char filename[256];
     snprintf(filename, sizeof(filename), "FM2K_P%d_rngtrace.csv", player_index + 1);
     FILE* f = fopen(filename, "w");
     if (!f) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                      "rngtrace: failed to open %s", filename);
+        SaveState_ResetRngTrace();
         return;
     }
     fprintf(f, "# rngtrace flush reason=%s count=%zu\n", reason ? reason : "",
-            g_rngtrace_count);
+            count);
     fprintf(f, "frame,rng,fingerprint\n");
     // Walk from oldest to newest
-    size_t start = (g_rngtrace_count < RNGTRACE_CAPACITY)
+    size_t start = (count < RNGTRACE_CAPACITY)
                    ? 0
                    : g_rngtrace_head;  // head points at the oldest when full
-    for (size_t i = 0; i < g_rngtrace_count; i++) {
+    for (size_t i = 0; i < count; i++) {
         const auto& e = g_rngtrace_ring[(start + i) % RNGTRACE_CAPACITY];
         fprintf(f, "%d,0x%08X,0x%08X\n", e.frame, e.rng, e.fingerprint);
     }
     fclose(f);
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "rngtrace: wrote %zu entries to %s (%s)",
-                g_rngtrace_count, filename, reason ? reason : "");
+                count, filename, reason ? reason : "");
+    // Every flush is a match boundary, so the ring starts the next match
+    // empty. Without this the dump grew monotonically across a set -- the
+    // reason the tail got worse the longer people played.
+    SaveState_ResetRngTrace();
 }
 
 // Hashing: use xxHash3-64 (truncated to u32) instead of pure-C Fletcher32.

@@ -622,6 +622,41 @@ bool SpectatorNode_EngageRelayFallback() {
     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
         "SpectatorNode: direct join produced no frames -- engaging hub "
         "spec-relay fallback via %s", buf);
+    // Say goodbye to the DIRECT upstream first. The re-JOIN below arrives at
+    // the host from a different source address (the relay's per-session
+    // socket), and the host keys BOTH its subscriber list and its
+    // GekkoSpectator dedup set on "ip:port" -- so without this the host ends
+    // up serving a second viewer while the first one, which is the same human,
+    // goes permanently silent. That silent subscriber keeps costing the host
+    // real work on its main-loop-blocking path (heartbeat sweeps, and any
+    // re-ship aimed at it) until the 30s expiry sweep culls it. One packet,
+    // best-effort, before the upstream swap -- RequestJoin overwrites
+    // upstream_addr, so this cannot be done afterwards.
+    //
+    // HONEST LIMIT: this retires the SpectatorNode-level subscriber, NOT the
+    // gekko spectator actor. gekko_add_actor's handle is discarded at the
+    // JOIN site and the dedup set is keyed by address, so the orphaned actor
+    // still ages out through GekkoNet's own DISCONNECT_TIMEOUT (5000 ms) of
+    // full-history re-blast. Removing it properly needs the host to track
+    // actor handles per address, and would then have to answer what happens
+    // when the SAME address re-JOINs into a now-Disconnected actor -- a
+    // bigger change than this path deserves.
+    {
+        const sockaddr_in& direct = (g_state.upstream_addr.sin_port != 0)
+                                        ? g_state.upstream_addr
+                                        : g_state.root_addr;
+        if (direct.sin_port != 0 && !AddrEqual(direct, *relay)) {
+            CtrlPacket leave = {};
+            leave.header.type = CtrlMsg::SPEC_LEAVE;
+            ControlChannel_SendTo(leave, direct);
+            g_state.subscribed_upstream = false;
+            char dbuf[48] = {}; FormatAddr(direct, dbuf, sizeof(dbuf));
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "SpectatorNode: SPEC_LEAVE -> %s before the relay re-JOIN so "
+                "the host is not left serving a dead direct subscriber "
+                "alongside the relayed one", dbuf);
+        }
+    }
     SpectatorNode_RequestJoin(*relay, g_state.last_requested_mode);
     return true;
 }

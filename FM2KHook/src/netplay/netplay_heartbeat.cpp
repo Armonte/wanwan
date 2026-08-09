@@ -96,6 +96,55 @@ void Netplay_TickHeartbeat() {
         }
     }
 
+    // task #56 follow-up (candidate D): the stale-InputAck guard used to
+    // reject SILENTLY, which mattered because the same `return` also skips
+    // the only call site of SetRemoteAdvantage -- so a sustained reject
+    // window freezes the remote frame-advantage sample that feeds FA and
+    // therefore SleepToTarget's brake (up to +3 ms/frame = a 77 fps floor,
+    // engaged for exactly as long as the window lasts, then self-recovering:
+    // the shape of the reported 5-10 s sag).
+    //
+    // EPISODIC BY CONSTRUCTION, not per-ack. Logging in this process is a
+    // synchronous fputs+fflush on the calling thread (quill is deliberately
+    // off in the hook -- its backend thread deadlocks the loader), so a
+    // per-ack counter line would BE a frame-thread stall. Exactly two lines
+    // per episode: one when the guard has been rejecting continuously for
+    // 500 ms, one when it stops. Below 500 ms the legitimate
+    // session-transition skew this guard exists for passes unlogged.
+    //
+    // Recovery keys on reject_streak, not on pacing_neutralised: the streak
+    // is cleared by the accepted ack itself, so it cannot latch if a peer
+    // vanishes mid-episode.
+    GekkoAckGuardStats ag = {};
+    gekko_ack_guard_stats(&ag);
+    {
+        static bool s_ackguard_open = false;
+        if (!s_ackguard_open && ag.reject_streak > 0 && ag.rejecting_ms >= 500) {
+            s_ackguard_open = true;
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "[ACKGUARD] stale-ack guard has been rejecting for %ums "
+                "(streak=%u total_rej=%llu total_ok=%llu last_ack=%d vs "
+                "last_sent=%d) -- peer is acking frames we never sent. "
+                "Frame-advantage sampling is stalled; pacing_neutralised=%u "
+                "(1 = FA forced to 0 so the brake cannot ride a dead sample)",
+                ag.rejecting_ms, ag.reject_streak,
+                (unsigned long long)ag.rejects_total,
+                (unsigned long long)ag.accepts_total,
+                ag.last_reject_ack_frame, ag.last_reject_last_sent,
+                (unsigned)ag.pacing_neutralised);
+        } else if (s_ackguard_open && ag.reject_streak == 0) {
+            s_ackguard_open = false;
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "[ACKGUARD] recovered -- acks are passing the guard again "
+                "(total_rej=%llu total_ok=%llu neutralise_episodes=%llu). "
+                "FA resumes tracking the real remote advantage over the next "
+                "~26 frames",
+                (unsigned long long)ag.rejects_total,
+                (unsigned long long)ag.accepts_total,
+                (unsigned long long)ag.episodes_total);
+        }
+    }
+
     if (now_ms - g_beat_last_emit_ms < 10000ULL) return;
     g_beat_last_emit_ms = now_ms;
 
@@ -123,7 +172,8 @@ void Netplay_TickHeartbeat() {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
         "[BEAT] bf=%u role=%s ping=%ums jit=%.1fms FA=%+.1f "
         "delay=%d ra=%d pred=%d rb_total=%u rb_win=%u rb_avg=%.1f rb_max=%u "
-        "conf=%d gko_rx=%llu gko_rx_age=%llums",
+        "conf=%d gko_rx=%llu gko_rx_age=%llums "
+        "ackrej=%llu ackneut=%llu",
         g_netplay_frame, SessionRoleStr(),
         stats.last_ping, stats.jitter, fa,
         g_local_delay,
@@ -132,7 +182,12 @@ void Netplay_TickHeartbeat() {
         g_rollback_count, rb_count, rb_avg, rb_max,
         gekko_confirmed_frame(g_session),
         (unsigned long long)g_gekko_rx_total.load(std::memory_order_relaxed),
-        (unsigned long long)(beat_rx_ms ? (now_ms - beat_rx_ms) : 0));
+        (unsigned long long)(beat_rx_ms ? (now_ms - beat_rx_ms) : 0),
+        // candidate D time series: acks the stale guard dropped, and how many
+        // times that ran long enough to force FA to 0. Both flat = the guard
+        // is not involved in whatever else the log shows.
+        (unsigned long long)ag.rejects_total,
+        (unsigned long long)ag.episodes_total);
 
     // [RELAY-RTT-DIAG] Under relay, surface whether gekko's RTT-match address
     // (the live g_remote_sockaddr stamp) still equals the string we registered

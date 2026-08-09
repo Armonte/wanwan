@@ -13,6 +13,29 @@
 // 7=sync_drained.
 unsigned long long g_gekko_wire_stats[8] = {};
 
+// task #56 follow-up (candidate D): stale-ack-guard visibility. See the
+// GekkoAckGuardStats comment in gekkonet.h for why an invisible guard is the
+// wrong property here. Process-scope like the wire stats above, and reset in
+// the same place, because the guard's condition is about our own local input
+// queue and reads identically for every remote.
+GekkoAckGuardStats g_gekko_ack_guard = {};
+// Wall-clock start of the current reject run. Kept out of the public struct
+// because a raw steady_clock stamp is meaningless across the C boundary --
+// gekko_ack_guard_stats turns it into the rejecting_ms age at read time.
+unsigned long long g_gekko_ack_guard_reject_since_ms = 0;
+
+namespace {
+    // Local clock for AdvantageHistory. MessageSystem::TimeSinceEpoch is a
+    // private member and AdvantageHistory is not a MessageSystem, so this
+    // mirrors it rather than widening that class's interface. Only read on
+    // the guard-rejecting path, so the healthy per-frame Update pays nothing.
+    inline u64 AdvNowMs() {
+        using namespace std::chrono;
+        return (u64)duration_cast<milliseconds>(
+            steady_clock::now().time_since_epoch()).count();
+    }
+}
+
 Gekko::MessageSystem::MessageSystem()
 {
     _num_players = 0;
@@ -33,6 +56,7 @@ void Gekko::MessageSystem::Init(u8 num_players, u32 input_size, u32 history_size
 	_input_size = input_size;
 
     for (int i = 0; i < 8; i++) g_gekko_wire_stats[i] = 0;  // #56 counters
+    g_gekko_ack_guard = GekkoAckGuardStats{};               // candidate D counters
 
     // history_size > 0 enables late-joiner backfill: per-spectator input
     // queue grows up to that many unacked frames so a fresh subscriber
@@ -991,10 +1015,42 @@ void Gekko::MessageSystem::OnInputAck(NetAddress& addr, NetPacket& pkt)
     // 2026-07-19 01:54 -- see project_battle_entry_wedge memory.
     const Frame last_sent = GetLastAddedInput(false);
     if (ack_frame > last_sent) {
+        // REJECT. Candidate D follow-up: what this ack CLAIMS is still
+        // discarded in full -- last_acked_frame is not touched, the remote
+        // advantage sample is not taken, the wedge fix is unchanged. The only
+        // thing added is a record that we rejected, because the rejection is
+        // also (silently) the reason the pacing brake upstream of
+        // gekko_frames_ahead stops getting fresh data. See
+        // AdvantageHistory::Update for what the record is used for.
+        const u64 now = TimeSinceEpoch();
+        g_gekko_ack_guard.rejects_total++;
+        if (g_gekko_ack_guard.reject_streak == 0) {
+            g_gekko_ack_guard_reject_since_ms = now;
+        }
+        g_gekko_ack_guard.reject_streak++;
+        g_gekko_ack_guard.last_reject_ack_frame = (int)ack_frame;
+        g_gekko_ack_guard.last_reject_last_sent = (int)last_sent;
+        for (auto& player : remotes) {
+            if (player->address.Equals(addr)) {
+                player->adv_history.NoteRemoteAdvantageRejected(now);
+            }
+        }
         return;  // acking frames we never sent = stale/foreign packet
     }
+    // Past the guard: this ack is real, so the episode (if any) is over.
+    g_gekko_ack_guard.accepts_total++;
+    g_gekko_ack_guard.reject_streak = 0;
+    g_gekko_ack_guard_reject_since_ms = 0;
+    g_gekko_ack_guard.pacing_neutralised = 0;
     for (auto& player : remotes) {
-        if (player->address.Equals(addr) && player->stats.last_acked_frame < ack_frame) {
+        if (!player->address.Equals(addr)) continue;
+        // Any ack from this peer that PASSED the guard proves the guard is no
+        // longer why the advantage sample is stale -- so stop neutralising
+        // even for a duplicate ack that carries no new frame. The advantage
+        // sample itself is still only taken on a forward ack, exactly as
+        // before.
+        player->adv_history.NoteRemoteAdvantageAccepted();
+        if (player->stats.last_acked_frame < ack_frame) {
             player->stats.last_acked_frame = ack_frame;
             player->adv_history.SetRemoteAdvantage(remote_advantage);
             g_gekko_wire_stats[6]++;  // #56: ack received + matched
@@ -1305,12 +1361,51 @@ void Gekko::AdvantageHistory::Init()
     _remote_frame_adv = 0;
 	std::memset(_local, 0, HISTORY_SIZE * sizeof(i8));
 	std::memset(_remote, 0, HISTORY_SIZE * sizeof(i8));
+	_remote_adv_rejects = 0;
+	_remote_adv_reject_since_ms = 0;
+	_remote_adv_neutralised = false;
 }
 
 void Gekko::AdvantageHistory::Update(Frame frame)
 {
 	const u32 update_frame = std::max(frame, 0);
 	_local[update_frame % HISTORY_SIZE] = _local_frame_adv;
+
+	// ---- candidate D: do not let a guard-rejected peer drive the brake ----
+	//
+	// GetAverageAdvantage() returns (avg_local - avg_remote) / 2 and nothing
+	// else, so the ONLY thing the remote ring contributes to frames_ahead is
+	// its difference from the local ring. When the #56 stale-ack guard has
+	// been rejecting this peer's acks continuously for longer than the
+	// holdoff, _remote_frame_adv is not a measurement any more -- it is
+	// whatever was last true before the guard closed (typically 0, since a
+	// session transition builds a fresh Player and Init() zeroes it), and
+	// stamping it into the ring every frame is what converges the average
+	// onto it and pins the caller's pacing brake for the whole episode.
+	//
+	// So: mirror the local sample instead. Every slot written during the
+	// episode has difference EXACTLY 0, the ring is fully mirrored after
+	// HISTORY_SIZE frames (~260 ms at 100 Hz), and frames_ahead from this
+	// peer is then exactly 0.0 and STAYS there until a real ack lands. There
+	// is no feedback path -- the value written does not depend on how fast we
+	// are running -- so the brake cannot oscillate; it can only ramp
+	// monotonically off and hold. Decaying toward zero instead of toward
+	// local was considered and is WRONG for this failure: local_frame_adv
+	// climbs 1/frame precisely because the peer's inputs are not arriving,
+	// so (avg_local - 0)/2 would pin the brake harder, not release it.
+	//
+	// Recovery is symmetric: the first accepted ack clears the flags, the
+	// ring refills with real differences over the next HISTORY_SIZE frames,
+	// and the brake ramps back in rather than stepping.
+	if (_remote_adv_rejects > 0 &&
+	    AdvNowMs() - _remote_adv_reject_since_ms >= STALE_REMOTE_ADV_HOLDOFF_MS) {
+		if (!_remote_adv_neutralised) {
+			_remote_adv_neutralised = true;
+			g_gekko_ack_guard.episodes_total++;
+		}
+		g_gekko_ack_guard.pacing_neutralised = 1;
+		_remote_frame_adv = _local_frame_adv;
+	}
 	_remote[update_frame % HISTORY_SIZE] = _remote_frame_adv;
 }
 
@@ -1337,5 +1432,20 @@ void Gekko::AdvantageHistory::SetLocalAdvantage(i8 adv) {
 
 void Gekko::AdvantageHistory::SetRemoteAdvantage(i8 adv) {
     _remote_frame_adv = adv;
+}
+
+void Gekko::AdvantageHistory::NoteRemoteAdvantageRejected(u64 now_ms) {
+    if (_remote_adv_rejects == 0) {
+        _remote_adv_reject_since_ms = now_ms;
+    }
+    // Saturate rather than wrap: only the "is it non-zero" and the elapsed
+    // time are ever read, and a wrap to 0 would silently un-neutralise.
+    if (_remote_adv_rejects < 0xFFFFFFFFu) _remote_adv_rejects++;
+}
+
+void Gekko::AdvantageHistory::NoteRemoteAdvantageAccepted() {
+    _remote_adv_rejects = 0;
+    _remote_adv_reject_since_ms = 0;
+    _remote_adv_neutralised = false;
 }
 

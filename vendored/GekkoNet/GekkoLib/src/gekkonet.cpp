@@ -2,6 +2,8 @@
 
 #include "session.h"
 
+#include <chrono>
+
 GEKKONET_API bool gekko_create(GekkoSession** session, GekkoSessionType session_type)
 {
     if (*session) {
@@ -108,6 +110,26 @@ void gekko_wire_stats(unsigned long long out[])
 {
     extern unsigned long long g_gekko_wire_stats[8];
     for (int i = 0; i < 8; i++) out[i] = g_gekko_wire_stats[i];
+}
+
+void gekko_ack_guard_stats(GekkoAckGuardStats* out)
+{
+    if (!out) return;
+    extern GekkoAckGuardStats g_gekko_ack_guard;
+    extern unsigned long long g_gekko_ack_guard_reject_since_ms;
+    *out = g_gekko_ack_guard;
+    // rejecting_ms is derived at read time so the caller never sees a raw
+    // steady_clock stamp it has no epoch for.
+    out->rejecting_ms = 0;
+    if (out->reject_streak > 0 && g_gekko_ack_guard_reject_since_ms != 0) {
+        using namespace std::chrono;
+        const unsigned long long now = (unsigned long long)duration_cast<milliseconds>(
+            steady_clock::now().time_since_epoch()).count();
+        if (now > g_gekko_ack_guard_reject_since_ms) {
+            out->rejecting_ms =
+                (unsigned int)(now - g_gekko_ack_guard_reject_since_ms);
+        }
+    }
 }
 
 void gekko_network_poll(GekkoSession* session)

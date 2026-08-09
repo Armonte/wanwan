@@ -103,7 +103,9 @@ void HandleDesyncDetected(int frame, uint32_t local_chk,
 
     SaveState_DumpDesyncDiagnostic(frame, local_chk, remote_chk,
                                    g_player_index);
-    SaveState_FlushRngTrace(g_player_index, "first desync");
+    // force=true: this is the forensic the ring exists for, and the process
+    // is about to terminate, so the CSV cost is not a mid-match hitch.
+    SaveState_FlushRngTrace(g_player_index, "first desync", /*force=*/true);
 
     // Escape hatch: FM2K_NO_DESYNC_KILL=1 keeps the game running for
     // diagnostic sessions. Off by default.

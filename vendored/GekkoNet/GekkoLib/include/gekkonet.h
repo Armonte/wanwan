@@ -241,6 +241,37 @@ typedef enum GekkoWireStat {
 } GekkoWireStat;
 GEKKONET_API void gekko_wire_stats(unsigned long long out[/*GEKKO_WS_COUNT*/]);
 
+// Local FM2K patch (task #56 follow-up "candidate D"): visibility into the
+// stale-InputAck guard in MessageSystem::OnInputAck. That guard drops any ack
+// covering frames we never sent -- correct, and the fix for the battle-entry
+// wedge -- but it returns BEFORE the remotes loop, which is the only place
+// AdvantageHistory::SetRemoteAdvantage is ever called. So a sustained reject
+// window leaves the remote frame-advantage sample with no fresh input while
+// AdvantageHistory::Update keeps refilling the ring every frame, which feeds
+// gekko_frames_ahead() and therefore the caller's pacing brake. The guard
+// itself was completely uninstrumented (it returns with no counter at all),
+// which is the wrong property for something that can silently pin a frame-rate
+// brake. These counters exist so the host can say so out loud.
+//
+// Scope is per-process, not per-peer: the guard's condition
+// (ack_frame > GetLastAddedInput(false)) is a statement about OUR OWN local
+// input queue and is identical for every remote. Reset at MessageSystem::Init
+// (session create), exactly like the wire stats above.
+typedef struct GekkoAckGuardStats {
+    unsigned long long rejects_total;     // acks dropped by the stale guard
+    unsigned long long accepts_total;     // acks that passed the guard
+    unsigned long long episodes_total;    // reject runs that reached the
+                                          // pacing-neutralise holdoff
+    unsigned int  reject_streak;          // rejects since the last ack that passed
+    unsigned int  rejecting_ms;           // ms since the current run began (0 = not rejecting)
+    int           last_reject_ack_frame;  // the ack frame most recently dropped
+    int           last_reject_last_sent;  // GetLastAddedInput(false) at that moment
+    unsigned char pacing_neutralised;     // 1 while the remote advantage sample is
+                                          // being mirrored from the local one, i.e.
+                                          // this peer contributes 0 to frames_ahead
+} GekkoAckGuardStats;
+GEKKONET_API void gekko_ack_guard_stats(GekkoAckGuardStats* out);
+
 GEKKONET_API void gekko_network_poll(GekkoSession* session);
 
 #ifndef GEKKONET_NO_ASIO

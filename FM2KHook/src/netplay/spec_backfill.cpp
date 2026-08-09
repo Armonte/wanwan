@@ -71,7 +71,8 @@ constexpr size_t BACKFILL_CHUNK_BYTES = 900;
 // preceding history we already shipped via SNAPSHOT_*.
 void SendSessionEventsTo(const sockaddr_in& to,
                          size_t   first_event_idx,
-                         uint32_t start_input_frame) {
+                         uint32_t start_input_frame,
+                         size_t   max_events) {
     // Clamp the backfill at the GLOBAL live-flush cursor, not the vector
     // tip. Live EVENT_BATCH broadcasts resume from last_flushed_event_idx
     // for every fenced subscriber; shipping [cursor..tip) here too sent
@@ -80,18 +81,30 @@ void SendSessionEventsTo(const sockaddr_in& to,
     // diverged at exactly the backfill->live boundary (k=3474,
     // 2026-06-11). The clamped tail reaches the sub via the very next
     // regular FlushBatch instead.
-    const size_t total_events =
+    size_t total_events =
         (g_state.last_flushed_event_idx < g_state.session_events.size())
             ? g_state.last_flushed_event_idx
             : g_state.session_events.size();
     if (first_event_idx >= total_events) return;
 
+    // Bounded window (candidate A1). Applied to the WALK LIMIT only, never to
+    // first_event_idx, so the range still starts exactly where the caller
+    // anchored it and the caller's next pull continues from wherever the
+    // viewer's cursor reached. Zero = unbounded, which is every pre-existing
+    // caller (bind-path backfills are one-shot per bind and already floored).
+    const size_t full_total = total_events;
+    if (max_events != 0 && total_events - first_event_idx > max_events) {
+        total_events = first_event_idx + max_events;
+    }
+
     char addr_buf[48] = {};
     FormatAddr(to, addr_buf, sizeof(addr_buf));
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "SpectatorNode: streaming events [%zu..%zu) (%u INPUTs total in session) "
+                "SpectatorNode: streaming events [%zu..%zu)%s (%u INPUTs total in session) "
                 "to %s, anchor INPUT-frame=%u",
-                first_event_idx, total_events, g_state.total_input_count,
+                first_event_idx, total_events,
+                (total_events < full_total) ? " WINDOWED (more on next pull)" : "",
+                g_state.total_input_count,
                 addr_buf, start_input_frame);
 
     // Walk session_events, packing into chunks bounded by BACKFILL_CHUNK_BYTES.
@@ -104,8 +117,25 @@ void SendSessionEventsTo(const sockaddr_in& to,
     // session events (append order), advanced for every op walked --
     // including the never-happens unencodable skip -- so backfill numbering
     // matches FlushBatch's total_op_count-derived numbering exactly.
+    //
+    // Resumed from the CSS anchor rather than recounted from 0 (candidate
+    // A1). css_anchor_op_count is the op prefix AT css_anchor_event_idx,
+    // stamped O(1) from the single op choke point (AppendOpAndFlush) in the
+    // same block as the event index and the input frame, so the pair is
+    // consistent by construction. Only usable when the anchor is at or below
+    // where we start; otherwise fall back to the full prefix scan. This is a
+    // pure scan-start optimisation -- the value computed is identical either
+    // way, and getting it wrong would misnumber ops for the viewer, so the
+    // fallback is deliberately the unconditional default.
     uint32_t op_cursor = 0;
-    for (size_t i = 0; i < first_event_idx; ++i) {
+    size_t   op_scan_from = 0;
+    if (g_state.have_css_anchor &&
+        g_state.css_anchor_event_idx <= first_event_idx &&
+        g_state.css_anchor_event_idx <= g_state.session_events.size()) {
+        op_cursor    = g_state.css_anchor_op_count;
+        op_scan_from = g_state.css_anchor_event_idx;
+    }
+    for (size_t i = op_scan_from; i < first_event_idx; ++i) {
         if (g_state.session_events[i].type != SessionEventType::INPUT) ++op_cursor;
     }
 
@@ -309,8 +339,32 @@ void SendSessionBackfillFromRecentAnchor(const sockaddr_in& to) {
 size_t BackfillFirstIdxForFrame(uint32_t anchor_input_frame) {
     const size_t total = g_state.session_events.size();
     uint32_t cursor = g_state.session_start_frame;
+    size_t   scan_from = 0;
+    // Resume from the CSS anchor instead of walking the whole session
+    // (candidate A1). session_events is never trimmed, so a 20-minute set is
+    // ~120k entries and the gap-fill path used to re-walk all of them on
+    // EVERY pull, twice. The anchor pair (event idx, INPUT-frame at that idx)
+    // is maintained O(1) at the op choke point; using it as a scan START is
+    // safe whenever the requested anchor is at or after it, because every
+    // INPUT below css_anchor_input_frame is by definition below the request
+    // too. Below the anchor we still scan from 0 -- correctness first.
+    //
+    // session_start_frame == 0 is part of the hint's arithmetic:
+    // css_anchor_input_frame is a total_input_count snapshot, so equating it
+    // with the loop cursor holds only while session_events[0] is INPUT-frame
+    // 0. That is the documented invariant ("always 0 unless we ever drop
+    // history") and SendSessionBackfillFromRecentAnchor already depends on
+    // it; testing it here means the hint degrades to the old full scan
+    // instead of shipping the wrong range if history trimming ever lands.
+    if (g_state.have_css_anchor &&
+        g_state.session_start_frame == 0 &&
+        g_state.css_anchor_event_idx <= total &&
+        anchor_input_frame >= g_state.css_anchor_input_frame) {
+        scan_from = g_state.css_anchor_event_idx;
+        cursor    = g_state.css_anchor_input_frame;
+    }
     size_t   first_idx = total;   // sentinel: nothing matched
-    for (size_t i = 0; i < total; ++i) {
+    for (size_t i = scan_from; i < total; ++i) {
         const SessionEvent& ev = g_state.session_events[i];
         if (ev.type == SessionEventType::INPUT) {
             if (cursor >= anchor_input_frame) {
@@ -336,7 +390,8 @@ size_t BackfillFirstIdxForFrame(uint32_t anchor_input_frame) {
 }
 
 void SendSessionBackfillFromFrame(const sockaddr_in& to,
-                                  uint32_t anchor_input_frame) {
+                                  uint32_t anchor_input_frame,
+                                  size_t   max_events) {
     const size_t total = g_state.session_events.size();
     if (total == 0) return;
 
@@ -349,7 +404,7 @@ void SendSessionBackfillFromFrame(const sockaddr_in& to,
         return;
     }
 
-    SendSessionEventsTo(to, first_idx, anchor_input_frame);
+    SendSessionEventsTo(to, first_idx, anchor_input_frame, max_events);
 }
 
 // Phase 3: ship the cached SaveState blob to a single subscriber as a

@@ -43,8 +43,28 @@ namespace Gekko {
 
 		void SetRemoteAdvantage(i8 adv);
 
+		// task #56 follow-up (candidate D). The stale-ack guard in
+		// OnInputAck returns before SetRemoteAdvantage can run, so a
+		// sustained reject window leaves _remote_frame_adv with no fresh
+		// sample while Update() keeps stamping it into the ring at 100 Hz.
+		// These two record that the guard -- not the network -- is why the
+		// sample is not moving, so Update can stop feeding the pacing brake
+		// a number that no longer means anything. NOT a change to what the
+		// guard rejects: the ack is dropped exactly as before.
+		void NoteRemoteAdvantageRejected(u64 now_ms);
+
+		void NoteRemoteAdvantageAccepted();
+
 	private:
 		static const i32 HISTORY_SIZE = 26;
+
+		// How long the guard must reject CONTINUOUSLY before Update stops
+		// trusting the frozen remote sample. Deliberately longer than any
+		// healthy ack gap (acks ride every drained input frame, ~10 ms) and
+		// shorter than a user-visible frame-rate sag, so the legitimate
+		// few-hundred-ms session-transition skew the #56 guard was built for
+		// mostly passes underneath it.
+		static const u64 STALE_REMOTE_ADV_HOLDOFF_MS = 250;
 
         i8 _local_frame_adv;
 
@@ -53,6 +73,17 @@ namespace Gekko {
 		i8 _local[HISTORY_SIZE];
 
 		i8 _remote[HISTORY_SIZE];
+
+		// Rejects since the last ack from this peer that passed the guard,
+		// and the timestamp of the first reject in that run. Both zero in
+		// steady state -- every accepted ack clears them -- which is what
+		// makes the neutralise branch in Update unreachable on a healthy
+		// link rather than merely unlikely.
+		u32 _remote_adv_rejects;
+
+		u64 _remote_adv_reject_since_ms;
+
+		bool _remote_adv_neutralised;
 	};
 
 	class Player

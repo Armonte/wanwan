@@ -67,6 +67,12 @@ bool Netplay_StartBattle() {
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Netplay: Starting battle GekkoSession");
 
+    // rngtrace is a PER-MATCH ring. Netplay_EndBattle clears it on the normal
+    // path; this covers the abnormal ones (a battle that never reached
+    // EndBattle), so the invariant "the ring holds this match and nothing
+    // else" holds regardless of how the previous one finished.
+    SaveState_ResetRngTrace();
+
     // Capture per-match character IDs + resolved .player filenames
     // while the CSS-side state is still live. Held in shared mem so
     // the launcher can include them in the hub `match_result` payload

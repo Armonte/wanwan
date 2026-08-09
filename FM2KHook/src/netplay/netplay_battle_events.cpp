@@ -666,8 +666,11 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
                 "Harness: .fm2krep slice %s -> %s",
                 wrote ? "written" : "WRITE FAILED",
                 wrote ? ts : "(no MATCH_START in session_events?)");
+            // force=true: TerminateProcess is three statements away, so the
+            // gate that keeps the dump off a live match end does not apply,
+            // and the harness expects the CSV to exist.
             SaveState_FlushRngTrace(g_player_index,
-                "harness auto-terminate");
+                "harness auto-terminate", /*force=*/true);
             // Flush parity recorder -- fopen("wb") is fully
             // buffered and TerminateProcess kills the stdio
             // buffer without writing. Without this the

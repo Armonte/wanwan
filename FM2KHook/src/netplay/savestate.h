@@ -351,4 +351,11 @@ void SaveState_DumpDesyncDiagnostic(int frame, uint32_t local_crc, uint32_t remo
 // Per-save rngtrace. Fixed-size in-memory ring, written to CSV on demand.
 // Per-frame console logging was too noisy and tanked framerate at 100 fps.
 void SaveState_PushRngTrace(int frame, uint32_t rng, uint32_t fp);
-void SaveState_FlushRngTrace(int player_index, const char* reason);
+// Emits a one-line summary always; writes the ~1.4 MB CSV only when
+// FM2K_RNGTRACE is set or force=true (desync handler / harness terminator,
+// both of which are already killing the process). ALWAYS clears the ring --
+// every caller is a match boundary, and carrying entries across matches is
+// what made the dump grow through a set. force defaults to false so the
+// routine per-match call is the cheap one by default.
+void SaveState_FlushRngTrace(int player_index, const char* reason, bool force = false);
+void SaveState_ResetRngTrace();

@@ -157,6 +157,12 @@ void SpectatorNode_OnMatchEnd(const MatchEndPayload& p) {
 namespace {
 
 void AppendOpAndFlush(const SessionEvent& ev) {
+    // Ops already in session_events, i.e. the op prefix count at the index
+    // this event is about to occupy. Captured BEFORE the ++ below and before
+    // the push_back, so it never includes this event itself -- which is
+    // exactly the meaning of SendSessionEventsTo's op_cursor prefix. Only
+    // consumed by the CSS-anchor stamp further down.
+    const uint32_t ops_before_this = g_state.total_op_count;
     // Phase F: single choke point for non-INPUT appends -- the running op
     // count ships as op_seq in UDP_INPUT_BATCH so viewers can order
     // inputs after ops (see admission invariant in spectator_node.h).
@@ -183,6 +189,10 @@ void AppendOpAndFlush(const SessionEvent& ev) {
         g_state.have_css_anchor        = true;
         g_state.css_anchor_event_idx   = g_state.session_events.size();
         g_state.css_anchor_input_frame = g_state.total_input_count;
+        // Third leg of the same O(1) stamp: the op prefix at that index.
+        // Lets the backfill senders resume their op-cursor scan here instead
+        // of recounting from 0 on every gap-fill pull (candidate A1).
+        g_state.css_anchor_op_count    = ops_before_this;
     } else if (ev.type == SessionEventType::MATCH_END) {
         g_state.have_prior_match = true;   // a set is now in progress
     }

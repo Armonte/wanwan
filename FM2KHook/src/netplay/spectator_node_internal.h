@@ -134,6 +134,24 @@ constexpr uint64_t SPECTATOR_SNAPSHOT_RESHIP_MS = 6000;
 // bounds the pull rate while the host re-ships the (idempotent) range.
 constexpr uint64_t SPECTATOR_GAP_FILL_STALL_MS     = 250;    // stall before pull
 constexpr uint64_t SPECTATOR_GAP_FILL_THROTTLE_MS  = 500;    // min between pulls
+// HOST-side floor + window for answering those pulls (candidate A1). The two
+// constants above are the VIEWER's cadence, and until now they were the only
+// thing bounding the host's work: every pull re-encoded [cursor .. live edge)
+// with no floor of its own, on the worker thread under g_poll_mutex, and the
+// trigger condition IS a stuck cursor -- so the re-shipped range grew by 100
+// events/s for as long as the stall lasted, on a session_events vector that is
+// never trimmed. Two bounds, both necessary:
+//   * a floor, so a 500 ms viewer cadence cannot set the host's work rate; and
+//   * a window, so the cost per pull is O(window) instead of O(session).
+// The window still ADVANCES every pull -- the viewer admits what it gets, its
+// cursor moves, and its next pull asks from there -- so a legitimately-behind
+// viewer closes the gap at ~2000 events/s against ~100 events/s of live
+// production. It is bounded work per pull, not a bounded total.
+// Distinct from SPECTATOR_SNAPSHOT_RESHIP_MS above: that floors SNAPSHOT
+// re-ships from the bind path; this floors EVENT re-ships from the gap-fill
+// path, which the bind path never reaches.
+constexpr uint64_t SPECTATOR_GAP_FILL_HOST_FLOOR_MS = 1000;
+constexpr size_t   SPECTATOR_GAP_FILL_MAX_EVENTS    = 2048;
 // ---- mid-stream starve escalation ------------------------------------------
 // The gap-fill pull is SURGICAL and cannot heal a TRANSPORT wedge: the host
 // answers it over the same reliable endpoint, explicitly without resetting
@@ -274,6 +292,15 @@ struct Subscriber {
     // SPECTATOR_DEEPJOIN_REPLY_FLOOR_MS, so a starved viewer's 1.5 s request
     // cadence can never turn into a host-side re-ship storm.
     uint64_t     deep_join_last_reply_ms = 0;
+
+    // Gap-fill EVENT re-ship floor (candidate A1). Last time this sub was
+    // actually answered on the surgical gap-fill path, and how many pulls
+    // have been suppressed since. The count is REPORTED on the next real
+    // ship rather than logged per suppression -- hook-side logging is a
+    // synchronous fputs+fflush on the calling thread, so a per-pull line on
+    // a path that fires twice a second is itself a frame-thread cost.
+    uint64_t     last_gapfill_ship_ms   = 0;
+    uint32_t     gapfill_suppressed     = 0;
 };
 
 // Cached initial-match metadata so new joiners get a consistent handoff.
@@ -346,6 +373,14 @@ struct State {
     bool                      have_css_anchor         = false;
     size_t                    css_anchor_event_idx    = 0;
     uint32_t                  css_anchor_input_frame  = 0;
+    // Op prefix at css_anchor_event_idx: the number of non-INPUT events
+    // STRICTLY BELOW that index. Stamped from the same O(1) choke point as
+    // the two above (AppendOpAndFlush, captured BEFORE its ++total_op_count
+    // and before the push_back, so it counts exactly the ops already in the
+    // vector). This is the third leg that lets the backfill senders resume
+    // BOTH of their linear scans -- the event scan and the op-cursor prefix
+    // scan -- from the anchor instead of from index 0 (candidate A1).
+    uint32_t                  css_anchor_op_count     = 0;
     // Gate for the above: only bound the backfill once a match has actually
     // ENDED. Before that the session is still its first char-select plus its
     // first battle -- there is no prior match to skip, and anchoring on the
@@ -893,9 +928,14 @@ void     ApplySessionEvent(const SessionEvent& ev);
 
 // ---- backfill (spec_backfill.cpp) ----
 size_t   BackfillFirstIdxForFrame(uint32_t anchor_input_frame);
-void     SendSessionEventsTo(const sockaddr_in& to, size_t first_event_idx, uint32_t start_input_frame);
+// max_events == 0 means "to the live edge" (every pre-existing caller). A
+// non-zero cap ships at most that many session events and stops -- used by the
+// gap-fill re-ship, whose caller pulls again for the next window.
+void     SendSessionEventsTo(const sockaddr_in& to, size_t first_event_idx,
+                             uint32_t start_input_frame, size_t max_events = 0);
 void     SendSessionBackfillTo(const sockaddr_in& to);
-void     SendSessionBackfillFromFrame(const sockaddr_in& to, uint32_t anchor_input_frame);
+void     SendSessionBackfillFromFrame(const sockaddr_in& to, uint32_t anchor_input_frame,
+                                      size_t max_events = 0);
 // Design 2: bounded backfill from the most recent CSS_ENTERED (falls back to
 // SendSessionBackfillTo when the session has no char-select boundary yet).
 // HaveBoundedAnchor() reports whether that fallback would trigger, so callers

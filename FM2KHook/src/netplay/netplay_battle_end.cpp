@@ -272,8 +272,12 @@ void Netplay_EndBattle() {
     // changes between matches).
     SoundRollback::OnBattleEnd();
 
-    // Flush the rngtrace ring on clean battle exit too, so a desync-free
-    // round still produces a trace to diff against a future desync run.
+    // Match boundary for the rngtrace ring. Emits the one-line count summary
+    // always and CLEARS the ring, so the next match starts empty; the ~1.4 MB
+    // CSV itself is written only under FM2K_RNGTRACE. Before this, every match
+    // end wrote up to 60000 fprintf lines on the game thread, from a ring that
+    // was never cleared -- so the tail got longer with every match of a set,
+    // on top of the up-to-600ms confirmed-input drain immediately above.
     SaveState_FlushRngTrace(g_player_index, "battle end");
 
     g_session_ready = false;

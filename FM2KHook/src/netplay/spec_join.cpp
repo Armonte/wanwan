@@ -373,18 +373,59 @@ void SpectatorNode_HandleJoinReq(const sockaddr_in& from, SpecJoinMode mode,
             const bool reliable_path_up =
                 SpectatorTCP::HasLiveConnFor(sub.addr) ||
                 (SpecRcSnapshotEnabled() && sub.tcp_bound);
+            //
+            // HOST-SIDE FLOOR + WINDOW (candidate A1). This branch had
+            // NEITHER, and it sits ABOVE the 3s destructive-reset floor
+            // below, so it was the one re-ship path whose rate was set
+            // entirely by the viewer (250ms stall / 500ms throttle) and whose
+            // cost was O(session_events) -- a vector that is never trimmed
+            // and grows one INPUT per confirmed frame. Worse, the trigger IS
+            // a stuck cursor, so resume_frame does not advance while the live
+            // edge does: every pull re-encoded a LONGER range than the last,
+            // on the MM-timer worker thread holding g_poll_mutex, which the
+            // game main thread takes blocking on every gekko receive. That is
+            // an episode that gets worse the longer the session has run.
+            //
+            // The floor is 1s against the viewer's 500ms pull cadence, so at
+            // worst the host answers every other pull. It stays well under
+            // the starve-escalation rungs (4s), so a viewer whose pulls are
+            // genuinely not helping still escalates to the full re-JOIN on
+            // schedule.
             if (resume_frame > 0 && sub.tcp_bound &&
                 !g_state.spec_transport_relay &&
                 reliable_path_up) {
-                sub.last_seen_ms = GetTickCount64();
+                const uint64_t gf_now = GetTickCount64();
+                if (sub.last_gapfill_ship_ms != 0 &&
+                    gf_now - sub.last_gapfill_ship_ms <
+                        SPECTATOR_GAP_FILL_HOST_FLOOR_MS) {
+                    // Suppressed. Still ACK -- the viewer must not read this
+                    // as an unreachable host and escalate early -- but ship
+                    // nothing and log nothing. The count rides out on the
+                    // next real ship instead (synchronous logging: a line
+                    // here would fire twice a second per stalled viewer).
+                    ++sub.gapfill_suppressed;
+                    sub.last_seen_ms = gf_now;
+                    sub.udp_ok       = udp_ok;
+                    CtrlPacket ack = BuildJoinAckPacket();  // live: no re-pin
+                    ControlChannel_SendTo(ack, sub.addr);
+                    return;
+                }
+                sub.last_seen_ms = gf_now;
                 sub.udp_ok       = udp_ok;
                 CtrlPacket ack = BuildJoinAckPacket();  // live: no re-pin
                 ControlChannel_SendTo(ack, sub.addr);
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "SpectatorNode: gap-fill for %s from INPUT-frame=%u "
-                    "(live conn -- reliable re-ship, no reset)",
-                    addr_buf, resume_frame);
-                SendSessionBackfillFromFrame(sub.addr, resume_frame);
+                    "(live conn -- reliable re-ship, no reset; window<=%zu "
+                    "events, %u pull(s) suppressed by the %llums floor since "
+                    "the last ship)",
+                    addr_buf, resume_frame, SPECTATOR_GAP_FILL_MAX_EVENTS,
+                    sub.gapfill_suppressed,
+                    (unsigned long long)SPECTATOR_GAP_FILL_HOST_FLOOR_MS);
+                sub.last_gapfill_ship_ms = gf_now;
+                sub.gapfill_suppressed   = 0;
+                SendSessionBackfillFromFrame(sub.addr, resume_frame,
+                                             SPECTATOR_GAP_FILL_MAX_EVENTS);
                 return;
             }
             // Destructive-reset rate limit (task #55): floor full

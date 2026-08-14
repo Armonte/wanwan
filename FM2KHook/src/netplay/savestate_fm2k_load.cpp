@@ -3,6 +3,7 @@
 #include "savestate.h"
 #include "savestate_internal.h"
 #include "globals.h"
+#include "seam_trace.h"       // Phase 1bc: [SEAM] marker + FM2K_SEAM_GUARD kill-switch (diagnostic)
 #include "../hooks/hooks.h"   // IsBattleMode + RoundEvents_LiveSubstate / Fm2k_ClearAfterimageIndices (task #53) / Fm2k_{Neutralize,Check}... (match-end seam)
 #include <SDL3/SDL_log.h>
 #include <cstring>
@@ -607,29 +608,66 @@ bool SaveState_Load(int frame) {
         Fm2k_ClearAfterimageIndices();
     }
 
-    // Match-end script-VM guard. The primary fix is sim-side (round_events.cpp,
-    // `post >= RSS_MATCH_COMPLETE`), which is what makes both peers and every
-    // resim agree; this is the restore-side backstop for the one case that
-    // cannot reach it: a rollback that lands BEFORE the 902 edge while the live
-    // process has already torn the battle down. Such a restore resurrects live
-    // type-4 objects holding battle-era cursors into blobs the CSS entry has
-    // already GlobalFree'd (or replaced with a smaller one for a different
-    // character), and the very next resim tick would fetch an opcode through
-    // them at 0x4125FC.
+    // Match-end script-VM seam. THE BLANKET PARK THAT USED TO LIVE HERE IS
+    // DELETED. It was the cause of the match-end-seam player DESYNC that
+    // 967f89f introduced; the campaign record is
+    // /home/teo/specrel-2026-08-07/ (seam_fix_plan.md, seam_p1c_confirmation.md
+    // for the confirmed mechanism, seam_p2a_design.md for the free timeline,
+    // seam_p2b_adversarial.md for the review that made this the whole fix).
     //
-    // Determinism note, stated plainly: a rollback whose restored frames were
-    // originally simulated BEFORE the heap was freed can never be bit-identical
-    // to that original pass -- SaveState_Load cannot un-GlobalFree memory, so
-    // that window is already outside the deterministic contract regardless of
-    // what we do here (this is the same trade v0.2.81 made for the afterimage
-    // pool). For every restore at or after the 902 edge -- the overwhelmingly
-    // common case, because Fm2k_Neutralize... ran inside the tick that produced
-    // those savestates -- the call below is a pure identity write and changes
-    // nothing. The window it can perturb is bounded by the battle-end swap
-    // frame, a handful of frames later, after which the session is destroyed.
+    // WHY IT WAS WRONG, in one chain:
+    //   * The park's gate, crossing_teardown, is a function of THIS peer's
+    //     rollback schedule, so the two peers park over different frame
+    //     ranges. A parked type-4 VM returns at 0x411C3F before the HP writes
+    //     and before 2 of the 12 game_rand sites, so every resim frame after
+    //     the park draws NO rng -- 0x41FB1C freezes at each peer's own
+    //     restored value, those resim saves become that peer's final
+    //     per-frame gameplay_fingerprint, and gekko mismatches. Measured
+    //     3/3 with the park, 0/2 without, at 230ms/50j/0.20 loss.
+    //   * The write is self-propagating and permanent: it lands AFTER the
+    //     object-pool memcpy, so the resim re-saves bake init_state == 2 into
+    //     every reachable snapshot, and character_state_machine has no 2 -> 1
+    //     transition. One crossing poisons the rest of the session.
+    //   * And it was protecting nothing in any reachable configuration.
+    //     Netplay hard-zeroes BOTH players' inputs whenever the live mode is
+    //     not battle (hooks_getinput.cpp:671-672, on forward passes and on
+    //     every resim), so g_processed_input @ 0x447F40 is 0 for the whole
+    //     crossing window, the CSS cursor globals cannot move, the engine
+    //     re-requests the character already resident, and
+    //     player_data_file_loader @ 0x4039F0 early-returns on
+    //     g_slot_loaded_char_idx @ 0x4CF9E0 (0x403A27) without reaching
+    //     ClearCharacterSlot. No GlobalFree is reachable in the window, so
+    //     the blobs the restored cursors index are alive, so the AV the park
+    //     existed for cannot occur here.
+    //
+    // WHAT STILL PROTECTS THE AV (967f89f's actual fix, untouched):
+    //   * the SIM-side park at post >= 902 in round_events.cpp -- deterministic
+    //     by construction (same write, same logical frame, both peers, forward
+    //     passes and resims alike), which is exactly what this site was not;
+    //   * the pointer PRESERVE above, which can never install a freed pointer
+    //     because ClearCharacterSlot memory_clear's the slot (so the only
+    //     tick-boundary state is nullptr, not a dangling pointer);
+    //   * the [ENDSEAM-OOB] probe, still evaluated HERE as well as at the sim
+    //     edge. Keeping this evaluation point is deliberate: it is now the AV
+    //     detector of record for precisely the window the deleted park used to
+    //     cover, and dropping it would silently shrink what "0 [ENDSEAM-OOB]"
+    //     measures relative to 967f89f's original stressor proof.
+    //
+    // The [SEAM] marker stays too, as a PURE OBSERVATION -- it still reports
+    // that a run entered the hazard, which is the harness contract a green run
+    // needs in order to mean anything.
+    //
+    // FM2K_SEAM_LEGACY_PARK=1 restores the deleted park. DIAGNOSTIC A/B LEVER
+    // ONLY, default OFF; it reinstates the desync on purpose. See seam_trace.cpp.
     if (crossing_teardown) {
         Fm2k_CheckEndSeamScriptCursors("load-teardown");
-        Fm2k_NeutralizeMatchEndScriptObjects();
+        const bool legacy_park = SeamGuard_LegacyLoadParkEnabled();
+        const int parkable = Fm2k_CountParkableScriptObjects();
+        SeamTrace_OnCrossingTeardown(frame, live_game_mode_pre, snap_game_mode,
+                                     parkable, g_is_rolling_back, legacy_park);
+        if (legacy_park) {
+            Fm2k_NeutralizeMatchEndScriptObjects();
+        }
     }
 
     return true;

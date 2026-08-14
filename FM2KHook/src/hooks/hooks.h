@@ -103,5 +103,7 @@ void Fm2k_ClearAfterimageIndices();
 // returns 0 on a freed handle, so one probe catches dangling AND shrunk).
 void Fm2k_NeutralizeMatchEndScriptObjects();
 void Fm2k_CheckEndSeamScriptCursors(const char* where);
+// DIAGNOSTIC (Phase 1bc): slots the neutralize would change, read-only.
+int  Fm2k_CountParkableScriptObjects();
 
 #endif // HOOKS_H

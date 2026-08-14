@@ -3,6 +3,7 @@
 #include "savestate.h"
 #include "savestate_internal.h"
 #include "globals.h"
+#include "seam_trace.h"   // Phase 1bc per-save fingerprint ring (diagnostic)
 #include <SDL3/SDL_log.h>
 #include <cstring>
 #include <cstdio>
@@ -593,6 +594,13 @@ bool SaveState_Save(int frame) {
         g_replay_saves[slot].frame_number = -1;
         g_replay_saves[slot].valid        = false;
     }
+
+    // Phase 1bc seam ring (DIAGNOSTIC, FM2K_SEAM_TRACE=1, memory only).
+    // Deliberately records EVERY save, forward and resim, in append order --
+    // the whole question is whether a resim re-save reproduces its forward
+    // save, which a dedupe-by-frame ring would erase. Written to a file only
+    // from HandleDesyncDetected.
+    SeamTrace_PushSave(frame, is_replay_save, g_is_rolling_back);
 
     // Per-save logging.
     //   First 10 frames: verbose (combined + fingerprint + rng + buf_idx).

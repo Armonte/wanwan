@@ -10,6 +10,7 @@
 #include "game_hash.h"
 #include "input.h"
 #include "savestate.h"
+#include "seam_trace.h"   // Phase 1bc seam instruments (diagnostic)
 #include "spectator_node.h"
 #include "nat_traversal.h"
 #include "upload_queue.h"
@@ -106,6 +107,10 @@ void HandleDesyncDetected(int frame, uint32_t local_chk,
     // force=true: this is the forensic the ring exists for, and the process
     // is about to terminate, so the CSV cost is not a mid-match hitch.
     SaveState_FlushRngTrace(g_player_index, "first desync", /*force=*/true);
+    // Phase 1bc (DIAGNOSTIC): [SEAM] episode list + per-save fingerprint ring.
+    // Always emits its one-line counts summary; writes the CSV only when the
+    // ring was armed (FM2K_SEAM_TRACE=1) or a crossing actually happened.
+    SeamTrace_Dump(g_player_index, "first desync");
 
     // Escape hatch: FM2K_NO_DESYNC_KILL=1 keeps the game running for
     // diagnostic sessions. Off by default.

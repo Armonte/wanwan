@@ -45,6 +45,7 @@ set(FM2KHOOK_SOURCES
     src/hooks/input.cpp
     src/hooks/game_patches.cpp
     src/hooks/round_events.cpp
+    src/hooks/seam_free_probe.cpp        # [ENDSEAM-FREE] ClearCharacterSlot telemetry (counts only)
     src/hooks/css_autoconfirm.cpp
     src/hooks/css_fastsound.cpp
     src/hooks/per_game_patches.cpp        # FM2K: damage/kof + input/mode toggles (#if !ENGINE_FM95)
@@ -82,6 +83,7 @@ set(FM2KHOOK_SOURCES
     src/netplay/savestate_fm2k_save.cpp # FM2K SaveState_Save + save profiler (#if !ENGINE_FM95)
     src/netplay/savestate_fm2k_load.cpp # FM2K SaveState_Load (#if !ENGINE_FM95)
     src/netplay/savestate_fm2k_diag.cpp # FM2K snapshot/checksum/desync-diag (#if !ENGINE_FM95)
+    src/netplay/seam_trace.cpp          # DIAGNOSTIC match-end-seam instruments + FM2K_SEAM_LEGACY_PARK A/B lever (dark by default)
     src/netplay/spectator_node.cpp
     src/netplay/spec_wire.cpp  # SessionEvent wire codecs + zero-RLE (split from spectator_node)
     src/netplay/spec_transport.cpp  # UDP/TCP/relay send + EVENT_BATCH flush (split from spectator_node)

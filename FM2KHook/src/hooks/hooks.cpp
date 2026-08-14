@@ -3,6 +3,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "round_events.h"     // C3.5 -- vs_round_function detour install
+#include "seam_free_probe.h"  // [ENDSEAM-FREE] ClearCharacterSlot telemetry
 #include "css_autoconfirm.h"  // CSS lock-and-confirm for offline replay playback
 #include "css_fastsound.h"    // FM2K_FPK_CSS_FASTSOUND: lazy DSound buffers (CSS dip fix)
 #include "per_game_patches.h" // damage multiplier MinHook + team-size override
@@ -343,6 +344,12 @@ bool InitializeHooks() {
             "Hooks: RoundEvents_Install failed -- round events will be missing "
             "from session_events / .fm2krep round_offsets");
     }
+
+    // [ENDSEAM-FREE] telemetry on ClearCharacterSlot @ 0x4039B0. Behaviour is
+    // unchanged either way (it counts and tail-calls the original); its own
+    // installer logs loudly on failure because a silently-absent probe reports
+    // "0 in-window frees" for the wrong reason. See seam_free_probe.h.
+    SeamFreeProbe_Install();
 
     // CSS auto-lock-and-confirm -- installs idle, only activates when
     // SpectatorNode's MATCH_START apply path arms it for offline replay

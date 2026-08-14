@@ -23,6 +23,8 @@
 #include "spectator_node.h"
 #include "globals.h"            // FM2K::ADDR_*, FM2K::kIsFM95, original_*, g_sim_step_count
 #include "gekkonet.h"
+#include "seam_trace.h"         // SeamTrace_Dump on the harness auto-terminate path
+#include "../hooks/seam_free_probe.h"   // [ENDSEAM-FREE] per-tick window sampling
 #include "../parity/parity_recorder.h"  // ParityRecorder::Capture/Close
 #include "../parity/parity_pool.h"      // player-slot resolution + pool-topology fencepost term
 #include <SDL3/SDL_log.h>
@@ -312,6 +314,15 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
     // 11's input (000,006) absent from the file, two confirmed
     // advances both labeled f=10.
     g_netplay_frame = (uint32_t)update->data.adv.frame;
+
+    // [ENDSEAM-FREE] window sampling (telemetry only, counters, no logging).
+    // This site rather than Hook_UpdateGameState: in netplay the trampoline
+    // calls original_update_game directly, so the update hook is NOT the
+    // per-tick point and a sampler placed there records literally nothing
+    // (measured: window_ticks=0). Every tick of the window -- which runs from
+    // the 902 edge to Netplay_EndBattle -- is an advance event of the live
+    // battle session, so this is the tick point that actually exists.
+    SeamFreeProbe_OnTick();
 
     // Record the pre-sim frame for the Mike Z sound sync window.
     // `g_netplay_frame` here is the frame we're about to *produce*;
@@ -671,6 +682,14 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
             // and the harness expects the CSV to exist.
             SaveState_FlushRngTrace(g_player_index,
                 "harness auto-terminate", /*force=*/true);
+            // Seam ring + seam-window buffer. A GREEN run must produce this
+            // file or the offline bit-exact-resim check
+            // (tools/seam_ring_check.py) has nothing to check and reads green
+            // for the wrong reason. Legal here for the same reason the rngtrace
+            // force-flush is: TerminateProcess is a few statements away, so the
+            // fprintf cost cannot hitch a live match. NEVER add this to a
+            // normal exit path.
+            SeamTrace_Dump(g_player_index, "harness auto-terminate");
             // Flush parity recorder -- fopen("wb") is fully
             // buffered and TerminateProcess kills the stdio
             // buffer without writing. Without this the

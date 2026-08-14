@@ -4,6 +4,7 @@
 #include "netplay_internal.h"  // shared file-scope state, externed for the split netplay_*.cpp TUs
 #include "../hooks/hooks.h"   // Hook_ApplySOCD_Public for SOCD-pre-apply on spec capture
 #include "../hooks/css_autoconfirm.h"  // CssAutoConfirm_OnReplayMatchStart (TEST_CSS_CHAR pin)
+#include "../hooks/seam_free_probe.h"  // [ENDSEAM-FREE] window close at the swap point
 #include "control_channel.h"
 #include "game_hash.h"
 #include <algorithm>   // std::max for the rounds-cache merge (#63 lineage)
@@ -45,6 +46,10 @@ void Netplay_EndBattle() {
     if constexpr (FM2K::kIsFM2K) {
         Fm2k_ClearAfterimageIndices();
     }
+    // [ENDSEAM-FREE] window closes here: the battle-end swap point is the last
+    // moment any SaveState_Load can reach a pre-902 frame, so a free after it
+    // cannot be crossed by a rollback. Telemetry only.
+    SeamFreeProbe_CloseWindow();
     // Capture match outcome BEFORE we destroy the session -- reading HP
     // at this point reflects the final state of the just-ended battle.
     // Outcome is from the local player's perspective; the launcher

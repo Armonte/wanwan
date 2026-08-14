@@ -23,6 +23,7 @@
 #include "../netplay/netplay.h"        // Netplay_MatchSettingsDigest / HostConfigRxCount
 #include "../netplay/spectator_node.h" // SpectatorNode_AppendRound{Start,End}
 #include "per_game_patches.h"          // PerGamePatches_OnBattleInitComplete
+#include "seam_free_probe.h"           // [ENDSEAM-FREE] window latch (telemetry)
 
 // SOCD mode accessor (defined in hooks_input.cpp). Declared here rather than
 // pulled from a header for the same reason netplay.cpp declares it locally --
@@ -301,6 +302,22 @@ void Fm2k_CheckEndSeamScriptCursors(const char* where) {
 // Secondary benefits over the demote: the objects keep their sprite fields so
 // the results transition still draws them (a demote makes them vanish a frame
 // early), and nothing else in the engine reads +0x152 on a type-4 slot.
+// Phase 1bc instrument (DIAGNOSTIC): how many slots the neutralize below WOULD
+// change, computed before it runs. 0 = the call is a pure identity write, > 0 =
+// this restore is about to park VMs the snapshot had unparked. Read-only, same
+// walk shape as the neutralize itself.
+int Fm2k_CountParkableScriptObjects() {
+    const uint8_t* pool = (const uint8_t*)ADDR_OBJECT_POOL_RND;
+    int n = 0;
+    for (size_t i = 0; i < OBJ_COUNT_RND; ++i) {
+        const uint8_t* obj = pool + i * OBJ_STRIDE_RND;
+        if (*(const int*)(obj + OFF_OBJ_TYPE) != OBJ_TYPE_SCRIPT_VM) continue;
+        const int st = *(const int*)(obj + OFF_OBJ_INIT_STATE);
+        if (st == CSM_STATE_INIT || st == CSM_STATE_RUNNING) ++n;
+    }
+    return n;
+}
+
 void Fm2k_NeutralizeMatchEndScriptObjects() {
     uint8_t* pool = (uint8_t*)ADDR_OBJECT_POOL_RND;
     for (size_t i = 0; i < OBJ_COUNT_RND; ++i) {
@@ -368,6 +385,13 @@ static char __cdecl Hook_vs_round_function() {
     if (post >= RSS_MATCH_COMPLETE) {
         Fm2k_CheckEndSeamScriptCursors("sim902");
         Fm2k_NeutralizeMatchEndScriptObjects();
+        // [ENDSEAM-FREE] window latch (telemetry only, see seam_free_probe.h).
+        // Deliberately placed here, i.e. ABOVE the g_is_rolling_back early
+        // return further down, so the window opens on resim passes too and
+        // stays open once any pass has reached the edge. A rollback back past
+        // the edge keeping the window OPEN is the correct behaviour: a
+        // teardown-crossing load is exactly the event the window covers.
+        SeamFreeProbe_OnMatchCompleteTick();
     }
 
     // AI field writes per frame: drive ai_input_processor's switch via
@@ -605,6 +629,7 @@ void RoundEvents_OnMatchStart() {
     s_round_idx_counter = 0;
     s_last_emit         = LastEmit::NONE;
     s_kof_snapshot.pending = false;
+    SeamFreeProbe_CloseWindow();
 }
 
 void RoundEvents_SetKofRetention(bool enabled) {

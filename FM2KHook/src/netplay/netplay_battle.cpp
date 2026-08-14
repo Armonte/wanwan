@@ -14,6 +14,7 @@
 #include "game_hash.h"
 #include "input.h"
 #include "savestate.h"
+#include "seam_trace.h"       // Phase 1bc seam instruments (diagnostic)
 #include "spectator_node.h"
 #include "nat_traversal.h"
 #include "upload_queue.h"
@@ -72,6 +73,10 @@ bool Netplay_StartBattle() {
     // EndBattle), so the invariant "the ring holds this match and nothing
     // else" holds regardless of how the previous one finished.
     SaveState_ResetRngTrace();
+    // Same per-match contract for the Phase 1bc seam instruments, so the
+    // always-on "[SEAM] OPEN" line fires once per MATCH rather than once per
+    // process in a multi-match harness run. (Diagnostic; dark by default.)
+    SeamTrace_Reset();
 
     // Capture per-match character IDs + resolved .player filenames
     // while the CSS-side state is still live. Held in shared mem so

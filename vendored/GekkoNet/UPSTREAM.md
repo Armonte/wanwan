@@ -44,6 +44,26 @@ gekkonet.cpp, spectator_session.cpp, stress_session.cpp, backend.h, gekkonet.h,
 session.h). It is small and surgical -- it applies onto a reformatted/rewritten
 upstream cleanly under a whitespace-insensitive 3-way merge (see below).
 
+!! THE b5c6528 BUMP ITSELF IS A WIRE BREAK (recorded 2026-08-13) !!
+------------------------------------------------------------------
+The 8ca4058 -> b5c6528 bump (our commit 0dde1f5) took upstream's serializer
+upgrade (#51): thirdparty/zpp/serializer.h is DELETED and thirdparty/zpp_bits.h
+added, and every archive call site in GekkoLib/src/backend.cpp is rewritten from
+zpp::serializer::memory_{input,output}_archive to zpp::bits::{in,out}. That
+swaps polymorphic registered types for a flat serializer, which changes the
+BYTE FORMAT of every Gekko message -- an old peer cannot parse a new packet.
+
+  * Builds at or after that bump are wire-INCOMPATIBLE with v0.2.83-bleeding
+    and everything earlier. This is not a soft degradation; the handshake and
+    input packets simply do not decode.
+  * The protection is the hub's client_version equality gate, which only works
+    if the version actually differs -- so FM2K_VERSION was bumped 0.2.83 ->
+    0.2.84 the same day (scripts/make_version.sh). Do not ship a build carrying
+    this bump under the old version string.
+  * Direct-IP sessions between a pre-bump and a post-bump peer bypass the hub
+    gate and WILL fail. That is expected behavior for a wire break, not a bug --
+    the fix is "both sides update".
+
 !! STOP -- READ BEFORE UPDATING PAST b5c6528 (assessed 2026-07-27) !!
 --------------------------------------------------------------------
 Upstream tip 675b31d "ReplaySession (#55)" (2026-07-26) is **WIRE-BREAKING**.

@@ -406,7 +406,7 @@ if(FM2K_LOG_UPLOAD_URL STREQUAL "")
 endif()
 if(FM2K_LOG_UPLOAD_SECRET STREQUAL "")
     message(WARNING
-        "FM2K_LOG_UPLOAD_SECRET not set — log auto-upload will be DISABLED in this build. "
+        "FM2K_LOG_UPLOAD_SECRET not set -- log auto-upload will be DISABLED in this build. "
         "Set it before configure to enable.")
 endif()
 configure_file(
@@ -419,10 +419,13 @@ configure_file(
 # `1 24 "app.manifest"` include inside the .rc, so editing app.manifest
 # alone would NOT retrigger the resource recompile (stale .res relinked,
 # the SxS/manifest fix silently doesn't ship). Declare the dependency
-# explicitly. version_rc.h is regenerated every build by make_version.sh
-# so it doesn't need listing here.
+# explicitly. Same story for version_rc.h: make_version.sh rewrites it every
+# build, but rewriting the header does NOT invalidate the compiled .res --
+# without this edge every version bump ships the PREVIOUS release's
+# FileVersion in the VERSIONINFO resource until something touches the .rc.
 set_source_files_properties(launcher.rc updater.rc
-    PROPERTIES OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/app.manifest")
+    PROPERTIES OBJECT_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/app.manifest;${CMAKE_CURRENT_SOURCE_DIR}/version_rc.h")
 
 add_executable(FM2K_RollbackLauncher
     # launcher.rc must be FIRST so its compiled .res is the first

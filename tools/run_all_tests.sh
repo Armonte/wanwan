@@ -27,6 +27,11 @@
 #                    so gate-green was zero evidence for it. Now DEFAULT ON, so
 #                    the stage also runs a KILL-SWITCH check
 #                    (FM2K_SPEC_DEEP_JOIN=0 -> the legacy from-frame-0 path).
+#   2e. seamdesync   spec_selftest at the EXTREME profile (230ms/50ms jitter/
+#                    20% loss), seeded, multi-match -- the MATCH-END SEAM
+#                    rollback-desync class (the 967f89f regression). Judged ONLY
+#                    by GekkoNet's `DESYNC #` term, plus tools/seam_ring_check.py
+#                    when the build emits seam-ring CSVs.
 #   3. ddraw         ddraw_redirect_test.sh — cnc-ddraw redirect applied.
 #   4. multigame     multigame_determinism_sweep.sh (FULL only) — byte-identical
 #                    engine determinism across the real FM2K game library.
@@ -49,6 +54,8 @@
 #      MM_RUNS(1) MM_TOTAL(3200) MM_LOSS(0.06)  — stage 2b multi-match E2E
 #      DJ_TOTAL(3200) DJ_LOSS(0.10) DJ_TOL(250) DJ_TIMEOUT(400) DJ_SKIP(0)
 #      KS_SKIP(0)                               -- stage 2d deep join (+kill-switch)
+#      SEAM_SEEDS(130; FULL: "130 131") SEAM_TOTAL(6000) SEAM_TIMEOUT(480)
+#      SEAM_SKIP(0) SEAM_GAMEDIR(/mnt/c/games/2dfm/wanwan)  -- stage 2e seam desync
 #      CPW_EXE(/mnt/c/dev/fm95/CPW/ＣＰＷ.exe) FM95_NETPLAY(0)  — stage 5
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -370,6 +377,26 @@ else
         grep -a "bounded deep join disabled" "$ks_host" 2>/dev/null | head -1 | sed 's/^.*\[SPEC-DEEPJOIN\]/      [SPEC-DEEPJOIN]/'
         pass+=("deep-join-killswitch")
     fi
+fi
+
+# Stage 2e -- SEAM DESYNC (tools/seam_desync_gate.sh owns the recipe and the
+# verdict; the rationale for both lives in that file's header). The class:
+# commit 967f89f shipped a match-end-seam rollback desync that survived the
+# whole gate because no stage ran a multi-match session at a profile harsh
+# enough to force a non-identity rollback across the battle-exit boundary.
+# Judged ONLY by GekkoNet's `DESYNC #` term, plus tools/seam_ring_check.py when
+# the build emits seam-ring CSVs; the tail-CINPUT artifact, spectator stalls and
+# a laggard rc=124 are explicitly NOT failures at this profile.
+#
+# 1 run (seed 130) in the default gate, 2 under FULL=1 (~5 min per run).
+if [ -n "${SEAM_SEEDS:-}" ]; then SEAM_SEED_LIST="$SEAM_SEEDS"
+elif [ "$FULL" = 1 ];        then SEAM_SEED_LIST="130 131"
+else                              SEAM_SEED_LIST="130"; fi
+if [ "${SEAM_SKIP:-0}" = 1 ]; then
+    echo "[run_all] seamdesync: SKIPPED (SEAM_SKIP=1)"
+else
+    CMD="SEAM_SEEDS='$SEAM_SEED_LIST' SEAM_OUT='$OUT/2e_seam' bash '$ROOT/tools/seam_desync_gate.sh'"
+    stage "seamdesync" "$OUT/2e_seamdesync.log"
 fi
 
 # Stage 3 — cnc-ddraw redirect (the "SJIS folder -> fullscreen" class). Drives

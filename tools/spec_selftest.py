@@ -549,19 +549,42 @@ def _css_parity_gate(out_dir, specs):
             lines.append(f"[harness] CSS-SPEC {s['tag']}: no CSS sessions observed -- skipped")
             continue
         for si, (snav, slk) in enumerate(Ss):
-            best = None   # (non_embed, hi, L, hnav_len, hlk)
+            # WHICH host session is this spectator session? Ranked by, in order:
+            # fewest non-embedded cells (the mismatch term), then longest LCS,
+            # then longest common PREFIX -- all evidence terms. The old key was
+            # non_embed alone, and non_embed TIES AT 0 for every host session
+            # whenever the spectator segment is short (a trailing char-select
+            # the host hard-terminated through embeds in anything), so min()
+            # silently handed back host-sess0. That is how a run with TWENTY
+            # char-selects reported "sess19 ... vs host-sess0 -> CSS DESYNC
+            # (LOCKED CHAR host=2/17 spec=None)" and pointed every reader at
+            # the wrong end of the session (campaign
+            # /home/teo/specrel-2026-08-07/, Phase 2c run V3-c).
+            # When the evidence terms STILL tie, the last resort is ordinal
+            # proximity -- CSS sessions are strictly time-ordered on both sides,
+            # so sess19 belongs next to host-sess18, never host-sess0 -- and the
+            # line says AMBIGUOUS out loud rather than implying a real pairing.
+            cands = []
             for hi, (hnav, hlk) in enumerate(Hs):
                 L = lcs_len(hnav, snav)
                 non_embed = min(len(hnav), len(snav)) - L
-                if best is None or non_embed < best[0]:
-                    best = (non_embed, hi, L, len(hnav), hlk)
-            non_embed, hi, L, hlen, hlk = best
+                pfx = 0
+                for a, b in zip(hnav, snav):
+                    if a != b: break
+                    pfx += 1
+                cands.append(((non_embed, -L, -pfx), hi, L, len(hnav), hlk))
+            bkey = min(c[0] for c in cands)
+            tied = [c for c in cands if c[0] == bkey]
+            _, hi, L, hlen, hlk = min(tied, key=lambda c: (abs(c[1] - si), c[1]))
+            non_embed = bkey[0]
+            ambig = (f" [AMBIGUOUS: {len(tied)} host sessions tie on this "
+                     f"{len(snav)}-cell segment]" if len(tied) > 1 else "")
             shorter = min(hlen, len(snav))
             tol = max(2, (shorter + 49) // 50)   # ~2% seam slack (snapshot join)
             lock_ok, nav_ok = (slk == hlk), (non_embed <= tol)
             if lock_ok and nav_ok:
                 lines.append(f"[harness] CSS-SPEC {s['tag']} sess{si}: sel-path matches "
-                             f"host-sess{hi} (LCS {L}/{shorter}, lock {slk}) OK")
+                             f"host-sess{hi} (LCS {L}/{shorter}, lock {slk}) OK{ambig}")
             else:
                 fail = True
                 why = []
@@ -569,7 +592,7 @@ def _css_parity_gate(out_dir, specs):
                 if not nav_ok:  why.append(f"sel-path diverged ({non_embed} cells off, "
                                            f"LCS {L}/{shorter})")
                 lines.append(f"[harness] CSS-SPEC {s['tag']} sess{si}: vs host-sess{hi} "
-                             f"-> CSS DESYNC ({'; '.join(why)})")
+                             f"-> CSS DESYNC ({'; '.join(why)}){ambig}")
     return fail, lines
 
 
@@ -725,6 +748,66 @@ def _parity_gates(out_dir, specs):
     # catches frame-misaligned inputs -> in-battle position desyncs the rng/hp gate
     # is structurally blind to. Authoritative; the rng/hp gate below is secondary.
     import re as _cre
+
+    def _pair_key(mismatches, overlap, prefix):
+        """Ranking key that picks WHICH host match a spectator segment belongs to.
+
+        A spectator segment is compared against every host match and the best
+        pairing is the one reported. Until 2026-08 the key led with the longest
+        consecutive-MISMATCH run, which is a divergence-shape statistic, not a
+        pairing statistic: a wrong host match whose CRCs disagree everywhere
+        scores a long run, but so does the RIGHT host match once a real desync
+        starts -- and past the first few hundred divergent frames the wrong
+        pairing can score BETTER. The stage that hurt: the match-end-seam
+        forensics (campaign /home/teo/specrel-2026-08-07/) printed
+        "vs host-match0" for a segment that plainly belonged to a later match,
+        and the desync frames only lined up after agents re-paired the segments
+        by raw CRC by hand.
+
+        The key is now, in order:
+          1. overlap > 0            -- a candidate with no aligned frames at all
+                                       explains nothing; it may only win if
+                                       every candidate is empty (that case is
+                                       reported as NO OVERLAP downstream).
+          2. fewest mismatches      -- the actual "does this segment belong to
+                                       this match" evidence.
+          3. longest identical prefix -- tie-break: the segment that agreed with
+                                       this host match for longest BEFORE
+                                       diverging is the one it was really
+                                       following.
+          4. largest overlap        -- final tie-break, unchanged.
+        Known residual (unchanged by this fix): a badly truncated candidate can
+        still win on raw count against a long, nearly-identical one. Both keys
+        had that; it has never been observed, because CRC/press collisions
+        across matches are what would be needed to produce it.
+        """
+        return (0 if overlap > 0 else 1, mismatches, -prefix, -overlap)
+
+    def _pick_tied(cands, prev_hi):
+        """Resolve an EXACT tie on _pair_key by ordinal continuity.
+
+        Ties are not a corner case here, they are the norm on the CINPUT side:
+        the autoplay drives the SAME scripted input sequence every match, so a
+        spectator's match-N input stream aligns against EVERY host match with
+        zero mismatches, all candidate keys are identical, and `min()` handed
+        back host-match0 forever. A 20-match stressor run printed "vs
+        host-match0" for all 20 segments, which is what sent the match-end-seam
+        forensics looking for a divergence at frame ~2530 of match 1.
+
+        Matches are strictly time-ordered on both sides and a spectator sees
+        them in order, so when the evidence cannot separate candidates the next
+        segment continues the sequence: prefer the tied candidate nearest to
+        (previous choice + 1). This is DELIBERATELY only reachable on an exact
+        tie -- every tied candidate produced identical mismatch/overlap/prefix
+        numbers, so the choice cannot change any verdict, only the label.
+
+        cands: [(key, hi, ...)] ; returns the winning tuple.
+        """
+        bkey = min(c[0] for c in cands)
+        tied = [c for c in cands if c[0] == bkey]
+        want = prev_hi + 1
+        return min(tied, key=lambda c: (abs(c[1] - want), c[1])), len(tied)
+
     _cpat = _cre.compile(r'\[CINPUT\] bf=(\d+) p1=0x([0-9A-Fa-f]+) p2=0x([0-9A-Fa-f]+)')
     def _cin_parse(path):
         segs = []; cur = {}; last = -1
@@ -739,14 +822,16 @@ def _parity_gates(out_dir, specs):
         if cur: segs.append(cur)
         return segs
     def _cin_align(sseg, hseg):
-        # (full_mismatches, offset, overlap, longest_run). Offset = MODE of all
-        # press-deltas -- robust to stray boundary inputs and the autoplay's
-        # identical match openings (a single-press anchor mis-aligns). longest_run
-        # = longest consecutive-mismatch streak; isolated 1-frame artifacts (off-by-
-        # one boundary, a stray transition press) don't count as a desync, a
-        # SUSTAINED run does.
+        # (full_mismatches, offset, overlap, longest_run, identical_prefix).
+        # Offset = MODE of all press-deltas -- robust to stray boundary inputs
+        # and the autoplay's identical match openings (a single-press anchor
+        # mis-aligns). longest_run = longest consecutive-mismatch streak;
+        # isolated 1-frame artifacts (off-by-one boundary, a stray transition
+        # press) don't count as a desync, a SUSTAINED run does. identical_prefix
+        # = aligned frames that matched before the FIRST mismatch; it is the
+        # pairing tie-break (see _pair_key), never a verdict.
         spress = [(bf, sseg[bf]) for bf in sorted(sseg) if sseg[bf] != (0, 0)]
-        if not spress: return (0, 0, 0, 0)
+        if not spress: return (0, 0, 0, 0, 0)
         hbi = {}
         for hb in hseg:
             if hseg[hb] != (0, 0): hbi.setdefault(hseg[hb], []).append(hb)
@@ -754,16 +839,17 @@ def _parity_gates(out_dir, specs):
         for sb, si in spress:
             for hb in hbi.get(si, ()):
                 deltas[hb - sb] = deltas.get(hb - sb, 0) + 1
-        if not deltas: return (len(spress), 0, 0, len(spress))
+        if not deltas: return (len(spress), 0, 0, len(spress), 0)
         O = max(deltas, key=deltas.get)
         bfs = sorted(bf for bf in sseg if (bf + O) in hseg)
-        run = mx = fmm = 0
+        run = mx = fmm = pfx = 0
         for bf in bfs:
             if hseg[bf + O] != sseg[bf]:
                 fmm += 1; run += 1; mx = max(mx, run)
             else:
                 run = 0
-        return (fmm, O, len(bfs), mx)
+                if fmm == 0: pfx += 1
+        return (fmm, O, len(bfs), mx, pfx)
     cin_H = _cin_parse(out_dir / "live_FM2K_P1_Debug.log")
     cin_fail = False
     if not cin_H:
@@ -783,24 +869,26 @@ def _parity_gates(out_dir, specs):
             else:
                 print(f"[harness] CINPUT P1-vs-P2 match{i}: {n} frames IDENTICAL (players lockstep)")
         for s in specs:
+            prev_hi = -1
             for si, sseg in enumerate(_cin_parse(s["live"])):
-                best = None
+                cands = []
                 for hi, hseg in enumerate(cin_H):
-                    fmm, O, n, mx = _cin_align(sseg, hseg)
-                    key = (mx, fmm, -n)
-                    if best is None or key < best[0]: best = (key, fmm, O, n, mx, hi)
-                _, fmm, O, n, mx, hi = best
+                    fmm, O, n, mx, pfx = _cin_align(sseg, hseg)
+                    cands.append((_pair_key(fmm, n, pfx), hi, fmm, O, n, mx))
+                (_, hi, fmm, O, n, mx), nties = _pick_tied(cands, prev_hi)
+                prev_hi = hi
+                tie = f" [tie:{nties}]" if nties > 1 else ""
                 if mx > 3:   # sustained mismatch run = real input-frame desync
                     cin_fail = True
                     hseg = cin_H[hi]
                     fb = next((bf for bf in sorted(sseg) if (bf + O) in hseg and hseg[bf + O] != sseg[bf]), None)
                     print(f"[harness] CINPUT {s['tag']} seg{si}: vs host-match{hi} off{O}: {fmm} mismatches "
                           f"(longest run {mx}) -> DESYNC (first spec-bf={fb} host-bf={fb + O if fb is not None else '?'}: "
-                          f"spec={sseg.get(fb)} host={hseg.get(fb + O) if fb is not None else '?'})")
+                          f"spec={sseg.get(fb)} host={hseg.get(fb + O) if fb is not None else '?'}){tie}")
                 else:
                     extra = f" ({fmm} isolated boundary artifact{'s' if fmm != 1 else ''})" if fmm else ""
                     print(f"[harness] CINPUT {s['tag']} seg{si}: vs host-match{hi} off{O}: "
-                          f"{n} frames input-frame IDENTICAL{extra}")
+                          f"{n} frames input-frame IDENTICAL{extra}{tie}")
 
     # ---- FULL-STATE FENCEPOST: [CHECKSUM] gameplay_fingerprint (GDC GAP #1) ----
     # The host logs the gameplay_fingerprint (HP/pos/rng/timer -- gekko's own
@@ -843,9 +931,10 @@ def _parity_gates(out_dir, specs):
         return segs
     def _ck_align(sseg, hseg):
         # offset O (host_f = spec_bf + O) maximizing CRC matches via distinctive
-        # non-zero CRC anchors. Returns (mismatches, O, overlap, longest_run, first).
+        # non-zero CRC anchors. Returns (mismatches, O, overlap, longest_run,
+        # first, identical_prefix). identical_prefix feeds _pair_key only.
         sanchor = [(bf, sseg[bf]) for bf in sorted(sseg) if sseg[bf] != 0]
-        if not sanchor: return (0, 0, 0, 0, None)
+        if not sanchor: return (0, 0, 0, 0, None, 0)
         hbi = {}
         for hf, hc in hseg.items():
             if hc != 0: hbi.setdefault(hc, []).append(hf)
@@ -853,17 +942,18 @@ def _parity_gates(out_dir, specs):
         for sb, sc in sanchor:
             for hf in hbi.get(sc, ()):
                 deltas[hf - sb] = deltas.get(hf - sb, 0) + 1
-        if not deltas: return (len(sanchor), 0, 0, len(sanchor), sanchor[0][0])
+        if not deltas: return (len(sanchor), 0, 0, len(sanchor), sanchor[0][0], 0)
         O = max(deltas, key=deltas.get)
         bfs = sorted(bf for bf in sseg if sseg[bf] != 0 and (bf + O) in hseg)
-        run = mx = mm = 0; first = None
+        run = mx = mm = pfx = 0; first = None
         for bf in bfs:
             if hseg[bf + O] != sseg[bf]:
                 mm += 1; run += 1; mx = max(mx, run)
                 if first is None: first = bf
             else:
                 run = 0
-        return (mm, O, len(bfs), mx, first)
+                if mm == 0: pfx += 1
+        return (mm, O, len(bfs), mx, first, pfx)
     ck_H = _ck_host(out_dir / "live_FM2K_P1_Debug.log")
     ck_fail = False
     if not ck_H:
@@ -871,6 +961,7 @@ def _parity_gates(out_dir, specs):
               "inactive (need FM2K_CINPUT=1 + a battle)")
     else:
         for s in specs:
+            prev_hi = -1
             for si, sseg in enumerate(_ck_spec(s["live"])):
                 nz = sum(1 for c in sseg.values() if c)
                 if nz == 0:
@@ -878,12 +969,13 @@ def _parity_gates(out_dir, specs):
                     print(f"[harness] CHECKSUM {s['tag']} seg{si}: ALL-ZERO CRCs "
                           f"(stale spec fingerprint -- recompute regressed) -> FAIL")
                     continue
-                best = None
+                cands = []
                 for hi, hseg in enumerate(ck_H):
-                    mm, O, n, mx, fb = _ck_align(sseg, hseg)
-                    key = (mx, mm, -n)
-                    if best is None or key < best[0]: best = (key, mm, O, n, mx, fb, hi)
-                _, mm, O, n, mx, fb, hi = best
+                    mm, O, n, mx, fb, pfx = _ck_align(sseg, hseg)
+                    cands.append((_pair_key(mm, n, pfx), hi, mm, O, n, mx, fb))
+                (_, hi, mm, O, n, mx, fb), nties = _pick_tied(cands, prev_hi)
+                prev_hi = hi
+                tie = f" [tie:{nties}]" if nties > 1 else ""
                 if n == 0:
                     ck_fail = True
                     print(f"[harness] CHECKSUM {s['tag']} seg{si}: NO OVERLAP with "
@@ -894,11 +986,11 @@ def _parity_gates(out_dir, specs):
                     print(f"[harness] CHECKSUM {s['tag']} seg{si}: vs host-match{hi} "
                           f"off{O} {mm}/{n} CRC mismatches (longest run {mx}) -> "
                           f"FULL-STATE DESYNC (first spec-bf={fb} host-f={fb + O}: "
-                          f"spec=0x{sseg[fb]:08X} host=0x{hseg[fb + O]:08X})")
+                          f"spec=0x{sseg[fb]:08X} host=0x{hseg[fb + O]:08X}){tie}")
                 else:
                     extra = f" ({mm} tail/predicted artifact)" if mm else ""
                     print(f"[harness] CHECKSUM {s['tag']} seg{si}: vs host-match{hi} "
-                          f"off{O} {n} frames FULL-STATE IDENTICAL{extra}")
+                          f"off{O} {n} frames FULL-STATE IDENTICAL{extra}{tie}")
 
     for s in specs:
         r = gate_one(s["live"])
@@ -1116,7 +1208,10 @@ def main():
               # #66 CSS rollback opt-in + prediction window
               "FM2K_CSS_ROLLBACK", "FM2K_CSS_PREDICTION",
               # mid-join spectate desync hunt: per-region full-state fingerprint
-              "FM2K_FULLFP", "FM2K_POOLSET"):
+              "FM2K_FULLFP", "FM2K_POOLSET",
+              # match-end seam diagnosis (Phase 1bc): per-save fingerprint ring
+              # + [SEAM] detail lines. Dark by default in the hook.
+              "FM2K_SEAM_TRACE"):
         if os.environ.get(k):
             common_env[k] = os.environ[k]
     # FM2K_SPEC_DEEP_JOIN is forwarded SEPARATELY and by presence, not by
@@ -1132,6 +1227,22 @@ def main():
     # see the spectator list below for the other half.
     if os.environ.get("FM2K_SPEC_DEEP_JOIN") is not None:
         common_env["FM2K_SPEC_DEEP_JOIN"] = os.environ["FM2K_SPEC_DEEP_JOIN"]
+    # FM2K_SEAM_LEGACY_PARK: same presence-not-truthiness rule. It is the
+    # DIAGNOSTIC A/B lever that restores the deleted blanket load-site park
+    # (i.e. reinstates the match-end-seam desync on purpose), default OFF in
+    # the hook. Forwarding BY PRESENCE keeps "0"/"" round-tripping faithfully
+    # instead of relying on Python's "0" being truthy.
+    if os.environ.get("FM2K_SEAM_LEGACY_PARK") is not None:
+        common_env["FM2K_SEAM_LEGACY_PARK"] = os.environ["FM2K_SEAM_LEGACY_PARK"]
+    # FM2K_SEAM_GUARD is RETIRED. It is still FORWARDED (so the hook's loud
+    # "RETIRED and IGNORED" line lands in the Debug log) and warned about here,
+    # because an old recipe that silently measures the default is exactly how a
+    # bisect reaches the wrong conclusion.
+    if os.environ.get("FM2K_SEAM_GUARD") is not None:
+        common_env["FM2K_SEAM_GUARD"] = os.environ["FM2K_SEAM_GUARD"]
+        print("WARNING: FM2K_SEAM_GUARD is RETIRED and has no effect. "
+              "Use FM2K_SEAM_LEGACY_PARK=1 to restore the old blanket "
+              "load-site park for an A/B.")
 
     p1_env = {**common_env,
               "FM2K_LOCAL_PORT": str(P1_PORT),

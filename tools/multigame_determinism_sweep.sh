@@ -108,7 +108,7 @@ else
         "$LIB/kensei2023/kensei2023.exe"                          # cluster
         "$LIB/REQUIEM FINAL/REQUIEM FINAL.exe"                    # SPACE path -> staged
         "$LIB/闘闘/闘闘.exe"                                       # kanji + long intro
-        "$LIB/Shadow Arts/ShadowArts.exe"                         # SPACE + PACKED 71MB
+        "$LIB/Retsuzan/Shadow Arts/ShadowArts.exe"                # SPACE + PACKED 71MB (nested under Retsuzan/)
     )
 fi
 

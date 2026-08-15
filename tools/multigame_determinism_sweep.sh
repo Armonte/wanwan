@@ -143,3 +143,7 @@ done
 echo "========================================"
 printf '%s\n' "${RESULTS[@]}"
 echo "[sweep] PASS=$pass DESYNC=$fail ERROR=$err"
+# Exit nonzero on any desync or error. Without this the script's status was
+# the final echo's (always 0), so the run_all_tests stage could never fail
+# no matter what happened above.
+[ "$fail" -eq 0 ] && [ "$err" -eq 0 ]

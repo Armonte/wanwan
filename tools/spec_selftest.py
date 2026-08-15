@@ -55,6 +55,14 @@ GAMES = {
     "pkmncc": Path("/mnt/d/Games/fm2k/_NODEV/pkmncc/pkmncc.exe"),
 }
 GAME_EXE = GAMES["wanwan"]   # default; overridden by --game in main()
+# Engine detection, harness-side (Phase 4e, review A4a(ii)). Only the FM95/CPW
+# registry entry builds against ENGINE_FM95, where ParityPool has no FM2K object
+# pool to scan and ComputeTopology() returns the documented `0` not-computed
+# sentinel by construction. On FM2K that sentinel means the gate did not run and
+# is a FAIL; on FM95 it is expected, so the POOL terms advisory-skip there with a
+# loud line. Set in main() from --game; the default is FM2K.
+FM95_GAMES  = {"cpw"}
+IS_FM95_RUN = False
 OUT_DIR  = Path(os.environ.get("FM2K_TEST_OUT_DIR",
                                "/mnt/c/dev/wanwan/tools/.spec_selftest"))
 PARITY_DIFF = Path(__file__).parent / "parity_diff.py"
@@ -898,9 +906,46 @@ def _parity_gates(out_dir, specs):
     # POSITION/full-state desyncs the subset rng/hp gate is structurally blind to.
     # Host f resets per match + re-emits per re-sim -> segment on f=-1, dedupe
     # frame-LAST. Spec bf resets per battle -> segment on bf reset.
-    _ckpat = _cre.compile(r'\[CHECKSUM\] f=(-?\d+) crc=0x([0-9A-Fa-f]+)')
+    # Phase 4c: the line now carries the POOL-TOPOLOGY terms alongside crc --
+    #   top=  slot->type map + population  (which objects exist, of what kind,
+    #         at which slot indices; the term a re-INDEXING moves)
+    #   bind= owner / player slot / entity kind / creator link, in slot order
+    #   nobj= active-slot population
+    # All four are optional in the regex so logs from builds that predate them
+    # still parse (they simply contribute no topology verdict).
+    #
+    # tv= TOPOLOGY TERM VERSION (Phase 4e, review A4a(i)). PRE-4c builds emit a
+    # top= too, but it is the RETIRED COMBINED digest (slot map AND bindings
+    # folded together, tag PTO1) -- a different quantity under the same name.
+    # Re-gating an old corpus with the new slot-map semantics therefore reds
+    # every segment (measured on p4b_runs/R5: top 3953/3953). The version tag
+    # makes PTO1 and PTO2 distinguishable on the wire: `tv=2` means "top=/bind=
+    # are the 4c split", its ABSENCE means PTO1 and the pool terms are skipped
+    # with a loud line instead of compared.
+    _ckpat = _cre.compile(
+        r'\[CHECKSUM\] f=(-?\d+) crc=0x([0-9A-Fa-f]+)'
+        r'(?: tv=(\d+))?'
+        r'(?: top=0x([0-9A-Fa-f]+))?(?: bind=0x([0-9A-Fa-f]+))?(?: nobj=(\d+))?')
+    def _ck_row(m):
+        # (crc, top, bind, nobj, topology_version); None for a term this build
+        # did not emit. VERSION: the explicit tv= when present, otherwise
+        # INFERRED from bind= -- the 4c split introduced bind= and PTO1 builds
+        # never emitted it, so "has bind=" is an exact test for the new
+        # semantics on the corpus recorded between 4c and 4e. That keeps the
+        # p4c_runs corpus re-gatable instead of blanket-skipping everything
+        # older than the tag.
+        bind = int(m.group(5), 16) if m.group(5) else None
+        if m.group(3):
+            ver = int(m.group(3))
+        else:
+            ver = 2 if bind is not None else 1
+        return (int(m.group(2), 16),
+                int(m.group(4), 16) if m.group(4) else None,
+                bind,
+                int(m.group(6))     if m.group(6) else None,
+                ver)
     def _ck_host(path):
-        # per-MATCH segments [{frame: crc}]; split on f=-1 (battle-entry marker),
+        # per-MATCH segments [{frame: row}]; split on f=-1 (battle-entry marker),
         # dedupe frame-LAST within a segment (re-sim re-emits; last = confirmed).
         segs, cur = [], {}
         try: fh = open(path, errors="ignore")
@@ -908,11 +953,11 @@ def _parity_gates(out_dir, specs):
         for ln in fh:
             m = _ckpat.search(ln)
             if not m: continue
-            f = int(m.group(1)); crc = int(m.group(2), 16)
+            f = int(m.group(1))
             if f < 0:
                 if cur: segs.append(cur); cur = {}
                 continue
-            cur[f] = crc
+            cur[f] = _ck_row(m)
         if cur: segs.append(cur)
         return segs
     def _ck_spec(path):
@@ -924,11 +969,56 @@ def _parity_gates(out_dir, specs):
             if not m: continue
             bf = int(m.group(1))
             if bf < 0: continue
-            crc = int(m.group(2), 16)
             if bf <= last and cur: segs.append(cur); cur = {}
-            cur[bf] = crc; last = bf
+            cur[bf] = _ck_row(m); last = bf
         if cur: segs.append(cur)
         return segs
+    def _ck_crc(seg):
+        return {f: r[0] for f, r in seg.items()}
+    _CK_TOPO_VER = 2       # the 4c top=/bind= split; see the tv= note above
+    def _ck_term(sseg, hseg, O, idx):
+        '''Compare one non-crc [CHECKSUM] term at the ALREADY-CHOSEN pairing
+        offset O. Returns (mismatches, compared, longest_run, first_bf,
+        legacy_rows, notcomputed_rows).
+
+        Frames where either side did not emit the term are skipped, so an old
+        log pairs cleanly against a new one instead of reporting a false red.
+        Two further classes are NOT compared, and are counted so the caller can
+        say so out loud instead of scoring them as agreement:
+
+        LEGACY (review A4a(i)) -- either side lacks `tv=2`, i.e. its top=/bind=
+        are the retired PTO1 combined digest. A different quantity under the
+        same name; comparing it is a guaranteed false RED.
+
+        NOT-COMPUTED (review A4a(ii), the ship-blocker) -- either side's
+        topology digest is the documented `0` sentinel (parity_pool.h:104-106),
+        emitted whenever TopologyEnabled() is false: ENGINE_FM95, or
+        FM2K_CK_TOPOLOGY=0. The line is still printed as
+        `top=0x00000000 bind=0x00000000 nobj=0`, so a naive comparison finds
+        both planes equal and prints a POSITIVE verdict for a FATAL term that
+        never ran. A real digest can never be 0 (the seed is non-zero and
+        ScanPool reserves 0 with `folded ? folded : 1u`), so the test is exact.'''
+        run = mx = mm = 0; first = None; n = 0; n_legacy = 0; n_nc = 0
+        for bf in sorted(sseg):
+            srow = sseg[bf]
+            hrow = hseg.get(bf + O)
+            if hrow is None: continue
+            sv, hv = srow[idx], hrow[idx]
+            if sv is None or hv is None: continue
+            # Version gate FIRST: an unversioned row's top=/bind= mean something
+            # else, and its nobj= rides the same topology pass.
+            if srow[4] != _CK_TOPO_VER or hrow[4] != _CK_TOPO_VER:
+                n_legacy += 1; continue
+            # Sentinel gate: 0 == not computed, on EITHER plane.
+            if srow[1] == 0 or hrow[1] == 0:
+                n_nc += 1; continue
+            n += 1
+            if hv != sv:
+                mm += 1; run += 1; mx = max(mx, run)
+                if first is None: first = bf
+            else:
+                run = 0
+        return (mm, n, mx, first, n_legacy, n_nc)
     def _ck_align(sseg, hseg):
         # offset O (host_f = spec_bf + O) maximizing CRC matches via distinctive
         # non-zero CRC anchors. Returns (mismatches, O, overlap, longest_run,
@@ -963,7 +1053,8 @@ def _parity_gates(out_dir, specs):
         for s in specs:
             prev_hi = -1
             for si, sseg in enumerate(_ck_spec(s["live"])):
-                nz = sum(1 for c in sseg.values() if c)
+                scrc = _ck_crc(sseg)
+                nz = sum(1 for c in scrc.values() if c)
                 if nz == 0:
                     ck_fail = True
                     print(f"[harness] CHECKSUM {s['tag']} seg{si}: ALL-ZERO CRCs "
@@ -971,7 +1062,7 @@ def _parity_gates(out_dir, specs):
                     continue
                 cands = []
                 for hi, hseg in enumerate(ck_H):
-                    mm, O, n, mx, fb, pfx = _ck_align(sseg, hseg)
+                    mm, O, n, mx, fb, pfx = _ck_align(scrc, _ck_crc(hseg))
                     cands.append((_pair_key(mm, n, pfx), hi, mm, O, n, mx, fb))
                 (_, hi, mm, O, n, mx, fb), nties = _pick_tied(cands, prev_hi)
                 prev_hi = hi
@@ -982,15 +1073,109 @@ def _parity_gates(out_dir, specs):
                           f"any host match -> FULL-STATE DESYNC")
                 elif mx > 3:
                     ck_fail = True
-                    hseg = ck_H[hi]
+                    hcrc = _ck_crc(ck_H[hi])
                     print(f"[harness] CHECKSUM {s['tag']} seg{si}: vs host-match{hi} "
                           f"off{O} {mm}/{n} CRC mismatches (longest run {mx}) -> "
                           f"FULL-STATE DESYNC (first spec-bf={fb} host-f={fb + O}: "
-                          f"spec=0x{sseg[fb]:08X} host=0x{hseg[fb + O]:08X}){tie}")
+                          f"spec=0x{scrc[fb]:08X} host=0x{hcrc[fb + O]:08X}){tie}")
                 else:
                     extra = f" ({mm} tail/predicted artifact)" if mm else ""
                     print(f"[harness] CHECKSUM {s['tag']} seg{si}: vs host-match{hi} "
                           f"off{O} {n} frames FULL-STATE IDENTICAL{extra}{tie}")
+
+                # ---- POOL TOPOLOGY (Phase 4c) --------------------------------
+                # The crc term above hashes rng / HP / timers / ring inputs. It
+                # is structurally blind to the object pool, and 4b measured the
+                # consequence: a spectator's pool population drifted from the
+                # host's for 1163 frames BEFORE either fighter diverged, in a
+                # match every existing gate called clean until the fighters
+                # finally forked. nobj= and top= are that early warning.
+                #
+                # FAILING terms, same longest-run>3 rule the crc/CINPUT gates
+                # use (so the documented single-frame emit/dedupe artifact
+                # cannot flip a verdict), raw counts always printed:
+                #   nobj -- active-object POPULATION. 0 mismatches across 22094
+                #           clean paired frames in 4b, 530 in the pre-divergence
+                #           window of the one match that broke.
+                #   top  -- slot->type map + population, i.e. the re-INDEXING
+                #           itself. This is the term the match-start pool
+                #           resync exists to keep at zero.
+                # ADVISORY term:
+                #   bind -- owner / player / kind / creator link. Strictly more
+                #           sensitive; reported so a regression here is visible,
+                #           never fatal on its own.
+                #
+                # PHASE 4e (review A4a). A FATAL term that could not run must be
+                # RED, never a vacuous green: `tn == 0` used to `continue`
+                # SILENTLY, so a FM95 build or a single FM2K_CK_TOPOLOGY=0 turned
+                # the campaign's headline gate into a positive verdict on a term
+                # that was never computed. The three no-compare classes are now
+                # distinguished and each says what it is:
+                #   not-computed  -> FATAL FAIL (or an advisory skip on FM95,
+                #                    where the engine genuinely has no pool to
+                #                    scan and the whole stage is advisory)
+                #   legacy (no tv=2) -> loud SKIP, never a verdict (A4a(i))
+                #   term absent      -> loud SKIP (pre-4b log)
+                hrow = ck_H[hi]
+                for idx, name, fatal in ((3, "nobj", True), (1, "top", True),
+                                         (2, "bind", False)):
+                    tmm, tn, tmx, tfb, tleg, tnc = _ck_term(sseg, hrow, O, idx)
+                    if tn == 0:
+                        if tnc:
+                            if IS_FM95_RUN:
+                                print(f"[harness] POOL {s['tag']} seg{si}: {name}= "
+                                      f"NOT COMPUTED on {tnc} paired frames "
+                                      f"(top=0x00000000 sentinel) -- ENGINE_FM95 "
+                                      f"build has no FM2K object pool to scan. "
+                                      f"ADVISORY SKIP (the FM95 stage is "
+                                      f"advisory; on FM2K this is a FAIL)")
+                            elif fatal:
+                                ck_fail = True
+                                print(f"[harness] POOL {s['tag']} seg{si}: {name}= "
+                                      f"topology NOT COMPUTED on {tnc} paired "
+                                      f"frames (top=0x00000000 sentinel) -> "
+                                      f"POOL-TOPOLOGY GATE INACTIVE (FAIL). A "
+                                      f"fatal term that cannot run must not "
+                                      f"pass. Cause: FM2K_CK_TOPOLOGY=0 in the "
+                                      f"game's environment, or an ENGINE_FM95 "
+                                      f"build. UNSET FM2K_CK_TOPOLOGY and re-run")
+                            else:
+                                print(f"[harness] POOL {s['tag']} seg{si}: {name}= "
+                                      f"NOT COMPUTED on {tnc} paired frames "
+                                      f"[advisory term, skipped]")
+                        elif tleg:
+                            print(f"[harness] POOL {s['tag']} seg{si}: {name}= "
+                                  f"SKIPPED on {tleg} paired frames -- one or "
+                                  f"both logs predate the Phase-4c split (no "
+                                  f"tv=2). Their top= is the retired PTO1 "
+                                  f"COMBINED digest, a different quantity under "
+                                  f"the same name; comparing it would be a "
+                                  f"false RED, not a verdict")
+                        else:
+                            print(f"[harness] POOL {s['tag']} seg{si}: {name}= "
+                                  f"absent from these logs -- no topology "
+                                  f"verdict (build predates the term)")
+                        continue
+                    if tnc or tleg:
+                        print(f"[harness] POOL {s['tag']} seg{si}: {name}= "
+                              f"{tnc} not-computed + {tleg} legacy frame(s) "
+                              f"excluded from the {tn} compared")
+                    if fatal and tmx > 3:
+                        ck_fail = True
+                        sv = sseg[tfb][idx]; hv = hrow[tfb + O][idx]
+                        fmt = (lambda v: str(v)) if name == "nobj" else (lambda v: f"0x{v:08X}")
+                        print(f"[harness] POOL {s['tag']} seg{si}: vs host-match{hi} "
+                              f"off{O} {name}= {tmm}/{tn} mismatches (longest run "
+                              f"{tmx}) -> POOL-TOPOLOGY DESYNC (first spec-bf={tfb} "
+                              f"host-f={tfb + O}: spec={fmt(sv)} host={fmt(hv)})")
+                    elif tmm:
+                        lbl = "advisory" if not fatal else "isolated artifact"
+                        print(f"[harness] POOL {s['tag']} seg{si}: vs host-match{hi} "
+                              f"off{O} {name}= {tmm}/{tn} mismatches "
+                              f"(longest run {tmx}, first spec-bf={tfb}) [{lbl}]")
+                    else:
+                        print(f"[harness] POOL {s['tag']} seg{si}: vs host-match{hi} "
+                              f"off{O} {name}= {tn} frames IDENTICAL")
 
     for s in specs:
         r = gate_one(s["live"])
@@ -1039,6 +1224,12 @@ def main():
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--game", default="wanwan", choices=sorted(GAMES.keys()),
                     help="which FM2K game to test (registry in GAMES)")
+    ap.add_argument("--game-exe", default="",
+                    help="override the registry path for --game. Exists so a "
+                         "caller's 'which install' variable can be LOAD-BEARING "
+                         "rather than decorative: the harness runs exactly this "
+                         "exe and FAILS (rc=2) if it is absent, instead of "
+                         "silently running the hardcoded copy.")
     ap.add_argument("--spectators", default="css",
                     help="comma-list of spectator join-phases. 'css' = dial in "
                          "during the host's CSS (FULL_SESSION / CSS-walk); "
@@ -1108,11 +1299,22 @@ def main():
     # Per-spectator parity files are created below in the `specs` list.
     spec_phases = [p.strip() for p in args.spectators.split(",") if p.strip()]
 
-    game_exe = GAMES[args.game]
+    # --game-exe overrides the registry path for --game (Phase 4e, review A4d).
+    # Without it a caller's "which install?" variable is DECORATIVE: run_all_tests
+    # stage 2g guarded on $VANPRI_EXE while the harness resolved vanpri from the
+    # hardcoded GAMES entry, so pointing the variable at a different install
+    # would have passed the guard and then silently run the other copy -- the
+    # exact shape of the ShadowArts defect (d0455bc), where a stage reported PASS
+    # while the game it named had never run.
+    game_exe = Path(args.game_exe) if args.game_exe else GAMES[args.game]
     if not game_exe.exists():
-        print(f"[harness] FATAL: --game {args.game} exe not found: {game_exe}")
+        print(f"[harness] FATAL: --game {args.game} exe not found: {game_exe}"
+              + (" (from --game-exe)" if args.game_exe else ""))
         return 2
-    print(f"[harness] game={args.game} ({game_exe.name})")
+    global IS_FM95_RUN
+    IS_FM95_RUN = (args.game in FM95_GAMES)
+    print(f"[harness] game={args.game} ({game_exe.name}) engine="
+          f"{'FM95' if IS_FM95_RUN else 'FM2K'} path={game_exe}")
     game_arg = to_win(game_exe)
     game_dir = game_exe.parent
     kill_strays()
@@ -1209,9 +1411,32 @@ def main():
               "FM2K_CSS_ROLLBACK", "FM2K_CSS_PREDICTION",
               # mid-join spectate desync hunt: per-region full-state fingerprint
               "FM2K_FULLFP", "FM2K_POOLSET",
+              # Phase 4c match-start pool resync kill-switch. Default ON in the
+              # hook, so this only ever needs forwarding to turn it OFF -- but
+              # it MUST reach the host as well as the viewers: the host half is
+              # what serves the per-battle snapshot at all.
+              "FM2K_SPEC_POOL_SYNC",
+              # Phase 4e (review A4a(ii)): the topology gate's OWN escape hatch.
+              # FM2K_CK_TOPOLOGY=0 makes ComputeTopology() return the "not
+              # computed" sentinel, which the POOL terms now treat as a FAILED
+              # fatal term rather than a match. Forwarded to BOTH sides so the
+              # hatch is reachable (and visible) from a WSL-side invocation
+              # instead of only through a Windows-level environment variable.
+              "FM2K_CK_TOPOLOGY",
               # match-end seam diagnosis (Phase 1bc): per-save fingerprint ring
               # + [SEAM] detail lines. Dark by default in the hook.
-              "FM2K_SEAM_TRACE"):
+              "FM2K_SEAM_TRACE",
+              # Phase 4b spectator across-match-boundary diagnosis. ALL of
+              # these must ALSO reach the spectators (see the spectator list
+              # below) -- forwarding them here only is exactly the recorded
+              # trap that produces a half-blind run: the probe fires on P1/P2
+              # and silently never arms on the plane under investigation.
+              #   FM2K_FACING_TRACE  -- [FACING] ring, both planes (dark)
+              #   FM2K_FULL_CRCS     -- per-region CRC on EVERY save, not 1/sec
+              #   FM2K_EB_DIAG       -- shake/palette/screen timers (rank 4)
+              #   FM2K_SPEC_FINGERPRINT -- [HOST-FP]/[SPEC-FP] pairing
+              "FM2K_FACING_TRACE", "FM2K_FULL_CRCS", "FM2K_EB_DIAG",
+              "FM2K_SPEC_FINGERPRINT"):
         if os.environ.get(k):
             common_env[k] = os.environ[k]
     # FM2K_SPEC_DEEP_JOIN is forwarded SEPARATELY and by presence, not by
@@ -1310,7 +1535,23 @@ def main():
                    "FM2K_RC_FEC", "FM2K_RC_FEC_K",
                    "FM2K_TEST_SPEC_TCP_BLACKHOLE",
                    # mid-join spectate desync hunt: per-region full-state fingerprint
-                   "FM2K_FULLFP", "FM2K_POOLSET"):
+                   "FM2K_FULLFP", "FM2K_POOLSET",
+                   # Phase 4c match-start pool resync kill-switch (viewer half).
+                   "FM2K_SPEC_POOL_SYNC",
+                   # Phase 4e: the topology gate escape hatch, viewer half. It
+                   # MUST be symmetric with the player list -- the POOL terms
+                   # compare the two planes, so a one-sided hatch would silently
+                   # disable the gate from whichever side got it.
+                   "FM2K_CK_TOPOLOGY",
+                   # Phase 4b: the SPECTATOR half of the diagnosis env. The
+                   # whole point of the phase is to compare the two planes, so
+                   # every probe listed for the players above must appear here
+                   # too or the run measures the host against nothing.
+                   # FM2K_HOST_TRACE is included because [SPEC-FP]'s sibling
+                   # [HOST-FP] is gated on it and the pair is read together.
+                   "FM2K_FACING_TRACE", "FM2K_FULL_CRCS", "FM2K_EB_DIAG",
+                   "FM2K_SPEC_FINGERPRINT", "FM2K_HOST_TRACE",
+                   "FM2K_SEAM_TRACE"):
             if os.environ.get(kk):
                 env[kk] = os.environ[kk]
         # Bounded deep join -- the viewer only obeys the grant, but it must be
@@ -1915,7 +2156,7 @@ def main():
             f.unlink(missing_ok=True)
 
     if real_fail:
-        why = ("CHECKSUM full-state desync (see above)" if ck_fail else
+        why = ("CHECKSUM full-state / POOL topology desync (see above)" if ck_fail else
                "CINPUT input-frame desync (see above)" if cin_fail else
                "CSS-FP cursor/selection desync (see above)" if css_fail else "rng/hp gate")
         print(f"[harness] OVERALL FAIL: a spectator desynced from host -- {why}.")

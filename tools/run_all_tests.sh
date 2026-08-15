@@ -32,6 +32,21 @@
 #                    rollback-desync class (the 967f89f regression). Judged ONLY
 #                    by GekkoNet's `DESYNC #` term, plus tools/seam_ring_check.py
 #                    when the build emits seam-ring CSVs.
+#   2f. hubspec      hub_spectate_e2e.py -- the HUB-BROKERED spectate path:
+#                    a LOCAL hub (FM2K_HUB_AUTH_DISABLE=1, no Discord, no DB),
+#                    three launchers driven headless by the default-off
+#                    FM2K_HUB_AUTOMATION surface, a real challenge/accept, and a
+#                    spectator that exists ONLY because the hub granted it (no
+#                    --spectate anywhere). Every other spectator stage dials the
+#                    host directly, so the grant path had zero coverage.
+#                    FULL=1 adds the relay variant (spec_transport=relay
+#                    negotiated through the grant + the hub's 0xCF data plane).
+#   2g. specgame     spec_selftest --game vanpri --total-frames 16000 (FULL only)
+#                    -- the spectator x HEAVY-GAME hole: every other spectator
+#                    stage runs without --game, i.e. always wanwan (~10 objects),
+#                    so spectate against an 80-150-object game with projectiles
+#                    and recursive stage scripts had NEVER been gated. That is
+#                    where the object-pool index incoherence decides a hit.
 #   3. ddraw         ddraw_redirect_test.sh — cnc-ddraw redirect applied.
 #   4. multigame     multigame_determinism_sweep.sh (FULL only) — byte-identical
 #                    engine determinism across the real FM2K game library.
@@ -56,6 +71,8 @@
 #      KS_SKIP(0)                               -- stage 2d deep join (+kill-switch)
 #      SEAM_SEEDS(130; FULL: "130 131") SEAM_TOTAL(6000) SEAM_TIMEOUT(480)
 #      SEAM_SKIP(0) SEAM_GAMEDIR(/mnt/c/games/2dfm/wanwan)  -- stage 2e seam desync
+#      HUBSPEC_SKIP(0) HUBSPEC_TIMEOUT(480)     -- stage 2f hub-brokered spectate
+#      SPECGAME_SKIP(0) SPECGAME_TIMEOUT(720) VANPRI_EXE(...)  -- stage 2g
 #      CPW_EXE(/mnt/c/dev/fm95/CPW/ＣＰＷ.exe) FM95_NETPLAY(0)  — stage 5
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -63,7 +80,7 @@ FRAMES="${FRAMES:-1500}"; LOSS="${LOSS:-0.15}"; SPEC_RUNS="${SPEC_RUNS:-4}"
 CD="${FM2K_CHECK_DISTANCE:-10}"; FULL="${FULL:-0}"
 OUT="$ROOT/logs/run_all_tests"; rm -rf "$OUT"; mkdir -p "$OUT"
 
-kill_games() { for p in WonderfulWorld_ver_0946 WonderfulRvl FM2K_RollbackLauncher fm2k FM2K CPW ＣＰＷ; do
+kill_games() { for p in WonderfulWorld_ver_0946 WonderfulRvl FM2K_RollbackLauncher fm2k FM2K CPW ＣＰＷ vanpri; do
     taskkill.exe /F /IM "${p}.exe" >/dev/null 2>&1; done; }
 
 # FM95/CPW reference exe (fullwidth filename). Stage 5 self-skips if absent so
@@ -397,6 +414,94 @@ if [ "${SEAM_SKIP:-0}" = 1 ]; then
 else
     CMD="SEAM_SEEDS='$SEAM_SEED_LIST' SEAM_OUT='$OUT/2e_seam' bash '$ROOT/tools/seam_desync_gate.sh'"
     stage "seamdesync" "$OUT/2e_seamdesync.log"
+fi
+
+# Stage 2f -- HUB-BROKERED SPECTATE (tools/hub_spectate_e2e.py owns the recipe
+# and the verdict; the rationale lives in that file's header). The class: every
+# spectator stage before this one passed `--spectate <ip:port>` on the command
+# line, which is the one path a real user never takes. This stage stands up a
+# LOCAL hub with auth disabled, drives host+guest+spectator launchers headless
+# through the default-off FM2K_HUB_AUTOMATION surface, and asserts the spectator
+# process was created from the hub's spectate_grant (the grant's host=IP:PORT is
+# matched against the address the process was actually launched with, and the
+# harness passes no --spectate token anywhere, so a direct fallback is
+# impossible by construction rather than merely unobserved).
+#
+# It touches ONLY a local hub on 127.0.0.1 -- the production hub and droplet are
+# never contacted -- though the stage is NOT network-isolated: each launcher
+# still does its own GitHub releases update-check on first menu-bar render.
+# It temporarily swaps four per-user files (the Discord auth cache,
+# dev_flags.ini, the games-root launcher.cfg and games.cache) under sentinel
+# backups. Restore paths, in order of what they survive: the run's own finally;
+# an atexit + SIGTERM/SIGINT/SIGBREAK handler (unhandled exception, terminal
+# kill); and restore-on-start, which is the FIRST thing the next run does and is
+# the only thing that survives a SIGKILL, a BSOD or power loss. The synthetic
+# Discord credential is planted only after the run proves it is pointed at a
+# loopback hub.
+#
+# ~65 s per run. FULL=1 adds the relay variant.
+if [ "${HUBSPEC_SKIP:-0}" = 1 ]; then
+    echo "[run_all] hubspec: SKIPPED (HUBSPEC_SKIP=1)"
+else
+    HUBSPEC_TIMEOUT="${HUBSPEC_TIMEOUT:-480}"
+    # Dedicated FM2K_TEST_OUT_DIR: tools/.spec_selftest is shared and re-gated
+    # across stages 2b/2c, and it must sit on the Windows filesystem.
+    CMD="FM2K_TEST_OUT_DIR='$ROOT/tools/.hub_spectate_e2e' timeout $HUBSPEC_TIMEOUT python3 -u '$ROOT/tools/hub_spectate_e2e.py'"
+    stage "hubspec" "$OUT/2f_hubspec.log"
+    if [ "$FULL" = 1 ]; then
+        CMD="FM2K_TEST_OUT_DIR='$ROOT/tools/.hub_spectate_e2e_relay' timeout $HUBSPEC_TIMEOUT python3 -u '$ROOT/tools/hub_spectate_e2e.py' --relay"
+        stage "hubspec-relay" "$OUT/2f_hubspec_relay.log"
+    fi
+fi
+
+# Stage 2g -- SPECTATOR x HEAVY GAME (FULL only). THE GATE HOLE THIS CLOSES:
+# every other spectator stage runs spec_selftest WITHOUT --game, i.e. always
+# against wanwan -- a 2-stage game whose battles carry ~10 active objects. The
+# spectator-vs-heavy-game combination had never been gated at all, which is the
+# ShadowArts shape (a stage that reports PASS for a path it never executes).
+# vanguard-princess carries 80-150 active objects per battle frame with
+# projectiles and recursive stage scripts, and it is where the object-pool
+# index incoherence (Phase 4b/4c) actually decides a hit: the 4a/4b runs
+# reproduced a real spectator sim divergence 1 run in 1 at this recipe, on a
+# build where wanwan looked perfectly clean.
+#
+# The recipe is 4a's VERBATIM, including --total-frames 16000: that number is
+# load-bearing (a vanpri match runs ~3500-7000 frames, and reaching a THIRD
+# match is what the class needs; 7000 deterministically yields 0-frame
+# spectators). Registry key is `vanpri` -- the DIRECTORY is
+# /mnt/c/games/2dfm/vanguard-princess/ but --game takes the GAMES key.
+#
+# Verdict = spec_selftest's own exit code (CINPUT + CHECKSUM + the new POOL
+# topology terms + the rng/hp gate), same as every other spectator stage.
+# ~6 min, FULL=1 only. Self-skips when the game is not installed, so a
+# contributor without it is unaffected.
+#
+# VANPRI_EXE IS LOAD-BEARING (Phase 4e, review A4d). It used to be read ONLY by
+# the skip guard below while the harness resolved vanpri from its own hardcoded
+# GAMES entry -- so the two agreed by coincidence, and pointing VANPRI_EXE at a
+# different install would pass the guard and then run the other copy. That is the
+# ShadowArts shape this stage exists to eliminate, reproduced inside the fix for
+# it. The path is now handed to the harness as --game-exe, which FAILS (rc=2) if
+# it is absent rather than falling back.
+VANPRI_EXE="${VANPRI_EXE:-/mnt/c/games/2dfm/vanguard-princess/vanpri.exe}"
+if [ "${SPECGAME_SKIP:-0}" = 1 ]; then
+    echo "[run_all] specgame-vanpri: SKIPPED (SPECGAME_SKIP=1)"
+elif [ "$FULL" != 1 ]; then
+    echo "[run_all] specgame-vanpri: SKIPPED (set FULL=1 -- ~6 min)"
+elif [ ! -f "$VANPRI_EXE" ]; then
+    echo "[run_all] specgame-vanpri: SKIPPED (vanguard-princess not installed at $VANPRI_EXE)"
+else
+    SPECGAME_TIMEOUT="${SPECGAME_TIMEOUT:-720}"
+    # Dedicated FM2K_TEST_OUT_DIR, same reason stage 2f has one: tools/.spec_selftest
+    # is shared and re-gated across stages 2b/2c, and this stage runs with --keep,
+    # so a later `python3 tools/test_css_gate.py` would read vanpri logs where it
+    # expects wanwan's. Must sit on the Windows filesystem (recorded harness trap).
+    CMD="FM2K_TEST_OUT_DIR='$ROOT/tools/.spec_selftest_vanpri' \
+      FM2K_SPEC_DEEP_JOIN=1 FM2K_NET_DELAY_MS=100 FM2K_NET_JITTER_MS=30 FM2K_NET_LOSS=0.10 \
+      timeout $SPECGAME_TIMEOUT python3 -u '$ROOT/tools/spec_selftest.py' --game vanpri \
+      --game-exe '$VANPRI_EXE' \
+      --rounds 1 --total-frames 16000 --spectators battle1,css2 --record-timeout 600 --keep"
+    stage "specgame-vanpri" "$OUT/2g_specgame_vanpri.log"
 fi
 
 # Stage 3 — cnc-ddraw redirect (the "SJIS folder -> fullscreen" class). Drives

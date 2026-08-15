@@ -190,13 +190,23 @@ public:
     // launcher sets FM2K_SPEC_TRANSPORT=relay on the spec game spawn
     // so the hook enters relay mode without the user setting an env.
     // Default "tcp" preserves legacy P2P TCP spec data plane.
+    //
+    // NO DEFAULTS on session_kind / mode / spec_transport (Phase 4e, review
+    // A7b). They used to default to "menu" / "current" / "tcp", which is how a
+    // 6-argument call with the TRANSPORT in the 6th slot compiled clean, warned
+    // nothing, and silently pinned FM2K_SPEC_TRANSPORT=tcp on every
+    // hub-brokered spectator for the whole life of the feature (relay spectate
+    // could not have worked in the field). A wrong-arity call must be a compile
+    // error, not a behaviour change that is invisible for tcp hosts. Only
+    // player_index -- the one argument no caller has ever varied -- keeps a
+    // default.
     bool LaunchRemoteSpectator(const std::string& game_path,
                                int spectator_port,
                                const std::string& host_ip,
                                int host_port,
-                               const std::string& session_kind = "menu",
-                               const std::string& mode = "current",
-                               const std::string& spec_transport = "tcp",
+                               const std::string& session_kind,
+                               const std::string& mode,
+                               const std::string& spec_transport,
                                int player_index = 2);
 
     // Offline replay player. Launches the game with FM2K_SPECTATOR_MODE=1

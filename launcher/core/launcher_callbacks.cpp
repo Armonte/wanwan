@@ -226,8 +226,20 @@ void FM2KLauncher::WireUICallbacks() {
         // If a spectator is already running, LaunchRemoteSpectator returns
         // false; user can stop it from the multi-client tools first.
         constexpr int SPEC_LOCAL_PORT = 7002;
+        // ARGUMENT ORDER. LaunchRemoteSpectator is
+        //   (game, port, host_ip, host_port, session_kind, mode, spec_transport)
+        // and this call used to pass spec_transport in the SIXTH slot, i.e. as
+        // `mode`, leaving spec_transport at its "tcp" default. So the hub path
+        // -- the ONLY path that negotiates a transport -- set
+        // FM2K_SPEC_TRANSPORT=tcp on every spectator no matter what the grant
+        // said, and relay-mode spectating could never work for a real user.
+        // Invisible for a tcp host (mode "tcp" normalizes to "current", which
+        // is also the default), which is why it survived; the hub-brokered E2E
+        // harness caught it on its first relay run ("mode=relay, transport=tcp"
+        // in the launch line, host subscribed but zero frames admitted).
         LaunchRemoteSpectator(selected_game_.exe_path, SPEC_LOCAL_PORT,
-                              host_ip, host_port, session_kind, spec_transport);
+                              host_ip, host_port, session_kind,
+                              /*mode=*/"current", spec_transport);
     };
     ui_->on_exit = [this]() {
         running_ = false;

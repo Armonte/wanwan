@@ -335,7 +335,6 @@ void LauncherUI::RenderHubPanel() {
             // off restores the user's last custom value).
             const std::string outgoing_nick =
                 s_use_discord_name ? s_discord_global_name : std::string(s_nick);
-            hs.my_nick = outgoing_nick;
             // Persist nick + checkbox state to discord_auth.json.
             auto cached_save = fm2k::discord_auth::LoadCached();
             if (cached_save.valid) {
@@ -350,91 +349,12 @@ void LauncherUI::RenderHubPanel() {
                 }
                 if (dirty) fm2k::discord_auth::SaveCached(cached_save);
             }
-            // Auto-pick a free UDP port: bind a socket to port 0
-            // (OS-assigned ephemeral), read back the chosen port via
-            // getsockname, close. Same-machine multi-launcher tests
-            // get distinct ports automatically; users never need to
-            // think about it. Cross-machine: any free port works.
-            //
-            // WSAStartup is required before socket() on Windows. It's
-            // idempotent -- internal refcount, fine to call repeatedly.
-            // Without it socket() fails with WSANOTINITIALISED and the
-            // fallback picks 7000, which then collides between two
-            // launchers on the same box.
-            int picked = 7000;
-            WSADATA wsa{};
-            WSAStartup(MAKEWORD(2, 2), &wsa);
-            SOCKET s = socket(AF_INET, SOCK_DGRAM, 0);
-            if (s == INVALID_SOCKET) {
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "Hub: auto-pick socket() failed (err=%d) -- falling back to 7000",
-                    WSAGetLastError());
-            } else {
-                sockaddr_in addr{};
-                addr.sin_family = AF_INET;
-                addr.sin_port = 0;
-                addr.sin_addr.s_addr = INADDR_ANY;
-                if (bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
-                    sockaddr_in bound{};
-                    int len = sizeof(bound);
-                    if (getsockname(s, reinterpret_cast<sockaddr*>(&bound), &len) == 0) {
-                        picked = ntohs(bound.sin_port);
-                    }
-                } else {
-                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                        "Hub: auto-pick bind() failed (err=%d)", WSAGetLastError());
-                }
-                closesocket(s);
-            }
-            network_config_.local_port = picked;
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                        "Hub: auto-picked UDP port %d for this session", picked);
-            // Hub address from the Host field above. The same string
-            // gets persisted into the FM2K_HUB_HOST env so the spawned
-            // game's nat_traversal STUN probe / relay endpoint uses
-            // the same host.
-            const std::string hub_host = (hub_host_[0] != '\0') ? hub_host_ : "hub.2dfm.org";
-            ::SetEnvironmentVariableA("FM2K_HUB_HOST", hub_host.c_str());
-            // TCP-STUN endpoint -- same hub host, port 7713 (UDP-STUN at
-            // 7711, UDP-relay at 7712). Set process-wide here so every
-            // spawned game (player AND spectator) inherits and can run
-            // its outbound TCP-STUN probe at hook init. Without this,
-            // the spec hook logs "FM2K_HUB_TCP_STUN_ADDR unset -- skipping"
-            // and falls back to local listener port for cross-NAT punch
-            // -- which fails on non-port-preserving NATs.
-            ::SetEnvironmentVariableA("FM2K_HUB_TCP_STUN_ADDR",
-                                      (hub_host + ":7713").c_str());
-            // FM2K_HUB_UDP_ADDR -- set at connect time (hub_host known here).
-            // FM2K_HUB_USER_ID is set on Connected (hello_ack) where my_id
-            // first lands; both are required by the hook's STUN probe
-            // (nat_traversal.cpp::SendStunProbe). Used to be set only
-            // inside the match_start handler -- meaning a spec instance
-            // launched before joining any match wouldn't STUN, so hub's
-            // user.udp_addr stayed at whatever earlier game STUN landed
-            // (or empty), and spectator_incoming forwarded the wrong UDP
-            // port to the host. The punch went nowhere.
-            ::SetEnvironmentVariableA("FM2K_HUB_UDP_ADDR",
-                                      (hub_host + ":7711").c_str());
-            // Pull the cached Discord hub_token. Hub will reject the
-            // hello with `auth_required` if missing/expired and the
-            // launcher will surface the error in status_line.
-            const auto cached = fm2k::discord_auth::LoadCached();
-            // v0.2.8 routes WSS through Caddy on 443 by default; legacy
-            // 2dfm.sytes.net hosts (set by users on older configs) keep
-            // the direct-WS-on-7711 path so cutover is transparent.
-            const bool use_legacy = (hub_host.find("sytes.net") != std::string::npos);
-            const uint16_t      ws_port = use_legacy ? 7711  : 443;
-            const char*         ws_path = use_legacy ? "/"   : "/ws";
-            const bool          ws_tls  = !use_legacy;
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                        "Hub: connecting to %s%s:%u (%sWS) auth=%s",
-                        hub_host.c_str(), ws_path, (unsigned)ws_port,
-                        ws_tls ? "WSS via " : "",
-                        cached.valid ? "present" : "missing");
-            hs.client.SetStealth(hs.stealth);  // ensure the hello reflects the current toggle
-            hs.client.Connect(hub_host, ws_port, ws_path, hs.my_nick,
-                              cached.hub_token, ws_tls);
-            hs.status_line = "connecting to " + hub_host + " ...";
+            // Connect body moved verbatim to LauncherUI::HubConnect()
+            // (launcher_ui_hub_automation.cpp): the default-off
+            // FM2K_HUB_AUTOMATION driver has to run the SAME port pick, env
+            // exports and endpoint selection this button does, and it runs
+            // from TickAlways() where no ImGui panel is painting.
+            HubConnect(outgoing_nick);
         }
         if (!can_connect) ImGui::EndDisabled();
     } else {
@@ -737,56 +657,12 @@ void LauncherUI::RenderHubPanel() {
                         // accept modal (#54). Anti-cheat clamps land
                         // launcher-side before the wire encode so the
                         // target can't see un-clamped values.
+                        // Body moved verbatim to BuildChallengeSettings()
+                        // (launcher_ui_hub_automation.cpp) so the default-off
+                        // automation driver issues the IDENTICAL payload
+                        // instead of a second, drifting copy.
                         fm2k::MatchSettings ms;
-                        if (selected_game_index_ >= 0 &&
-                            selected_game_index_ < (int)games_.size())
-                        {
-                            const auto& g = games_[selected_game_index_];
-                            fm2k::game_ini::GamePlayConfig cfg;
-                            fm2k::game_ini::LoadResolved(g.exe_path, cfg);
-                            fm2k::game_ini::ForceOnlineClamps(cfg);
-                            ms.player0_cpu      = cfg.player0_cpu;
-                            ms.player1_cpu      = cfg.player1_cpu;
-                            ms.game_speed       = cfg.game_speed;
-                            ms.hit_judge        = cfg.hit_judge;
-                            ms.game_information = cfg.game_information;
-                            ms.stage_nb         = cfg.stage_nb;
-                            ms.joystick         = cfg.joystick;
-                            ms.time             = cfg.time;
-                            ms.exit_flag        = cfg.exit_flag;
-                            ms.vs_mode          = cfg.vs_mode;
-                            ms.vs_single_play   = cfg.vs_single_play;
-                            ms.vs_team_play     = cfg.vs_team_play;
-                        }
-                        // Random-stage extension (#56). When enabled,
-                        // generate a fresh xorshift seed per challenge
-                        // and ship it to the peer. Both peers re-seed
-                        // their hook PRNG from this same value, then
-                        // run identical sequences on rematches with
-                        // zero per-rematch wire traffic. Seed != 0
-                        // is the wire signal "random is on" -- keep
-                        // a tiny rejection loop so we never accidentally
-                        // hand a 0 seed.
-                        EnsureRandomStageLoaded();  // per-game
-                        if (random_stage_enable_ &&
-                            random_stage_max_ >= random_stage_min_)
-                        {
-                            uint32_t seed = 0;
-                            while (seed == 0) {
-                                // 32-bit mix of two rand() bursts; not
-                                // cryptographic but plenty random for
-                                // a uniform stage roll.
-                                seed = (uint32_t)((std::rand() & 0xFFFF) |
-                                                  ((std::rand() & 0xFFFF) << 16));
-                            }
-                            ms.random_seed      = seed;
-                            ms.random_stage_min = random_stage_min_;
-                            ms.random_stage_max = random_stage_max_;
-                            // Override any explicit stage_nb so the
-                            // client doesn't apply both. Random takes
-                            // precedence when on.
-                            ms.stage_nb = -1;
-                        }
+                        BuildChallengeSettings(ms);
                         hs.client.Challenge(uid, ms);
                         hs.outgoing_challenge_to_id   = uid;
                         hs.outgoing_challenge_to_nick = u.nick;

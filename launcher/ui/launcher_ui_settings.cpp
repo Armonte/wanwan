@@ -322,24 +322,70 @@ void LauncherUI::RenderDiscordAuthWindow() {
     if (busy) ImGui::BeginDisabled();
     if (ImGui::Button(s_cached.valid ? T("hub_resignin") : T("hub_signin"))) {
         // Build hub HTTP base URL. Default is HTTPS via the public
-        // reverse proxy (hub.2dfm.org → Caddy → 127.0.0.1:7700 on the
-        // DO droplet). The old No-IP host 2dfm.sytes.net is fully
-        // retired (DNS gone); the sytes.net branch below is dead
-        // legacy-compat, kept only so a stale saved hub_host_ resolves
-        // to nothing loudly rather than silently -- clear the Hub Server
-        // host field to fall back to the hub.2dfm.org default.
+        // reverse proxy (hub.2dfm.org -> Caddy -> 127.0.0.1:7700 on the
+        // DO droplet).
+        //
+        // DEFAULT RESTORATION for the ONE retired name (review A8a): only the
+        // exact dead literal 2dfm.sytes.net is restored to the default. An
+        // unanchored find("sytes.net") would silently redirect a user's own
+        // free-dyndns hub -- typed this session, since hub_host_ is never
+        // persisted -- to production, together with their Discord OAuth
+        // exchange. Same predicate as the WS path in
+        // launcher_ui_hub_automation.cpp::HubConnect.
         std::string base;
-        const char* host = hub_host_[0] ? hub_host_ : "hub.2dfm.org";
-        // Heuristic: any host that's the new public hostname OR an
-        // IP-with-no-port likely wants HTTPS on 443. Legacy NoIP host
-        // stays on http://...:7700 for backwards compat.
-        if (std::strstr(host, "sytes.net") || std::strchr(host, ':')) {
-            base = "http://";
-            base += host;
-            if (!std::strchr(host, ':')) base += ":7700";
+        std::string host = hub_host_[0] ? hub_host_ : "hub.2dfm.org";
+        if (fm2k::hub_endpoint::IsRetiredHubHost(host)) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "Hub: hub host '%s' is the RETIRED No-IP name (DNS removed) -- "
+                "restoring the default hub.2dfm.org.", host.c_str());
+            host = "hub.2dfm.org";
+        } else if (host.find("sytes.net") != std::string::npos) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "Hub: hub host '%s' is not the retired 2dfm.sytes.net -- using "
+                "it AS TYPED for the Discord pairing exchange.", host.c_str());
+        }
+        // Plain http (no TLS front) is for a LOCAL hub only: a loopback
+        // spelling, a private-IP host, or an explicit host:port on one of
+        // those. Everything else is the public hostname behind Caddy (https).
+        //
+        // PHASE 4e (review A8c). Two downgrades were reachable for a PUBLIC
+        // host and the comment above them claimed neither could be:
+        //   * FM2K_HUB_INSECURE was not conditioned on the host at all;
+        //   * bare presence-of-a-colon sent ANY "example.com:8443" to plain
+        //     http -- and this exchange is HOW the hub_token is obtained, so it
+        //     ran the Discord OAuth pairing unencrypted against a public host.
+        // Both are now gated on the host actually being private. The colon term
+        // survives only for a private host (a local dev hub's 127.0.0.1:7700).
+        const char* insecure_env = std::getenv("FM2K_HUB_INSECURE");
+        const bool  insecure_req = (insecure_env && std::strcmp(insecure_env, "1") == 0);
+        const size_t colon       = host.find(':');
+        // "::1" is a loopback spelling, not a host:port -- test it first.
+        const bool  loopback_hub = fm2k::hub_endpoint::IsLoopbackHost(host);
+        const std::string bare   = (!loopback_hub && colon != std::string::npos)
+                                     ? host.substr(0, colon) : host;
+        const bool  has_port     = (!loopback_hub && colon != std::string::npos);
+        const bool  private_hub  = fm2k::hub_endpoint::IsPrivateHost(bare);
+        const bool  hub_insecure = insecure_req && private_hub;
+        if (insecure_req && !private_hub) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                "Hub: REFUSING FM2K_HUB_INSECURE for '%s' -- not a loopback or "
+                "private address. The Discord pairing exchange stays on https.",
+                host.c_str());
+        }
+        if (has_port && !private_hub) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "Hub: '%s' names a port on a PUBLIC host -- using https, not "
+                "plain http. The Discord pairing exchange must not run in the "
+                "clear against a routable host.", host.c_str());
+        }
+        if ((has_port && private_hub) || loopback_hub || hub_insecure) {
+            // A bare IPv6 literal needs brackets before a port can be appended
+            // (previously "::1" produced the malformed "http://::1").
+            const bool v6_bare = (host == "::1");
+            base = "http://" + (v6_bare ? std::string("[::1]") : host);
+            if (!has_port) base += ":7700";
         } else {
-            base = "https://";
-            base += host;
+            base = "https://" + host;
         }
         s_pairing.reset(Begin(base));
         s_status = "Browser opened. Click Authorize on Discord and come back.";

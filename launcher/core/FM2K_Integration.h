@@ -25,6 +25,9 @@ class FM2KGameInstance;
 class LauncherUI;
 namespace fm2k { struct HubEvent; }   // hub WS event (FM2K_HubClient.h); only a
                                       // reference is needed for the LauncherUI::HandleHubEvent decl
+namespace fm2k { struct MatchSettings; }  // challenge payload (FM2K_HubClient.h);
+                                      // only a reference is needed for the
+                                      // LauncherUI::BuildChallengeSettings decl
 namespace fm2k { class PortMapper; }  // UPnP port mapper (Phase 1); defined
                                       // in FM2K_PortMapper.h, owned by
                                       // LauncherUI as a unique_ptr so the

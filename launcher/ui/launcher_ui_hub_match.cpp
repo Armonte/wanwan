@@ -392,6 +392,11 @@ void LauncherUI::TickAlways() {
     if (hub_state_) {
         auto& hs = *hub_state_;
         hs.client.Poll([this](const fm2k::HubEvent& ev) { HandleHubEvent(ev); });
+        // Default-off harness automation. Runs AFTER the drain so it acts on
+        // this tick's freshly-dispatched state, and here rather than in
+        // RenderHubPanel because the panel does not paint when its dock tab is
+        // unselected or the launcher is minimized. One getenv when disabled.
+        TickHubAutomation();
     }
     PollMatchOutcome();
 }

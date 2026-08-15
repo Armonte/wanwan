@@ -5,6 +5,33 @@
 
 // Game instance management - see FM2K_GameInstance.h for full definition
 
+// Hub ENDPOINT PREDICATES (Phase 4e, review A8a/A8c). Shared by the two call
+// sites that choose a hub URL -- launcher_ui_hub_automation.cpp (HubConnect,
+// the WS endpoint) and launcher_ui_settings.cpp (the OAuth HTTP base) -- so the
+// two can never drift. Defined in launcher_ui_hub_automation.cpp.
+namespace fm2k { namespace hub_endpoint {
+
+// EXACTLY the three loopback spellings the rest of the launcher special-cases.
+// Exact string equality, never substring: "localhost.evil.com" and
+// "127.0.0.1.attacker.net" must NOT be loopback.
+bool IsLoopbackHost(const std::string& host);
+
+// Loopback, or an RFC1918 / link-local literal (10.x, 172.16-31.x, 192.168.x,
+// 169.254.x, IPv6 fc00::/7 and fe80::/10). This is the ONLY set for which a
+// plaintext hub connection may be chosen: a plaintext hub WS carries the
+// Discord hub_token in its hello, so allowing FM2K_HUB_INSECURE to downgrade a
+// public host would ship that credential in the clear.
+bool IsPrivateHost(const std::string& host);
+
+// The retired No-IP hub name, EXACTLY. Anchored on purpose: sytes.net is a
+// large public free-dyndns domain and running your own hub is a use case the
+// Settings help text invites, so a substring test silently redirects a live
+// user choice ("myhub.sytes.net") to production. Only the one dead literal is
+// restored to the default.
+bool IsRetiredHubHost(const std::string& host);
+
+}}  // namespace fm2k::hub_endpoint
+
 // Modern ImGui launcher interface
 class LauncherUI {
 public:
@@ -292,6 +319,18 @@ private:
     void RenderHubPanel();              // Fightcade-style lobby
     void HandleHubEvent(const fm2k::HubEvent& ev);  // hub WS event dispatch (split into launcher_ui_hub_events.cpp)
     void HandleMatchStartEvent(const fm2k::HubEvent& ev);  // K::MatchStart handler (launcher_ui_hub_events_match.cpp)
+    // Hub CONNECT action (port auto-pick + env exports + WS endpoint choice +
+    // HubClient::Connect), shared by the Hub panel's Connect button and the
+    // default-off FM2K_HUB_AUTOMATION driver. launcher_ui_hub_automation.cpp.
+    void HubConnect(const std::string& outgoing_nick);
+    // Resolved [GamePlay] challenge payload (ini + online clamps + random
+    // stage), shared by the Challenge button and the automation driver so the
+    // two can never issue different settings. launcher_ui_hub_automation.cpp.
+    void BuildChallengeSettings(fm2k::MatchSettings& ms);
+    // FM2K_HUB_AUTOMATION driver -- inert unless that var is 1. Called from
+    // TickAlways (NOT the render path: the Hub panel does not paint when its
+    // dock tab is unselected). launcher_ui_hub_automation.cpp.
+    void TickHubAutomation();
     void RenderHostConfigWindow();      // Match-settings UI (SOCD, stage, etc.)
     void RenderHubServerWindow();       // Legacy floating window -- kept for hot-reload paths; new path is the Settings tab.
     void RenderDiscordAuthWindow();     // Stays separate -- OAuth pairing flow has its own state machine.

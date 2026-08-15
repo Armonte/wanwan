@@ -467,6 +467,7 @@ add_executable(FM2K_RollbackLauncher
     launcher/ui/launcher_ui_hub_events.cpp  # HandleHubEvent: hub WS event dispatch (split from RenderHubPanel)
     launcher/ui/launcher_ui_hub_events_match.cpp  # HandleMatchStartEvent: 358-line K::MatchStart handler (split)
     launcher/ui/launcher_ui_hub_panel.cpp  # RenderHubPanel: lobby panel rendering (split from hub)
+    launcher/ui/launcher_ui_hub_automation.cpp  # HubConnect/BuildChallengeSettings + default-off FM2K_HUB_AUTOMATION driver
     launcher/hub/FM2K_HubClient.cpp  # core: ctor/dtor + Connect/Disconnect/Poll/queue (split)
     launcher/hub/FM2K_HubClient_json.cpp  # minimal JSON encode/decode helpers (split)
     launcher/hub/FM2K_HubClient_outbound.cpp  # Send*/Join/Challenge/MatchResult senders (split)

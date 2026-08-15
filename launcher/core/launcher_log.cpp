@@ -188,6 +188,26 @@ void Init() {
     std::wstring logpath  = dir + L"\\launcher.log";
     std::wstring prevpath = dir + L"\\launcher.prev.log";
 
+    // FM2K_LAUNCHER_LOG -- absolute path override. The default path is derived
+    // from the EXE directory, so N launchers sharing one install (the
+    // documented two-local-instances dev flow, and the hub-brokered spectate
+    // harness which runs THREE) all open the same file with CREATE_ALWAYS and
+    // then write through independent file pointers: every instance truncates
+    // the others and the result is unreadable. Pointing each instance at its
+    // own file is the only way to get a per-instance log out of a multi-
+    // instance session. Unset in every normal run, so the shipped behavior
+    // (launcher.log next to the EXE, rotating to launcher.prev.log) is
+    // untouched.
+    if (const char* over = std::getenv("FM2K_LAUNCHER_LOG"); over && over[0]) {
+        const int wn = MultiByteToWideChar(CP_UTF8, 0, over, -1, nullptr, 0);
+        if (wn > 1) {
+            std::wstring w(static_cast<size_t>(wn - 1), L'\0');
+            MultiByteToWideChar(CP_UTF8, 0, over, -1, w.data(), wn);
+            logpath  = w;
+            prevpath = w + L".prev";
+        }
+    }
+
     // Keep the previous run around (best-effort -- ignore failure).
     MoveFileExW(logpath.c_str(), prevpath.c_str(), MOVEFILE_REPLACE_EXISTING);
 

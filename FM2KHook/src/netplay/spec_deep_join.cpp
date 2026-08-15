@@ -80,6 +80,7 @@
 // count it separately as `charguard`.
 #include "spectator_node.h"
 #include "spectator_node_internal.h"  // shared State model + g_state
+#include "spec_pool_sync.h"           // Phase 4c: widens WHO the per-battle push serves
 #include "control_channel.h"
 #include "netplay.h"
 #include "netplay_state.h"
@@ -212,7 +213,19 @@ uint32_t ConsumedInputPos() {
 // ---------------------------------------------------------------------------
 
 void DeepJoinOnBind(Subscriber& sub) {
-    if (!sub.deep_join_eligible) return;
+    if (!sub.deep_join_eligible) {
+        // PHASE 4e (review A1.3). Under the match-start pool resync every bound
+        // subscriber is armed at battle entry, and DeepJoinPushTick deliberately
+        // KEEPS an arm across an unbound window (a deep joiner is waiting on
+        // that blob and cannot proceed without it). A CONTINUING viewer is not:
+        // if its TCP dropped and it rebinds mid-match, delivering the arm then
+        // ships a ~45 KB blob for an anchor the viewer is already past, so it is
+        // refused (anchor < consumed) -- pure waste, injected exactly when the
+        // link has just proved itself stressed. Drop the stale arm; the next
+        // battle entry re-arms this viewer along with everyone else.
+        sub.deep_join_pending = false;
+        return;
+    }
     // Nothing has been pushed to this sub yet on the deep-join path.
     sub.deep_join_push_anchor = 0xFFFFFFFFu;
     // Arm ONLY when the host is already inside the battle this viewer is about
@@ -240,8 +253,25 @@ void DeepJoinOnBind(Subscriber& sub) {
 
 void DeepJoinArmSubscribers() {
     size_t armed = 0;
+    // PHASE 4c: with the match-start pool resync on, EVERY bound subscriber is
+    // served the battle-entry blob, not only the uncorrected bounded deep
+    // joiners. The header's old claim -- "a continuing viewer is bit-exact by
+    // simulation and a pushed snapshot would be pure risk for it" -- was
+    // measured false: a continuing viewer's object POOL is index-incoherent
+    // with the host's on 100% of frames of every match (seam_p4b_diagnosis.md),
+    // because slot assignment is a function of per-process residue that the
+    // event stream does not carry. The push is bounded by the same per-battle
+    // anchor dedupe below (one blob per viewer per match, ~45 KB on the wire),
+    // and the VIEWER still refuses anything that is not exactly its own
+    // battle-entry anchor.
+    const bool serve_all = PoolSync_HostServes();
     for (auto& sub : g_state.subscribers) {
-        if (!sub.deep_join_eligible) continue;
+        if (!sub.deep_join_eligible && !serve_all) continue;
+        // PHASE 4e (review A1.3), the other half of the DeepJoinOnBind fix:
+        // arm a CONTINUING viewer only while it is bound right now. An arm laid
+        // on an unbound continuing viewer can only ever be drained on a later
+        // rebind, i.e. mid-match, for an anchor it is already past.
+        if (!sub.deep_join_eligible && !sub.tcp_bound) continue;
         // RE-ARMS EVERY BATTLE ENTRY while the viewer is still uncorrected.
         // That is the rematch property: a joiner whose first battle ended
         // before its snapshot arrived is served the NEXT battle's blob with no
@@ -252,7 +282,7 @@ void DeepJoinArmSubscribers() {
     }
     if (armed == 0) return;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "[SPEC-DEEPJOIN] battle entry -- armed %zu bounded deep joiner(s) for "
+        "[SPEC-DEEPJOIN] battle entry -- armed %zu subscriber(s) for "
         "match=%u anchor INPUT-frame=%u (wire %zu bytes)",
         armed, g_state.current_snapshot.match_index,
         g_state.current_snapshot.input_frame,
@@ -269,8 +299,10 @@ void DeepJoinPushTick(uint64_t now) {
     // become the PREVIOUS match's -- dropping a between-matches viewer into the
     // last match's state is a worse desync than the one this wave fixes.
     if (Netplay_GetSessionKind() != NetplaySessionKind::BATTLE) return;
+    const bool serve_all = PoolSync_HostServes();   // Phase 4c, see the arm above
     for (auto& sub : g_state.subscribers) {
-        if (!sub.deep_join_pending || !sub.deep_join_eligible) continue;
+        if (!sub.deep_join_pending) continue;
+        if (!sub.deep_join_eligible && !serve_all) continue;
         // Unbound subs keep the arm: the bind path ships their payload and
         // DeepJoinOnBind decides fresh. Pushing to an unbound sub drops the
         // bytes on the floor (no TCP socket / no RC endpoint paired yet).
@@ -286,10 +318,14 @@ void DeepJoinPushTick(uint64_t now) {
         char buf[48] = {}; FormatAddr(sub.addr, buf, sizeof(buf));
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
             "[SPEC-DEEPJOIN] pushing battle snapshot to %s (match=%u, anchor "
-            "INPUT-frame=%u, wire %zu bytes) -- this viewer skipped prior "
-            "matches' simulation and is holding at battle entry for it",
+            "INPUT-frame=%u, wire %zu bytes) -- %s",
             buf, cache.match_index, cache.input_frame,
-            cache.wire_blob.size());
+            cache.wire_blob.size(),
+            sub.deep_join_eligible
+                ? "this viewer skipped prior matches' simulation and is "
+                  "holding at battle entry for it"
+                : "match-start pool resync (Phase 4c): this viewer is bit-exact "
+                  "by simulation but its object-pool slot assignment is not");
         SendSnapshotTo(sub.addr);
         sub.deep_join_push_anchor   = cache.input_frame;
         sub.deep_join_pending       = false;
@@ -327,10 +363,13 @@ void SpectatorNode_HandleSnapshotReq_Impl(const sockaddr_in& from,
             sub.deep_join_pending  = false;
             return;
         }
-        if (!sub.deep_join_eligible) {
-            // Not a deep joiner (or already corrected). Shipping a snapshot to
-            // a viewer that is bit-exact by simulation is pure risk, so refuse
-            // rather than be helpful.
+        if (!sub.deep_join_eligible && !PoolSync_HostServes()) {
+            // Not a deep joiner (or already corrected), and the match-start
+            // pool resync is off. Shipping an unasked-for snapshot then really
+            // is pure risk, so refuse rather than be helpful. With the resync
+            // ON this same request is the viewer's bounded battle-entry nudge,
+            // and the anchor equality test below is what keeps it honest -- we
+            // only ever answer with the blob for exactly the anchor asked for.
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                 "[SPEC-DEEPJOIN] ignoring SPEC_SNAPSHOT_REQ from %s -- not a "
                 "bounded deep joiner (anchor=%u)", buf, anchor_frame);
@@ -419,7 +458,19 @@ DeepJoinVerdict DeepJoinSnapshotVerdict(const State::SnapshotInbox& inbox) {
         // If we are ALREADY held at a battle entry, a forward anchor means the
         // host has moved on to a battle we missed entirely. It can never become
         // applicable, so refuse it rather than wedge the inbox on it.
-        if (!g_state.pb_deep_join_await) return DeepJoinVerdict::WAIT;
+        //
+        // PHASE 4e (review A3.2). PoolSync_Holding() is the pool-resync viewer's
+        // exact equivalent of pb_deep_join_await, and without it the REFUSE
+        // below was UNREACHABLE for that population: every forward anchor parked
+        // as WAIT, so a viewer lagging a whole match behind had its needed blob
+        // superseded by the next battle's (spec_recv.cpp SNAPSHOT_BEGIN restart)
+        // and then burned the full hold budget at every boundary waiting for a
+        // repair that no longer existed -- 2.5 s of frozen video per boundary,
+        // which makes the lag it is caused by worse. Recognise it and release.
+        const bool held_at_entry =
+            g_state.pb_deep_join_await || PoolSync_Holding();
+        if (!held_at_entry) return DeepJoinVerdict::WAIT;
+        PoolSync_OnMissedBattle(inbox.anchor_frame, consumed);
         // Was SILENT, and this is the interesting half of the pair: it is the
         // exact fingerprint of the held-battle-ended corner (our hold is on
         // battle N, the blob is battle N+1's). Counting it is how Phase 1.3

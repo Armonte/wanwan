@@ -46,6 +46,7 @@ set(FM2KHOOK_SOURCES
     src/hooks/game_patches.cpp
     src/hooks/round_events.cpp
     src/hooks/seam_free_probe.cpp        # [ENDSEAM-FREE] ClearCharacterSlot telemetry (counts only)
+    src/hooks/facing_trace.cpp           # DIAGNOSTIC Phase 4b [FACING] ring, both planes (FM2K_FACING_TRACE, dark by default)
     src/hooks/css_autoconfirm.cpp
     src/hooks/css_fastsound.cpp
     src/hooks/per_game_patches.cpp        # FM2K: damage/kof + input/mode toggles (#if !ENGINE_FM95)
@@ -95,6 +96,7 @@ set(FM2KHOOK_SOURCES
     src/netplay/spec_join.cpp        # join/redirect protocol + GekkoSpectator dedup (split from spectator_node)
     src/netplay/spec_join_viewer.cpp # viewer-side JOIN_REQ/ACK/redirect/kick (split from spec_join)
     src/netplay/spec_deep_join.cpp   # bounded deep-join snapshot push + battle-entry hold (Wave 4)
+    src/netplay/spec_pool_sync.cpp   # match-start pool resync: host snapshot re-applied at every match boundary (Phase 4c)
     src/netplay/spec_session_file.cpp # .fm2kset/.fm2krep write + load/seek (split from spectator_node)
     src/netplay/spec_playback.cpp     # op-apply + PopFrameInputs driver (split from spectator_node)
     src/netplay/spec_playback_state.cpp # admission pacing + adaptive delay bank + state accessors (split from spec_playback)

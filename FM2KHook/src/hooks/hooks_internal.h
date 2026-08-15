@@ -27,6 +27,7 @@ extern "C" void Hook_BattleDiag_TickIfActive();           // input cluster
 uint16_t Hook_ApplySOCD(uint16_t input);                  // input cluster (was static inline)
 uint16_t Hook_ApplySOCDForSpecConsume(uint16_t input);    // input cluster: spectator/replay pop path
 void CheckGameModeTransition();                            // game_mode cluster (called by Hook_UpdateGameState)
+#include "facing_trace.h"                                  // Phase 4b [FACING] ring (dark); declared here so hooks_getinput.cpp needs no new include line (1000-line rule)
 
 // Cross-cluster file-scope state (definitions in the noted TU; were static).
 extern uint16_t g_capture_p[2];                            // input TU

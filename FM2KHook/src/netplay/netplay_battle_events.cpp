@@ -24,6 +24,7 @@
 #include "globals.h"            // FM2K::ADDR_*, FM2K::kIsFM95, original_*, g_sim_step_count
 #include "gekkonet.h"
 #include "seam_trace.h"         // SeamTrace_Dump on the harness auto-terminate path
+#include "../hooks/facing_trace.h"  // Phase 4b [FACING] ring dump on the same path
 #include "../hooks/seam_free_probe.h"   // [ENDSEAM-FREE] per-tick window sampling
 #include "../parity/parity_recorder.h"  // ParityRecorder::Capture/Close
 #include "../parity/parity_pool.h"      // player-slot resolution + pool-topology fencepost term
@@ -109,13 +110,11 @@ void Netplay_HandleSaveEvent(GekkoGameEvent* update) {
     // the DETERMINISTIC rng / HP / round+game timer / current-input hash GekkoNet
     // uses for P1-vs-P2 desync detection, computed at the SAVE event = re-emitted
     // on every re-sim, so the harness's dedupe-by-frame-last yields the CONFIRMED
-    // state. It contains NO POSITION FIELDS and no object-pool term -- this
-    // comment used to say "HP/pos/rng/timer ... (positions included)" and that
-    // was never true of the code (see SaveState_CalculateFingerprint); the
-    // top=/nobj= topology term below exists precisely because of that gap.
-    // The players are already cross-checked by gekko; logging it lets
-    // the harness extend the same check to the SPECTATORS (not in the gekko
-    // session). Gated FM2K_CINPUT.
+    // state. It contains NO POSITION FIELDS and no object-pool term (see
+    // SaveState_CalculateFingerprint) -- the topology terms below exist
+    // precisely because of that gap. The players are already cross-checked by
+    // gekko; logging it lets the harness extend the same check to the
+    // SPECTATORS (not in the gekko session). Gated FM2K_CINPUT.
     {
         static int s_ck = -1;
         if (s_ck < 0) { const char* v = std::getenv("FM2K_CINPUT"); s_ck = (v && v[0] == '1') ? 1 : 0; }
@@ -125,15 +124,20 @@ void Netplay_HandleSaveEvent(GekkoGameEvent* update) {
             // handed to GekkoNet as the live P1-vs-P2 desync hash, and adding
             // terms to it would change netplay behaviour (and could kill a
             // session on a benign difference). The crc covers
-            // rng/HP/timers/ring-inputs only; the digest covers slot occupancy,
-            // object type, entity kind and player/parent linkage -- carry-state
-            // family A1, which the fencepost was blind to. Process-independent
-            // by construction (parity_pool.h): no pointer or pointer-derived
-            // value is hashed.
+            // rng/HP/timers/ring-inputs only. POST-4c SPLIT: top= is the SLOT
+            // MAP (slot index + type + population), bind= carries owner /
+            // player slot / entity kind / creator link -- this comment used to
+            // describe the pre-4c COMBINED digest and was stale from the split.
+            // Process-independent by construction (parity_pool.h). tv= is the
+            // TOPOLOGY TERM VERSION (Phase 4e, review A4a): tv=2 means "the 4c
+            // split", its ABSENCE means the retired PTO1 combined digest (which
+            // the harness skips rather than re-gate red), and a digest of 0
+            // remains the documented "not computed" sentinel.
             const ParityPool::Topology host_top = ParityPool::ComputeTopology();
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "[CHECKSUM] f=%d crc=0x%08X top=0x%08X nobj=%u",
-                frame, checksum, host_top.digest, host_top.active_count);
+                "[CHECKSUM] f=%d crc=0x%08X tv=2 top=0x%08X bind=0x%08X nobj=%u",
+                frame, checksum, host_top.digest, host_top.binding,
+                host_top.active_count);
         }
     }
 }
@@ -690,6 +694,7 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
             // fprintf cost cannot hitch a live match. NEVER add this to a
             // normal exit path.
             SeamTrace_Dump(g_player_index, "harness auto-terminate");
+            FacingTrace_Dump("harness auto-terminate");  // Phase 4b [FACING] ring
             // Flush parity recorder -- fopen("wb") is fully
             // buffered and TerminateProcess kills the stdio
             // buffer without writing. Without this the
@@ -881,13 +886,14 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
                 "p1_hp=%u p2_hp=%u timer=%u "
                 "p1_pos=(%d,%d) p2_pos=(%d,%d) "
                 "p1_script=%d p2_script=%d "
-                "p1_in=0x%03X p2_in=0x%03X slots=(%d,%d)",
+                "p1_in=0x%03X p2_in=0x%03X slots=(%d,%d) rend=%u sim=%u",  // Phase 4b: render:sim ratio (4a rank 4)
                 g_netplay_frame, rng, buf_idx,
                 p1_hp, p2_hp, timer,
                 p1v.pos_x, p1v.pos_y, p2v.pos_x, p2v.pos_y,
                 p1v.script, p2v.script,
                 g_p1_input, g_p2_input,
-                p1v.slot, p2v.slot);
+                p1v.slot, p2v.slot,
+                *(uint32_t*)0x4456FC, (uint32_t)g_sim_step_count);
         }
 
         // C9: append FINGERPRINT op every 30 confirmed INPUTs.

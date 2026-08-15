@@ -102,18 +102,36 @@ struct PlayerView {
     int32_t script;
 };
 
-/* The pool-topology fencepost term. digest == 0 means "not computed"
+/* The pool-topology fencepost terms. digest == 0 means "not computed"
  * (ENGINE_FM95, or FM2K_CK_TOPOLOGY=0); a real digest can never be 0 because
- * the FNV seed is non-zero and the final mix is multiplicative. */
+ * the FNV seed is non-zero and the final mix is multiplicative.
+ *
+ * TWO DIGESTS, NOT ONE (Phase 4c). Until 4c a single `top=` folded the slot map
+ * and the object-to-object BINDINGS together, and Phase 4b then measured that
+ * on a wanwan run whose every other term was bit-identical for 5320/5320 frames
+ * the entire divergence was ONE object's creator back-pointer -- so a term
+ * documented as "which objects exist, of what kind, at which slot indices" was
+ * in practice reporting something else, and was 100% red in passing runs. Split:
+ *   digest  -- the SLOT MAP: (slot index, type) over active slots + population.
+ *              This is exactly what the doc comment above claims, it is what
+ *              a re-INDEXING moves, and it is what a gate can be built on.
+ *   binding -- owner (+4), playerSlotId (+0x156), entityKind (+0x15A) and the
+ *              normalised parent token (+0x17A), in slot order + population.
+ *              Strictly more sensitive and strictly harder to interpret: kept,
+ *              reported, and deliberately NOT the primary term.
+ * Nothing was dropped; the seed tags are bumped so an old build's digest can
+ * never compare equal to a new build's. */
 struct Topology {
     uint32_t digest;
+    uint32_t binding;
     uint32_t active_count;
 };
 
 /* Everything one pass over the pool can produce. */
 struct Scan {
     uint32_t active_count;    /* slots with type != 0 */
-    uint32_t topology;        /* process-independent TOPOLOGY digest */
+    uint32_t topology;        /* process-independent SLOT-MAP digest */
+    uint32_t binding;         /* process-independent BINDING digest (see above) */
     uint32_t legacy_poolset;  /* the historical [POOLSET] fingerprint, bit-for-bit
                                * (slot, type, owner, posX, posY) -- only filled
                                * when want_legacy_fp, else 0 */
@@ -136,6 +154,16 @@ Topology ComputeTopology();
  * "idx:type " listing used by the [POOLSET] diagnostic, always
  * NUL-terminated and truncated to fit list_cap. */
 Scan ScanPool(bool want_legacy_fp, char* active_list, size_t list_cap);
+
+/* Phase 4b DIAGNOSTIC (docs/dev/ seam campaign corpus): per-active-slot dump of
+ * exactly the three topology members the legacy [POOLSET] fingerprint does NOT
+ * cover -- playerSlotId (+0x156), entityKind (+0x15A) and the normalised parent
+ * slot token (+0x17A). The 4b runs showed `fp=` (slot,type,owner,posX,posY)
+ * IDENTICAL host-vs-spectator on 3984/3984 frames while `top=` differed on
+ * 3984/3984, so the divergent field is provably one of these three and nothing
+ * else. Writes "i:player:kind:parent " pairs, NUL-terminated, truncated to cap.
+ * Rides the [POOLSET] gate (FM2K_POOLSET=1); nothing calls it otherwise. */
+size_t DumpTopoDetail(char* out, size_t cap);
 
 /* False under ENGINE_FM95 or when FM2K_CK_TOPOLOGY is set to 0. Callers do
  * not need to check this -- ComputeTopology() already honours it -- it is

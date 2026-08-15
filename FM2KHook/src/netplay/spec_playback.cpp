@@ -11,6 +11,7 @@
 #include "spectator_node.h"
 #include "spectator_node_internal.h"  // shared State model + g_state (split for sibling TUs)
 #include "spec_playback_internal.h"   // SeamStep / SeamResetWalkState (spec_playback_seam.cpp)
+#include "spec_pool_sync.h"       // Phase 4c match-start pool resync (arm + bounded battle-entry hold)
 #include "spec_wire.h"            // zero-RLE codec (SessionEvent_* live in spectator_node.h)
 #include "spec_relay_queue.h"     // hub-relay outbound queue (Phase 2c)
 #include "spectator_tcp.h"        // TCP transport for INPUT_BATCH stream
@@ -143,6 +144,13 @@ void ApplySessionEvent(const SessionEvent& ev) {
         case SessionEventType::MATCH_START: {
             g_state.pb_awaiting_match_end = true;
             g_state.pb_local_battle_seen  = false;
+            // Phase 4c: a new match boundary re-arms the pool resync. The
+            // battle-entry hold this arms is what gives the host's fresh
+            // battle-entry snapshot a window in which `anchor == consumed` is
+            // still true -- without it the viewer's object-pool slot assignment
+            // is whatever ITS own title/CSS/previous-match residue produced,
+            // which is the index incoherence 4b measured on 100% of frames.
+            PoolSync_OnMatchStart();
             // Look up the cached 96-byte header by side-table index.
             // Header layout matches Replay::ReplayHeader on-disk; pull
             // seed/state-hash/char/color and re-publish into the playback
@@ -361,6 +369,16 @@ void ApplySessionEvent(const SessionEvent& ev) {
             const char* who = (p.winner_idx == 0) ? "P1"
                             : (p.winner_idx == 1) ? "P2" : "DRAW";
             g_state.pb_awaiting_match_end = false;
+            // Phase 4c: arm the pool resync HERE as well as at MATCH_START.
+            // The host captures and pushes the next battle's blob at ITS battle
+            // entry, which reaches a lagging viewer while it is still walking
+            // this boundary -- i.e. BEFORE the next MATCH_START drains. Armed
+            // only from MATCH_START, that blob hit the re-join guard with the
+            // resync disarmed and was DISCARDED outright instead of parked as
+            // WAIT (measured on the first 4c run: "discarding re-join snapshot
+            // (anchor=8184 ... consumed=8105)"), so the boundary then had to be
+            // repaired by a re-request round-trip, or not at all.
+            PoolSync_OnMatchEnd();
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "SpectatorNode: applied MATCH_END winner=%s rounds=%u-%u "
                 "frames=%u (queued=%zu) -- boundary SEAM entered",
@@ -443,8 +461,27 @@ bool SpectatorNode_PopFrameInputs(uint16_t* p1_input, uint16_t* p2_input) {
     // CSS mirror; they move the cursor TOWARD the anchor and cannot overshoot,
     // because the battle-align hold parks the battle INPUTs at the head until
     // mode >= 3000 and DeepJoinShouldHold takes over there.
+    //
+    // EXEMPT (Phase 4c), for a structurally identical reason: a pool-resync
+    // viewer receives a battle-entry snapshot at EVERY match boundary, and the
+    // host pushes it at ITS battle entry -- i.e. while this viewer is still on
+    // the previous match's results screen or walking the rematch CSS. Parking
+    // the sim there is the 2026-06-11 circular deadlock exactly (apply waits
+    // for mode >= 3000, mode >= 3000 needs pops, pops wait on pending_apply),
+    // and it would fire at EVERY boundary rather than once per join. The
+    // battle-entry hold PoolSync_ShouldHold provides below is BOUNDED and is
+    // the only hold that path takes; the worst case of not freezing here is
+    // that one match goes unrepaired, which is pre-4c behaviour.
+    // PoolSync_Active() is false for the join flows (deep join, and a
+    // CURRENT_MATCH joiner before its own snapshot lands), so their reliance on
+    // this freeze is untouched.
+    // PHASE 4e (review A2.1): the exemption uses the NARROWED predicate, so a
+    // viewer that re-JOINed mid-stream keeps this freeze until its next snapshot
+    // applies -- it is the other half of the pre-4c pair (freeze + placeholder
+    // drive) and removing only one of the two on an untested path is how a
+    // viewer ends up with no route to mode >= 3000 at all.
     if (g_state.pb_snapshot_inbox.pending_apply &&
-        !DeepJoinWalkingToAnchor()) return false;
+        !DeepJoinWalkingToAnchor() && !PoolSync_SuppressLegacyCssFallback()) return false;
 
     // ...and hold the SAME way while the snapshot is still DOWNLOADING (active,
     // pre-finalize) once we've reached the captured battle phase. A mid-battle
@@ -576,6 +613,15 @@ bool SpectatorNode_PopFrameInputs(uint16_t* p1_input, uint16_t* p2_input) {
     // TickHealth; this path never releases into from-scratch. Rationale and the
     // five state families are documented in spec_deep_join.cpp's header.
     if (DeepJoinShouldHold()) return false;
+
+    // Match-start pool resync hold (Phase 4c). Same position and the same
+    // reason as the deep-join hold immediately above -- the boundary releases
+    // have run, so the consumed cursor is exactly the host's snapshot anchor --
+    // but BOUNDED: this viewer is bit-exact in everything the fingerprint
+    // covers and merely index-incoherent in the object pool, so releasing
+    // un-repaired is a degradation, never a corruption. Rationale, scope proof
+    // and the +0x17A verification are in spec_pool_sync.cpp.
+    if (PoolSync_ShouldHold()) return false;
 
     // Results-tail guard: the local game can reach CSS a few frames
     // before the stream's MATCH_END applies (our results screens run

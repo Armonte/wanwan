@@ -382,7 +382,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
             uint16_t right_bit = (input & 0x002);
             input = (input & ~0x003) | (left_bit << 1) | (right_bit >> 1);
         }
-        input = Hook_ApplySOCDForSpecConsume(input);  // see hooks_input.cpp
+        input = Hook_ApplySOCDForSpecConsume(FacingTrace_Note(1, player_id, input_type, game_mode, facing_reversed, input));  // [FACING] ring (dark) + SOCD, see hooks_input.cpp
         return (int)input;  // spectator path doesn't record
     }
 
@@ -713,7 +713,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
             uint16_t right_bit = (input & 0x002);
             input = (input & ~0x003) | (left_bit << 1) | (right_bit >> 1);
         }
-        input = Hook_ApplySOCD(input);
+        input = Hook_ApplySOCD(FacingTrace_Note(0, player_id, input_type, game_mode, facing_reversed, input));  // [FACING] ring (dark), Phase 4b
 
         // Log only the first 4 calls (initial handshake verification). After
         // that stay silent -- Hook_GetPlayerInput fires 2x per sim tick, and

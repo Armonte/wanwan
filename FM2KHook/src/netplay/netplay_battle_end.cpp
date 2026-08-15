@@ -18,6 +18,7 @@
 #include "../audio/sound_rollback.h"
 #include "../ui/shared_mem.h"  // SharedMem_PublishMatchOutcome
 #include "../parity/parity_recorder.h"  // ParityRecorder::Close on harness auto-terminate
+#include "../hooks/facing_trace.h"      // Phase 4b [FACING] ring match-boundary dump
 #include <SDL3/SDL_log.h>
 #include <ws2tcpip.h>
 #include <cstdlib>
@@ -50,6 +51,9 @@ void Netplay_EndBattle() {
     // moment any SaveState_Load can reach a pre-902 frame, so a free after it
     // cannot be crossed by a rollback. Telemetry only.
     SeamFreeProbe_CloseWindow();
+    // Phase 4b [FACING] ring: player-plane match-boundary flush. Between
+    // matches, not mid-match -- same legality argument as SeamTrace_Dump.
+    FacingTrace_Dump("player match end");
     // Capture match outcome BEFORE we destroy the session -- reading HP
     // at this point reflects the final state of the just-ended battle.
     // Outcome is from the local player's perspective; the launcher

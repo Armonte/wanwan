@@ -3,6 +3,7 @@
 #include "globals.h"
 #include "../hooks/hooks.h"
 #include "../hooks/wndproc_subclass.h"
+#include "../hooks/facing_trace.h"    // Phase 4b [FACING] ring: match-boundary dump on the spectator plane
 #include "../netplay/netplay.h"
 #include "../netplay/control_channel.h"
 #include "../netplay/game_hash.h"
@@ -156,6 +157,7 @@ static bool SpectatorSimOneFrame() {
             // set by match 1's applied snapshot wrongly skips match 2's init ->
             // match-2 rng desync (run_all_tests multi-match-e2e S2 seg1).
             SpectatorNode_ClearSnapshotAppliedForNextBattle();
+            FacingTrace_Dump("spectator match end");  // between matches, not mid-match
         }
         s_spec_trace_in_battle = false;
     }
@@ -243,11 +245,16 @@ static bool SpectatorSimOneFrame() {
                 // same fingerprint value is handed to GekkoNet as the P1-vs-P2
                 // desync checksum, so folding would change netplay behaviour.
                 // Process-independent by construction (parity_pool.h); top=0 means
-                // not computed (FM95, or FM2K_CK_TOPOLOGY=0).
+                // not computed (FM95, or FM2K_CK_TOPOLOGY=0) -- the harness
+                // treats that sentinel as a FAILED fatal term, never as a match.
+                // tv=2 tags the 4c top=/bind= SPLIT so a pre-4c log (which
+                // carries the retired combined digest under the same name) is
+                // skipped rather than re-gated red. See review A4a.
                 const ParityPool::Topology spec_top = ParityPool::ComputeTopology();
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "[CHECKSUM] f=%u crc=0x%08X top=0x%08X nobj=%u",
-                    bf, spec_fp, spec_top.digest, spec_top.active_count);
+                    "[CHECKSUM] f=%u crc=0x%08X tv=2 top=0x%08X bind=0x%08X nobj=%u",
+                    bf, spec_fp, spec_top.digest, spec_top.binding,
+                    spec_top.active_count);
             }
             // [SPEC-FP] every 30 battle frames (~3 lines/sec). Routed
             // through SDL_LOG_CATEGORY_CUSTOM so LogOutputFunction puts
@@ -283,13 +290,15 @@ static bool SpectatorSimOneFrame() {
                     "p1_hp=%u p2_hp=%u timer=%u "
                     "p1_pos=(%d,%d) p2_pos=(%d,%d) "
                     "p1_script=%d p2_script=%d "
-                    "p1_in=0x%03X p2_in=0x%03X catchup=%d slots=(%d,%d)",
+                    "p1_in=0x%03X p2_in=0x%03X catchup=%d slots=(%d,%d) "
+                    "rend=%u sim=%u",  // Phase 4b: render:sim ratio (4a rank 4)
                     bf, s_pop_count, rng, buf_idx,
                     p1_hp, p2_hp, timer,
                     p1v.pos_x, p1v.pos_y, p2v.pos_x, p2v.pos_y,
                     p1v.script, p2v.script,
                     p1, p2, (int)g_spectator_catchup,
-                    p1v.slot, p2v.slot);
+                    p1v.slot, p2v.slot,
+                    *(uint32_t*)0x4456FC, (uint32_t)g_sim_step_count);
             }
         } else {
             s_in_battle = false;

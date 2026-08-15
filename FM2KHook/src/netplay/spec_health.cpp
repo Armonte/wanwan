@@ -6,6 +6,7 @@
 #include "spectator_node_internal.h"  // shared State model + g_state (split for sibling TUs)
 #include "spec_wire.h"            // zero-RLE codec (SessionEvent_* live in spectator_node.h)
 #include "spec_relay_queue.h"     // hub-relay outbound queue (Phase 2c)
+#include "spec_pool_sync.h"       // Phase 4c match-start pool resync (hold supervision)
 #include "spectator_tcp.h"        // TCP transport for INPUT_BATCH stream
 #include "control_channel.h"
 #include "netplay.h"
@@ -296,6 +297,12 @@ void SpectatorNode_TickHealth() {
         // escalation to a resume-suppressed re-JOIN at the budget -- never a
         // silent release into the from-scratch battle path.
         DeepJoinHoldTick(now);
+
+        // Match-start pool resync hold supervision (Phase 4c). No-op unless
+        // this viewer is holding at a match boundary for the host's
+        // battle-entry snapshot. One nudge per interval, no escalation: the
+        // hold is bounded and releases into ordinary playback on its own.
+        PoolSync_HoldTick(now);
 
         // Silence-based failover. TCP receive activity is the only
         // liveness signal -- the bulk stream lives entirely there.

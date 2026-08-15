@@ -11,6 +11,7 @@
 #include "input.h"
 #include "savestate.h"
 #include "seam_trace.h"   // Phase 1bc seam instruments (diagnostic)
+#include "../hooks/facing_trace.h"  // Phase 4b [FACING] ring (diagnostic)
 #include "spectator_node.h"
 #include "nat_traversal.h"
 #include "upload_queue.h"
@@ -111,6 +112,7 @@ void HandleDesyncDetected(int frame, uint32_t local_chk,
     // Always emits its one-line counts summary; writes the CSV only when the
     // ring was armed (FM2K_SEAM_TRACE=1) or a crossing actually happened.
     SeamTrace_Dump(g_player_index, "first desync");
+    FacingTrace_Dump("first desync");  // Phase 4b [FACING] ring
 
     // Escape hatch: FM2K_NO_DESYNC_KILL=1 keeps the game running for
     // diagnostic sessions. Off by default.

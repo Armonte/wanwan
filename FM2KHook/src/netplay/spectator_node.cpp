@@ -2,6 +2,7 @@
 #include "spectator_node_internal.h"  // shared State model + g_state (split for sibling TUs)
 #include "spec_wire.h"            // zero-RLE codec (SessionEvent_* live in spectator_node.h)
 #include "spec_relay_queue.h"     // hub-relay outbound queue (Phase 2c)
+#include "spec_pool_sync.h"       // Phase 4c match-start pool resync (apply-side arm/latch)
 #include "spectator_tcp.h"        // TCP transport for INPUT_BATCH stream
 #include "control_channel.h"
 #include "netplay.h"
@@ -527,10 +528,25 @@ void SpectatorNode_ApplyPendingSnapshot() {
         // the viewer re-request) is what makes the healthy path cost one
         // transfer. PopFrameInputs' parked-snapshot freeze is exempted for this
         // walk (DeepJoinWalkingToAnchor) so keeping it cannot deadlock.
+        //
+        // PHASE 4c WIDENING -- the match-start pool resync, and only it. A
+        // pool-resync viewer is in exactly the position the applicability rule
+        // was written for: it sits at a battle entry having consumed nothing
+        // past the host's snapshot anchor, and the blob it is being offered is
+        // the one the host captured at THAT battle entry. The rule is what
+        // makes the widening safe rather than the flag: anchor equality refuses
+        // every rewind, the phase gate refuses every forward jump, and the
+        // character-identity assert refuses the 0x40CD47 shape. What it repairs
+        // is the object pool's slot assignment, which nothing in the event
+        // stream carries and which no amount of simulation can re-derive (see
+        // spec_pool_sync.cpp). PoolSync_Armed() is false for offline replay,
+        // for a deep joiner, and for a CURRENT_MATCH joiner whose own join
+        // snapshot has not landed yet, so no existing path changes.
         const uint32_t consumed = ConsumedInputPos();
         const DeepJoinVerdict verdict =
-            g_state.spec_deep_join ? DeepJoinSnapshotVerdict(inbox)
-                                   : DeepJoinVerdict::REFUSE;
+            (g_state.spec_deep_join || PoolSync_Armed())
+                ? DeepJoinSnapshotVerdict(inbox)
+                : DeepJoinVerdict::REFUSE;
         if (verdict == DeepJoinVerdict::WAIT) return;   // keep the inbox
         if (verdict != DeepJoinVerdict::APPLY) {
             // Re-join snapshots NEVER re-apply. Backward anchors would rewind
@@ -556,9 +572,10 @@ void SpectatorNode_ApplyPendingSnapshot() {
             return;
         }
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "[SPEC-DEEPJOIN] admitting snapshot past the re-join guard -- "
+            "[%s] admitting snapshot past the re-join guard -- "
             "anchor=%u == consumed=%u and chars match, so this rewinds nothing "
             "(natural_boot=%d pb_started=%d applied_once=%d)",
+            g_state.spec_deep_join ? "SPEC-DEEPJOIN" : "POOLSYNC",
             inbox.anchor_frame, consumed, (int)g_state.natural_boot,
             (int)g_state.pb_started, (int)g_state.pb_snapshot_applied_once);
     }
@@ -722,6 +739,10 @@ void SpectatorNode_ApplyPendingSnapshot() {
     // viewer is bit-exact from here and continues by simulation) and tells the
     // host to stop pushing. No-op for every other join shape.
     DeepJoinOnSnapshotApplied(anchor);
+    // Phase 4c: releases the bounded pool-resync hold and latches "a snapshot
+    // has landed on this viewer" (which is what promotes a CURRENT_MATCH joiner
+    // out of its join flow). Called for EVERY apply, deliberately.
+    PoolSync_OnSnapshotApplied(anchor);
 
     inbox = State::SnapshotInbox{};
 }

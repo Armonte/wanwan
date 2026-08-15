@@ -7,6 +7,7 @@
 #include "spectator_node.h"
 #include "spectator_node_internal.h"  // shared State model + g_state (split for sibling TUs)
 #include "spec_join_internal.h"       // shared with spec_join.cpp
+#include "spec_pool_sync.h"           // PoolSync_OnViewerRejoin (Phase 4e, A2.1)
 #include "spectator_tcp.h"        // TCP transport for INPUT_BATCH stream
 #include "control_channel.h"
 #include "reliable_channel_net.h" // ReliableChannel_ResetPeer -- the starve escalation
@@ -334,6 +335,14 @@ void SpectatorNode_HandleJoinAck(const sockaddr_in& from, uint8_t host_session_k
     // mid-stream re-JOIN would silently kill every later snapshot). Same
     // "truly fresh viewer" test the RNG pin below already uses.
     const bool fresh_boot = first_time && !g_state.have_frame_baseline;
+
+    // PHASE 4e (review A2.1). A GRANT that is NOT a fresh boot is a mid-stream
+    // re-JOIN: we already have a stream and it is about to be re-anchored,
+    // possibly past the char-select we were mirroring. Tell the pool resync, so
+    // it puts the two pre-4c fallbacks back for exactly one boundary. A LIVE
+    // REFRESH is not a re-JOIN (it re-states host state, it does not re-anchor
+    // us), so it is excluded.
+    if (!live_refresh && !fresh_boot) PoolSync_OnViewerRejoin();
 
     // Wave 4: bounded deep-join grant. The host decided this at pin time, from
     // the same read as the kind, and the live-refresh builder never sets the

@@ -6,6 +6,7 @@
 #include "spectator_node_internal.h"  // shared State model + g_state (split for sibling TUs)
 #include "spec_wire.h"            // zero-RLE codec (SessionEvent_* live in spectator_node.h)
 #include "spec_relay_queue.h"     // hub-relay outbound queue (Phase 2c)
+#include "spec_pool_sync.h"       // Phase 4c: suppresses the placeholder CSS drive for a resync viewer
 #include "spectator_tcp.h"        // TCP transport for INPUT_BATCH stream
 #include "reliable_channel_net.h" // RC_CHAN_SPEC / RC_CHAN_SPEC_SNAPSHOT (cross-channel reorder)
 #include "spec_impair.h"          // test-only spectator-downlink loss (FM2K_SPEC_DROP)
@@ -400,8 +401,32 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
             // arm for a from-frame-0 viewer that receives a snapshot through
             // the re-JOIN two-bind hybrid -- plausibly correct, entirely
             // untested, and not this wave's business.
+            //
+            // PHASE 4c adds the SECOND suppression case, and it is the same
+            // failure verbatim rather than a new theory: with the match-start
+            // pool resync on, the host pushes a battle-entry blob at EVERY
+            // match boundary, so this arm fired at every rematch of a viewer
+            // that was already mirroring the host's real char-select. Measured
+            // on the first 4c run: the natural mirror had correctly reached
+            // sel=10/8 when SNAPSHOT_BEGIN landed, the placeholder drive then
+            // locked 0/0, and the snapshot's own char-identity guard refused
+            // every re-ship ("engine has chars p1=0 p2=0 but THIS battle's
+            // drained MATCH_START announced p1=10 p2=8") while the viewer
+            // played the whole match as the wrong characters. PoolSync_Active()
+            // is exactly "this viewer reaches battle by its own mirrored
+            // char-select plus the MATCH_START pin", which is the precondition
+            // this arm exists to substitute for.
+            //
+            // PHASE 4e (review A2.1) narrows that second case. The predicate is
+            // PoolSync_SuppressLegacyCssFallback(), not PoolSync_Active(): a
+            // viewer that re-JOINed mid-stream keeps this arm until its next
+            // snapshot applies, because its stream was re-anchored past the
+            // char-select and mirroring is no longer a route to game_mode 3000
+            // for it. That is the population the "NOT used: !natural_boot"
+            // paragraph above calls entirely untested, and 4c had enacted the
+            // suppression for it as a side effect.
             if (fresh_start && g_spectator_mode && meta.captured_game_mode == 3000u &&
-                !g_state.spec_deep_join) {
+                !g_state.spec_deep_join && !PoolSync_SuppressLegacyCssFallback()) {
                 CssAutoConfirm_OnReplayMatchStart(
                     /*p1_char=*/0, /*p1_color=*/0,
                     /*p2_char=*/0, /*p2_color=*/0,
@@ -414,11 +439,14 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
             } else if (fresh_start && g_spectator_mode &&
                        meta.captured_game_mode == 3000u) {
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "[SPEC-DEEPJOIN] NOT arming the CssAutoConfirm placeholder "
-                    "drive -- this viewer is a bounded deep joiner already "
+                    "[%s] NOT arming the CssAutoConfirm placeholder "
+                    "drive -- this viewer is %s already "
                     "mirroring the host's real char-select (q=%zu). Driving it "
                     "to 0/0 here would load the wrong .player files and make "
                     "the snapshot unapplyable",
+                    g_state.spec_deep_join ? "SPEC-DEEPJOIN" : "POOLSYNC",
+                    g_state.spec_deep_join ? "a bounded deep joiner"
+                                           : "a pool-resync viewer",
                     g_state.pb_queue.size());
             }
             break;

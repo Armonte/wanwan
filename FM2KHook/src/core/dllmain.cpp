@@ -21,6 +21,7 @@ extern void NeuterFullscreenTogglesForCncDdraw();
 // detoured on game_state_manager -- sharing the same MinHook entry).
 #include "../hooks/css_autoconfirm.h"
 #include "../hooks/round_events.h"
+#include "../hooks/facing_trace.h"  // Phase 4b [FACING] ring: last-chance flush at DETACH
 #include "../hooks/per_game_patches.h"
 #include "../netplay/upload_queue.h"
 #include "../netplay/spectator_node.h"  // SpectatorNode_GetSessionId
@@ -770,6 +771,12 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
     case DLL_PROCESS_DETACH:
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "FM2K Hook shutting down...");
+
+        // Phase 4b [FACING] ring: last-chance flush. Covers the spectator's
+        // graceful ExitProcess paths (trampoline_spectator.cpp), which have no
+        // match-boundary of their own for the final match. No-op unless
+        // FM2K_FACING_TRACE=1 armed the ring. TerminateProcess skips this.
+        FacingTrace_Dump("dll detach");
 
         // Restore default timer resolution
         timeEndPeriod(1);

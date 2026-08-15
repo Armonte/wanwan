@@ -262,7 +262,8 @@ namespace {
  * changes, so a digest from an old build can never accidentally compare equal
  * to one from a new build. */
 constexpr uint32_t kFnvPrime  = 16777619u;
-constexpr uint32_t kTopoSeed  = 0x811C9DC5u ^ 0x50544F31u;  /* 'PTO1' */
+constexpr uint32_t kTopoSeed  = 0x811C9DC5u ^ 0x50544F32u;  /* 'PTO2' -- slot map */
+constexpr uint32_t kBindSeed  = 0x811C9DC5u ^ 0x50424E31u;  /* 'PBN1' -- bindings */
 
 inline uint32_t Mix(uint32_t h, uint32_t v) {
     return (h ^ v) * kFnvPrime;
@@ -364,6 +365,7 @@ Scan ScanPool(bool want_legacy_fp, char* active_list, size_t list_cap) {
     }
 
     uint32_t topo = kTopoSeed;
+    uint32_t bind = kBindSeed;
     /* Legacy [POOLSET] accumulator -- kept bit-for-bit identical to the
      * original inline form (Fletcher-style over (slot, type, owner, posX,
      * posY), low half-word then high half-word) so fingerprints from this
@@ -381,15 +383,23 @@ Scan ScanPool(bool want_legacy_fp, char* active_list, size_t list_cap) {
         if (type == 0u) continue;          /* free slot: one dword touched */
         ++out.active_count;
 
-        /* TOPOLOGY tuple. Occupancy is implied by being here; the slot index
-         * is what makes a pure re-INDEXING of the same object set (carry-state
-         * family A1) visible. Every member is an integer the pointer audit
-         * classifies as a non-pointer, except parent which is normalised to a
-         * slot index above. Deliberately NOT included: positions, velocities,
-         * script cursors, HP -- those are gameplay STATE and belong to the crc
-         * term, and keeping them out is what lets a `top=` mismatch mean
-         * exactly one thing ("different objects, or same objects at different
-         * indices/bindings"). */
+        /* SLOT-MAP tuple (`top=`). Occupancy is implied by being here; the
+         * slot index paired with the type is what makes a pure re-INDEXING of
+         * the same object set (carry-state family A1) visible, and it is
+         * EXACTLY the "which objects exist, of what kind, at which slot
+         * indices" this term is documented as meaning. Deliberately NOT
+         * included: positions, velocities, script cursors, HP -- those are
+         * gameplay STATE and belong to the crc term.
+         *
+         * BINDING tuple (`bind=`), Phase 4c: owner, player slot, entity kind
+         * and the creator link, i.e. who each object belongs to rather than
+         * where it sits. Split out of `top=` because 4b measured a wanwan match
+         * that was bit-identical on every other term for 5320/5320 frames while
+         * `top=` was red on all of them, and the whole difference was one
+         * object's parent link -- a real difference, but not the one the term
+         * claimed to report, and useless as a gate at 100% red. Every member is
+         * an integer the pointer audit classifies as a non-pointer, except
+         * parent which is normalised to a slot index above. */
         const uint32_t owner  = Read32(a + kOffOwner);
         const uint32_t player = *reinterpret_cast<const uint16_t*>(a + kOffPlayerSlot);
         const uint32_t kind   = Read32(a + kOffEntityKind);
@@ -400,10 +410,11 @@ Scan ScanPool(bool want_legacy_fp, char* active_list, size_t list_cap) {
          * reputation for false positives. */
         topo = Mix(topo, static_cast<uint32_t>(i));
         topo = Mix(topo, type);
-        topo = Mix(topo, owner);
-        topo = Mix(topo, player);
-        topo = Mix(topo, kind);
-        topo = Mix(topo, parent);
+        bind = Mix(bind, static_cast<uint32_t>(i));
+        bind = Mix(bind, owner);
+        bind = Mix(bind, player);
+        bind = Mix(bind, kind);
+        bind = Mix(bind, parent);
 
         if (want_legacy_fp) {
             legacy_mix(static_cast<uint32_t>(i));
@@ -422,16 +433,61 @@ Scan ScanPool(bool want_legacy_fp, char* active_list, size_t list_cap) {
      * tuple alone. The |1 on a zero result keeps 0 reserved as the documented
      * "not computed" value -- a 1-in-2^32 collision is not worth an ambiguous
      * sentinel. */
-    const uint32_t folded = Mix(topo, out.active_count);
-    out.topology       = folded ? folded : 1u;
+    const uint32_t folded  = Mix(topo, out.active_count);
+    const uint32_t bfolded = Mix(bind, out.active_count);
+    out.topology       = folded  ? folded  : 1u;
+    out.binding        = bfolded ? bfolded : 1u;
     out.legacy_poolset = want_legacy_fp ? ((s2 << 16) | s1) : 0u;
     return out;
 }
 
+size_t DumpTopoDetail(char* out, size_t cap) {
+    if (!out || cap == 0) return 0;
+    out[0] = '\0';
+    if constexpr (!FM2K::kIsFM2K) {
+        return 0;
+    }
+    /* Reserve for ONE worst-case record plus the truncation marker.
+     * Worst case is "1023:65535:4294967295:4294967295 " = 33 chars, and the
+     * parent sentinels kParentNone / kParentForeign print as 4294967295 /
+     * 4294967294 routinely -- the old 24-byte reserve was arithmetically too
+     * small, so the last record on a capped line could be cut MID-TOKEN into a
+     * valid-looking but wrong tuple. Measured before this fix: 1881 of 20738
+     * [POOLTOPO] lines on wanwan (9%) were pegged at the 1024-byte cap, with no
+     * marker of any kind, while the report that cites [POOLTOPO] as the
+     * authority for naming a bind= residual assumed whole lines. */
+    constexpr size_t kRecordReserve = 40u;
+    /* ...and for the trailing marker, so it can NEVER be the thing that gets
+     * dropped: "TRUNCATED (n=1023/1023)" is 23 chars. */
+    constexpr size_t kMarkerReserve = 32u;
+    size_t lp = 0;
+    size_t emitted = 0, active = 0;
+    bool   truncated = false;
+    for (size_t i = 0; i < kSlotCount; ++i) {
+        const uintptr_t a = kPoolBase + static_cast<uintptr_t>(i) * kSlotStride;
+        if (Read32(a + kOffType) == 0u) continue;
+        ++active;
+        if (lp + kRecordReserve + kMarkerReserve >= cap) { truncated = true; continue; }
+        const uint32_t player = *reinterpret_cast<const uint16_t*>(a + kOffPlayerSlot);
+        const uint32_t kind   = Read32(a + kOffEntityKind);
+        const uint32_t parent = ParentSlotToken(Read32(a + kOffParentPtr));
+        lp += static_cast<size_t>(std::snprintf(out + lp, cap - lp, "%u:%u:%u:%u ",
+                                                (unsigned)i, player, kind, parent));
+        ++emitted;
+    }
+    /* LOUD, always: a consumer can tell a whole line from a partial one without
+     * counting characters, and the counts say exactly how much was dropped. */
+    lp += static_cast<size_t>(std::snprintf(out + lp, cap - lp,
+        "%s(n=%u/%u)", truncated ? "TRUNCATED " : "",
+        (unsigned)emitted, (unsigned)active));
+    if (lp > cap - 1u) lp = cap - 1u;   /* snprintf returns the WOULD-BE length */
+    return lp;
+}
+
 Topology ComputeTopology() {
-    if (!TopologyEnabled()) return Topology{0u, 0u};
+    if (!TopologyEnabled()) return Topology{0u, 0u, 0u};
     const Scan s = ScanPool(/*want_legacy_fp=*/false, nullptr, 0u);
-    return Topology{s.topology, s.active_count};
+    return Topology{s.topology, s.binding, s.active_count};
 }
 
 }  /* namespace ParityPool */
@@ -575,9 +631,16 @@ void Capture() {
             const ParityPool::Scan sc =
                 ParityPool::ScanPool(/*want_legacy_fp=*/true, list, sizeof(list));
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "[POOLSET] seq=%u cnt=%u fp=0x%08X top=0x%08X active=%s",
+                "[POOLSET] seq=%u cnt=%u fp=0x%08X top=0x%08X bind=0x%08X active=%s",
                 g_active_recorder->frames_written, sc.active_count,
-                sc.legacy_poolset, sc.topology, list);
+                sc.legacy_poolset, sc.topology, sc.binding, list);
+            // Phase 4b: the three members `fp=` cannot see. See
+            // ParityPool::DumpTopoDetail. Same gate, same cadence.
+            char topo_detail[1024];
+            ParityPool::DumpTopoDetail(topo_detail, sizeof(topo_detail));
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "[POOLTOPO] seq=%u d=%s",
+                g_active_recorder->frames_written, topo_detail);
         }
     }
 

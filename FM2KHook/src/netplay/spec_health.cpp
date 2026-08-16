@@ -135,6 +135,7 @@ void SpectatorNode_TickHealth() {
         const bool gap_ahead = !g_state.pb_reorder.empty() &&
             g_state.pb_reorder.begin()->first > g_state.next_expected_frame;
         bool starved_battle = false;
+        bool starved_any    = false;   // same predicate, WITHOUT the battle gate
         // "We are mid-stream", NOT "we are inside the one battle a snapshot
         // landed in". This term used to read pb_snapshot_applied_once ALONE,
         // which made variant 2 unreachable for most spectators and for ALL of
@@ -163,7 +164,11 @@ void SpectatorNode_TickHealth() {
             // equality would have missed any battle sub-mode.
             const uint32_t gm = *(const uint32_t*)FM2K::ADDR_GAME_MODE;
             starved_battle = (gm >= 3000u && gm < 4000u);
+            starved_any    = true;
         }
+        // Measurement only (see spectator_node_internal.h): the ladder above
+        // does not exist outside battle, so record how long that costs us.
+        SpecCssWindowStarveTick(now, starved_any, starved_battle);
         if (g_state.have_frame_baseline && (gap_ahead || starved_battle)) {
             if (g_state.next_expected_frame != g_state.gap_fill_stall_frame) {
                 // Cursor moved (or first observation) -- (re)start the timer,

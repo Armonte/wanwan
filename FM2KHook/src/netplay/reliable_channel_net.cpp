@@ -193,6 +193,24 @@ bool ReliableChannel_ResetPeer(const sockaddr_storage& addr) {
     return ReliableChannel_ResetPeerLocked(addr);
 }
 
+// Contract: g_poll_mutex is ALREADY held. Pure read of latched state -- it
+// creates nothing, so an unknown address is simply "not repairing" and a
+// stray call can never allocate an endpoint for a spoofed source.
+bool ReliableChannel_IsRepairingOrderedLocked(const sockaddr_storage& addr) {
+    if (!g_inited) return false;
+    auto it = g_peers.find(fm2k::Addr_ActorString(addr));
+    if (it == g_peers.end() || !it->second->ep) return false;
+    return fm2k::rc::IsRepairingOrdered(it->second->ep);
+}
+
+// Main-thread entry, OUTSIDE any poll (the viewer's TickHealth ladder). Same
+// use-after-free hazard as ResetPeer: the timer worker can be destroying the
+// very endpoint we would read.
+bool ReliableChannel_IsRepairingOrdered(const sockaddr_storage& addr) {
+    std::lock_guard<std::mutex> lock(g_poll_mutex);
+    return ReliableChannel_IsRepairingOrderedLocked(addr);
+}
+
 // From RawReceive's 0xCB branch. Runs under g_poll_mutex (RawReceive contract).
 void ReliableChannel_OnDatagram(const sockaddr_storage& from, const uint8_t* body, int body_len) {
     if (!g_inited) return;

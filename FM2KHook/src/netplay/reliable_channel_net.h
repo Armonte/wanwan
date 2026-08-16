@@ -73,5 +73,23 @@ void ReliableChannel_OnDatagram(const sockaddr_storage& from, const uint8_t* bod
 bool ReliableChannel_ResetPeerLocked(const sockaddr_storage& addr);
 bool ReliableChannel_ResetPeer(const sockaddr_storage& addr);
 
+// True when at least one ORDERED rx channel from this peer is pinned at a hole
+// AND the peer's latest ack carrier advertises that it is STILL HOLDING that
+// hole -- i.e. the transport is provably mid-repair and the missing message is
+// still being retransmitted.
+//
+// This exists because the app's starve ladder outranks the transport's own
+// repair: escalation #1 calls ReliableChannel_ResetPeer, which DESTROYS the
+// endpoint and with it every message the sender's liveness-conditional
+// retirement was retaining. Without this predicate the retention is inert for
+// spectators past 4000ms. Always false when FM2K_RC_LIVENESS is off, and false
+// for an unknown address.
+//
+// Same two-entry locked/unlocked shape as ResetPeer, and for the same reason:
+// the endpoint registry is shared with the MM-timer worker thread. The viewer
+// calls the plain entry from TickHealth on the main thread, outside any poll.
+bool ReliableChannel_IsRepairingOrderedLocked(const sockaddr_storage& addr);
+bool ReliableChannel_IsRepairingOrdered(const sockaddr_storage& addr);
+
 // Pump all endpoints (acks + retransmit + ack-carrier). From PollImplLocked.
 void ReliableChannel_NetUpdate();

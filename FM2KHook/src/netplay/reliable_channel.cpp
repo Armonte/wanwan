@@ -55,6 +55,7 @@ void EnsureReliableInit() {
     if (!inited) { reliable_init(); inited = true; }
 }
 
+
 void DeliverOrdered(Endpoint* ep, uint8_t chan, RxChannel& rc,
                     uint64_t seq, const uint8_t* payload, int plen) {
     if (!rc.started) {
@@ -93,6 +94,18 @@ void DeliverOrdered(Endpoint* ep, uint8_t chan, RxChannel& rc,
             (unsigned long long)seq);
         rc.next_deliver = seq;
         rc.ooo.clear();
+        // The peer's holding advertisement describes the PREVIOUS generation
+        // of its endpoint: those seqs no longer exist and a stale
+        // "oldest_unacked" from before the restart would read as "the sender
+        // retired everything below your cursor" and could skip real content.
+        rc.peer_hold_known  = false;
+        rc.holding_repair   = false;
+        // The arm (and its sticky latch) described a cursor in the PREVIOUS
+        // generation of the peer's stream. Carrying either across the restart
+        // would let the first message of the new stream adopt a cursor derived
+        // from seqs that no longer exist.
+        rc.stall_resync          = false;
+        rc.stall_resync_backstop = false;
     }
     if (seq > rc.next_deliver && rc.stall_resync) {
         // The stall sweep armed a resync: this channel delivered nothing for
@@ -126,7 +139,10 @@ void DeliverOrdered(Endpoint* ep, uint8_t chan, RxChannel& rc,
             it = rc.ooo.find(rc.next_deliver);
         }
         rc.last_progress_time = ep->now_time;
-        rc.stall_resync       = false;   // progress -> the channel is healthy again
+        rc.stall_resync          = false;  // progress -> the channel is healthy again
+        rc.stall_resync_backstop = false;  // ...the arm was consumed, drop the latch
+        rc.holding_repair        = false;  // ...and no longer mid-repair
+        rc.defer_logged          = false;
     } else if (rc.ooo.size() < RC_OOO_MAX) {
         rc.ooo.emplace(seq, std::vector<uint8_t>(payload, payload + plen));  // buffer, in order
     } else {
@@ -189,10 +205,19 @@ void DeliverOne(Endpoint* ep, uint8_t chan, uint8_t cls, uint64_t seq,
                 auto it = ep->tx.find(ackchan);
                 if (it != ep->tx.end()) {
                     auto& un = it->second.unacked;
-                    for (auto uit = un.begin(); uit != un.end();)
-                        if (uit->first < nexp) uit = un.erase(uit); else ++uit;
+                    for (auto uit = un.begin(); uit != un.end();) {
+                        if (uit->first < nexp) {
+                            const size_t nb = uit->second.framed.size();
+                            ep->unacked_bytes = (ep->unacked_bytes >= nb)
+                                                    ? ep->unacked_bytes - nb : 0;
+                            uit = un.erase(uit);
+                        } else {
+                            ++uit;
+                        }
+                    }
                 }
             }
+            CarrierParseHoldSection(ep, p, end);
         }
         return;
     }
@@ -306,10 +331,18 @@ void PumpSendQueue(Endpoint* ep, double now) {
             if (!pkt.empty() && pkt.size() + ps.framed.size() > RC_NAGLE_MAX) break; // packet full
             const size_t framed_bytes = ps.framed.size();
             pkt.insert(pkt.end(), ps.framed.begin(), ps.framed.end());  // copy into packet
+            {   // leaving the queue: the channel's lowest QUEUED seq moves on.
+                // Seqs within a channel are allocated and queued in order, so
+                // popping S leaves S+1 as the front (see TxChannel).
+                TxChannel& tcq = ep->tx[ps.chan];
+                if (tcq.queued_count > 0) tcq.queued_count--;
+                tcq.queued_lowest = ps.msg_seq + 1;
+            }
             if (reliable) {
                 Unacked u; u.framed = std::move(ps.framed); u.sent_time = now;
                 u.first_time = now; u.pkt_seq = 0;
-                ep->tx[ps.chan].unacked.emplace(ps.msg_seq, std::move(u));  // per-msg retransmit
+                if (ep->tx[ps.chan].unacked.emplace(ps.msg_seq, std::move(u)).second)
+                    ep->unacked_bytes += framed_bytes;   // per-msg retransmit
                 inflight++;
             }
             ep->send_queue_bytes = (ep->send_queue_bytes >= framed_bytes)
@@ -405,10 +438,17 @@ void Send(Endpoint* ep, uint8_t chan, Class cls, const uint8_t* data, int len) {
         return;
     }
     TxChannel& tc = ep->tx[chan];
+    tc.cls_known   = true;
+    tc.cls_ordered = (cls == Class::ReliableOrdered);
     PendingSend ps;
     ps.chan = chan;
     ps.cls = static_cast<uint8_t>(cls);
     ps.msg_seq = tc.next_msg_seq++;
+    // Holding-advertisement bookkeeping (S2): a message that has a msg_seq but
+    // has not been pumped yet is still held, and the advertisement must not
+    // claim otherwise.
+    if (tc.queued_count == 0) tc.queued_lowest = ps.msg_seq;
+    tc.queued_count++;
     BuildFramed(chan, cls, ps.msg_seq, data, len, ps.framed);
     ep->send_queue_bytes += ps.framed.size();
     ep->send_queue.push_back(std::move(ps));  // paced out in Update()
@@ -440,11 +480,22 @@ void Update(Endpoint* ep, double now) {
             }
             const uint64_t* c = reliable_endpoint_counters(ep->rel);
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "[RC-STATS] ep=%llu q=%zu qb=%zu fec_supp=%d unacked=%zu oldest=%.1fs | "
+                "[RC-STATS] ep=%llu q=%zu qb=%zu fec_supp=%d unacked=%zu ub=%zu oldest=%.1fs | "
+                "ret_dead=%llu ret_hard=%llu ret_cap=%llu ret_flat=%llu "
+                "hadv=%llu unfact=%llu untimer=%llu hdefer=%llu hback=%llu | "
                 "sent=%llu recv=%llu acked=%llu stale=%llu invalid=%llu "
                 "TOO_LARGE=%llu frag_sent=%llu frag_recv=%llu FRAG_INVALID=%llu",
                 (unsigned long long)ep->id, queue, ep->send_queue_bytes,
-                (int)ep->fec_suppressed, unacked_total, oldest,
+                (int)ep->fec_suppressed, unacked_total, ep->unacked_bytes, oldest,
+                (unsigned long long)ep->st_retire_dead,
+                (unsigned long long)ep->st_retire_hard,
+                (unsigned long long)ep->st_retire_bytecap,
+                (unsigned long long)ep->st_retire_flat,
+                (unsigned long long)ep->st_hold_adverts_sent,
+                (unsigned long long)ep->st_unanchor_by_fact,
+                (unsigned long long)ep->st_unanchor_by_timer,
+                (unsigned long long)ep->st_hold_defers,
+                (unsigned long long)ep->st_backstop_arms,
                 (unsigned long long)c[0], (unsigned long long)c[1],
                 (unsigned long long)c[2], (unsigned long long)c[3],
                 (unsigned long long)c[4], (unsigned long long)c[5],
@@ -457,14 +508,40 @@ void Update(Endpoint* ep, double now) {
     // peer can clear/retransmit precisely on what we've DELIVERED. Sent DIRECTLY
     // (not queued) so acks always flow -- never blocked by pacing or a cwnd-stalled
     // reliable head (which would otherwise deadlock recovery).
-    if (ep->rx_since_carrier > 0 && now - ep->last_carrier_time >= RC_ACK_FLUSH_INTERVAL) {
-        // body = [u8 count]{ u8 chan, u64 next_expected } for each started rx channel.
-        uint8_t body[1 + 32 * 9];
+    //
+    // S0 KEEPALIVE: also emit one every RC_ACK_KEEPALIVE_INTERVAL while we
+    // have any started rx channel, even with nothing received since the last
+    // carrier. Without it a receiver whose FORWARD path is down goes silent,
+    // which is indistinguishable from being dead -- and the whole liveness
+    // design below would then fail closed in exactly the outage it targets.
+    const bool liveness = LivenessEnabled();
+    bool carrier_due = ep->rx_since_carrier > 0 &&
+                       now - ep->last_carrier_time >= RC_ACK_FLUSH_INTERVAL;
+    if (!carrier_due && liveness &&
+        now - ep->last_carrier_time >= RC_ACK_KEEPALIVE_INTERVAL) {
+        for (auto& kv : ep->rx) {
+            if (kv.second.started) { carrier_due = true; break; }
+        }
+    }
+    if (carrier_due) {
+        // body = [u8 count]{ u8 chan, u64 next_expected } for each started rx
+        // channel, then optionally the S2 holding section (see the wire note
+        // in reliable_channel_internal.h). Sized for BOTH sections full:
+        // 1 + 32*9 + 2 + 32*10 = 611 B, which with 12 B of RC header and 4 B of
+        // CRC is 627 B -- comfortably under RC_FRAGMENT_ABOVE (1024), so the
+        // carrier is always exactly one datagram. Asserted, not assumed.
+        // (These numbers were 579/595 while the hold entry was 9 bytes; the
+        // `holding` flag made the stride 10. Unit test 13(c) recomputes them
+        // independently, and the static_assert below is the real guarantee.)
+        uint8_t body[1 + RC_CARRIER_MAX_ENTRIES * 9 +
+                     2 + RC_CARRIER_MAX_ENTRIES * RC_CARRIER_HOLD_STRIDE];
+        static_assert(RC_HDR_BYTES + sizeof(body) + RC_CRC_BYTES <= RC_FRAGMENT_ABOVE,
+                      "ack carrier must stay a single datagram");
         uint8_t cnt = 0;
         size_t off = 1;
         for (auto& kv : ep->rx) {
             if (!kv.second.cls_known) continue;
-            if (cnt >= 32) break;
+            if (cnt >= RC_CARRIER_MAX_ENTRIES) break;
             // Cumulative next-expected: ordered -> next_deliver; unordered -> the
             // contiguous received prefix (un_next_ack). Either way the sender may
             // clear all msgs with seq < this and must retransmit the rest.
@@ -475,6 +552,7 @@ void Update(Endpoint* ep, double now) {
             off += 9; cnt++;
         }
         body[0] = cnt;
+        if (liveness) off = CarrierAppendHoldSection(ep, body, off);
         std::vector<uint8_t> framed;
         BuildFramed(RC_ACK_CARRIER_CHANNEL, Class::Unreliable, 0, body, static_cast<int>(off), framed);
         SendFramedNow(ep, framed);
@@ -558,14 +636,106 @@ void Update(Endpoint* ep, double now) {
     //     ordered channel, where the arm is a no-op: the next message arrives
     //     at exactly next_deliver, takes the ordinary in-order path, and
     //     clears the arm without ever adopting.
+    //
+    // S2 turns the 3.5s guess into a negotiated fact, in BOTH directions:
+    //   * the peer advertises an oldest-held seq ABOVE our cursor -> it has
+    //     provably retired our hole, so repair IMMEDIATELY (typically within
+    //     one carrier interval of the retire) instead of waiting the horizon
+    //     out. Strictly faster than today, and it is what makes the un-anchor
+    //     honest rather than a guess.
+    //   * the peer advertises an oldest-held seq AT OR BELOW our cursor -> it
+    //     is still holding and still retransmitting the hole, so do NOT
+    //     repair: skipping here is exactly the case where next_deliver
+    //     advances past a message that was in flight and about to arrive.
+    //     Bounded by RC_ORDERED_STALL_HARD_SEC so a peer that lies or wedges
+    //     cannot pin us forever, and by RC_HOLD_ADVERT_FRESH_SEC so a peer
+    //     that stopped talking cannot pin us on a stale claim.
+    //
+    // CORRECTION (adversarial review, 2026-08-16). The bound above used to read
+    // "at most RC_ORDERED_STALL_HARD_SEC", and for the EMPTY-ooo branch that was
+    // FALSE -- the branch this whole ladder exists for. The backstop's "repair"
+    // there delivers nothing; it only ARMS the next arrival to adopt itself.
+    // The disarm-on-fresh-positive rule in CarrierParseHoldSection then cleared
+    // that arm on the peer's very next carrier, so the DEFERRAL was bounded at
+    // 9s while the REPAIR was not bounded at all (25s against an honest peer,
+    // unbounded against one that lies). A backstop arm is now STICKY -- see
+    // RxChannel::stall_resync_backstop -- so 9s is the real bound again, for any
+    // peer behaviour including one that never stops claiming to hold our hole.
+    // No advertisement (pre-fix peer, kill switch off, or a peer with no
+    // ordered tx) -> exactly today's timer behaviour.
     for (auto& [rxchan, rc] : ep->rx) {
         if (!rc.cls_ordered || !rc.started) continue;
         if (rc.last_progress_time < 0.0) { rc.last_progress_time = now; continue; }
-        if (now - rc.last_progress_time < RC_ORDERED_STALL_SEC) continue;
+        const double stalled = now - rc.last_progress_time;
+        const bool advert_fresh =
+            liveness && rc.peer_hold_known && rc.peer_hold_time >= 0.0 &&
+            now - rc.peer_hold_time < RC_HOLD_ADVERT_FRESH_SEC;
+        // Peer speaks the extension but has told us nothing recently: we have
+        // NO CURRENT INFORMATION, which is not the same as "the hole is gone".
+        // It is usually the opposite -- the link is down, which is exactly when
+        // the sender is retaining hardest. Repairing on no information is what
+        // makes a healed link lose the head of the retained backlog.
+        const bool advert_stale = liveness && rc.peer_hold_known && !advert_fresh;
+        // `!stall_resync`: once the un-anchor is armed the repair has already
+        // happened and re-running it every RC_ORDERED_FACT_REPAIR_SEC would
+        // just spin the counter.
+        const bool fact_repair = advert_fresh && !rc.stall_resync &&
+                                 rc.peer_hold_oldest > rc.next_deliver &&
+                                 stalled >= RC_ORDERED_FACT_REPAIR_SEC;
+        // `peer_hold_active` is load-bearing: without it an IDLE in-sync
+        // channel (oldest == next_msg_seq == our next_deliver) is byte-
+        // identical to "I am holding exactly your hole" and would defer
+        // forever. Measured 23 spurious deferrals on RC_CHAN_SPEC_SNAPSHOT in
+        // one spectator session before the flag existed.
+        const bool hold_fresh = advert_fresh && rc.peer_hold_active &&
+                                rc.peer_hold_oldest <= rc.next_deliver;
+        if (!fact_repair && stalled < RC_ORDERED_STALL_SEC) continue;
+        // Did we get here by running the deferral out to its hard bound? That
+        // is the arm the peer must not be able to take back (see the CORRECTION
+        // above and RxChannel::stall_resync_backstop).
+        const bool backstop_fired = (hold_fresh || advert_stale) &&
+                                    stalled >= RC_ORDERED_STALL_HARD_SEC;
+        if ((hold_fresh || advert_stale) && stalled < RC_ORDERED_STALL_HARD_SEC) {
+            // DEFER. last_progress_time is deliberately NOT refreshed: the
+            // stall clock must keep running so the hard backstop below is
+            // measured on the same clock as the app's starve ladder.
+            //
+            // holding_repair -- the flag the app's starve ladder reads -- is
+            // set ONLY for the positive claim. A stale advertisement means the
+            // peer has gone quiet, and that is precisely when a re-JOIN is the
+            // right app-level move; telling the ladder "the transport is
+            // repairing" there would defer the one action that could help.
+            rc.holding_repair = hold_fresh;
+            if (!rc.defer_logged) {
+                rc.defer_logged = true;
+                ep->st_hold_defers++;
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "[RC] ordered chan=%u stalled %.1fs at msg_seq=%llu -- "
+                    "DEFERRING repair (%s; backstop %.1fs). Un-anchoring here "
+                    "would adopt whatever arrives first when the link returns, "
+                    "and a healing backlog retransmits phase-staggered, not in "
+                    "order -- that is how the head of a RETAINED backlog gets "
+                    "silently discarded",
+                    (unsigned)rxchan, stalled,
+                    (unsigned long long)rc.next_deliver,
+                    hold_fresh ? "the sender says it is STILL HOLDING our hole"
+                               : "the sender has told us NOTHING recently, so "
+                                 "we have no evidence the hole is gone",
+                    RC_ORDERED_STALL_HARD_SEC);
+            }
+            continue;
+        }
+        rc.holding_repair = false;
+        rc.defer_logged   = false;
+        if (fact_repair) ep->st_unanchor_by_fact++; else ep->st_unanchor_by_timer++;
         if (rc.ooo.empty()) {
             // One line per stall episode: the arm latches until a delivery
             // clears it, and last_progress_time is refreshed so a channel
             // that stays quiet does not re-log every horizon.
+            if (backstop_fired && !rc.stall_resync_backstop) {
+                rc.stall_resync_backstop = true;
+                ep->st_backstop_arms++;
+            }
             if (!rc.stall_resync) {
                 rc.stall_resync = true;
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
@@ -591,7 +761,8 @@ void Update(Endpoint* ep, double now) {
             (unsigned long long)skip_to);
         rc.next_deliver = skip_to;
         rc.last_progress_time = now;
-        rc.stall_resync       = false;   // we found the successor ourselves
+        rc.stall_resync          = false;   // we found the successor ourselves
+        rc.stall_resync_backstop = false;   // ...so there is no arm left to protect
         auto it = rc.ooo.find(rc.next_deliver);
         while (it != rc.ooo.end()) {
             if (ep->deliver) ep->deliver(ep->deliver_ctx, rxchan,
@@ -616,12 +787,53 @@ void Update(Endpoint* ep, double now) {
         if (resend < 0.08) resend = 0.08;
         if (resend > 0.75) resend = 0.75;
     }
+    // RETRANSMIT AMPLIFICATION, measured rather than asserted (adversarial
+    // review D4c, 2026-08-16). This loop calls reliable_endpoint_send_packet
+    // DIRECTLY: it does not spend tokens and it is not charged WireCost, so it
+    // is the one egress path the pacer does not see. The retention arms extend
+    // how long it may run against an alive-but-deaf peer from 7s to 25s, so the
+    // honest question is how much extra wire that buys.
+    //
+    //   RATE (unchanged by this change, and this is the load-bearing point):
+    //     unacked is cwnd-bounded at 96 messages ENDPOINT-wide (PumpSendQueue
+    //     stops at inflight >= cwnd, InFlight sums the endpoint), and each is
+    //     re-sent at most once per `resend` = clamp(2*RTT, 0.08, 0.75). Worst
+    //     case is the 0.08 floor: 96 / 0.08 = 1200 messages/s, x (1 + M/K) FEC
+    //     parity (K=4, M<=6) = 3000 datagrams/s. At the ~180B spectator batch
+    //     that is ~540 KB/s per endpoint. The retire horizon never bounded this
+    //     rate; cwnd and `resend` do, and neither moved.
+    //   DURATION (what actually changed): 7s -> 25s worst case, i.e. 25/7 =
+    //     3.57x more datagrams for one wedged peer, ~21k -> ~75k at the numbers
+    //     above. The review's threshold for adding pacing to this loop was 10x;
+    //     3.57x is under it, so the loop is deliberately left unpaced -- pacing
+    //     the retransmit path would also delay the repair this whole change
+    //     exists to make possible, and the RIGHT bound on a peer that is alive
+    //     and never receiving is RC_RETIRE_HARD_SEC itself, which is what it is.
+    //   Field observable if this is ever wrong: [RC-STATS] ret_hard= climbing
+    //     while reliable.io's own sent counter is high. ret_hard was 0 in every
+    //     validation run to date.
+    //
+    // S1: is the peer alive? A one-way FORWARD outage leaves the reverse path
+    // healthy, so the peer keeps acking (S0 guarantees it keeps acking even
+    // with nothing to ack) and this stays false -- which is the entire point.
+    const bool peer_silent = ep->last_peer_rx_time < 0.0 ||
+                             now - ep->last_peer_rx_time >= RC_PEER_SILENT_SEC;
     for (auto& tkv : ep->tx) {
         auto& un = tkv.second.unacked;
         for (auto it = un.begin(); it != un.end();) {
             Unacked& u = it->second;
             if (u.first_time < 0.0) u.first_time = now;
-            if (now - u.first_time >= 7.0) {
+            const double age = now - u.first_time;
+            // Reaching RC_RETIRE_SEC is necessary but no longer sufficient.
+            const char* why = nullptr;
+            if (age >= RC_RETIRE_SEC) {
+                if (!liveness)                        why = "flat 7s TTL (FM2K_RC_LIVENESS off)";
+                else if (peer_silent)                 why = "peer SILENT >=2s (link is dead)";
+                else if (age >= RC_RETIRE_HARD_SEC)   why = "25s hard ceiling (peer alive but never receiving)";
+                else if (ep->unacked_bytes > RC_MAX_UNACKED_BYTES)
+                                                      why = "2MB unacked byte cap";
+            }
+            if (why) {
                 // Retiring a RELIABLE message is a delivery-contract break. It
                 // is survivable because both sides now have a repair: an
                 // ORDERED channel skips the hole after RC_ORDERED_STALL_SEC
@@ -630,27 +842,50 @@ void Update(Endpoint* ep, double now) {
                 // host's rate-limited re-ship, which the viewer's BEGIN-continue
                 // rule now folds into the transfer already in progress instead
                 // of restarting it.
-                // The TTL itself is deliberately NOT channel-aware: at one
-                // datagram per chunk, 7s is ~9+ independent retransmit attempts
-                // at ~80% each, so a chunk essentially never reaches the retire
-                // horizon unless the link is genuinely dead -- and extending the
-                // TTL for a dead link would keep 1000+ messages resident and
-                // retransmitting, which is the congestion collapse this whole
-                // change set exists to remove.
+                // The TTL is deliberately NOT channel-aware: at one datagram
+                // per chunk, 7s is ~9+ independent retransmit attempts at ~80%
+                // each, so a chunk essentially never reaches the retire horizon
+                // unless the link is genuinely dead.
+                // CORRECTION to the claim that used to sit here ("extending the
+                // TTL for a dead link would keep 1000+ messages resident"): it
+                // could not. PumpSendQueue stops adding to `unacked` at
+                // inflight >= cwnd and InFlight() counts the WHOLE endpoint, so
+                // total unacked is bounded at ~96 messages however long the TTL
+                // is (~17KB at the ~180B spectator batch size). What the TTL
+                // actually bounds is the retransmit WIRE RATE on a dead link --
+                // which is why the "peer silent" arm above still retires on the
+                // flat clock, and why the retention arms are capped by
+                // RC_RETIRE_HARD_SEC and RC_MAX_UNACKED_BYTES rather than
+                // trusted to be self-limiting.
                 // It must never be silent again (the silent retire hid the
                 // oversize-chunk drop for weeks).
-                static double s_last_retire_log = 0.0;
-                if (now - s_last_retire_log >= 1.0) {
-                    s_last_retire_log = now;
+                // Per-ENDPOINT throttle. It was a function-local static, which
+                // is shared by every endpoint in the process and is therefore
+                // not a throttle at all when their clocks differ -- one
+                // endpoint's stamp silently muted another's retires for a full
+                // second (and, with the unit test's per-test clocks, for an
+                // entire test).
+                if (now - ep->last_retire_log >= 1.0) {
+                    ep->last_retire_log = now;
                     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                        "[RC] RETIRED reliable msg seq=%llu chan=%u after 7s "
-                        "undelivered (%zu bytes) -- permanent gap. The RECEIVER "
-                        "repairs it at %.1fs (ordered-stall skip/resync); a bare "
-                        "app-level re-JOIN does NOT, because RC state is "
-                        "per-endpoint and survives it -- only "
+                        "[RC] RETIRED reliable msg seq=%llu chan=%u after %.1fs "
+                        "undelivered (%zu bytes) -- reason: %s. Permanent gap. "
+                        "The RECEIVER repairs it (ordered-stall skip/resync, "
+                        "immediately once our holding advertisement drops past "
+                        "its cursor); a bare app-level re-JOIN does NOT, because "
+                        "RC state is per-endpoint and survives it -- only "
                         "ReliableChannel_ResetPeer clears this endpoint",
-                        (unsigned long long)it->first, (unsigned)tkv.first,
-                        u.framed.size(), RC_ORDERED_STALL_SEC);
+                        (unsigned long long)it->first, (unsigned)tkv.first, age,
+                        u.framed.size(), why);
+                }
+                if      (!liveness)                   ep->st_retire_flat++;
+                else if (peer_silent)                 ep->st_retire_dead++;
+                else if (age >= RC_RETIRE_HARD_SEC)   ep->st_retire_hard++;
+                else                                  ep->st_retire_bytecap++;
+                {
+                    const size_t nb = u.framed.size();
+                    ep->unacked_bytes = (ep->unacked_bytes >= nb)
+                                            ? ep->unacked_bytes - nb : 0;
                 }
                 it = un.erase(it);
                 continue;

@@ -78,6 +78,7 @@ set(FM2KHOOK_SOURCES
     src/netplay/host_clock.cpp             # host-clock sync + rift frame pacing (FM2K_HOST_CLOCK)
     src/netplay/reliable_channel.cpp       # reliable-ordered channel layer over reliable.io
     src/netplay/reliable_channel_fec.cpp   # its FEC half: parity encode on egress, RS recovery on ingress
+    src/netplay/reliable_channel_liveness.cpp  # its liveness half: FM2K_RC_LIVENESS + the holding-advertisement codec
     src/netplay/reliable_channel_net.cpp   # control-channel glue: 0xCB demux + RawSend egress + poll Update
     src/netplay/savestate.cpp           # common: lifecycle + buffers + RNG-trace + hashing
     src/netplay/savestate_fm95.cpp      # FM95 save/load body (#if ENGINE_FM95)

@@ -406,21 +406,26 @@ void RunSpectatorTick() {
         //  12000  give up (here)             -- two full escalations deep
         // A genuinely-crashed host therefore costs 4s more before the window
         // closes; a wedged-but-reachable one now gets two chances at repair
-        // instead of zero.
+        // instead of zero. S3 (2026-08-16) adds a second layout: under active
+        // RC repair #1 defers to 7500 and #2 lands at 11500, still two rungs
+        // inside this budget -- a cap derived from this number and
+        // static_asserted in spectator_node_internal.h.
         static const uint32_t s_gone_ms = []{
             const char* v = std::getenv("FM2K_SPEC_HOST_GONE_MS");
-            const uint32_t ms = (v && v[0]) ? (uint32_t)std::atoi(v) : 12000u;
+            const uint32_t ms = (v && v[0]) ? (uint32_t)std::atoi(v) : SPECTATOR_HOST_GONE_DEFAULT_MS;
             // An override BELOW the ladder truncates it. That is legitimate
             // (the harness deliberately shortens teardown, and
             // spec_host_gone_test.sh needs to beat the harness cleanup), but
             // it must never again be a silent reason the repair "never fires":
             // say so once, at startup, so a truncated run is self-diagnosing.
-            if (ms < 12000u) {
+            if (ms < SPECTATOR_HOST_GONE_DEFAULT_MS) {
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     "SpectatorNode: FM2K_SPEC_HOST_GONE_MS=%u is BELOW the "
-                    "recovery ladder's 12000ms budget (RC stall repair 3500, "
-                    "escalation #1 4000, escalation #2 8000) -- this viewer "
-                    "will exit before the later rungs can run", ms);
+                    "recovery ladder's %ums budget (RC stall repair 3500, "
+                    "escalation #1 4000 or up to 7500 under active RC repair, "
+                    "escalation #2 a 4000ms floor behind it) -- this viewer "
+                    "will exit before the later rungs can run",
+                    ms, (unsigned)SPECTATOR_HOST_GONE_DEFAULT_MS);
             }
             return ms;
         }();
@@ -519,6 +524,7 @@ void RunSpectatorTick() {
                 const uint32_t pkt_age  = SpectatorNode_MsSinceUpstreamPacket();
                 const uint32_t pulls    = SpectatorNode_GapFillPullCount();
                 const uint32_t escs     = SpectatorNode_StarveEscalationCount();
+                const uint32_t defers   = SpectatorNode_StarveDeferralCount();
                 const bool     reachable = pkt_age != 0 && pkt_age < since_admit;
                 if (reachable) {
                     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
@@ -526,20 +532,21 @@ void RunSpectatorTick() {
                         "but the host is still REACHABLE (last packet from it %ums "
                         "ago), so this is a wedged stream, NOT a crashed host. "
                         "Recovery tried: %u gap-fill pull(s), %u re-JOIN "
-                        "escalation(s), and the RC ordered-stall repair; none "
-                        "restored the feed. Closing stream",
-                        since_admit, pkt_age, pulls, escs);
+                        "escalation(s) (%u deferred while RC reported active "
+                        "repair), and the RC ordered-stall repair; none restored "
+                        "the feed. Closing stream",
+                        since_admit, pkt_age, pulls, escs, defers);
                 } else {
                     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                         "SpectatorNode: HOST UNREACHABLE -- no new content for "
                         "%ums and nothing at all from the upstream %s. It left "
                         "ungracefully (crash / network drop / TerminateProcess: "
                         "no SPEC_SESSION_END). Recovery tried: %u gap-fill "
-                        "pull(s), %u re-JOIN escalation(s). Closing stream",
+                        "pull(s), %u re-JOIN escalation(s) (%u deferred). Closing",
                         since_admit,
                         pkt_age == 0 ? "since the session began"
                                      : "for at least as long",
-                        pulls, escs);
+                        pulls, escs, defers);
                 }
                 ExitProcess(0);
             }

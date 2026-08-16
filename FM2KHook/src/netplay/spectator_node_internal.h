@@ -162,6 +162,9 @@ constexpr size_t   SPECTATOR_GAP_FILL_MAX_EVENTS    = 2048;
 // resume-suppressed re-JOIN that forces the host's destructive-reset branch AND
 // resets the RC endpoint on both sides.
 constexpr uint32_t SPECTATOR_STARVE_PULLS_BEFORE_ESCALATE = 3;
+// Cap on [CSS-STARVE] episode-end lines per session. Measurement keeps running
+// past it; see State::css_window_starve_logged.
+constexpr uint32_t SPECTATOR_CSS_STARVE_LOG_MAX = 32;
 // ...but never before the RC layer has had its own go. RC_ORDERED_STALL_SEC is
 // 3.5s (reliable_channel_internal.h), and its repair is strictly cheaper than a
 // re-JOIN, so the ladder is ORDERED by making the escalation wait out that
@@ -169,11 +172,63 @@ constexpr uint32_t SPECTATOR_STARVE_PULLS_BEFORE_ESCALATE = 3;
 // watchdog uses -- so the rungs are directly comparable:
 //   3.5s RC ordered-stall repair | 4.0s escalation #1 | 8.0s escalation #2
 //   | 12.0s host-gone give-up (FM2K_SPEC_HOST_GONE_MS default)
+// ...and, when the transport reports active repair, escalation #1 slides to at
+// most SPECTATOR_STARVE_ESCALATE_HARD_MS (7.5s) with #2 behind it at 11.5s.
+// Both layouts fit the 12000ms budget; see the derivation on HARD_MS below.
 constexpr uint64_t SPECTATOR_STARVE_ESCALATE_MIN_STALL_MS = 4000;
 // Floor between escalations. Must clear BOTH the host's 3s destructive-reset
 // suppression (spec_join.cpp) and the 3.5s re-JOIN cadences (KICK_JOIN /
 // NOADMIT_FIRST), or an escalation lands on a bare re-ACK and re-ships nothing.
 constexpr uint64_t SPECTATOR_STARVE_ESCALATE_FLOOR_MS     = 4000;
+// ...and never wait PAST the point the transport itself gives up. While RC
+// reports active ordered repair (the sender is provably still holding and
+// retransmitting our hole) escalation is deferred, because escalation destroys
+// the endpoint and with it the very retention that repair depends on. This is
+// the cap on that deferral.
+//
+// THE NUMBER IS DERIVED, NOT PICKED. It was 9000 -- chosen to mirror the
+// transport's own RC_ORDERED_STALL_HARD_SEC -- and adversarial review
+// (2026-08-16, D3) showed that spent escalation #2 entirely at the shipping
+// budget. The arithmetic, all on SpectatorNode_MsSinceLastAdmit():
+//
+//   escalation #1 fires at min(deferral cap, ...) once pulls are exhausted
+//   escalation #2 fires no earlier than #1 + SPECTATOR_STARVE_ESCALATE_FLOOR_MS
+//   the viewer exits at FM2K_SPEC_HOST_GONE_MS, default 12000
+//     (trampoline_spectator.cpp -- 5000 is a HARNESS-only override)
+//
+//   old: 9000 + 4000 = 13000 > 12000  -> escalation #2 UNREACHABLE for any
+//        viewer that took the deferral path. Pre-fix, #1 at 4000 left 8s and
+//        both rungs fit; the deferral silently traded the second rung away.
+//   now: cap <= 12000 - 4000 = 8000 is the hard requirement. 7500 is taken
+//        rather than 8000 so #2 lands at 11500 with 500ms of margin before the
+//        give-up rather than landing on the same tick as it (the ladder is
+//        sampled from RunSpectatorTick at ~100Hz, so a tie is a coin flip --
+//        the same mistake RC_ORDERED_STALL_SEC's own history records).
+//
+// CONSEQUENCE, recorded honestly: the app now releases its deferral 1500ms
+// BEFORE the transport's RC_ORDERED_STALL_HARD_SEC (9.0s) backstop, so the two
+// numbers are no longer equal. Between 7.5s and 9.0s a still-deferring RC
+// endpoint can be destroyed by escalation #1, discarding retained content --
+// exactly what S3 exists to avoid, now confined to a 1.5s window instead of
+// starting at 4.0s. That trade is deliberate: at 7.5s of zero cursor movement
+// the viewer has 4.5s of budget left, and one escalation that can still be
+// followed by a second beats 1.5s more of waiting followed by none. RC's own
+// backstop cannot simply be lowered to match: it must stay clear of the
+// SENDER's RC_RETIRE_SEC (7.0s) by enough that a retire-then-advertise round
+// trip repairs on a FACT instead of on the backstop.
+constexpr uint64_t SPECTATOR_STARVE_ESCALATE_HARD_MS      = 7500;
+// SPECTATOR_HOST_GONE_DEFAULT_MS (12000) lives in spectator_node.h so the
+// viewer's watchdog and these derived rungs read one definition. The budget
+// arithmetic above is therefore checked by the compiler, not by a comment.
+static_assert(SPECTATOR_STARVE_ESCALATE_HARD_MS +
+                  SPECTATOR_STARVE_ESCALATE_FLOOR_MS <
+              SPECTATOR_HOST_GONE_DEFAULT_MS,
+              "starve escalation #2 must land strictly inside the host-gone "
+              "budget: deferral cap + escalation floor < budget");
+static_assert(SPECTATOR_STARVE_ESCALATE_HARD_MS >
+                  SPECTATOR_STARVE_ESCALATE_MIN_STALL_MS,
+              "the deferral cap must sit above escalation #1's own floor, or "
+              "the deferral can never happen");
 constexpr uint64_t SPECTATOR_SUBSCRIBER_EXPIRY_MS  = 30000;  // upstream-side
                                                              // sweep: drop
                                                              // subscribers
@@ -873,6 +928,37 @@ struct State {
     uint32_t                  gap_fill_pull_total        = 0;  // session total, for the exit message
     uint32_t                  starve_escalations         = 0;  // ditto
     uint64_t                  last_starve_escalate_ms    = 0;  // escalation floor
+    // Times the escalation gate was open on its own clock but held back
+    // because RC reported active ordered repair. Session total; a nonzero
+    // value on an otherwise-clean run is the fix doing its job, not a fault.
+    uint32_t                  starve_escalations_deferred = 0;
+    // 1Hz throttle for the deferral line. Lives HERE, not in a function-local
+    // static: this diff's own S1 half fixed exactly that antipattern for the RC
+    // retire line (Endpoint::last_retire_log), where a process-wide static
+    // silently muted one endpoint's warnings from another's clock. Harmless
+    // today (one spectator node per process) and it stays harmless by not being
+    // reintroduced.
+    uint64_t                  last_starve_defer_log_ms   = 0;
+    // Episode cap for the [CSS-STARVE] line. The predicate is sampled at ~100Hz
+    // from RunSpectatorTick and one line is emitted per episode END, so a
+    // predicate that flaps at batch cadence would emit at batch cadence -- into
+    // a hook whose logging is SYNCHRONOUS. Measured 0-3 episodes per session
+    // across four validation runs, so this cap never binds in practice; it is
+    // there so a flapping predicate degrades to a bounded log instead of a
+    // frame-rate bug. Counting continues after the cap; only printing stops.
+    uint32_t                  css_window_starve_logged   = 0;
+    // CSS-window starve measurement (pre-committed trigger for the
+    // between-matches gap-fill rung). The whole starve ladder is gated to
+    // battle mode, so a viewer starving at gm==2000 has NO rung at all and the
+    // host-gone timer runs unopposed -- the shape the surviving R3b log shows.
+    // We do not widen the gate on this evidence: a pull's JOIN_ACK carries the
+    // host's CURRENT kind and a between-matches kind aborts the viewer's BTB.
+    // We MEASURE instead, and the trigger is pre-committed: if any gated run
+    // records a CSS-window starve episode longer than 3000ms, the
+    // between-matches rung gets implemented.
+    uint64_t                  css_window_starve_since_ms = 0;  // 0 = not starving
+    uint32_t                  css_window_starve_episodes = 0;
+    uint32_t                  css_window_starve_max_ms   = 0;
 };
 
 // The one definition lives in spectator_node.cpp; sibling TUs see it via this.
@@ -1015,6 +1101,14 @@ bool     SpecForceFullReJoin(SpecJoinMode mode, const char* reason);
 // rather than re-derived so the two can never drift. Lives here rather than
 // inline in TickHealth so spec_health.cpp stays under the 1000-line cap.
 void     SpecGapFillPullOrEscalate(uint64_t now, bool gap_ahead);
+
+// CSS-window starve measurement. `starving` is "we are mid-stream, playing
+// back, and the pending-frame queue is empty"; `in_battle` gates the real
+// ladder. Accumulates episodes only for the NOT-in-battle case, which is the
+// window every rung is gated out of. Measurement only -- it never pulls, never
+// escalates, and never touches the ladder. Lives here for the same 1000-line
+// reason as SpecGapFillPullOrEscalate above.
+void     SpecCssWindowStarveTick(uint64_t now, bool starving, bool in_battle);
 
 // The snapshot applicability rule, as a tri-state so a snapshot that is merely
 // EARLY is not confused with one that is wrong.

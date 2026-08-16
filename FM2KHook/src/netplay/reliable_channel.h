@@ -73,5 +73,19 @@ void Update(Endpoint* ep, double now);
 float Rtt(Endpoint* ep);
 float PacketLoss(Endpoint* ep);
 
+// True when at least one ORDERED rx channel of this endpoint is pinned at a
+// hole AND the peer's latest ack carrier advertises that it is STILL HOLDING
+// that hole (S2). The app's starve ladder consults this so it does not tear
+// the endpoint down while the transport is provably mid-repair -- see
+// ReliableChannel_IsRepairingOrdered in reliable_channel_net.h. Always false
+// when the FM2K_RC_LIVENESS kill switch is off.
+bool IsRepairingOrdered(Endpoint* ep);
+
+// FM2K_RC_LIVENESS kill switch (DEFAULT ON). Parsed once, logged once. OFF
+// restores the pre-fix transport contract exactly: no carrier keepalive, flat
+// unconditional 7s retire, no holding advertisement emitted or honoured, and
+// IsRepairingOrdered() constantly false. Diagnostic lever only.
+bool LivenessEnabled();
+
 }  // namespace rc
 }  // namespace fm2k

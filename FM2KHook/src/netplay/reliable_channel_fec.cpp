@@ -175,6 +175,34 @@ void OnDatagram(Endpoint* ep, const uint8_t* data, int len) {
     // caller already stripped the 0xCB tag; first byte is the FEC role.
     uint8_t role = data[0];
 
+    // S1 liveness: a datagram from the peer -- data, parity or a bare ack
+    // carrier -- is proof it is alive. Stamped here rather than at delivery on
+    // purpose: a peer whose acks reach us while its data does not is exactly
+    // the "alive and asking" state the retire test must not read as dead, and
+    // waiting for a DELIVERY would make the test fail closed in the one outage
+    // it targets.
+    //
+    // WHAT THIS DELIBERATELY DOES AND DOES NOT PROVE (review D5a, 2026-08-16 --
+    // the consequences were understated when this stamp was first written):
+    //   * it is a LINK-liveness test, not a peer-correctness test. A peer whose
+    //     RC layer emits carriers while acking nothing keeps the sender
+    //     retaining and blind-retransmitting for the full RC_RETIRE_HARD_SEC.
+    //     RC_RETIRE_HARD_SEC is what bounds that, and it is why it exists.
+    //   * routing is by source address alone (Addr_ActorString in
+    //     reliable_channel_net.cpp), and UDP source addresses are spoofable, so
+    //     an off-path attacker who knows the peer tuple can hold `peer_silent`
+    //     false at ~2 packets/s of traffic. Bounded (25s ceiling) and
+    //     spectator-only (RC has no other consumer), so this is a recorded
+    //     limitation, not a defended boundary. It is strictly cheaper than the
+    //     pre-existing forged-cumulative-ack hole, which is also untouched.
+    // CHEAP HARDENING TAKEN: the stamp now happens only after the role byte
+    // parses to a role this codec knows, so a stream of arbitrary 0xCB-tagged
+    // garbage no longer counts as proof of life. rx_since_carrier is left
+    // above it on purpose -- owing an ack for a datagram we could not parse is
+    // harmless, and moving it would change the carrier cadence for no gain.
+    if (role == FEC_RAW || role == FEC_DATA || role == FEC_PARITY)
+        ep->last_peer_rx_time = ep->now_time;
+
     if (role == FEC_RAW) {
         FeedInner(ep, data + FEC_RAW_HDR, len - static_cast<int>(FEC_RAW_HDR));
         return;

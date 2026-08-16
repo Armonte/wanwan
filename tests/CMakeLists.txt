@@ -44,8 +44,10 @@ target_compile_options(delay_math_test PRIVATE -Wall -Wextra -Wpedantic)
 # Its body is guarded by RC_STANDALONE_TEST.
 add_executable(reliable_channel_test
     ../FM2KHook/src/netplay/reliable_channel_test.cpp
+    ../FM2KHook/src/netplay/reliable_channel_liveness_test.cpp
     ../FM2KHook/src/netplay/reliable_channel.cpp
     ../FM2KHook/src/netplay/reliable_channel_fec.cpp
+    ../FM2KHook/src/netplay/reliable_channel_liveness.cpp
     ../vendored/reliable/reliable.c
 )
 target_compile_definitions(reliable_channel_test PRIVATE RC_STANDALONE_TEST)

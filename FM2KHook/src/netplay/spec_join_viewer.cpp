@@ -236,8 +236,53 @@ void SpecGapFillPullOrEscalate(uint64_t now, bool gap_ahead) {
     // had its horizon. That repair is strictly cheaper (no re-JOIN, no
     // re-ship, no host work) and it heals the common shape on its own, so
     // spending a destructive reset first would be pure waste.
+    //
+    // The horizon is now a FACT, not a constant. RC's sender retains an
+    // unacked message past 7s while the peer is provably alive, and RC's
+    // receiver defers its own repair while the sender advertises it is still
+    // holding the hole -- but escalation calls ReliableChannel_ResetPeer,
+    // which destroys the endpoint and with it everything that retention was
+    // for. So while the transport reports active repair we wait, capped at
+    // SPECTATOR_STARVE_ESCALATE_HARD_MS.
+    // A pre-fix host, a relay-transport viewer, or FM2K_RC_LIVENESS=0 all make
+    // the predicate false and restore the plain 4000ms gate.
+    //
+    // THE CAP IS 7500, NOT THE TRANSPORT'S 9000 (adversarial review D3,
+    // 2026-08-16). It used to mirror RC_ORDERED_STALL_HARD_SEC exactly, and
+    // that mirror cost escalation #2 outright: 9000 + the 4000ms floor = 13000,
+    // past the 12000ms host-gone budget, so a viewer that took the deferral
+    // path got ONE escalation where the pre-fix ladder got two. The binding
+    // constraint is the budget, not the symmetry; the full derivation and the
+    // static_assert that enforces it are on the constant itself. Consequence,
+    // recorded rather than hidden: between 7500 and 9000 this gate can now tear
+    // down an endpoint that RC still considers mid-repair.
+    bool rc_repairing = false;
+    if (!g_state.spec_transport_relay && SpecRcEnabled() &&
+        stalled_ms < SPECTATOR_STARVE_ESCALATE_HARD_MS) {
+        const sockaddr_in& up = (g_state.upstream_addr.sin_port != 0)
+                                    ? g_state.upstream_addr : g_state.root_addr;
+        if (up.sin_port != 0) {
+            sockaddr_storage ss{};
+            std::memcpy(&ss, &up, sizeof(up));
+            rc_repairing = ReliableChannel_IsRepairingOrdered(ss);
+        }
+    }
     const bool rc_repair_had_its_turn =
-        stalled_ms >= SPECTATOR_STARVE_ESCALATE_MIN_STALL_MS;
+        stalled_ms >= SPECTATOR_STARVE_ESCALATE_MIN_STALL_MS && !rc_repairing;
+    if (rc_repairing && stalled_ms >= SPECTATOR_STARVE_ESCALATE_MIN_STALL_MS) {
+        ++g_state.starve_escalations_deferred;
+        if (g_state.last_starve_defer_log_ms == 0 ||
+            now - g_state.last_starve_defer_log_ms >= 1000) {
+            g_state.last_starve_defer_log_ms = now;
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "SpectatorNode: starve escalation DEFERRED (%ums stalled, %u "
+                "deferrals) -- the RC ordered channel is pinned at a hole the "
+                "host says it is STILL retransmitting. Escalating would destroy "
+                "that endpoint and the retained message with it; hard cap %llums",
+                stalled_ms, g_state.starve_escalations_deferred,
+                (unsigned long long)SPECTATOR_STARVE_ESCALATE_HARD_MS);
+        }
+    }
     const bool floor_clear =
         g_state.last_starve_escalate_ms == 0 ||
         now - g_state.last_starve_escalate_ms >= SPECTATOR_STARVE_ESCALATE_FLOOR_MS;
@@ -269,6 +314,39 @@ void SpecGapFillPullOrEscalate(uint64_t now, bool gap_ahead) {
         gap_ahead ? "gap ahead" : "live starved", g_state.pb_reorder.size(),
         stalled_ms);
     SpectatorNode_RequestGapFill();
+}
+
+// See the contract in spectator_node_internal.h. The pre-committed trigger:
+// any gated run recording an episode longer than 3000ms justifies giving the
+// CSS window its own between-matches gap-fill rung.
+void SpecCssWindowStarveTick(uint64_t now, bool starving, bool in_battle) {
+    if (starving && !in_battle) {
+        if (g_state.css_window_starve_since_ms == 0) {
+            g_state.css_window_starve_since_ms = now;
+            ++g_state.css_window_starve_episodes;
+        }
+        const uint64_t held = now - g_state.css_window_starve_since_ms;
+        if (held > g_state.css_window_starve_max_ms)
+            g_state.css_window_starve_max_ms = (uint32_t)held;
+        return;
+    }
+    if (g_state.css_window_starve_since_ms != 0) {
+        const uint64_t held = now - g_state.css_window_starve_since_ms;
+        g_state.css_window_starve_since_ms = 0;
+        // Bounded log, unbounded counting: the episode counter and the session
+        // max keep accumulating (they are what the pre-committed 3000ms trigger
+        // is read from), only the per-episode line stops. See
+        // State::css_window_starve_logged for why a hook log needs the cap.
+        if (g_state.css_window_starve_logged >= SPECTATOR_CSS_STARVE_LOG_MAX) return;
+        ++g_state.css_window_starve_logged;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "[CSS-STARVE] between-matches starve episode #%u ended after %llums "
+            "(session max %ums). The starve ladder is gated to battle mode, so "
+            "this window has NO repair rung -- >3000ms is the pre-committed "
+            "trigger for adding one",
+            g_state.css_window_starve_episodes, (unsigned long long)held,
+            g_state.css_window_starve_max_ms);
+    }
 }
 
 }  // namespace specnode

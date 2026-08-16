@@ -233,6 +233,7 @@ uint32_t SpectatorNode_MsSinceUpstreamPacket() {
 }
 uint32_t SpectatorNode_GapFillPullCount()      { return g_state.gap_fill_pull_total; }
 uint32_t SpectatorNode_StarveEscalationCount() { return g_state.starve_escalations; }
+uint32_t SpectatorNode_StarveDeferralCount()   { return g_state.starve_escalations_deferred; }
 
 // True once the upstream told us the whole session is OVER (SPEC_SESSION_END
 // -- the host quit cleanly). Distinguishes a GRACEFUL stream end (drain what's

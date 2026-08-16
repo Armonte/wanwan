@@ -639,6 +639,15 @@ uint32_t SpectatorFingerprint_Compute();
 // Daisy-chain is the failure case, not the design.
 constexpr size_t SPECTATOR_DEFAULT_CAPACITY = 32;
 
+// The viewer's host-gone give-up budget, in ms since the last admitted INPUT.
+// The LAST rung of the spectator recovery ladder, so every rung below it is
+// derived from this number rather than picked next to it -- see the ladder and
+// the SPECTATOR_STARVE_ESCALATE_* derivation in spectator_node_internal.h, and
+// the FM2K_SPEC_HOST_GONE_MS override (harness-only; warned about at startup)
+// in trampoline_spectator.cpp. Public here purely so both of those TUs and the
+// compile-time budget assertions can read the one definition.
+constexpr uint32_t SPECTATOR_HOST_GONE_DEFAULT_MS = 12000;
+
 // Set the direct-subscriber cap. 0 disables accepting (node still relays if
 // it already has subscribers).
 void SpectatorNode_SetCapacity(size_t max_direct);
@@ -804,6 +813,12 @@ bool     SpectatorNode_SessionEnded();      // upstream sent SPEC_SESSION_END (h
 uint32_t SpectatorNode_MsSinceUpstreamPacket();
 uint32_t SpectatorNode_GapFillPullCount();
 uint32_t SpectatorNode_StarveEscalationCount();
+// Times escalation was DUE on its own clock and held back because RC reported
+// active ordered repair (S3). Surfaced in the closing verdict because the
+// per-deferral log line is 1Hz-throttled: without this, a short session whose
+// only deferral line was eaten by the throttle would show no trace of the
+// ladder's most consequential decision.
+uint32_t SpectatorNode_StarveDeferralCount();
 void SpectatorNode_StampInputAdmit();
 // Layer-2 render pacing: the spectator's outer-tick sleep target in ms, =
 // clamp(measured host production period, 10, 20). Lets the spectator render at

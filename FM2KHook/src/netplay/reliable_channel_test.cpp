@@ -7,7 +7,26 @@
 //   3. multi-loss beyond FEC still eventually delivers via retransmit,
 //   4. an ordered channel whose head message the SENDER retired repairs itself
 //      -- including the empty-reassembly-buffer shape that made the repair
-//      unreachable and produced the mid-stream spectator starve (test 10).
+//      unreachable and produced the mid-stream spectator starve (test 10),
+//   5. a message is NOT retired while the peer is provably alive, so a one-way
+//      outage longer than the TTL costs latency and not content (test 11),
+//   6. retention is still bounded -- a peer that is alive but can never receive
+//      has its backlog retired at the hard ceiling (test 12),
+//   7. the extended ack carrier is readable by a pre-fix parser and a pre-fix
+//      carrier infers no advertisement (test 13).
+//
+// Tests 11-13 map onto the implementation spec's tests 11, 13 and 14. The
+// spec's separate test 12 ("the dead-link contract must not regress") is not a
+// separate test here: re-authoring test 10 to a both-directions blackout IS
+// that test, and adding a duplicate would just be the same assertions twice.
+//
+// Tests 14-20 live in reliable_channel_liveness_test.cpp (same binary, same
+// g_fail): the positive-hold triangle, the sticky hard backstop, the real
+// builder against a pre-fix parser, hostile carrier bodies and the unacked byte
+// cap. They were added 2026-08-16 after adversarial review found that half of
+// the S0-S3 design had never executed at any level. The link model and the
+// delivery recorder are shared through reliable_channel_test_link.h -- one
+// definition, because both TUs link into one binary.
 //
 // Build + run on the host (Linux/WSL), not the mingw cross target:
 //   g++ -std=c++17 -DRC_STANDALONE_TEST -I vendored/reliable \
@@ -17,6 +36,7 @@
 #ifdef RC_STANDALONE_TEST
 
 #include "reliable_channel.h"
+#include "reliable_channel_test_link.h"   // Link / Recv / PumpLink / CHECK / g_fail
 
 #include <cstdint>
 #include <cstdio>
@@ -27,51 +47,10 @@
 
 using namespace fm2k::rc;
 
-// A one-way lossy link: datagrams queued here, optionally dropped, then pumped
-// into the destination endpoint.
-struct Link {
-    std::deque<std::vector<uint8_t>> q;
-    Endpoint* dst = nullptr;
-    // drop predicate: called per datagram with a running counter.
-    int counter = 0;
-    int drop_every = 0;   // 0 = no drop; N = drop every Nth datagram
-    int extra_drop_at = -1;  // one specific counter value to also drop (burst sim)
-    int dropped = 0;
-};
-
-static void LinkSend(void* ctx, const uint8_t* data, int len) {
-    Link* L = static_cast<Link*>(ctx);
-    int n = L->counter++;
-    bool drop = (L->drop_every > 0 && (n % L->drop_every) == (L->drop_every - 1));
-    if (n == L->extra_drop_at) drop = true;
-    if (drop) { L->dropped++; return; }
-    L->q.emplace_back(data, data + len);
-}
-
-// Deliver record on the receiver.
-struct Recv {
-    std::vector<std::pair<uint8_t, std::string>> msgs;  // (channel, payload)
-};
-static void OnDeliver(void* ctx, uint8_t chan, const uint8_t* data, int len) {
-    Recv* R = static_cast<Recv*>(ctx);
-    R->msgs.emplace_back(chan, std::string(reinterpret_cast<const char*>(data), len));
-}
-
-// Pump a link's queued datagrams into its destination endpoint (strip nothing --
-// the RC OnDatagram expects the payload after the 0xCB tag, and our LinkSend
-// captured exactly what TransmitCb produced INCLUDING the 0xCB tag, so strip it).
-static void PumpLink(Link& L) {
-    while (!L.q.empty()) {
-        std::vector<uint8_t> d = std::move(L.q.front());
-        L.q.pop_front();
-        // d[0] == 0xCB tag; OnDatagram wants the body after it.
-        if (d.size() >= 1) OnDatagram(L.dst, d.data() + 1, static_cast<int>(d.size()) - 1);
-    }
-}
-
-static int g_fail = 0;
-#define CHECK(cond, msg) do { if (!(cond)) { printf("  FAIL: %s\n", msg); g_fail++; } \
-                              else { printf("  ok:   %s\n", msg); } } while (0)
+// Tests 14-20: the liveness/holding-advertisement half of the design, in its
+// own TU so neither file crosses the repo's 1000-line rule. Returns nothing --
+// it reports through the shared g_fail.
+void RcLivenessTests();
 
 int main() {
     printf("ReliableChannel unit test\n");
@@ -387,8 +366,23 @@ int main() {
     // The check is deliberately taken with NO Update() between the message
     // arriving and the assertion: the repair must happen at DELIVERY time, not
     // at the next stall sweep. (It also makes the test discriminating -- with
-    // the old code the message sits in `ooo` at this instant.) ----
-    printf("[10] ordered stall, EMPTY ooo: retired hole must not deafen the channel\n");
+    // the old code the message sits in `ooo` at this instant.)
+    //
+    // *** DELIBERATE CONTRACT CHANGE, 2026-08-16 (RC liveness fix, S0-S2). ***
+    // This test used to black-hole A->B ONLY, leaving B->A clean, and it
+    // asserted the permanent loss of msg 5 as the EXPECTED outcome. That is no
+    // longer the contract and must not be: with a clean reverse path the peer
+    // is provably ALIVE and provably pinned on exactly that message, and
+    // retiring it there is the defect that produced the spectator starve --
+    // see test 11, which is the same link model with the opposite assertion.
+    //
+    // The un-anchor itself remains the last-resort repair and still needs a
+    // test, so what changed is the LINK MODEL, not the assertions: the
+    // blackout is now BOTH DIRECTIONS, which is the genuinely dead link. The
+    // peer goes silent, RC_PEER_SILENT_SEC elapses, retirement happens at 7s
+    // exactly as it always did, and the receiver un-anchors. This is the test
+    // that stops the liveness fix from degenerating into "never give up". ----
+    printf("[10] DEAD LINK (both directions): retired hole must not deafen the channel\n");
     Recv rb10; Link a2b10, b2a10;
     double t10 = 0.0;
     Endpoint* A10 = Create(18, &LinkSend, &a2b10, &OnDeliver, &ra, t10);
@@ -405,24 +399,33 @@ int main() {
     }
     CHECK(rb10.msgs.size() == 5, "stall-resync: 5 clean messages delivered, cursor at 5");
 
-    // Black-hole A->B completely and send msg 5. B receives nothing at all, so
-    // `ooo` stays EMPTY -- the shape the old precondition exempted. Hold it for
-    // 8s: past A's 7s retire (msg 5 can now NEVER be re-sent) and past B's
-    // stall horizon (the resync arms).
+    // Black-hole BOTH directions and send msg 5. B receives nothing at all, so
+    // `ooo` stays EMPTY -- the shape the old precondition exempted -- and A
+    // hears nothing from B, so its peer-liveness test correctly reads the link
+    // as dead. Hold it for 8s: past A's 7s retire (msg 5 can now NEVER be
+    // re-sent) and past B's stall horizon (the resync arms).
     a2b10.drop_every = 1;   // (n % 1) == 0 for every n -> drop everything
+    b2a10.drop_every = 1;   // dead LINK, not a one-way outage (see the note above)
     {
         char buf[32]; int n = snprintf(buf, sizeof(buf), "s-05");
         Send(A10, 0, Class::ReliableOrdered, reinterpret_cast<uint8_t*>(buf), n);
     }
-    for (int tick = 0; tick < 400; tick++) {   // 400 * 20ms = 8.0s
+    // 11s, not 8s. The receiver no longer un-anchors on the bare 3.5s timer
+    // when it has NO CURRENT INFORMATION about the sender (a silent peer is
+    // usually a down link, which is exactly when the sender retains hardest);
+    // it waits out RC_ORDERED_STALL_HARD_SEC = 9s first. Past that it un-
+    // anchors exactly as before, which is what this test pins. Test 11 is the
+    // complement: an outage INSIDE the 9s window must cost nothing at all.
+    for (int tick = 0; tick < 550; tick++) {   // 550 * 20ms = 11.0s
         t10 += 0.02;
         Update(A10, t10); Update(B10, t10);
         PumpLink(a2b10); PumpLink(b2a10);
     }
-    CHECK(rb10.msgs.size() == 5, "stall-resync: the black-holed msg 5 never arrived");
+    CHECK(rb10.msgs.size() == 5, "dead link: the black-holed msg 5 never arrived");
 
     // Link comes back. The very next message is msg 6, one PAST the dead hole.
     a2b10.drop_every = 0;
+    b2a10.drop_every = 0;
     {
         char buf[32]; int n = snprintf(buf, sizeof(buf), "s-06");
         Send(A10, 0, Class::ReliableOrdered, reinterpret_cast<uint8_t*>(buf), n);
@@ -450,6 +453,243 @@ int main() {
     CHECK(rb10.msgs.size() == 9,
           "stall-resync: the channel keeps delivering after the resync (5+1+3)");
 
+    // ---- Test 11: ONE-WAY OUTAGE LONGER THAN THE TTL, REVERSE PATH CLEAN.
+    // THE RED PROOF for the RC liveness fix (S0 + S1). This is the field shape
+    // behind the spectator starve: a host that is reachable the whole time
+    // (its JOIN_ACKs keep answering the viewer's pulls on a 500ms cadence)
+    // whose forward stream is wedged. Two independent pre-fix defects combine:
+    //
+    //   * the receiver only emitted an ack carrier when it had RECEIVED
+    //     something, so during a forward outage it went silent -- making a
+    //     perfectly healthy, still-asking peer indistinguishable from a dead
+    //     one; and
+    //   * the sender retired every unacked message at a flat 7s measured from
+    //     FIRST SEND, with no reference to whether the peer was alive. A live
+    //     stream sends in dense runs, so a whole burst shares a first_time and
+    //     EXPIRES AS A BLOCK -- which is why the field log said "14 message(s)
+    //     permanently lost" as one number rather than one message at a time.
+    //
+    // On pre-fix code this test is RED: the messages first sent during the
+    // outage are gone permanently and the delivered sequence has a gap. It is
+    // the same link model as the OLD test 10, with the opposite assertion,
+    // which is exactly the contract change documented there. ----
+    printf("[11] one-way outage past the TTL, reverse path clean: NO permanent loss\n");
+    Recv rb11; Link a2b11, b2a11;
+    double t11 = 0.0;
+    Endpoint* A11 = Create(20, &LinkSend, &a2b11, &OnDeliver, &ra, t11);
+    Endpoint* B11 = Create(21, &LinkSend, &b2a11, &OnDeliver, &rb11, t11);
+    a2b11.dst = B11; b2a11.dst = A11;
+    // ~900B each so Nagle never coalesces two of them into one datagram (the
+    // trick test 6 uses) -- otherwise "the outage" would not be per-message.
+    const int M11_BASE = 6, M11_OUTAGE = 10;
+    auto send11 = [&](int i) {
+        char buf[960];
+        int n = snprintf(buf, sizeof(buf), "w-%02d", i);
+        memset(buf + n, 'x', 900 - n);
+        Send(A11, 0, Class::ReliableOrdered, reinterpret_cast<uint8_t*>(buf), 900);
+    };
+    for (int i = 0; i < M11_BASE; i++) send11(i);
+    for (int tick = 0; tick < 25; tick++) {
+        t11 += 0.02;
+        Update(A11, t11); Update(B11, t11);
+        PumpLink(a2b11); PumpLink(b2a11);
+    }
+    CHECK(rb11.msgs.size() == (size_t)M11_BASE, "one-way: 6-message baseline delivered");
+
+    // Blackhole A->B ONLY. B->A stays clean, so B keeps acking (the carrier
+    // keepalive is what makes it keep acking with nothing to ack) and A can
+    // see that its peer is alive.
+    a2b11.drop_every = 1;
+    const int dg_before11 = a2b11.counter;
+    int sent11 = 0;
+    // THE WINDOW IS DELIBERATE, and the arithmetic is the point of the test:
+    // 7.5s is PAST the sender's 7.0s retire horizon (so a flat TTL loses the
+    // burst) and INSIDE the receiver's 9.0s hard backstop (so the receiver has
+    // not given up either). Both margins are ~1s, and the baseline pump above
+    // is kept short so the stall clock -- which runs from the last DELIVERY,
+    // not from the blackout -- stays inside the backstop too.
+    for (int tick = 0; tick < 375; tick++) {   // 375 * 20ms = 7.5s
+        t11 += 0.02;
+        if (tick % 20 == 0 && sent11 < M11_OUTAGE) send11(M11_BASE + sent11++);
+        Update(A11, t11); Update(B11, t11);
+        PumpLink(a2b11); PumpLink(b2a11);
+    }
+    const int dg_outage11 = a2b11.counter - dg_before11;
+    CHECK(sent11 == M11_OUTAGE, "one-way: all 10 outage messages were offered");
+    CHECK(rb11.msgs.size() == (size_t)M11_BASE,
+          "one-way: nothing arrived during the 7.5s blackout (the outage is real)");
+
+    // Heal. Everything A retained must now flow, in order, exactly once.
+    a2b11.drop_every = 0;
+    for (int tick = 0; tick < 150; tick++) {
+        t11 += 0.02;
+        Update(A11, t11); Update(B11, t11);
+        PumpLink(a2b11); PumpLink(b2a11);
+    }
+    printf("  delivered after heal: %zu / %d (A emitted %d datagrams during the outage)\n",
+           rb11.msgs.size(), M11_BASE + M11_OUTAGE, dg_outage11);
+    CHECK(rb11.msgs.size() == (size_t)(M11_BASE + M11_OUTAGE),
+          "one-way: ALL 16 delivered after the heal -- the peer was alive and "
+          "asking the whole time, so nothing was retired");
+    bool ordered11 = (rb11.msgs.size() == (size_t)(M11_BASE + M11_OUTAGE));
+    for (int i = 0; i < (int)rb11.msgs.size(); i++) {
+        char want[16]; snprintf(want, sizeof(want), "w-%02d", i);
+        if (rb11.msgs[i].second.compare(0, strlen(want), want) != 0) ordered11 = false;
+    }
+    CHECK(ordered11, "one-way: delivered strictly in order, no gap and no duplicates");
+    // Retention must not have turned into a flood. Bound: cwnd(96) messages
+    // over the outage at the 80ms retransmit floor, plus FEC parity and the
+    // ack carriers, is comfortably under this.
+    CHECK(dg_outage11 > 0 && dg_outage11 < 5000,
+          "one-way: the retained backlog kept retransmitting at a BOUNDED rate");
+
+    // ---- Test 12: THE HARD CEILING. A peer that is alive and asking but can
+    // NEVER receive (path-MTU blackhole, a middlebox eating one flow) would
+    // otherwise pin the sender's backlog forever, because liveness stays true
+    // by construction. RC_RETIRE_HARD_SEC is what answers the "infinite
+    // retention" attack, and without a test for it that answer is a promise.
+    //
+    // Read together with test 11 this brackets the ceiling from both sides:
+    // healed at 8s -> everything delivered (retained past the 7s TTL); held to
+    // 30s -> the backlog IS gone (retired at the 25s ceiling) and the channel
+    // still recovers afterwards. ----
+    printf("[12] hard ceiling: alive-but-deaf peer still sheds its backlog\n");
+    Recv rb12; Link a2b12, b2a12;
+    double t12 = 0.0;
+    Endpoint* A12 = Create(22, &LinkSend, &a2b12, &OnDeliver, &ra, t12);
+    Endpoint* B12 = Create(23, &LinkSend, &b2a12, &OnDeliver, &rb12, t12);
+    a2b12.dst = B12; b2a12.dst = A12;
+    for (int i = 0; i < 4; i++) {
+        char buf[32]; int n = snprintf(buf, sizeof(buf), "c-%02d", i);
+        Send(A12, 0, Class::ReliableOrdered, reinterpret_cast<uint8_t*>(buf), n);
+    }
+    for (int tick = 0; tick < 60; tick++) {
+        t12 += 0.02;
+        Update(A12, t12); Update(B12, t12);
+        PumpLink(a2b12); PumpLink(b2a12);
+    }
+    CHECK(rb12.msgs.size() == 4, "hard ceiling: 4-message baseline delivered");
+    a2b12.drop_every = 1;                       // forward path dead, reverse clean
+    for (int i = 4; i < 8; i++) {
+        char buf[32]; int n = snprintf(buf, sizeof(buf), "c-%02d", i);
+        Send(A12, 0, Class::ReliableOrdered, reinterpret_cast<uint8_t*>(buf), n);
+    }
+    for (int tick = 0; tick < 750; tick++) {   // 750 * 40ms = 30.0s, past the 25s ceiling
+        t12 += 0.04;
+        Update(A12, t12); Update(B12, t12);
+        PumpLink(a2b12); PumpLink(b2a12);
+    }
+    a2b12.drop_every = 0;
+    {   // one NEW message: the channel must still work after the shed
+        char buf[32]; int n = snprintf(buf, sizeof(buf), "c-99");
+        Send(A12, 0, Class::ReliableOrdered, reinterpret_cast<uint8_t*>(buf), n);
+    }
+    for (int tick = 0; tick < 150; tick++) {
+        t12 += 0.02;
+        Update(A12, t12); Update(B12, t12);
+        PumpLink(a2b12); PumpLink(b2a12);
+    }
+    bool shed12 = true, recovered12 = false;
+    for (auto& m : rb12.msgs) {
+        if (m.second == "c-04" || m.second == "c-05" ||
+            m.second == "c-06" || m.second == "c-07") shed12 = false;
+        if (m.second == "c-99") recovered12 = true;
+    }
+    CHECK(shed12, "hard ceiling: the 30s backlog WAS retired -- retention is bounded, "
+                  "not infinite (this is what stops the fix becoming 'never give up')");
+    CHECK(recovered12, "hard ceiling: the channel delivers again after the shed");
+
+    // ---- Test 13: WIRE COMPATIBILITY of the holding advertisement. The
+    // section is appended AFTER the cumulative ack block, and the claim that
+    // it is invisible to a pre-fix peer rests entirely on that parser reading
+    // exactly `count` fixed-stride entries and then returning. Both parse
+    // shapes are transcribed here rather than called, because the pre-fix one
+    // no longer exists in the tree -- so this pins the FORMAT claim, which is
+    // the one a mixed-version field pairing depends on. ----
+    printf("[13] wire compat: extended carrier body vs the pre-fix parse loop\n");
+    {
+        // Build a body exactly as the carrier builder does: 2 cumulative
+        // entries, then [0xA5][hcount=2] and 2 holding entries.
+        std::vector<uint8_t> body;
+        body.push_back(2);
+        const uint8_t  chans[2] = { 1, 2 };
+        const uint64_t nexp[2]  = { 4242ull, 7ull };
+        for (int i = 0; i < 2; i++) {
+            body.push_back(chans[i]);
+            const uint8_t* p = reinterpret_cast<const uint8_t*>(&nexp[i]);
+            body.insert(body.end(), p, p + 8);
+        }
+        const size_t cumulative_len = body.size();
+        body.push_back(0xA5);   // RC_CARRIER_EXT_MAGIC
+        body.push_back(2);
+        const uint64_t oldest[2]  = { 4242ull, 9ull };
+        const uint8_t  holding[2] = { 1, 0 };   // 10-byte stride: chan|holding|u64
+        for (int i = 0; i < 2; i++) {
+            body.push_back(chans[i]);
+            body.push_back(holding[i]);
+            const uint8_t* p = reinterpret_cast<const uint8_t*>(&oldest[i]);
+            body.insert(body.end(), p, p + 8);
+        }
+
+        // (a) THE PRE-FIX PARSER, transcribed verbatim from the shape at
+        // reliable_channel.cpp:181-197 as it stood before this change.
+        int      pre_entries = 0;
+        uint64_t pre_last    = 0;
+        size_t   pre_consumed = 0;
+        {
+            const uint8_t* payload = body.data();
+            int len = (int)body.size();
+            if (len >= 1) {
+                uint8_t cnt = payload[0];
+                const uint8_t* p = payload + 1;
+                const uint8_t* end = payload + len;
+                for (uint8_t i = 0; i < cnt && p + 9 <= end; i++) {
+                    uint64_t n; memcpy(&n, p + 1, 8);
+                    p += 9; pre_entries++; pre_last = n;
+                }
+                pre_consumed = (size_t)(p - payload);
+            }
+            // ...and then it RETURNS. Everything after `p` is unreachable.
+        }
+        CHECK(pre_entries == 2 && pre_last == 7ull,
+              "wire compat: a pre-fix parser reads both cumulative acks correctly");
+        CHECK(pre_consumed == cumulative_len,
+              "wire compat: a pre-fix parser stops exactly at the end of the "
+              "cumulative block and never touches the trailing section");
+
+        // (b) THE NEW PARSER against a PRE-FIX body (no trailing section):
+        // it must infer no advertisement at all rather than read past the end.
+        std::vector<uint8_t> old_body(body.begin(), body.begin() + cumulative_len);
+        bool inferred = false;
+        {
+            const uint8_t* payload = old_body.data();
+            int len = (int)old_body.size();
+            uint8_t cnt = payload[0];
+            const uint8_t* p = payload + 1;
+            const uint8_t* end = payload + len;
+            for (uint8_t i = 0; i < cnt && p + 9 <= end; i++) p += 9;
+            if (p + 2 <= end && p[0] == 0xA5) inferred = true;
+        }
+        CHECK(!inferred,
+              "wire compat: the new parser infers NO advertisement from a "
+              "pre-fix carrier (mixed-version degrades to today's behaviour)");
+
+        // (c) The full carrier must stay ONE datagram with both sections full,
+        // or the ack path starts fragmenting and a lost fragment silently
+        // costs an ack. 1 + 32*9 + 2 + 32*10 body + 12 header + 4 CRC.
+        const size_t worst = 1 + 32 * 9 + 2 + 32 * 10 + 12 + 4;
+        CHECK(worst <= 1024,
+              "wire compat: worst-case carrier stays under RC_FRAGMENT_ABOVE "
+              "(one datagram, never fragmented)");
+    }
+
+    // Tests 14-20 (sibling TU): the positive-hold triangle, the sticky
+    // backstop, builder-vs-format wire compat, hostile carrier bodies and the
+    // unacked byte cap. Everything the adversarial review of 2026-08-16 found
+    // to be unexecuted code lives there.
+    RcLivenessTests();
+
+    Destroy(A11); Destroy(B11); Destroy(A12); Destroy(B12);
     Destroy(A); Destroy(B); Destroy(A2); Destroy(B2); Destroy(A3); Destroy(B3);
     Destroy(A4); Destroy(B4); Destroy(A5); Destroy(B5);
     Destroy(A6); Destroy(B6); Destroy(A8b); Destroy(B8);

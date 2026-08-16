@@ -555,6 +555,16 @@ public:
     // already-idle user as a noop).
     void NotifyHubMatchEnded();
 
+    // Abort a match the launcher refused to start LOCALLY, after the hub has
+    // already brokered it. Sets the hub panel's status line to `reason` (which
+    // must already be localized -- pass a T("...") string) AND tells the hub the
+    // match ended, so the opponent is not left waiting for a peer that will
+    // never connect and neither user's status sticks at "in_match". Same shape
+    // as the match_start abort path in launcher_ui_hub_events_match.cpp. Safe
+    // to call outside a hub session: the status line is local and MatchEnded is
+    // skipped when the hub client is not connected.
+    void NotifyHubMatchAborted(const char* reason);
+
     // Helper methods
     void ShowGameValidationStatus(const FM2K::FM2KGameInfo& game);
     void ShowNetworkDiagnostics();      // Stub

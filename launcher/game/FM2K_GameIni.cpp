@@ -7,6 +7,7 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <system_error>   // std::errc, for the concurrent-backup carve-out
 #include <vector>
 
 namespace fm2k::game_ini {
@@ -189,10 +190,27 @@ bool Save(const std::filesystem::path& ini_path, const GamePlayConfig& cfg) {
     kept.insert(kept.begin() + gameplay_insert_at,
                 body.begin(), body.end());
 
-    // Atomic write: <path>.tmp then rename. Avoids a half-truncated
+    // Atomic write: <path>.<pid>.tmp then rename. Avoids a half-truncated
     // game.ini if the launcher crashes mid-save.
+    //
+    // THE PID IS LOAD-BEARING, not decoration. The temp name used to be a fixed
+    // "<path>.tmp", shared by every launcher process pointed at the same
+    // install. Two of them saving at once (the hub-brokered E2E harness runs
+    // host + guest + spectator against one game directory, and two people on one
+    // PC do the same) both open that one file, and whichever renames FIRST
+    // deletes the other's source -- so the loser's rename fails, Save returns
+    // false, and ApplyForLaunch reports a failure that has nothing to do with
+    // permissions. Measured 2026-08-15 (Wave 2 V4/V6): with the caller finally
+    // honouring the return value, that race refused a legitimate online launch.
+    // A per-process temp name removes the collision instead of papering over it
+    // with a retry.
     std::filesystem::path tmp = ini_path;
-    tmp += ".tmp";
+    {
+        char suffix[32];
+        std::snprintf(suffix, sizeof(suffix), ".%lu.tmp",
+                      (unsigned long)GetCurrentProcessId());
+        tmp += suffix;
+    }
     {
         std::ofstream out(tmp, std::ios::binary);
         if (!out) {
@@ -216,6 +234,8 @@ bool Save(const std::filesystem::path& ini_path, const GamePlayConfig& cfg) {
         if (ec) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                         "GameIni: rename failed: %s", ec.message().c_str());
+            std::error_code rm;
+            std::filesystem::remove(tmp, rm);   // never leave a per-pid turd
             return false;
         }
     }
@@ -314,16 +334,51 @@ bool ApplyForLaunch(const std::filesystem::path& exe_path, bool is_online) {
     // existing one -- it's the older "true original."
     auto bak = BackupPathFor(ini);
     std::error_code ec;
-    if (!std::filesystem::exists(bak, ec) &&
-         std::filesystem::exists(ini, ec)) {
+    const bool bak_existed = std::filesystem::exists(bak, ec);
+    if (!bak_existed && std::filesystem::exists(ini, ec)) {
         std::filesystem::copy_file(ini, bak,
             std::filesystem::copy_options::none, ec);
-        if (ec) {
+        if (ec == std::errc::file_exists) {
+            // MULTI-INSTANCE RACE, not a failure. Three launchers can share one
+            // install (the hub-brokered E2E harness runs host + guest + spectator
+            // against the same game directory, and two real users on one PC can
+            // do the same). Both processes ran `exists(bak) == false` before
+            // either created it, so the loser's copy_file lands on an existing
+            // destination. The invariant this backup exists to guarantee -- "a
+            // true original is on disk" -- is SATISFIED at that point, by the
+            // other process, one millisecond earlier. Treat it as success and
+            // carry on to the apply.
+            //
+            // Measured 2026-08-15 (Wave 2 V4): HOST and GUEST both reached here
+            // within the same millisecond; the loser logged "backup failed (File
+            // exists); aborting apply". While ApplyForLaunch's return value was
+            // discarded that abort was invisible and harmless (the winner had
+            // just written the same resolved config). The moment the caller
+            // started HONOURING the return value it became a refused online
+            // launch, which is how it was found.
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "GameIni: backup created concurrently by another launcher "
+                "instance (%s) -- the original is preserved, continuing",
+                bak.string().c_str());
+            ec.clear();
+        } else if (ec) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                 "GameIni: backup failed (%s); aborting apply to avoid clobber",
                 ec.message().c_str());
             return false;
         }
+    } else if (bak_existed) {
+        // Deliberately kept (see above) -- but say so. A .bak left behind by a
+        // crashed launcher or a force-killed game is the file RestoreFromBackup
+        // puts back at StopSession, so any game.ini edit the user made between
+        // that crash and now is silently discarded on exit. Until this line
+        // that happened with zero log output. INFO, not WARN: keeping the older
+        // backup IS the correct invariant, it is just not obvious.
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "GameIni: reusing existing backup %s (kept as the true original). "
+            "THAT file, not the current game.ini, is what gets restored on exit "
+            "-- edits made to game.ini since it was taken will be lost.",
+            bak.string().c_str());
     }
     GamePlayConfig resolved;
     LoadResolved(exe_path, resolved);

@@ -226,6 +226,18 @@ void LauncherUI::FireSystemNotification(const std::string& title_utf8,
     }
 }
 
+void LauncherUI::NotifyHubMatchAborted(const char* reason) {
+    if (!hub_state_) return;
+    hub_state_->status_line = reason ? reason : "";
+    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "Hub: match aborted locally -- %s",
+                hub_state_->status_line.c_str());
+    // The status line is worth setting even off-hub (direct IP): it is the only
+    // on-screen surface this failure has. MatchEnded only makes sense connected.
+    if (!hub_state_->client.IsConnected()) return;
+    hub_state_->client.MatchEnded();
+}
+
 void LauncherUI::NotifyHubMatchEnded() {
     if (!hub_state_) return;
     if (!hub_state_->client.IsConnected()) return;

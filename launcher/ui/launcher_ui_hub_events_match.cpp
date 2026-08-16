@@ -426,30 +426,48 @@ void LauncherUI::HandleMatchStartEvent(const fm2k::HubEvent& ev) {
                     cfg.remote_address =
                         peer_ip + ":" + std::to_string(peer_port);
 
-                    // Plumb the hub-authoritative match_settings into
-                    // env vars so the launcher's StartOnlineSession
-                    // path applies them to game.ini before spawn (#54)
-                    // and the hook reads random-stage params from env
-                    // (#56). Both peers see identical values from the
-                    // hub, so they spawn with identical configs and
-                    // run the same xorshift sequence on rematches.
+                    // Plumb the RANDOM-STAGE parameters into env vars; the
+                    // hook reads them from the environment it inherits on
+                    // CreateProcess (#56). Both peers see identical values from
+                    // the hub, so they run the same xorshift sequence on
+                    // rematches.
+                    //
+                    // WHAT USED TO BE HERE, AND WHY IT IS GONE (2026-08-15).
+                    // Eleven more FM2K_GP_* variables were written from
+                    // ev.match.settings, with a comment claiming StartOnlineSession
+                    // applied them to game.ini before spawn (#54). Nothing in
+                    // launcher/, FM2KHook/, tools/ or tests/ ever read one of
+                    // them: that consumer was never written. StartOnlineSession
+                    // calls game_ini::ApplyForLaunch, which resolves from the
+                    // LOCAL per-game override file and has no idea MatchSettings
+                    // exists. So the comment asserted a hub authority the code
+                    // did not have, and a reader debugging a settings mismatch
+                    // would start from a false premise.
+                    //
+                    // Deleting them is safe because every one of the eleven is
+                    // owned elsewhere:
+                    //   * round time/count, game speed, selected stage, SOCD --
+                    //     carried in-band by HOST_CONFIG, and since the entry
+                    //     barrier (netplay_control.cpp) agreement on a digest of
+                    //     the LIVE engine globals is a PRECONDITION of entering
+                    //     battle, so a guest cannot sim a frame holding
+                    //     different values;
+                    //   * player0_cpu / player1_cpu / hit_judge /
+                    //     game_information -- forced to 0 by ForceOnlineClamps
+                    //     on every online launch regardless of any of this;
+                    //   * joystick -- local input device selection, correctly
+                    //     local;
+                    //   * vs_mode / vs_single_play / vs_team_play -- netplay
+                    //     pins team mode to 1v1, so they cannot vary online.
+                    // Settings parity is owned by HOST_CONFIG plus the entry
+                    // barrier; the HOST's local override is what both peers
+                    // converge on.
                     const auto& s = ev.match.settings;
                     auto set_env = [](const char* k, int v) {
                         if (v == -1) { ::SetEnvironmentVariableA(k, nullptr); return; }
                         char buf[32]; std::snprintf(buf, sizeof(buf), "%d", v);
                         ::SetEnvironmentVariableA(k, buf);
                     };
-                    set_env("FM2K_GP_PLAYER0_CPU",      s.player0_cpu);
-                    set_env("FM2K_GP_PLAYER1_CPU",      s.player1_cpu);
-                    set_env("FM2K_GP_GAME_SPEED",       s.game_speed);
-                    set_env("FM2K_GP_HIT_JUDGE",        s.hit_judge);
-                    set_env("FM2K_GP_GAME_INFO",        s.game_information);
-                    set_env("FM2K_GP_STAGE_NB",         s.stage_nb);
-                    set_env("FM2K_GP_JOYSTICK",         s.joystick);
-                    set_env("FM2K_GP_TIME",             s.time);
-                    set_env("FM2K_GP_VS_MODE",          s.vs_mode);
-                    set_env("FM2K_GP_VS_SINGLE_PLAY",   s.vs_single_play);
-                    set_env("FM2K_GP_VS_TEAM_PLAY",     s.vs_team_play);
                     if (s.random_seed != 0) {
                         char buf[32];
                         std::snprintf(buf, sizeof(buf), "%u",

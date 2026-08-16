@@ -10,12 +10,15 @@
 #include "FM2K_GameInstance.h"
 #include "FM2K_Integration.h"
 #include "FM2K_GameIni.h"
+#include "FM2K_Locale.h"                 // T() -- the online-refusal status line
 #include "../ui/launcher_ui_internal.h"  // lui::NeutralizeGamePatchEnvVars
 
+#include <filesystem>   // the "is game.ini actually gone" test on the refusal path
 #include <memory>
 #include <string>
 #include <cstdlib>
 #include <iostream>
+#include <system_error>
 
 void FM2KLauncher::StartOfflineSession() {
     if (selected_game_.exe_path.empty()) {
@@ -194,8 +197,89 @@ void FM2KLauncher::StartOnlineSession(const NetworkConfig& config, bool is_host)
     // StopSession so leaving the launcher doesn't permanently mutate
     // the user's offline settings. is_online=true forces HitJudge +
     // GameInformation = 0 (debug overlays are cheating online).
-    fm2k::game_ini::ApplyForLaunch(selected_game_.exe_path,
-                                    /*is_online=*/true);
+    //
+    // THE RETURN VALUE IS LOAD-BEARING ON THIS PATH AND WAS BEING DISCARDED.
+    // ApplyForLaunch returns false when it could not take its one-time backup
+    // of game.ini (read-only directory, a Program Files / VirtualStore split,
+    // the file locked by another process) and therefore refused to write, to
+    // avoid clobbering the user's settings with no way back. Ignoring that
+    // meant the game launched ONLINE with game.ini untouched -- i.e. without
+    // ForceOnlineClamps, so HitJudge and GameInformation debug overlays go
+    // live in a rated match and the round config is whatever was on disk. The
+    // only trace was a WARN in launcher.log, which under exactly the
+    // VirtualStore split that causes this is not where the user is looking.
+    //
+    // This is the anti-cheat path, so refusing to start is the defensible
+    // behaviour: same shape as the Launch failure immediately below.
+    //
+    // ONE RETRY before refusing. The only failure this has ever been observed
+    // to take in practice is a same-install collision between two launcher
+    // processes (measured 2026-08-15: the hub-brokered E2E harness runs three
+    // launchers against one game directory). Both known collision points are
+    // fixed at the source -- the concurrent-backup carve-out and the per-pid
+    // temp file in FM2K_GameIni.cpp -- so this retry is belt-and-braces against
+    // any remaining transient sharing violation, not the fix for one. A genuine
+    // permissions failure fails both attempts in a few hundred microseconds.
+    bool ini_ok = fm2k::game_ini::ApplyForLaunch(selected_game_.exe_path,
+                                                 /*is_online=*/true);
+    if (!ini_ok) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "GameIni: apply-for-launch failed; retrying once in 250ms before "
+            "refusing the online session");
+        ::Sleep(250);
+        ini_ok = fm2k::game_ini::ApplyForLaunch(selected_game_.exe_path,
+                                                /*is_online=*/true);
+    }
+    if (!ini_ok) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+            "Online session ABORTED: could not apply game.ini for launch, so the "
+            "online anti-cheat clamps (HitJudge/GameInformation = 0) and the "
+            "shared round config were NOT written. Most likely cause: the game "
+            "directory is not writable (Program Files / UAC VirtualStore, or the "
+            "file is open elsewhere). Move the game out of Program Files or fix "
+            "the permissions on '%s' and try again.",
+            selected_game_.exe_path.c_str());
+        // RESCUE A DELETED game.ini (Wave-2 review B3b). ApplyForLaunch can
+        // fail INSIDE Save(), whose overwrite fallback is `remove(game.ini)` +
+        // `rename(tmp, game.ini)`: if that second rename also fails, game.ini is
+        // GONE and the temp has been removed too. Returning from here without
+        // putting it back would leave the user with no game.ini at all, because
+        // the only RestoreFromBackup call is in StopSession and this path never
+        // reaches it (the session never starts).
+        //
+        // CONDITIONAL ON THE FILE BEING MISSING, and that is load-bearing.
+        // RestoreFromBackup is `remove(ini) + rename(bak, ini)`: it CONSUMES
+        // the backup. On a shared install (two launchers, one game directory --
+        // the case that produced this whole family of races) an unconditional
+        // restore here would revert the OTHER launcher's freshly applied
+        // game.ini while its game is booting AND eat the backup its own
+        // StopSession needs. Restoring only when the file has actually
+        // disappeared fixes the destructive case and cannot touch a healthy one.
+        if (!selected_game_.exe_path.empty()) {
+            std::error_code ini_ec;
+            const auto ini_path =
+                fm2k::game_ini::PathForExe(selected_game_.exe_path);
+            if (!std::filesystem::exists(ini_path, ini_ec)) {
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "GameIni: game.ini is MISSING after the failed apply -- "
+                    "restoring it from the backup before refusing the session");
+                fm2k::game_ini::RestoreFromBackup(selected_game_.exe_path);
+            }
+        }
+        game_instance_.reset();
+        // SURFACE IT (Wave-2 review B6). This refusal happens AFTER the hub's
+        // match_start has already been accepted, so silence here means: the
+        // local user sees a launcher that did nothing, the OPPONENT launches and
+        // waits forever for a peer that will never connect, and both users' hub
+        // status sticks at "in_match" until someone reconnects. The sibling
+        // abort path in launcher_ui_hub_events_match.cpp does status_line +
+        // MatchEnded(); do the same, and return the launcher to a usable state.
+        if (ui_) {
+            ui_->NotifyHubMatchAborted(T("hub_status_online_ini_refused"));
+        }
+        SetState(LauncherState::GameSelection);
+        return;
+    }
 
     if (!game_instance_->Launch(selected_game_.exe_path, selected_game_.engine)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to launch game for online session.");

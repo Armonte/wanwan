@@ -89,4 +89,42 @@ void OnCapture(uint32_t seq, int32_t match_phase,
                int p1_slot, int32_t p1_pos_y, int32_t p1_script,
                int p2_slot, int32_t p2_pos_y, int32_t p2_script);
 
+/* ---- [BATTLE-OBJ] -- the battle-frame object census ---------------------
+ *
+ * WHY: the harness's player-vs-player [CHECKSUM] terms can now SAY that the
+ * two peers' pools differ, but not WHAT differs. On vanguard-princess the
+ * guest enters battle carrying exactly two more live objects than the host,
+ * from battle frame 1 onward, in every desyncing session and no clean one --
+ * and the pools are byte-identical at character-select close AND at battle
+ * frame 0, so the two extra objects are created inside battle initialisation,
+ * between frame 0 and frame 1. This dumps the full slot listing
+ * (slot:type:owner:script:pslot:kind:x:y, the same fields and the same chunked
+ * part=k/n format [CSS-OBJ] uses) on BOTH players at both of those frames, so
+ * an offline diff names the objects.
+ *
+ * COST AND SAFETY: gated on FM2K_BATTLE_F1; unset, OnBattleFrame() returns
+ * after one cached env read. Enabled, it is at most TWO dump events per battle
+ * per process -- latched, so a rollback re-sim of frames 0/1 does not repeat
+ * it. FM2K only (ENGINE_FM95 no-ops, same reason as the CSS window). Deliberately
+ * a SEPARATE env var from FM2K_CSS_WIN, which is host-only by Wave-2 review B2;
+ * this one must run on both players or it measures nothing.
+ *
+ * Alongside each census it emits ONE [BATTLE-CFG] line pairing the LATCHED sim
+ * values (g_round_limit 0x470048, g_score_value 0x470050, g_active_stage_id
+ * 0x470040, g_game_mode_flag 0x470058) with the CONFIG SOURCES they were
+ * derived from (0x430124 / 0x430114 / 0x43010C). Rationale in-source: the
+ * battle-entry settings barrier hashes the sources, the sim consumes the
+ * latches, and the round-limit latch happens one substate BEFORE the
+ * game_mode -> 3000 write the barrier is armed on, so "source agrees, latch
+ * does not" is a reachable state that no existing line can show.
+ *
+ * Call site: SaveState_Save(frame), BEFORE its frame<0 clamp -- the save
+ * event, i.e. the exact instant and the exact live pool the fingerprint (and
+ * the nobj= the harness compares P1-vs-P2) is computed over. It sits there
+ * rather than at the [CHECKSUM] emitter in netplay_battle_events.cpp only
+ * because that TU is at the 1000-line ceiling; same frame, same pool, same
+ * event. `frame` is the save frame (-1 = battle-entry marker, which re-arms). */
+bool CensusEnabled();
+void OnBattleFrame(int frame);
+
 }  /* namespace CssWindow */

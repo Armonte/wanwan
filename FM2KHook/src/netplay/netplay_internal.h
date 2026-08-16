@@ -70,6 +70,10 @@ extern PendingConfirmInput g_pending_confirm[PENDING_CONFIRM_RING];
 extern uint32_t g_next_confirm_flush;
 extern bool     g_local_battle_entered;
 extern bool     g_remote_battle_entered;
+// FM2K_HOSTCONFIG_LATE test lever (netplay_control.cpp): set once the battle
+// entry signal is reached so the lever can suppress ONLY the earlier
+// broadcasts. Never read unless the lever is armed; always false in shipping.
+extern bool     g_hc_late_entry_reached;
 extern bool     g_battle_synced;
 extern uint32_t g_battle_entry_swap_frame;     // Latest agreed swap frame.
 extern bool     g_battle_entry_armed;

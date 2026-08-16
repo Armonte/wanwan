@@ -155,6 +155,245 @@ static bool EntryConfigGatePass() {
     return false;
 }
 
+// =============================================================================
+// BATTLE-ENTRY LATCH RE-DERIVE (stale g_round_limit / the "+2 HUD pips" class)
+// =============================================================================
+//
+// THE BUG (proven 14/14 across three builds, phantom_hunt.md sections 4-5):
+// vs_round_function substate 1 LATCHES g_round_limit (0x470048) from
+// g_default_round (0x430124) at 0x4087DA, and writes g_game_mode = 3000 at
+// 0x40895E -- about 0x180 bytes LATER, in the SAME call. The battle-entry
+// settings barrier is armed on that mode write, so it is armed ONE WRITE TOO
+// LATE to protect the latch. Netplay_MatchSettingsDigest hashes the config
+// SOURCES (0x430124 / 0x430114 / 0x43010C), never the latched copies, so a
+// guest whose first HOST_CONFIG lands AFTER its own CSS->battle transition
+// latches its own game.ini round count, then applies HOST_CONFIG, then AGREES
+// on the digest and enters battle with a stale latch that nothing re-derives.
+// Consequences: ui_state_manager's two win-pip loops (for i in 0..g_round_limit
+// at 0x409DE1 / 0x409EC8) create exactly +2 objects on battle frame 1, and the
+// match-over predicate round_wins >= g_round_limit at 0x409710 makes the peers
+// take different match-end branches -- the session dies at the end of match 0.
+// Invisible to gekko all match (its fingerprint has no pool term).
+//
+// THE FIX: re-derive the latch HERE, at the instant the barrier agrees, which
+// is the deterministic point the engine's own latch should have used -- both
+// peers have signalled, the digest has agreed, and no sim frame of this battle
+// has run yet (see the PRECEDES-EVERY-SAVE proof below).
+//
+// PRECEDES EVERY SaveState_Save OF THIS BATTLE (code trace, not assertion):
+//   1. The only caller of this helper is the g_battle_synced = true transition
+//      in Netplay_IsBattleSynced(), which fires ONCE per battle (the flag is
+//      cleared in Netplay_EndBattle and Netplay_Reset).
+//   2. Netplay_IsBattleSynced has exactly two call sites --
+//      trampoline_battle.cpp:164 and hooks_update.cpp:307 -- and BOTH are
+//      inside `if (battle_entry_signaled && !Netplay_IsActive())` and RETURN
+//      (block the game) while it is false. So at this instant there is no
+//      battle GekkoNet session: Netplay_IsActive() is false by the enclosing
+//      condition.
+//   3. Every SaveState_Save of battle state runs behind a live session:
+//      netplay_battle_events.cpp:73 (Netplay_HandleSaveEvent) is only reached
+//      from Netplay_ProcessBattleInputPhase under Netplay_IsActive();
+//      netplay_battle_phase.cpp:429 is the SPECTATOR playback drain;
+//      spectator_node.cpp:329 (SpectatorNode_StashSnapshot) is called from
+//      Netplay_StartBattle, which both call sites invoke immediately AFTER
+//      this returns true. The previous battle's session was destroyed at
+//      netplay_battle_end.cpp:193 (gekko_destroy), so no snapshot from it can
+//      be rolled back into.
+//      => the first save of this battle is the StashSnapshot inside
+//      Netplay_StartBattle, strictly after this write. The host's spectator
+//      snapshot therefore carries the CORRECTED latch, so viewers inherit it.
+//   4. Spectator plane never reaches this site: hooks_update.cpp:202 returns
+//      before the battle-sync block when g_spectator_mode, and the spectator
+//      trampoline drives its own tick. Replay/offline never reaches it either
+//      (trampoline_battle.cpp:60 -- the offline branch exists precisely
+//      because Netplay_IsBattleSynced can never complete without a peer).
+//   5. THE CSS SESSION IS THE REMAINING HAZARD, AND IT IS CLOSED BY ORDERING
+//      ONLY -- read this before changing the barrier's keepalive. The CSS
+//      rollback save-set CSS_STATE_REGIONS (netplay_css.cpp:75-83) contains
+//      { 0x470020, 0x0220 }, and BOTH latches written/read here live inside
+//      it: g_round_limit (0x470048) and g_active_stage_id (0x470040). A CSS
+//      GekkoLoadEvent taken after this write would therefore silently REVERT
+//      it. The only reason that cannot happen is that while the barrier is
+//      open the sole CSS work is Netplay_PollBattleSync's keepalive, which
+//      polls, feeds neutral padding and DRAIN-DISCARDS the updates -- it never
+//      dispatches Netplay_CssHandleSave/Load (netplay_css.cpp:540-541, reached
+//      only from Netplay_ProcessCSS under IsCSSMode). A future "fix the CSS
+//      stall" change that makes that keepalive dispatch CSS save/load events
+//      would REOPEN this hole, silently: the write would still happen and a
+//      later CSS load would put the stale value back. If you make the
+//      keepalive dispatch, move this re-derive after Netplay_EndCSSSession or
+//      re-prove this leg.
+//
+// TRAP DISPOSITIONS (phantom_hunt.md 6.3):
+//   (a) TEAM MODE: in g_game_mode_flag == 2 the engine latches g_round_limit
+//       from g_team_round_setting (0x470064) at 0x408797, NOT from 0x430124 at
+//       0x4087DA. Netplay forces mode_flag = 1 today so team mode is
+//       unreachable, but an unguarded re-derive would silently break it if it
+//       ever becomes reachable -- so this scopes itself out with the predicate
+//       and says so in the log.
+//   (b) See the PRECEDES-EVERY-SAVE proof above.
+//   (c) ESCAPE HATCHES: EntryConfigGatePass can release WITHOUT agreement --
+//       local digest 0 (FM95), remote digest 0 (peer never announced), or the
+//       10s force-complete. Re-deriving on those paths would propagate a
+//       still-wrong value with a confident log line. The re-derive therefore
+//       requires TRUE agreement (both digests non-zero AND equal); on the
+//       escape paths it leaves the latch alone and logs LOUDLY. An
+//       attributable desync beats a silent wrong write.
+//   (d) g_score_value (0x470050) is NOT touched: it is stamped at
+//       RSS_BATTLE_INIT, i.e. AFTER this barrier, so the barrier already
+//       protects it.
+//
+// DELIBERATE SCOPE DECISION -- g_active_stage_id (0x470040) is DETECTED, NOT
+// WRITTEN. 6.3 lists it as a sibling latch, and structurally it is: it is
+// latched from g_selected_stage (0x43010C) at 0x408769, in the same substate,
+// also before the mode write. But that latch is ASSET-COUPLED: the dispatcher
+// does `g_active_stage_id = g_selected_stage; LoadStageFile(g_selected_stage);`
+// back to back (IDA-derived, recorded verbatim in random_stage.cpp's header
+// comment), so by the time the barrier runs the stage FILE for the stale id is
+// already loaded. Writing 0x470040 here would leave the id claiming stage Y
+// while the loaded background/script data is stage X -- a novel inconsistent
+// state that is not obviously better than a consistent stale one, and the real
+// repair (re-invoking LoadStageFile at the barrier) is a heavy allocating
+// engine call that is out of this lane's scope and unproven. So: log the
+// mismatch LOUDLY as its own attributable signature and fix nothing. Every run
+// of the diagnosing lane ran stage=0 on both peers, so this arm has never been
+// observed firing; a random-stage recipe would be its first test.
+static bool RoundsRelatchOn() {
+    static int s_on = -1;
+    if (s_on < 0) {
+        const char* v = std::getenv("FM2K_ROUNDS_RELATCH");
+        if (v == nullptr || v[0] == '\0') {
+            s_on = 1;                       // default ON -- this is the fix
+        } else if ((v[0] == '0' || v[0] == '1') && v[1] == '\0') {
+            s_on = v[0] - '0';              // strict: only "0" and "1" parse
+        } else {
+            s_on = 1;                       // fail SAFE (fix stays on), loudly
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                "[ROUNDS-RELATCH] FM2K_ROUNDS_RELATCH=\"%s\" is not \"0\" or "
+                "\"1\" -- refusing to guess; keeping the re-derive ON", v);
+        }
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "[ROUNDS-RELATCH] contract: enabled=%d (FM2K_ROUNDS_RELATCH, "
+            "default ON; =0 restores the pre-fix stale-latch behaviour for "
+            "A/B only -- it re-opens a real desync)", s_on);
+    }
+    return s_on == 1;
+}
+
+// true_agreement: the barrier reached REAL settings agreement (both digests
+// non-zero and equal), as opposed to one of EntryConfigGatePass's escape
+// hatches. Trap (c).
+static void RederiveBattleEntryLatches(bool true_agreement) {
+    if constexpr (FM2K::kIsFM2K) {
+        // Latched sim values vs the config sources they are derived from.
+        constexpr uintptr_t kRoundLimit    = 0x470048;  // g_round_limit
+        constexpr uintptr_t kDefaultRound  = 0x430124;  // g_default_round
+        constexpr uintptr_t kActiveStageId = 0x470040;  // g_active_stage_id
+        constexpr uintptr_t kSelectedStage = 0x43010C;  // g_selected_stage
+        constexpr uintptr_t kGameModeFlag  = 0x470058;  // 0=story 1=VS 2=team
+
+        const bool     on          = RoundsRelatchOn();  // also emits contract
+        const uint32_t latch_round = *(const uint32_t*)kRoundLimit;
+        const uint32_t src_round   = *(const uint32_t*)kDefaultRound;
+        const int32_t  latch_stage = *(const int32_t*) kActiveStageId;
+        const int32_t  src_stage   = *(const int32_t*) kSelectedStage;
+        const int32_t  mode_flag   = *(const int32_t*) kGameModeFlag;
+
+        if (!on) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "[ROUNDS-RELATCH] DISABLED by kill switch -- latch_rounds=%u "
+                "cfg_rounds=%u (a mismatch here is the stale-latch desync)",
+                latch_round, src_round);
+            return;
+        }
+        if (!true_agreement) {
+            // Escape-hatch release (FM95 digest 0 / peer never announced /
+            // 10s force-complete). Do NOT propagate an unagreed source.
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                "[ROUNDS-RELATCH] SKIPPED -- barrier released WITHOUT settings "
+                "agreement (local cfg=0x%08X remote cfg=0x%08X). Leaving "
+                "latch_rounds=%u (cfg_rounds=%u) alone: re-deriving from an "
+                "unagreed source would only make the wrong value confident. "
+                "If the peers disagree on rounds, THIS is the line that says why.",
+                Netplay_MatchSettingsDigest(), g_entry_remote_cfg_digest,
+                latch_round, src_round);
+            return;
+        }
+        if (mode_flag != 1) {
+            // Trap (a): team/story latch g_round_limit from a different source.
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "[ROUNDS-RELATCH] SKIPPED -- g_game_mode_flag=%d is not VS 1v1; "
+                "team mode latches g_round_limit from g_team_round_setting "
+                "(0x470064 @ 0x408797), not from g_default_round, so this "
+                "re-derive does not apply. latch_rounds=%u cfg_rounds=%u",
+                mode_flag, latch_round, src_round);
+            return;
+        }
+
+        // SANITY GUARD ON THE VALUE WE ARE ABOUT TO INSTALL. src_round comes
+        // off 0x430124, which is WIRE-SUPPLIED: netplay_control.cpp writes
+        // hc.round_count straight into it with only a 0xFFFFFFFF "host left
+        // default" sentinel check. The engine validates this value itself, but
+        // EARLIER than we run: at 0x408904 vs_round_function does
+        // `cmp g_round_limit, 0` and on zero pops display_error_message("Error ")
+        // + create_game_object(0xC, 0x7F, ...). Our write lands AFTER that
+        // validation, so without this guard a re-derive could install a value
+        // the engine has already rejected -- limit 0 means both pip loops
+        // (0x409DE1 / 0x409EC8) emit nothing and `round_wins >= 0` is true
+        // immediately, i.e. the match ends the instant it starts; an absurdly
+        // large value drives those same loops into the object pool unbounded.
+        // The zero bound is the engine's own; the upper bound is OURS (a single
+        // HUD pip row; no shipping game.ini goes near it) and deliberately
+        // generous. Refusing is fail-closed = pre-fix behaviour, and loud.
+        constexpr uint32_t kMaxPlausibleRounds = 9;
+        const bool src_plausible =
+            (src_round != 0u) && (src_round <= kMaxPlausibleRounds);
+
+        if (latch_round != src_round && !src_plausible) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                "[ROUNDS-RELATCH] REFUSED -- agreed cfg_rounds=%u is not a "
+                "plausible round limit (must be 1..%u; the engine's own check "
+                "at 0x408904 treats 0 as fatal and pops an error modal). "
+                "Leaving latch_rounds=%u alone (pre-fix behaviour). The source "
+                "is wire-supplied (HOST_CONFIG round_count -> 0x430124), so "
+                "this line means the HOST announced a bad round count, not "
+                "that the re-derive is wrong.",
+                src_round, kMaxPlausibleRounds, latch_round);
+        } else if (latch_round != src_round) {
+            *(uint32_t*)kRoundLimit = src_round;
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "[ROUNDS-RELATCH] CORRECTED g_round_limit %u -> %u at the "
+                "battle-entry barrier (agreed cfg=0x%08X). The engine latched "
+                "before HOST_CONFIG landed; without this the peers would run "
+                "the match with different round limits (+%u HUD pips at f=1) "
+                "and split at match end.",
+                latch_round, src_round, Netplay_MatchSettingsDigest(),
+                (latch_round > src_round) ? 2u * (latch_round - src_round)
+                                          : 2u * (src_round - latch_round));
+        } else {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "[ROUNDS-RELATCH] ok latch_rounds=%u cfg_rounds=%u "
+                "cfg=0x%08X (no correction needed)",
+                latch_round, src_round, Netplay_MatchSettingsDigest());
+        }
+
+        // Stage: DETECT ONLY, by the deliberate scope decision above.
+        if (latch_stage != src_stage) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                "[ROUNDS-RELATCH] STAGE-LATCH MISMATCH latch_stage=%d "
+                "cfg_stage=%d -- the same race stranded g_active_stage_id, and "
+                "this peer has ALREADY LOADED the stale stage file "
+                "(g_active_stage_id = g_selected_stage; LoadStageFile(...) run "
+                "back to back at battle init). NOT corrected here: writing the "
+                "id without reloading the assets would only make the two halves "
+                "disagree. Expect a stage-driven divergence this match.",
+                latch_stage, src_stage);
+        }
+    } else {
+        (void)true_agreement;  // FM95: none of these globals are mapped
+    }
+}
+
 void Netplay_SignalBattleEntry() {
     if (g_local_battle_entered) {
         return;  // Already signaled
@@ -167,6 +406,7 @@ void Netplay_SignalBattleEntry() {
     // not lost. Sending here gives it the whole barrier window, and the digest
     // gate below turns the remaining loss into a wait instead of a desync.
     // No-op on the guest.
+    g_hc_late_entry_reached = true;   // FM2K_HOSTCONFIG_LATE lever gate only
     Netplay_BroadcastHostConfig();
 
     // Compute our proposed swap frame on the active CSS session. Remote may
@@ -209,6 +449,19 @@ bool Netplay_IsBattleSynced() {
         g_remote_battle_entered &&
         EntryConfigGatePass()) {
         g_battle_synced = true;
+        // RE-DERIVE THE BATTLE-ENTRY LATCHES. This is the one instant in the
+        // session where the settings are agreed AND no sim frame of this battle
+        // has run (full proof + trap dispositions on RederiveBattleEntryLatches).
+        // TRUE agreement only -- EntryConfigGatePass also returns true on its
+        // escape hatches (digest 0 either side, 10s force-complete), and
+        // re-deriving there would propagate an unagreed value.
+        {
+            const uint32_t local_cfg = Netplay_MatchSettingsDigest();
+            const bool true_agreement = (local_cfg != 0) &&
+                                        (g_entry_remote_cfg_digest != 0) &&
+                                        (g_entry_remote_cfg_digest == local_cfg);
+            RederiveBattleEntryLatches(true_agreement);
+        }
         // Record completion so the handler can keep ANSWERING the peer's
         // retries after we disarm (deafness fix -- see the state block).
         g_entry_done_epoch = g_entry_epoch;

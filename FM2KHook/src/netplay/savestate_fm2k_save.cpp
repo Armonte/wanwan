@@ -4,6 +4,7 @@
 #include "savestate_internal.h"
 #include "globals.h"
 #include "seam_trace.h"   // Phase 1bc per-save fingerprint ring (diagnostic)
+#include "../parity/css_window.h"   // [BATTLE-OBJ] battle-frame object census
 #include <SDL3/SDL_log.h>
 #include <cstring>
 #include <cstdio>
@@ -56,6 +57,15 @@ static void SsMaybeReport() {
 
 bool SaveState_Save(int frame) {
     const uint64_t _ss_t_entry = g_ss_perf_on ? SsNowNs() : 0;
+    // [BATTLE-OBJ] battle-frame object census (css_window.h). Dark unless
+    // FM2K_BATTLE_F1=1; at most two dump events per battle per process. Placed
+    // at the SAVE EVENT, and BEFORE the frame<0 clamp below, so it sees the
+    // battle-entry marker and reads the identical live pool the fingerprint
+    // this frame is computed over -- the same instant whose nobj= the harness
+    // now compares P1-vs-P2. Lives here rather than at the [CHECKSUM] emitter
+    // in netplay_battle_events.cpp only because that TU is at the 1000-line
+    // ceiling (recorded split carry-over); same frame, same pool, same event.
+    CssWindow::OnBattleFrame(frame);
     // Handle frame -1 as frame 0 (initial state before first frame)
     // GekkoNet sends this during initialization
     if (frame < 0) {

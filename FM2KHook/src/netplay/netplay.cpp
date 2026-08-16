@@ -224,6 +224,10 @@ void ResetConfirmRing() {
 // CSS session reaches g_battle_entry_swap_frame.
 bool     g_local_battle_entered    = false;
 bool     g_remote_battle_entered   = false;
+// FM2K_HOSTCONFIG_LATE lever gate -- see netplay_control.cpp. Latched true at
+// the battle-entry signal and never cleared (the lever only needs to suppress
+// the pre-FIRST-entry broadcasts; later matches re-push normally).
+bool     g_hc_late_entry_reached   = false;
 bool     g_battle_synced           = false;
 uint32_t g_battle_entry_swap_frame = 0;     // Latest agreed swap frame.
 

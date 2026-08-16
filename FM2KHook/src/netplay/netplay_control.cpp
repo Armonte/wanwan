@@ -196,13 +196,54 @@ void Netplay_SendHostConfigToSpec(const sockaddr_in& to) {
     ControlChannel_SendTo(pkt, to);
 }
 
+// TEST-ONLY FORCING LEVER for the stale-latch race (FM2K_HOSTCONFIG_LATE=1,
+// DARK BY DEFAULT, host-side only). The race that strands g_round_limit is
+// "the guest applied NO HOST_CONFIG before its own CSS->battle transition":
+// in every captured phantom the boot-time broadcast (CheckFullyConnected) was
+// lost, so the first config the guest ever applied was the one pushed at the
+// top of Netplay_SignalBattleEntry, which lands 20-170ms AFTER the guest has
+// already latched. That is a ~1/4 coin flip at 0.10 loss. This lever removes
+// the coin flip WITHOUT changing what happens: it suppresses only the
+// pre-battle-entry broadcasts, so the barrier-top push is the first config on
+// the wire and (one-way delay >= 100ms vs a lockstep-simultaneous transition)
+// deterministically arrives after the guest's transition. Everything
+// downstream -- apply, digest agreement, barrier release -- runs the ordinary
+// path, including the 100ms resend loop, so the barrier still completes on
+// TRUE agreement rather than the force-complete hatch. Diagnostic only: it
+// also delays the spectators' first config, which is why it is not a shipping
+// behaviour and must never default on.
+static bool HostConfigLateLever() {
+    static int s_on = -1;
+    if (s_on < 0) {
+        const char* v = std::getenv("FM2K_HOSTCONFIG_LATE");
+        s_on = (v && v[0] == '1' && v[1] == '\0') ? 1 : 0;
+        if (s_on)
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "[HOSTCONFIG-LATE] TEST LEVER ARMED -- suppressing every "
+                "HOST_CONFIG broadcast before the battle-entry signal so the "
+                "guest is guaranteed to latch g_round_limit from its OWN "
+                "game.ini. Never use outside a red/green arm.");
+    }
+    return s_on == 1;
+}
+
 // Snapshot host's current settings and ship them to the remote peer +
 // any subscribed spectators. Called from CheckFullyConnected (initial
 // rendezvous) and from Netplay_StartBattle (every new match) so settings
 // changes mid-session propagate. No-op when the local peer isn't host.
 void Netplay_BroadcastHostConfig() {
     if (g_player_index != 0) return;  // only host pushes config
+    // NOTE THE ORDER: the packet is BUILT (which is what applies the host's own
+    // FM2K_TEST_ROUNDS / round-time overrides to its engine globals) and only
+    // the SEND is suppressed. Suppressing the build too made the lever
+    // symmetric -- the host latched its own game.ini default as well, both
+    // peers agreed on the wrong value, and nothing diverged (run RED1).
     CtrlPacket pkt = BuildHostConfigPacket();
+    if (HostConfigLateLever() && !g_hc_late_entry_reached) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "[HOSTCONFIG-LATE] suppressed a pre-entry HOST_CONFIG broadcast");
+        return;
+    }
     const auto& hc = pkt.data.host_config;
     ControlChannel_SendHostConfig(
         /*selected_stage*/  hc.selected_stage,

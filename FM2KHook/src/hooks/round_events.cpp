@@ -546,18 +546,38 @@ static char __cdecl Hook_vs_round_function() {
         // as capable of diverging silently, so stamp all of them plus the
         // digest the entry barrier agreed on and the count of HOST_CONFIG
         // packets this node ever applied (0 on a guest = smoking gun).
-        // Diffing this ONE line between the two peers' logs decides the whole
-        // question -- see the triage card in the Phase 1 diagnosis.
+        // CORRECTION (2026-08-16): this line used to claim that diffing it
+        // between the two peers decides the whole question. It does not, and a
+        // captured phantom run disproved it -- both peers printed
+        // `rounds=1 cfg=0x2C802A33` on a run where the GUEST's g_round_limit
+        // was 2, because every field here is a config SOURCE and the sim
+        // consumes LATCHED COPIES taken at 0x4087DA / 0x408769, before the
+        // g_game_mode=3000 write the entry barrier arms on. The stale latch is
+        // what creates +2 HUD pips at battle frame 1 and splits the match-end
+        // predicate at 0x409710. So the LATCHES are stamped here too:
+        // latch_rounds= / latch_stage= next to their sources. Diff the LATCH
+        // fields first; a source-only agreement means nothing.
+        // (netplay_barriers.cpp re-derives latch_rounds at the barrier, so a
+        // latch/source split in this line on a current build means either the
+        // re-derive was skipped -- its [ROUNDS-RELATCH] line says why -- or the
+        // SOURCE moved AFTER the barrier: Netplay_StartBattle broadcasts
+        // HOST_CONFIG again and the receiver writes 0x430124 at any point
+        // during the match, so a host settings change mid-session moves the
+        // source while the correct latch stays put. Read the [ROUNDS-RELATCH]
+        // line before concluding which.)
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
             "[ROUND-START] round=%u p1_hp_max=%u p2_hp_max=%u timer=%us "
-            "rounds=%u speed=%u socd=%d stage=%u cfg=0x%08X cfg_rx=%u",
+            "rounds=%u speed=%u socd=%d stage=%u cfg=0x%08X cfg_rx=%u "
+            "latch_rounds=%u latch_stage=%d",
             s_round_idx_counter, p1_hp_max, p2_hp_max, timer_seconds,
             *(uint32_t*)0x430124,                  // g_default_round
             *(uint32_t*)0x430104,                  // uValue (GameSpeed)
             Hook_GetSOCDModePublic(),
             *(uint32_t*)FM2K::ADDR_SELECTED_STAGE,
             Netplay_MatchSettingsDigest(),
-            Netplay_HostConfigRxCount());
+            Netplay_HostConfigRxCount(),
+            *(uint32_t*)0x470048,                  // g_round_limit    (LATCH)
+            *(int32_t*) 0x470040);                 // g_active_stage_id (LATCH)
     }
 
     // ROUND_END -- substate just transitioned to RSS_ROUND_END_BANNER from

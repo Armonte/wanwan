@@ -2165,6 +2165,14 @@ def main():
               # it MUST reach the host as well as the viewers: the host half is
               # what serves the per-battle snapshot at all.
               "FM2K_SPEC_POOL_SYNC",
+              # RC ordered-channel liveness kill-switch (S0-S3 starve fix).
+              # Default ON in the hook; forwarded so the causality control run
+              # (=0 restores the flat-TTL behaviour and the permanent loss with
+              # it) is reachable from a WSL-side invocation. BOTH sides: the
+              # SENDER half owns retention + the holding advertisement and the
+              # RECEIVER half owns the repair, so a one-sided switch would
+              # measure half a fix.
+              "FM2K_RC_LIVENESS",
               # Wave 2 spectator CSS-window park kill-switch. Default ON in the
               # hook; forwarded so the causality control run (=0 reproduces the
               # falling objects) is reachable from a WSL-side invocation. Listed
@@ -2356,6 +2364,10 @@ def main():
                    "FM2K_FULLFP", "FM2K_POOLSET",
                    # Phase 4c match-start pool resync kill-switch (viewer half).
                    "FM2K_SPEC_POOL_SYNC",
+                   # RC liveness kill-switch, viewer half -- this is the half
+                   # that honours the holding advertisement and defers the
+                   # starve escalation.
+                   "FM2K_RC_LIVENESS",
                    # Wave 2 CSS-window park kill-switch, viewer half -- this is
                    # the half that actually arms the window.
                    "FM2K_SPEC_CSS_PARK",

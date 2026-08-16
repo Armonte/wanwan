@@ -566,6 +566,14 @@ def main() -> int:
             "FM2K_TEST_ROUND_TIME":        str(args.round_time),
             "FM2K_AUTO_TERMINATE_TOTAL": str(args.total_frames),
         }
+        # RC ordered-channel liveness kill-switch. Default ON in the hook, so
+        # this only ever needs forwarding to turn it OFF -- and it must reach
+        # BOTH planes (the sender half owns retention + the holding
+        # advertisement, the viewer half owns the repair and the escalation
+        # deferral), or the control run measures half a fix.
+        rc_liveness = os.environ.get("FM2K_RC_LIVENESS")
+        if rc_liveness is not None:
+            play_env["FM2K_RC_LIVENESS"] = rc_liveness
         p1_pty = OUT_DIR / "p1_parity.pty"
         sp_pty = OUT_DIR / "spec_parity.pty"
         for f in (p1_pty, sp_pty):
@@ -597,6 +605,8 @@ def main() -> int:
                     "FM2K_TEST_ROUNDS": str(args.rounds),
                     "FM2K_SPEC_HOST_GONE_MS": "5000",
                     "FM2K_PARITY_RECORD_PATH": sst.to_win(sp_pty)}
+        if rc_liveness is not None:
+            spec_env["FM2K_RC_LIVENESS"] = rc_liveness
         if args.relay:
             # Host advertises the relay data plane in its hello; the hub stores
             # it and echoes it into spectate_grant, so LaunchRemoteSpectator

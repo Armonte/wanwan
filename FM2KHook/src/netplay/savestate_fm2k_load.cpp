@@ -605,13 +605,20 @@ bool SaveState_Load(int frame) {
     // once the CSS-init object owns g_object_data_ptr (see the entry comment),
     // which is precisely the set of restores it was written to cover.
     if (live_substate_pre >= 900 || crossing_teardown) {
+        // Lane A rec 3: instrument BEFORE the write. This is the last load-site
+        // write into checksummed sim state whose predicate depends on this
+        // peer's rollback schedule, i.e. the structural sibling of the park the
+        // seam campaign deleted. Counters unconditional, detail dark unless
+        // FM2K_SEAM_TRACE=1; see seam_trace.h.
+        SeamTrace_OnAfterimageClear(frame, live_substate_pre, snap_game_mode,
+                                    g_is_rolling_back, crossing_teardown);
         Fm2k_ClearAfterimageIndices();
     }
 
     // Match-end script-VM seam. THE BLANKET PARK THAT USED TO LIVE HERE IS
     // DELETED. It was the cause of the match-end-seam player DESYNC that
     // 967f89f introduced; the campaign record is
-    // /home/teo/specrel-2026-08-07/ (seam_fix_plan.md, seam_p1c_confirmation.md
+    // docs/dev/matchend_seam_campaign.md (phase reports seam_fix_plan, seam_p1c_confirmation
     // for the confirmed mechanism, seam_p2a_design.md for the free timeline,
     // seam_p2b_adversarial.md for the review that made this the whole fix).
     //

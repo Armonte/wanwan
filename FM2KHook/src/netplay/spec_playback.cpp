@@ -12,6 +12,7 @@
 #include "spectator_node_internal.h"  // shared State model + g_state (split for sibling TUs)
 #include "spec_playback_internal.h"   // SeamStep / SeamResetWalkState (spec_playback_seam.cpp)
 #include "spec_pool_sync.h"       // Phase 4c match-start pool resync (arm + bounded battle-entry hold)
+#include "spec_css_park.h"        // Wave 2 spectator CSS-window type-4 park (falling-fighters fix)
 #include "spec_wire.h"            // zero-RLE codec (SessionEvent_* live in spectator_node.h)
 #include "spec_relay_queue.h"     // hub-relay outbound queue (Phase 2c)
 #include "spectator_tcp.h"        // TCP transport for INPUT_BATCH stream
@@ -290,6 +291,12 @@ void ApplySessionEvent(const SessionEvent& ev) {
                 }
                 if (g_state.pb_boundary == State::PbBoundary::SEAM) {
                     g_state.pb_boundary = State::PbBoundary::PINNING;
+                    // Wave 2: second of the two window edges (the pin engage).
+                    // Idempotent -- MATCH_END normally armed it already; this
+                    // covers a viewer that reached the boundary without one.
+                    // Inside the SEAM branch, so live-spectator by construction
+                    // (offline replay never enters SEAM, see MATCH_END below).
+                    SpecCssPark_Engage("css pin");
                     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "SpectatorNode: boundary SEAM -> PINNING (holding "
                         "battle inputs until local game_mode reaches 3000)");
@@ -363,6 +370,13 @@ void ApplySessionEvent(const SessionEvent& ev) {
                     }
                     g_state.pb_boundary = State::PbBoundary::SEAM;
                     g_state.pb_css_marker_seen = false;
+                    // Wave 2: first of the two window edges. The seam hold that
+                    // engages from here keeps the CSS unadvanceable while the
+                    // fighters' entry scripts would otherwise run -- park them
+                    // for the duration (spec_css_park.cpp). Inside the
+                    // s_live_spec == 1 branch, so live-spectator by
+                    // construction; offline replay keeps the legacy path.
+                    SpecCssPark_Engage("match-end seam hold");
                 }
             }
             const auto& p = ev.u.match_end;

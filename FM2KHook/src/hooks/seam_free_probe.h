@@ -6,8 +6,8 @@
 // FREE ever actually happen while a teardown-crossing rollback could still
 // restore a pre-902 frame?
 //
-// Why the question matters (see /home/teo/specrel-2026-08-07/seam_p2a_design.md
-// sec 1.3 and seam_p2b_adversarial.md A5/A9): the blanket load-site park that
+// Why the question matters (see docs/dev/matchend_seam_campaign.md; the phase
+// reports seam_p2a_design sec 1.3 and seam_p2b_adversarial A5/A9): the blanket load-site park that
 // Phase 2c deletes only ever had a job in that case. The Phase 2b review
 // derived from disasm that the case cannot occur in netplay -- netplay
 // hard-zeroes both players' inputs whenever the live mode is not battle

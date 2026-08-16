@@ -3,6 +3,7 @@
 #include "spec_wire.h"            // zero-RLE codec (SessionEvent_* live in spectator_node.h)
 #include "spec_relay_queue.h"     // hub-relay outbound queue (Phase 2c)
 #include "spec_pool_sync.h"       // Phase 4c match-start pool resync (apply-side arm/latch)
+#include "spec_css_park.h"        // Wave 2 spectator CSS-window type-4 park
 #include "spectator_tcp.h"        // TCP transport for INPUT_BATCH stream
 #include "control_channel.h"
 #include "netplay.h"
@@ -263,6 +264,7 @@ void SpectatorNode_Shutdown() {
     g_state.pb_snapshot_applied_once = false;
     g_state.pb_started               = false;
     CssAutoConfirm_SetSeamHold(false);
+    SpecCssPark_Reset();   // Wave 2: the CSS park window dies with the session
     SpectatorTCP::Shutdown();
     // Tear down both relay rings if we created them. Close handles
     // nullptr. Kernel mapping refcount keeps the object alive while

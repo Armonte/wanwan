@@ -2,7 +2,7 @@
 // DIAGNOSTIC ONLY. Nothing here is a fix and nothing here may ship enabled.
 //
 // THE MECHANISM (Phase 1 confirmed it directly, see
-// /home/teo/specrel-2026-08-07/seam_p1c_confirmation.md): the LOAD-SITE park
+// docs/dev/matchend_seam_campaign.md, phase report seam_p1c_confirmation): the LOAD-SITE park
 // (Fm2k_NeutralizeMatchEndScriptObjects, called from savestate_fm2k_load.cpp
 // under the crossing_teardown predicate) fired as a function of each peer's
 // OWN rollback schedule. When the restored frame predated the 902 edge the
@@ -178,6 +178,21 @@ int         g_detail_lines      = 0;
 // loads under 0.20 loss. The counts survive in the dump regardless.
 constexpr int SEAM_DETAIL_LINE_CAP = 24;
 
+// Lane A rec 3 -- the load-site afterimage clear (savestate_fm2k_load.cpp).
+// Counters are unconditional (an increment each), so a run with the trace dark
+// still answers "did the last schedule-dependent load-site write fire, and via
+// which half of its predicate" -- which is precisely the question p4e R3b could
+// not answer. `nz` (how many non-zero +0x151 bytes the clear is about to zero)
+// costs a 1024-slot walk, so it is armed only under FM2K_SEAM_TRACE.
+constexpr ptrdiff_t OFF_OBJ_AFTERIMAGE_SEAM = 0x151;
+size_t g_ai_seen        = 0;   // total load-site clears this session
+size_t g_ai_substate    = 0;   // of those, reached via live_substate_pre >= 900
+size_t g_ai_crossing    = 0;   // of those, reached via crossing_teardown
+size_t g_ai_rollingback = 0;   // of those, taken with g_is_rolling_back set
+int    g_ai_nz_max      = -1;  // max non-zero +0x151 census seen (-1 = never armed)
+int    g_ai_detail_lines = 0;
+constexpr int SEAM_AI_DETAIL_LINE_CAP = 16;
+
 }  // namespace
 
 bool SeamTrace_Enabled() {
@@ -315,6 +330,40 @@ void SeamTrace_OnCrossingTeardown(int frame, uint32_t live_mode_pre,
     }
 }
 
+void SeamTrace_OnAfterimageClear(int frame, int live_substate_pre,
+                                 uint32_t snap_mode, bool rolling_back,
+                                 bool crossing_teardown) {
+    ++g_ai_seen;
+    if (live_substate_pre >= 900) ++g_ai_substate;
+    if (crossing_teardown)        ++g_ai_crossing;
+    if (rolling_back)             ++g_ai_rollingback;
+
+    if (!SeamTrace_Enabled()) return;
+
+    // How much this clear actually CHANGES. 0 = a pure identity write (the
+    // sim-side clear at round_events.cpp:355 already ran on this frame's tick);
+    // > 0 = this load-site write is the only one doing it, i.e. the asymmetry
+    // Lane A named. The write itself is one byte per slot, so a census of the
+    // same field costs the same walk.
+    int nz = 0;
+    const uint8_t* pool = (const uint8_t*)ADDR_OBJECT_POOL_SEAM;
+    for (size_t i = 0; i < OBJ_COUNT_SEAM; ++i) {
+        if (pool[i * OBJ_STRIDE_SEAM + OFF_OBJ_AFTERIMAGE_SEAM] != 0) ++nz;
+    }
+    if (nz > g_ai_nz_max) g_ai_nz_max = nz;
+
+    // EPISODIC, not per-call: the interesting event is a clear that changes
+    // something, so unconditional lines are capped and non-zero ones get the
+    // remaining budget. Hook logging is synchronous -- never per-frame.
+    if (g_ai_detail_lines < SEAM_AI_DETAIL_LINE_CAP && (nz > 0 || g_ai_seen <= 2)) {
+        ++g_ai_detail_lines;
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+            "[SEAM] aiclear f=%d sub=%d snap=%u rb=%d cross=%d nz=%d (#%zu)",
+            frame, live_substate_pre, snap_mode, rolling_back ? 1 : 0,
+            crossing_teardown ? 1 : 0, nz, g_ai_seen);
+    }
+}
+
 void SeamTrace_PushSave(int frame, bool is_replay_save, bool rolling_back) {
     if (!SeamTrace_Enabled()) return;
     const auto& rc = SaveState_GetRegionChecksums();
@@ -353,9 +402,11 @@ void SeamTrace_Dump(int player_index, const char* reason) {
     // the ring -- they say whether the hazard window was entered at all.
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
         "[SEAM] summary: crossings=%zu nonidentity=%zu ring=%zu window=%zu "
-        "window_dropped=%zu segs=%u match=%u (%s)",
+        "window_dropped=%zu segs=%u match=%u aiclear=%zu aisub=%zu "
+        "aicross=%zu airb=%zu ainzmax=%d (%s)",
         g_episode_seen, g_episode_nonident, g_ring_count, g_window_count,
         g_window_dropped, (unsigned)g_window_seg, (unsigned)g_match_idx,
+        g_ai_seen, g_ai_substate, g_ai_crossing, g_ai_rollingback, g_ai_nz_max,
         reason ? reason : "");
     // Paired finding: a DESYNC with in_window > 0 is the signature that would
     // justify the design's Stage 2 (character-reload suppression).
@@ -442,6 +493,14 @@ void SeamTrace_Reset() {
     g_episode_nonident = 0;
     g_open_logged    = false;
     g_detail_lines   = 0;
+    // Afterimage-clear probe: per-session like the crossing counters above.
+    // g_ai_nz_max deliberately SURVIVES -- it is a session-high-water mark and
+    // the whole point is that a late match's clear may be the interesting one.
+    g_ai_seen        = 0;
+    g_ai_substate    = 0;
+    g_ai_crossing    = 0;
+    g_ai_rollingback = 0;
+    g_ai_detail_lines = 0;
     // Per-match arming state resets; the WINDOW BUFFER ITSELF DOES NOT. That
     // is the whole point of it (A9): a green multi-match run must still carry
     // match 1's and match 2's completed seams at auto-terminate.

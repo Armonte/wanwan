@@ -1,5 +1,5 @@
 // seam_trace.h -- diagnostic instruments for the match-end seam (the 967f89f
-// desync campaign, /home/teo/specrel-2026-08-07/). Everything here is dark by
+// desync campaign -- docs/dev/matchend_seam_campaign.md). Everything here is dark by
 // default and none of it is a shipping behaviour.
 //
 // Four pieces, all documented in seam_trace.cpp:
@@ -37,6 +37,20 @@ bool SeamGuard_LegacyLoadParkEnabled();
 void SeamTrace_OnCrossingTeardown(int frame, uint32_t live_mode_pre,
                                   uint32_t snap_mode, int parkable,
                                   bool rolling_back, bool park_ran);
+
+// One call per LOAD-SITE Fm2k_ClearAfterimageIndices() (savestate_fm2k_load.cpp,
+// the `live_substate_pre >= 900 || crossing_teardown` branch). Lane A rec 3:
+// after Phase 2c deleted the blanket load-park, this is the LAST load-site write
+// into checksummed sim state gated on a live, rollback-schedule-dependent
+// predicate -- the direct structural sibling of the write that caused the
+// 967f89f desync -- and it is completely uninstrumented, which is exactly why
+// p4e R3b produced no evidence. Counters are unconditional and appear in the
+// [SEAM] summary (so a dark run is still evidence, as R3b's crossings=0 was);
+// the per-call detail line and the +0x151 non-zero census are dark unless
+// FM2K_SEAM_TRACE=1.
+void SeamTrace_OnAfterimageClear(int frame, int live_substate_pre,
+                                 uint32_t snap_mode, bool rolling_back,
+                                 bool crossing_teardown);
 
 // One call per SaveState_Save, after the fingerprint is computed.
 void SeamTrace_PushSave(int frame, bool is_replay_save, bool rolling_back);

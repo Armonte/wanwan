@@ -51,6 +51,7 @@
 
 #include "parity_recorder.h"
 #include "parity_pool.h"      // shared process-independent pool facts (player slots + topology digest)
+#include "css_window.h"       // [CSS-WIN]/[CSS-OBJ] character-select window gate (dark unless FM2K_CSS_WIN=1)
 #include "../core/globals.h"  // Fm2k_BuildLogPath
 #include "../netplay/savestate.h"  // SaveState_CalculateFullChecksum / RegionChecksums ([FULLFP] tracer)
 
@@ -782,8 +783,19 @@ void Capture() {
      * a different slot; pool slot 1 holds a system object). Not-found
      * (-1, pre-battle) produces the same zeroed/script=-1 block the old
      * empty-slot path did, so parity_diff alignment is unchanged. */
-    FillPlayerSnapshot(snap.players[0], ParityPool::FindPlayerObjectSlot(0));
-    FillPlayerSnapshot(snap.players[1], ParityPool::FindPlayerObjectSlot(1));
+    const int p1_slot = ParityPool::FindPlayerObjectSlot(0);
+    const int p2_slot = ParityPool::FindPlayerObjectSlot(1);
+    FillPlayerSnapshot(snap.players[0], p1_slot);
+    FillPlayerSnapshot(snap.players[1], p2_slot);
+
+    /* [CSS-WIN] / [CSS-OBJ] -- the character-select window's object-pool gate
+     * and the falling-object diagnosis (css_window.h). Dark unless
+     * FM2K_CSS_WIN=1. Placed HERE, sharing the .pty's own player resolution, so
+     * both planes sample the identical quantities at the identical point in the
+     * frame -- the window is otherwise unmeasured by every gate in the tree. */
+    CssWindow::OnCapture(g_active_recorder->frames_written, snap.match_phase,
+                         p1_slot, snap.players[0].pos_y, snap.players[0].script_idx,
+                         p2_slot, snap.players[1].pos_y, snap.players[1].script_idx);
 
     /* v2 match-level fields. rng_after_frame mirrors rng (we capture
      * post-update so they're identical). system_vars maps to FM2K's

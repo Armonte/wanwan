@@ -97,6 +97,7 @@ set(FM2KHOOK_SOURCES
     src/netplay/spec_join_viewer.cpp # viewer-side JOIN_REQ/ACK/redirect/kick (split from spec_join)
     src/netplay/spec_deep_join.cpp   # bounded deep-join snapshot push + battle-entry hold (Wave 4)
     src/netplay/spec_pool_sync.cpp   # match-start pool resync: host snapshot re-applied at every match boundary (Phase 4c)
+    src/netplay/spec_css_park.cpp    # spectator CSS-window type-4 park: stops the between-match falling fighters (Wave 2)
     src/netplay/spec_session_file.cpp # .fm2kset/.fm2krep write + load/seek (split from spectator_node)
     src/netplay/spec_playback.cpp     # op-apply + PopFrameInputs driver (split from spectator_node)
     src/netplay/spec_playback_state.cpp # admission pacing + adaptive delay bank + state accessors (split from spec_playback)
@@ -122,6 +123,7 @@ set(FM2KHOOK_SOURCES
     src/ui/screenshot.cpp
     # Parity — kgtengine cross-engine ground-truth recorder
     src/parity/parity_recorder.cpp
+    src/parity/css_window.cpp
     # Locale spoofing for Japanese-only games (CPW etc.)
     src/locale/locale_spoof.cpp
     src/locale/locale_spoof_dialog.cpp  # DialogBoxParamA template translation (split from locale_spoof)

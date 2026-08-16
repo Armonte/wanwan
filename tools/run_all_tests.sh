@@ -31,7 +31,10 @@
 #                    20% loss), seeded, multi-match -- the MATCH-END SEAM
 #                    rollback-desync class (the 967f89f regression). Judged ONLY
 #                    by GekkoNet's `DESYNC #` term, plus tools/seam_ring_check.py
-#                    when the build emits seam-ring CSVs.
+#                    when the build emits seam-ring CSVs. FULL=1 adds the
+#                    SAME gate pointed at vanpri (seamdesync-vanpri, ~2 min):
+#                    the fix was only ever validated on wanwan, and the legacy
+#                    lever reproduces the mechanism on vanpri too.
 #   2f. hubspec      hub_spectate_e2e.py -- the HUB-BROKERED spectate path:
 #                    a LOCAL hub (FM2K_HUB_AUTH_DISABLE=1, no Discord, no DB),
 #                    three launchers driven headless by the default-off
@@ -71,6 +74,7 @@
 #      KS_SKIP(0)                               -- stage 2d deep join (+kill-switch)
 #      SEAM_SEEDS(130; FULL: "130 131") SEAM_TOTAL(6000) SEAM_TIMEOUT(480)
 #      SEAM_SKIP(0) SEAM_GAMEDIR(/mnt/c/games/2dfm/wanwan)  -- stage 2e seam desync
+#      SEAM_VANPRI_SKIP(0) SEAM_VANPRI_SEEDS(130)  -- stage 2e vanpri leg (FULL)
 #      HUBSPEC_SKIP(0) HUBSPEC_TIMEOUT(480)     -- stage 2f hub-brokered spectate
 #      SPECGAME_SKIP(0) SPECGAME_TIMEOUT(720) VANPRI_EXE(...)  -- stage 2g
 #      CPW_EXE(/mnt/c/dev/fm95/CPW/ＣＰＷ.exe) FM95_NETPLAY(0)  — stage 5
@@ -414,6 +418,31 @@ if [ "${SEAM_SKIP:-0}" = 1 ]; then
 else
     CMD="SEAM_SEEDS='$SEAM_SEED_LIST' SEAM_OUT='$OUT/2e_seam' bash '$ROOT/tools/seam_desync_gate.sh'"
     stage "seamdesync" "$OUT/2e_seamdesync.log"
+fi
+
+# Stage 2e-vanpri -- the SAME gate pointed at the second game. Wave 2 / Lane A.
+# Why it exists: the seam fix was validated on wanwan only, three times over, and
+# "validated on one content set" is exactly how the ShadowArts hole survived for
+# months. Lane A took the red/green pair on this leg before it shipped -- with
+# FM2K_SEAM_LEGACY_PARK=1 the ring check goes RED on vanpri with 9 violations
+# naming `vm_live 59 -> 0` + a frozen rng (the wanwan mechanism, reproduced on
+# vanpri for the first time, and with NO `DESYNC #` line: the sampled comparator
+# missed what the ring caught), and green at the default. ~2 min, one seed.
+# FULL=1 only, self-skips when the game is not installed. VANPRI_EXE is defined
+# at stage 2g below; resolved here with the same default so the two agree.
+SEAM_VANPRI_EXE="${VANPRI_EXE:-/mnt/c/games/2dfm/vanguard-princess/vanpri.exe}"
+if [ "${SEAM_SKIP:-0}" = 1 ] || [ "${SEAM_VANPRI_SKIP:-0}" = 1 ]; then
+    echo "[run_all] seamdesync-vanpri: SKIPPED"
+elif [ "$FULL" != 1 ]; then
+    echo "[run_all] seamdesync-vanpri: SKIPPED (set FULL=1 -- ~2 min)"
+elif [ ! -f "$SEAM_VANPRI_EXE" ]; then
+    echo "[run_all] seamdesync-vanpri: SKIPPED (vanguard-princess not installed at $SEAM_VANPRI_EXE)"
+else
+    CMD="SEAM_SEEDS='${SEAM_VANPRI_SEEDS:-130}' SEAM_OUT='$OUT/2e_seam' \
+      SEAM_GAME=vanpri SEAM_GAME_EXE='$SEAM_VANPRI_EXE' \
+      SEAM_GAMEDIR=/mnt/c/games/2dfm/vanguard-princess \
+      bash '$ROOT/tools/seam_desync_gate.sh'"
+    stage "seamdesync-vanpri" "$OUT/2e_seamdesync_vanpri.log"
 fi
 
 # Stage 2f -- HUB-BROKERED SPECTATE (tools/hub_spectate_e2e.py owns the recipe

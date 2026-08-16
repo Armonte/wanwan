@@ -567,7 +567,7 @@ def _css_parity_gate(out_dir, specs):
             # char-selects reported "sess19 ... vs host-sess0 -> CSS DESYNC
             # (LOCKED CHAR host=2/17 spec=None)" and pointed every reader at
             # the wrong end of the session (campaign
-            # /home/teo/specrel-2026-08-07/, Phase 2c run V3-c).
+            # docs/dev/matchend_seam_campaign.md, Phase 2c run V3-c).
             # When the evidence terms STILL tie, the last resort is ordinal
             # proximity -- CSS sessions are strictly time-ordered on both sides,
             # so sess19 belongs next to host-sess18, never host-sess0 -- and the
@@ -601,6 +601,478 @@ def _css_parity_gate(out_dir, specs):
                                            f"LCS {L}/{shorter})")
                 lines.append(f"[harness] CSS-SPEC {s['tag']} sess{si}: vs host-sess{hi} "
                              f"-> CSS DESYNC ({'; '.join(why)}){ambig}")
+    return fail, lines
+
+
+# The CSS-window gate is FATAL as of Wave 2 (2026-08-15).
+#
+# It was ADVISORY while the falling-object bug it measures was known-present and
+# unfixed -- a fatal term would have reddened every run on every build and
+# nobody could have told a regression from the backlog. The fix landed in
+# FM2KHook/src/netplay/spec_css_park.cpp (the spectator parks its type-4 script
+# VMs across the character-select window, so the fighters stop running their
+# battle-entry scripts under gravity while the CSS is up), so the diversion is
+# gone: FALL and CSSPOOL failures, and the not-computed-must-fail rule, now set
+# the run verdict like every other term.
+#
+# The red-proof was taken twice BEFORE the flip: offline against six archived
+# runs (exactly 2 windows red per vanpri run, 0 on wanwan) and live in a vanpri
+# run that produced 4 falls while every pre-existing gate called it clean.
+# FM2K_CSSWIN_FATAL=0 restores the advisory behaviour for triage.
+CSS_WIN_FATAL = os.environ.get("FM2K_CSSWIN_FATAL", "1") not in ("0", "")
+
+# Tolerance, in pixels, on the FALL term's resting-level comparison. The
+# measured values are exact and stable (a vanguard-princess host rests at
+# 535.0 px in every window of every run; the fall peaks at 920.9-931.5 px), so
+# this only guards a sub-pixel sample and costs nothing against a 385 px signal.
+CSS_FALL_TOL_PX = 2.0
+
+# What counts as a RESTING LEVEL: a pos_y the host's object holds for at least
+# this fraction of the window's resolved frames (with a small absolute floor).
+# The measured separation is enormous -- a resting level is held for 900+ of
+# ~950 frames, and every value on the fall curve is held for exactly one -- so
+# this threshold is nowhere near any observed boundary.
+CSS_REST_FRACTION = 0.10
+CSS_REST_MIN_FRAMES = 10
+
+# MINIMUM WINDOW LENGTH for a FALL verdict, in resolved frames, on EACH plane.
+#
+# Measured artifact (Wave 2 V2a, 2026-08-15): a run whose HOST died mid-match-1
+# on an unrelated player desync left the spectator with a **2-frame**
+# character-select window (its truncated tail). The host's own window was long
+# enough to have a resting level of {480.0}, one of the spectator's two frames
+# read 535.0, and the term declared a falling object -- on a session that never
+# reached a between-match character-select window at all. With the term FATAL
+# that is exactly the tail-truncation noise the seamdesync gate's header warns
+# about, arriving in a different gate.
+#
+# The floor is set from the measured separation, not guessed: every REAL window
+# in the corpus is 1025-1040 frames on the spectator and 930-950 on the host,
+# and the falls last 28-93 frames inside them. 120 is ~8x below the shortest
+# real window and ~60x above the artifact, so it cannot mask a fall.
+# A window below the floor yields NO VERDICT, exactly like a window whose host
+# object never rests; the "not one pair produced a verdict" rule below still
+# turns a run in which NOTHING was measured into a FAIL.
+CSS_WIN_MIN_FRAMES = 120
+
+
+def _css_windows(snaps):
+    """Contiguous runs of match_phase == 2000 in a .pty, as (lo, hi) inclusive.
+
+    2000 is g_game_mode's character-select / results window; 3000 is battle.
+    The .pty recorder captures EVERY frame -- battle-only filtering happens in
+    parity_diff, not in the capture -- so this data has always been there.
+    """
+    out, cur = [], None
+    for i, s in enumerate(snaps):
+        if s["match_phase"] == 2000:
+            cur = [i, i] if cur is None else [cur[0], i]
+        elif cur is not None:
+            out.append((cur[0], cur[1])); cur = None
+    if cur is not None:
+        out.append((cur[0], cur[1]))
+    return out
+
+
+def _css_window_gate(out_dir, specs, host_pty, multi_match_recipe=True):
+    """The character-select window gate. Returns (fail: bool, lines: list[str]).
+
+    `multi_match_recipe` is the RECIPE'S OWN INTENT (--total-frames > 0, i.e.
+    FM2K_AUTO_TERMINATE_TOTAL across matches), not an observation of the run.
+    It is what re-keys the NOT-APPLICABLE hatch below; see the block comment
+    there for why observing the host's window count is not enough.
+
+    Every other correctness gate in this file is battle-only: CINPUT, CHECKSUM
+    and its 4c nobj=/top=/bind= POOL terms, and parity_diff all filter to
+    `match_phase == 3000` segments, and [CSS-FP] (above) covers the cursor and
+    the selection, not the object pool. So the window BETWEEN two matches was
+    never measured on either plane -- which is where the owner-reported
+    "player objects fall down on the character-select screen" bug lives.
+
+    Two terms, one per data source:
+
+    FALL (primary; source = the .pty captures, always present in a harness run)
+        Per paired window, per player: the host's object holds a RESTING LEVEL
+        -- a pos_y it sits at for most of the window (535.0 px on
+        vanguard-princess, 960.0 px on wanwan) -- and the spectator's object
+        must not go below it. Under the bug the spectator's leaves that level
+        over the last ~29 frames of the window on an acceleration curve and
+        reaches 920.9-931.5 px, i.e. ~385 px past the host's resting position
+        and off the bottom of the screen.
+
+        WHY RESTING LEVELS AND NOT A PLAIN MAXIMUM. The obvious form of this
+        term -- "no spectator frame exceeds the host's maximum pos_y" (the shape
+        specced in seam_p4c_fix.md 6.5) -- was implemented first and measured
+        against the whole kept corpus. It is WRONG, and wanwan is where it
+        breaks: in run 4b/R2 the host's OWN character-select window contains an
+        object at x=0 descending at a constant 15 px/frame under script 40 for
+        the entire window, reaching 13807 px. The spectator has the identical
+        object, but its window is 95 records longer, so it reaches 15231 px --
+        1424 px lower, which is exactly 95 frames of descent. A maximum-based
+        term reds on that pure window-length artifact. Resting levels are
+        length-invariant, so it does not.
+
+        The term is ALIGNMENT-FREE by construction, which is what makes it
+        trustworthy here: the windows are 940-1060 records long and differ in
+        length between the planes, and rng is far too degenerate during
+        character-select to key on (60-200 distinct values across ~1000 frames,
+        measured -- an rng-keyed pairing of this window is noise). Windows are
+        paired by ORDINAL FROM THE END (a viewer that joined mid-run lacks the
+        earlier windows; the trailing ones correspond), and the open-frame rng
+        is printed as an independent corroboration of that pairing.
+
+        When the host's own object never rests -- the wanwan case above -- the
+        term reports NO VERDICT for that window/player and says so, with both
+        planes' maxima, rather than inventing a pass. That is a real hole, so
+        it is bounded: a run in which NOTHING produced a verdict is a FAIL.
+
+        Measured on the kept corpus (6 runs, ~40 window/player pairs): red on
+        exactly the 6 known-broken windows -- V1r6 S1/S2 (920.9 px), 4b R1
+        S1/S2 (931.5 px), 4b R5 S1/S2 (929.9 px) -- and no red anywhere else,
+        including all three wanwan runs.
+
+    CSSPOOL (source = the hook's [CSS-WIN] lines, FM2K_CSS_WIN=1)
+        Population (nobj=) and the process-independent slot->type map digest
+        (map=) sampled every 30 in-window frames on both planes, paired window
+        by window from each plane's LAST window backwards (a viewer that joined
+        mid-run has fewer windows than the host, and it is the trailing ones
+        that correspond), then index-aligned on the in-window frame counter.
+        This one IS approximate by construction, and 4c measured it at 25-29%
+        divergent on a build whose battle windows were bit-identical, so it is
+        reported as a MEASUREMENT, not asserted at zero: it fails only on a
+        total structural absence (see below), and its mismatch counts are the
+        number the fix has to move.
+
+    NOT-COMPUTED MUST FAIL (the A4a(ii) rule, applied to both terms in their
+    fatal form): a term that could not run is RED, never a vacuous green.
+      * no host .pty, or no character-select frames in it -> nothing to compare
+      * a spectator .pty with no character-select frames -> nothing measured
+      * no window/player pair anywhere in the run produced a verdict -> the
+        FALL term ran and saw nothing; that is the wanwan-shaped hole above and
+        it must not read as a pass
+      * no [CSS-WIN] lines on a plane -> FM2K_CSS_WIN never reached the game
+      * map=0x00000000 -> ParityPool's documented "not computed" sentinel
+        (ENGINE_FM95, or FM2K_CK_TOPOLOGY=0), the exact hole the POOL terms
+        were shipped with; a real digest can never be 0.
+      * a MULTI-MATCH recipe (--total-frames) whose HOST produced fewer than 2
+        character-select windows -> the run was truncated before the window this
+        gate measures could exist (see the NOT-APPLICABLE block below).
+    The two host-side instrument checks (no [CSS-WIN] lines at all; every host
+    sample at the map= sentinel) run on EVERY run, including one the pairing is
+    not applicable to.
+    """
+    import io
+    import re as _re
+    from contextlib import redirect_stdout
+    fail, lines = False, []
+    adv = "" if CSS_WIN_FATAL else " [ADVISORY]"
+
+    def _fail(msg):
+        nonlocal fail
+        if CSS_WIN_FATAL:
+            fail = True
+        lines.append(msg + adv)
+
+    _td = str(Path(__file__).resolve().parent)
+    if _td not in sys.path:
+        sys.path.insert(0, _td)
+    try:
+        import parity_diff as _pd
+    except Exception as e:                                   # pragma: no cover
+        lines.append(f"[harness] CSS-WIN: parity_diff unavailable ({e}) -- "
+                     "gate not run" + adv)
+        return fail, lines
+
+    def _load(p):
+        # parity_diff.load prints a header line per file; keep the gate's own
+        # output readable and let a missing/short capture be a None, not a raise
+        # (SystemExit on a truncated .pty must not take the whole harness down
+        # after a run has already produced its other verdicts).
+        try:
+            with redirect_stdout(io.StringIO()):
+                return _pd.load(str(p))
+        except (OSError, SystemExit):
+            return None
+
+    # ---- FALL ---------------------------------------------------------------
+    from collections import Counter
+    TOL = int(CSS_FALL_TOL_PX * 65536)
+
+    def _ys(snaps, lo, hi, k):
+        """One player's resolved pos_y over [lo,hi], raw 16.16 fixed.
+
+        script_idx == -1 is FillPlayerSnapshot's not-found sentinel (no
+        character object this frame -- normal early in a window). Those frames
+        carry a zeroed player block; scoring their 0 as a position would drag
+        both the resting level and the peak toward 0 and quietly blunt the term.
+        """
+        return [snaps[i][k]["pos_y"] for i in range(lo, hi + 1)
+                if snaps[i][k]["script_idx"] != -1]
+
+    def _rest_levels(v):
+        """The pos_y values held for a large share of the window.
+
+        y == 0 is excluded: an object that exists but has not been placed sits
+        at the origin, and treating the origin as a resting level made a host
+        window whose object was never placed (host rest {0.0}) red every
+        spectator that HAD placed it -- a false red measured on the corpus.
+        """
+        thr = max(CSS_REST_MIN_FRAMES, int(CSS_REST_FRACTION * len(v)))
+        return {y for y, c in Counter(y for y in v if y != 0).items() if c >= thr}
+
+    H = _load(host_pty)
+    hwin = []
+    if H is None:
+        _fail("[harness] CSS-WIN FALL: host parity capture missing/unreadable "
+              f"({host_pty.name}) -- NOT COMPUTED, nothing to compare against")
+    else:
+        hwin = _css_windows(H)
+        if not hwin:
+            _fail("[harness] CSS-WIN FALL: host capture has no character-select "
+                  "frames -- NOT COMPUTED")
+
+    # NOT APPLICABLE vs NOT COMPUTED. A run whose HOST only ever had ONE
+    # character-select window has no between-match window in it, which is the
+    # only window this gate is about, and a mid-battle joiner never sees the
+    # boot one. When that is a property of the RECIPE it is NOT APPLICABLE and
+    # must not touch the verdict; when it is a property of the RUN -- the host
+    # desynced, AVed or was killed during match 1 -- it is NOT COMPUTED and must
+    # stay fatal.
+    #
+    # Measured 2026-08-15 (Wave 2 V4): with the term flipped fatal, base stage 2
+    # (`--frames 1500`, one match, spectator dials in mid-battle) went red 4/4
+    # on nothing but this rule, while stages 2b / 2d / 2d-ks / 2g -- every
+    # multi-match recipe in the gate -- computed it and passed with 0 falls. A
+    # term that reddens a stage which structurally cannot contain the thing it
+    # measures is exactly the "redden every run so nobody can tell a regression
+    # from the backlog" failure the advisory period existed to avoid.
+    #
+    # THE FIRST KEY WAS WRONG (Wave-2 review B4a, fixed here). It was the HOST
+    # WINDOW COUNT alone, defended as "no spectator-side defect can lower it" --
+    # true, and beside the point, because a HOST-side failure lowers it
+    # trivially. V2a and V2d are exactly that: the host desynced in match 1 of a
+    # 16000-frame multi-match recipe, so it saw one (boot) window, and the whole
+    # gate would have declared itself not applicable on the runs where the host
+    # died -- 3 runs in 5 at the recipe this campaign lives in. A gate that
+    # switches itself off when the host fails is the shape this campaign exists
+    # to kill.
+    #
+    # THE KEY IS NOW THE RECIPE'S OWN INTENT: --total-frames (multi-match) vs
+    # --frames (single match). It is known before the run starts and no failure
+    # can move it. A multi-match recipe that produced < 2 host windows is a
+    # TRUNCATED RUN and reds on the not-computed rule.
+    #
+    # NOT APPLICABLE IS ALSO NARROWER THAN IT WAS: it now suppresses only the
+    # PAIRED terms (the FALL comparison and the CSSPOOL per-window pairing),
+    # which are the ones that need a between-match window. The instrument checks
+    # below -- "no [CSS-WIN] lines on the host at all" and the map=0x00000000
+    # sentinel -- run on EVERY run, because they answer "is this gate wired up
+    # and computing anything", which is a question a single-match recipe can
+    # still answer. Before this change they sat after the early return, so a
+    # build with css_window.cpp missing entirely went green on any single-window
+    # run.
+    not_applicable = False
+    if hwin and len(hwin) < 2:
+        if multi_match_recipe:
+            _fail(f"[harness] CSS-WIN: host has {len(hwin)} character-select "
+                  f"window(s) in a MULTI-MATCH recipe (--total-frames) -- NOT "
+                  f"COMPUTED. The run was truncated before a between-match "
+                  f"character-select window existed (host desync / crash / kill "
+                  f"in match 1); the term could not run and must not read as a "
+                  f"pass")
+        else:
+            not_applicable = True
+            lines.append(f"[harness] CSS-WIN: host has {len(hwin)} "
+                         f"character-select window(s) -- FALL/CSSPOOL PAIRING "
+                         f"NOT APPLICABLE (single-match recipe: no between-match "
+                         f"character-select window exists in this run). The "
+                         f"instrument checks below still run")
+
+    verdicts = 0          # window/player pairs that actually produced one
+    if hwin and not not_applicable:
+        lines.append(f"[harness] CSS-WIN: host has {len(hwin)} character-select "
+                     f"window(s)")
+        for s in specs:
+            S = _load(s["pty"])
+            if S is None:
+                _fail(f"[harness] CSS-WIN FALL {s['tag']}: parity capture "
+                      f"missing/unreadable -- NOT COMPUTED")
+                continue
+            swin = _css_windows(S)
+            if not swin:
+                _fail(f"[harness] CSS-WIN FALL {s['tag']}: no character-select "
+                      f"frames captured -- NOT COMPUTED")
+                continue
+            npair = min(len(hwin), len(swin))
+            bad = 0
+            for j in range(npair):
+                hlo, hhi = hwin[len(hwin) - npair + j]
+                lo, hi   = swin[len(swin) - npair + j]
+                # Independent corroboration of the ordinal pairing: both planes
+                # sim the same frame, so a correctly paired window opens on the
+                # same rng. Annotated, never used AS the pairing -- rng is too
+                # degenerate here to key on, and the verdict does not need it.
+                pnote = "" if H[hlo]["rng"] == S[lo]["rng"] else " [pairing unconfirmed: open rng differs]"
+                for k in ("p1", "p2"):
+                    hv, sv = _ys(H, hlo, hhi, k), _ys(S, lo, hi, k)
+                    if not hv or not sv:
+                        lines.append(f"[harness] CSS-WIN FALL {s['tag']} win{j} "
+                                     f"{k}: no resolved object on one plane "
+                                     f"(host {len(hv)} / spec {len(sv)} frames) "
+                                     f"-- no verdict{pnote}")
+                        continue
+                    if len(hv) < CSS_WIN_MIN_FRAMES or len(sv) < CSS_WIN_MIN_FRAMES:
+                        # Truncated window (see CSS_WIN_MIN_FRAMES). Reported so
+                        # a corpus of nothing but short windows is visible, but
+                        # never a verdict in either direction.
+                        lines.append(f"[harness] CSS-WIN FALL {s['tag']} win{j} "
+                                     f"{k}: window too short to judge "
+                                     f"(host {len(hv)} / spec {len(sv)} resolved "
+                                     f"frames, floor {CSS_WIN_MIN_FRAMES}) -- no "
+                                     f"verdict, truncated session{pnote}")
+                        continue
+                    hl = _rest_levels(hv)
+                    if not hl:
+                        lines.append(
+                            f"[harness] CSS-WIN FALL {s['tag']} win{j} {k}: the "
+                            f"HOST's own object never rests in this window "
+                            f"(host max {max(hv)/65536.0:.1f} px, spec max "
+                            f"{max(sv)/65536.0:.1f} px) -- no verdict, the "
+                            f"resting-level term cannot run here{pnote}")
+                        continue
+                    verdicts += 1
+                    ceil = max(hl)
+                    over = sum(1 for y in sv if y > ceil + TOL)
+                    rest = ",".join(f"{y/65536.0:.1f}" for y in sorted(hl))
+                    if over:
+                        bad += 1
+                        if CSS_WIN_FATAL:
+                            fail = True
+                        peak = max(sv)
+                        at = next(i for i in range(lo, hi + 1)
+                                  if S[i][k]["script_idx"] != -1
+                                  and S[i][k]["pos_y"] == peak)
+                        lines.append(
+                            f"[harness] CSS-WIN FALL {s['tag']} win{j} ({lo}-{hi}) "
+                            f"{k}: host rests at {{{rest}}} px, spectator peaks "
+                            f"{peak/65536.0:.1f} px on {over}/{len(sv)} frames "
+                            f"-> CSS FALLING OBJECT (near spec idx {at})"
+                            f"{pnote}" + adv)
+                    else:
+                        lines.append(
+                            f"[harness] CSS-WIN FALL {s['tag']} win{j} ({lo}-{hi}) "
+                            f"{k}: host rests at {{{rest}}} px, spectator max "
+                            f"{max(sv)/65536.0:.1f} px -> OK{pnote}")
+            lines.append(f"[harness] CSS-WIN FALL {s['tag']}: {npair} paired "
+                         f"window(s) ({len(swin)} spectator / {len(hwin)} host), "
+                         f"{bad} with a falling object"
+                         + (" -> FAIL" + adv if bad else " -> PASS"))
+        if verdicts == 0:
+            _fail("[harness] CSS-WIN FALL: not one window/player pair produced a "
+                  "verdict (no host resting level anywhere) -- NOT COMPUTED. A "
+                  "term that saw nothing must not read as a pass")
+
+    # ---- CSSPOOL ------------------------------------------------------------
+    _wpat = _re.compile(
+        r'\[CSS-WIN\] win=(\d+) i=(\d+) seq=\d+ tv=(\d+) nobj=(\d+) '
+        r'map=0x([0-9A-Fa-f]{8}) bind=0x([0-9A-Fa-f]{8})')
+    _CSS_WIN_VER = 1
+
+    def _wrows(path):
+        """{window_ordinal: {in_window_idx: (nobj, map, bind)}} + version tally."""
+        out, bad_ver = {}, 0
+        try:
+            fh = open(path, errors="ignore")
+        except OSError:
+            return out, bad_ver
+        for ln in fh:
+            m = _wpat.search(ln)
+            if not m:
+                continue
+            if int(m.group(3)) != _CSS_WIN_VER:
+                bad_ver += 1
+                continue
+            out.setdefault(int(m.group(1)), {})[int(m.group(2))] = (
+                int(m.group(4)), int(m.group(5), 16), int(m.group(6), 16))
+        return out, bad_ver
+
+    # INSTRUMENT CHECKS -- these run on EVERY run, including a NOT-APPLICABLE
+    # one (review B4a). They do not need a between-match window or a spectator:
+    # they answer "did the instrument reach the game and is it computing a real
+    # digest", and a single-match recipe's boot character-select window answers
+    # both. Keeping them behind the pairing was the hole that let a build with
+    # the instrument missing go green on any single-window run.
+    hw, hbad = _wrows(out_dir / "live_FM2K_P1_Debug.log")
+    if not hw:
+        _fail("[harness] CSS-WIN CSSPOOL: no [CSS-WIN] lines on the host -- "
+              "NOT COMPUTED (FM2K_CSS_WIN did not reach the game, or the "
+              "parity recorder never opened)"
+              + (f"; {hbad} line(s) at an unknown tv=" if hbad else ""))
+    elif not any(r[1] for w in hw.values() for r in w.values()):
+        # Host-side form of the A4a(ii) sentinel rule: every host sample carries
+        # ParityPool's documented "not computed" digest, so nothing downstream
+        # can compare anything. Previously only reachable through a paired
+        # window, i.e. never on a single-match recipe.
+        _fail("[harness] CSS-WIN CSSPOOL: every host [CSS-WIN] sample has "
+              "map=0x00000000 (ParityPool's not-computed sentinel) -> GATE "
+              "INACTIVE. Cause: FM2K_CK_TOPOLOGY=0 in the game's environment, "
+              "or an ENGINE_FM95 build")
+    elif not_applicable:
+        lines.append(f"[harness] CSS-WIN CSSPOOL: instrument present on the "
+                     f"host ({sum(len(w) for w in hw.values())} sample(s) over "
+                     f"{len(hw)} window(s), digests non-sentinel); per-window "
+                     f"pairing NOT APPLICABLE on a single-match recipe")
+    else:
+        hord = sorted(hw)
+        for s in specs:
+            sw, sbad = _wrows(s["live"])
+            if not sw:
+                _fail(f"[harness] CSS-WIN CSSPOOL {s['tag']}: no [CSS-WIN] "
+                      f"lines -- NOT COMPUTED")
+                continue
+            sord = sorted(sw)
+            # Pair from the END: a viewer that joined mid-run simply lacks the
+            # earlier windows, and it is the trailing ones that correspond.
+            npair = min(len(hord), len(sord))
+            for j in range(npair):
+                ho, so = hord[len(hord) - npair + j], sord[len(sord) - npair + j]
+                hrow, srow = hw[ho], sw[so]
+                keys = sorted(set(hrow) & set(srow))
+                nc = sum(1 for k in keys
+                         if hrow[k][1] == 0 or srow[k][1] == 0)
+                cmpk = [k for k in keys if hrow[k][1] and srow[k][1]]
+                if not cmpk:
+                    if nc:
+                        _fail(f"[harness] CSS-WIN CSSPOOL {s['tag']} win{so} vs "
+                              f"host-win{ho}: topology NOT COMPUTED on {nc} "
+                              f"paired sample(s) (map=0x00000000 sentinel) -> "
+                              f"GATE INACTIVE. Cause: FM2K_CK_TOPOLOGY=0 in the "
+                              f"game's environment, or an ENGINE_FM95 build")
+                    else:
+                        _fail(f"[harness] CSS-WIN CSSPOOL {s['tag']} win{so} vs "
+                              f"host-win{ho}: no overlapping samples -- NOT "
+                              f"COMPUTED")
+                    continue
+                nmm = sum(1 for k in cmpk if hrow[k][0] != srow[k][0])
+                mmm = sum(1 for k in cmpk if hrow[k][1] != srow[k][1])
+                extra = f", {nc} not-computed excluded" if nc else ""
+                lines.append(
+                    f"[harness] CSS-WIN CSSPOOL {s['tag']} win{so} vs "
+                    f"host-win{ho}: nobj= {nmm}/{len(cmpk)}, map= "
+                    f"{mmm}/{len(cmpk)} mismatched samples "
+                    f"(host {len(hrow)} / spec {len(srow)} samples{extra}) "
+                    f"[measurement]")
+            if sbad or hbad:
+                lines.append(f"[harness] CSS-WIN CSSPOOL {s['tag']}: "
+                             f"{sbad + hbad} line(s) skipped at an unknown tv= "
+                             f"(build/harness [CSS-WIN] format mismatch)")
+
+    if not CSS_WIN_FATAL:
+        lines.append("[harness] CSS-WIN: ADVISORY -- explicitly downgraded by "
+                     "FM2K_CSSWIN_FATAL=0, so these terms do not affect the run "
+                     "verdict. The default is FATAL as of Wave 2 (the "
+                     "character-select falling-object bug is fixed in "
+                     "spec_css_park.cpp); unset the variable to gate on them")
     return fail, lines
 
 
@@ -767,7 +1239,7 @@ def _parity_gates(out_dir, specs):
         scores a long run, but so does the RIGHT host match once a real desync
         starts -- and past the first few hundred divergent frames the wrong
         pairing can score BETTER. The stage that hurt: the match-end-seam
-        forensics (campaign /home/teo/specrel-2026-08-07/) printed
+        forensics (docs/dev/matchend_seam_campaign.md) printed
         "vs host-match0" for a segment that plainly belonged to a later match,
         and the desync frames only lined up after agents re-paired the segments
         by raw CRC by hand.
@@ -1416,6 +1888,13 @@ def main():
               # it MUST reach the host as well as the viewers: the host half is
               # what serves the per-battle snapshot at all.
               "FM2K_SPEC_POOL_SYNC",
+              # Wave 2 spectator CSS-window park kill-switch. Default ON in the
+              # hook; forwarded so the causality control run (=0 reproduces the
+              # falling objects) is reachable from a WSL-side invocation. Listed
+              # on the player side too even though only the spectator plane arms
+              # it -- a one-sided env list is how a probe silently measures one
+              # plane against nothing.
+              "FM2K_SPEC_CSS_PARK",
               # Phase 4e (review A4a(ii)): the topology gate's OWN escape hatch.
               # FM2K_CK_TOPOLOGY=0 makes ComputeTopology() return the "not
               # computed" sentinel, which the POOL terms now treat as a FAILED
@@ -1469,10 +1948,37 @@ def main():
               "Use FM2K_SEAM_LEGACY_PARK=1 to restore the old blanket "
               "load-site park for an A/B.")
 
+    # [CSS-WIN]/[CSS-OBJ] -- the character-select window gate (css_window.h).
+    # DEFAULT ON in the harness, unlike the other diagnostics above: its
+    # not-computed-must-fail rule is only meaningful if the term is normally
+    # computed, and a gate nobody switches on is a gate that never sees its
+    # bug (the ShadowArts shape). The cost is one log line per 30 in-window
+    # frames per plane, on a screen that is not a hot path; the battle loop is
+    # never reached (exact phase gate). Explicitly settable to 0 to A/B it.
+    #
+    # HOST (P1) + SPECTATORS ONLY -- deliberately NOT the guest (review B2).
+    # The gate reads live_FM2K_P1_Debug.log for the host half and each
+    # spectator's live log for the other; **P2's [CSS-WIN] lines are read by
+    # nothing**, so carrying the instrument on the guest bought zero coverage.
+    # What it did buy was a per-confirmed-CSS-frame 1024-slot pool walk plus a
+    # synchronous log line every 30 frames on the guest process, during exactly
+    # the phase whose wall-clock timing decides which frame each peer crosses
+    # the match boundary on -- i.e. a self-inflicted timing perturbation, on one
+    # side only, injected by default into the gate that is currently arbitrating
+    # an open player-plane desync. Symmetry is what the HOST-vs-SPECTATOR
+    # comparison needs; the guest is not a party to it.
+    _css_win = os.environ.get("FM2K_CSS_WIN", "1")
+    # Retune of the [CSS-OBJ] dump trigger only (px below the resting level) (never a verdict; the
+    # harness FALL term compares against the host's own measured ceiling).
+    _css_fall_delta = os.environ.get("FM2K_CSS_FALL_DELTA")
+
     p1_env = {**common_env,
+              "FM2K_CSS_WIN": _css_win,
               "FM2K_LOCAL_PORT": str(P1_PORT),
               "FM2K_REMOTE_ADDR": f"127.0.0.1:{P2_PORT}",
               "FM2K_PARITY_RECORD_PATH": to_win(p1_pty)}
+    if _css_fall_delta:
+        p1_env["FM2K_CSS_FALL_DELTA"] = _css_fall_delta
     if measure_host:
         # Host frame-time profiler ON for the load test -> [FRAMETIME]
         # over_budget=X/300 + [HICCUP] lines land in the host's debug log.
@@ -1521,7 +2027,16 @@ def main():
                "FM2K_CINPUT": os.environ.get("FM2K_CINPUT", "1"),
                # Exit ~5s after the host's feed stops (harness TerminateProcess =
                # no graceful SESSION_END) instead of spinning at [SPEC-Q] q=0.
-               "FM2K_SPEC_HOST_GONE_MS": os.environ.get("FM2K_SPEC_HOST_GONE_MS", "5000")}
+               "FM2K_SPEC_HOST_GONE_MS": os.environ.get("FM2K_SPEC_HOST_GONE_MS", "5000"),
+               # [CSS-WIN]/[CSS-OBJ] character-select window gate -- the OTHER
+               # half of the HOST-side default above (the guest deliberately
+               # does not carry it; see the FM2K_CSS_WIN comment there). The
+               # whole point of the gate is the host-vs-spectator comparison, so
+               # THIS default must stay symmetric with P1's or the run measures
+               # one plane against nothing.
+               "FM2K_CSS_WIN": _css_win}
+        if _css_fall_delta:
+            env["FM2K_CSS_FALL_DELTA"] = _css_fall_delta
         for kk in ("FM2K_SPEC_DROP", "FM2K_SPEC_DROP_SEED", "FM2K_CSS_TRACE",
                    "FM2K_SPECTATOR_DEBUG", "FM2K_SPEC_CONNECT_TIMEOUT_MS",
                    "FM2K_NET_DELAY_MS", "FM2K_NET_JITTER_MS", "FM2K_NET_LOSS", "FM2K_NET_SEED",
@@ -1538,6 +2053,9 @@ def main():
                    "FM2K_FULLFP", "FM2K_POOLSET",
                    # Phase 4c match-start pool resync kill-switch (viewer half).
                    "FM2K_SPEC_POOL_SYNC",
+                   # Wave 2 CSS-window park kill-switch, viewer half -- this is
+                   # the half that actually arms the window.
+                   "FM2K_SPEC_CSS_PARK",
                    # Phase 4e: the topology gate escape hatch, viewer half. It
                    # MUST be symmetric with the player list -- the POOL terms
                    # compare the two planes, so a one-sided hatch would silently
@@ -1838,6 +2356,19 @@ def main():
     for _l in _css_lines:
         print(_l)
 
+    # CSS-WINDOW object-pool gate. Same placement rationale as the line above:
+    # before every early return, off the preserved logs and the .pty captures
+    # only. FATAL as of Wave 2 (see CSS_WIN_FATAL); `csswin_fail` was already
+    # wired into the OVERALL verdict while the term was advisory, so flipping
+    # the constant was the ONLY change the fix needed here.
+    # `multi_match_recipe` is the recipe's INTENT, read off the same argument
+    # that sets FM2K_AUTO_TERMINATE_TOTAL. It keys the NOT-APPLICABLE hatch, and
+    # it is deliberately something no run-time failure can move (review B4a).
+    csswin_fail, _csswin_lines = _css_window_gate(
+        OUT_DIR, specs, p1_pty, multi_match_recipe=(args.total_frames > 0))
+    for _l in _csswin_lines:
+        print(_l)
+
     # ---- CORRECTNESS GATES: CINPUT + CHECKSUM + rng/hp trace -----------------
     # Run HERE -- after preservation, before EVERY early return. Until 2026-08
     # they ran at the very end, so any earlier bail (most often
@@ -1847,7 +2378,7 @@ def main():
     # logs, so running them before the replay phase is also strictly safer (the
     # replay process overwrites the game-dir logs it would otherwise race).
     cin_fail, ck_fail = _parity_gates(OUT_DIR, specs)
-    real_fail = (cin_fail or ck_fail or css_fail
+    real_fail = (cin_fail or ck_fail or css_fail or csswin_fail
                  or any(s["gate"]["checked"] > 0 and not s["ok"] for s in specs))
     checked_any = any(s["gate"]["checked"] > 0 for s in specs)
 
@@ -1856,8 +2387,13 @@ def main():
         replay file) reported after the correctness gates above have already
         printed their verdict, so the two are never confused."""
         print(msg)
+        # Same rule as the OVERALL line (review B4c): a term that can set the
+        # verdict prints its OWN name. A CSS-WIN-only failure is not a desync
+        # and must never be reported as one.
+        _csswin_only = csswin_fail and not (cin_fail or ck_fail or css_fail)
         print("[harness] (correctness verdict from the gates above: "
-              + ("DESYNC DETECTED" if real_fail else
+              + ("CSS-WINDOW GATE FAILED (no desync term did)" if _csswin_only else
+                 "DESYNC DETECTED" if real_fail else
                  "no desync detected" if checked_any else
                  "INCONCLUSIVE -- no spectator trace frames")
               + " -- the FAIL above is structural, not a desync.)")
@@ -2156,10 +2692,22 @@ def main():
             f.unlink(missing_ok=True)
 
     if real_fail:
+        # The CSS-WIN branch is NOT decoration (review B4c): without it a run
+        # that failed ONLY on the character-select window gate printed
+        # "a spectator desynced from host -- rng/hp gate", which named a term
+        # that had not failed and a plane that may not be involved at all. That
+        # line has already had to be annotated as "must NOT be read as a result"
+        # in one report. A term that can set the verdict prints its own name.
         why = ("CHECKSUM full-state / POOL topology desync (see above)" if ck_fail else
                "CINPUT input-frame desync (see above)" if cin_fail else
-               "CSS-FP cursor/selection desync (see above)" if css_fail else "rng/hp gate")
-        print(f"[harness] OVERALL FAIL: a spectator desynced from host -- {why}.")
+               "CSS-FP cursor/selection desync (see above)" if css_fail else
+               "CSS-WIN character-select window gate (falling object, or the "
+               "term could not be computed -- see above)" if csswin_fail else
+               "rng/hp gate")
+        head = ("the CSS-WINDOW gate failed"
+                if csswin_fail and not (ck_fail or cin_fail or css_fail)
+                else "a spectator desynced from host")
+        print(f"[harness] OVERALL FAIL: {head} -- {why}.")
         if liveness_fail:
             print(f"[harness]   (also failed: {'; '.join(liveness_fail)})")
         return 1

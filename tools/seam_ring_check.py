@@ -54,6 +54,62 @@ FIELDS = ["kind", "match", "seg", "frame", "replay", "rb", "fingerprint",
 COMPARE = ["fingerprint", "rng", "p1_hp", "p2_hp", "round_timer",
            "game_timer", "buf_idx", "p1_input", "p2_input", "vm_live"]
 
+# ---------------------------------------------------------------------------
+# THE MISPREDICTION BLIND SPOT (Lane A, 2026-08-15) -- why not every difference
+# between the first and last save of a frame is a determinism violation.
+#
+# The criterion above silently assumes the FORWARD save of a frame ran on
+# CONFIRMED inputs. Under rollback it often does not: the forward pass saves a
+# frame using a PREDICTED remote input, the real input arrives, gekko rolls
+# back, and the resim re-saves the same frame with the corrected input. First
+# save != last save, entirely correctly -- that is rollback working, not
+# breaking. The state that had already been computed is identical; only the
+# input word the frame was run with, and the fingerprint that hashes it,
+# changed.
+#
+# The wanwan corpus satisfied the assumption by luck (2190 multiply-recorded
+# groups, 0 input-differing) because its harsher profile happened to always
+# confirm before the save. vanpri does not: run1 of the Lane A series failed
+# 4 groups at battle-entry frames whose ONLY differing fields were `p1_input`
+# and the fingerprint that follows it, with rng, both HP, both timers and
+# vm_live bit-identical -- and the same recipe produced 0 in runs 2-5. A gate
+# term that flakes on a correct rollback is worse than no term.
+#
+# So: a group is reclassified as INPUT-CORRECTION, reported separately and NOT
+# counted as a violation, when ALL of these hold:
+#   * every DETERMINISM_CRITICAL field is identical across the group, and
+#   * at least one input field differs, and
+#   * nothing outside {fingerprint, p1_input, p2_input} differs.
+# The fingerprint is allowed to differ ONLY because the inputs it hashes did:
+# a fingerprint that moves while both inputs agree stays a VIOLATION, which is
+# exactly the 967f89f signature (frozen rng, vm_live 146 -> 0, inputs agreeing).
+#
+# WHAT THIS TERM NO LONGER COVERS (named, not hidden -- Wave-2 review B5). Within
+# ONE peer, first-save-vs-last-save is the only view this ring has, so it cannot
+# tell "prediction corrected by the REAL input" from "the resim applied a
+# DIFFERENT WRONG input" -- the e5fe11f speculative-input-leak / input-indexing
+# class. Before the classifier any such group redded here; it is now advisory.
+# The class is still covered from outside: gekko's own fingerprint hashes BOTH
+# inputs, and the harness's CINPUT term compares the two peers frame by frame.
+# The `input_corrections` count is also unbounded and never fatal at any count --
+# an unexpected CLUSTER is meant to be read off the printed list below.
+DETERMINISM_CRITICAL = ["rng", "p1_hp", "p2_hp", "round_timer", "game_timer",
+                        "buf_idx", "vm_live"]
+INPUT_FIELDS = ["p1_input", "p2_input"]
+
+
+def classify(first, last, diff):
+    """'ok' | 'input' (mispredicted forward save) | 'violation'."""
+    if not diff:
+        return "ok"
+    if any(f in diff for f in DETERMINISM_CRITICAL):
+        return "violation"
+    if not any(f in diff for f in INPUT_FIELDS):
+        return "violation"          # fingerprint moved with inputs agreeing
+    if set(diff) - set(INPUT_FIELDS) - {"fingerprint"}:
+        return "violation"
+    return "input"
+
 
 def parse(path):
     """Return (rows, header_comment). Rows are dicts for SV/WN kinds only."""
@@ -107,18 +163,35 @@ def check_file(path, verbose=False):
 
     multi = [(k, v) for k, v in groups.items() if len(v) > 1]
     violations = []
+    corrections = []
     for key, entries in multi:
         first = entries[0][1]
         last = entries[-1][1]
         diff = [f for f in COMPARE if first[f] != last[f]]
-        if diff:
+        verdict = classify(first, last, diff)
+        if verdict == "violation":
             violations.append((key, entries, diff))
+        elif verdict == "input":
+            corrections.append((key, entries, diff))
 
     print("== %s" % path)
     if header:
         print("   %s" % header)
-    print("   rows=%d skipped_frame0=%d groups=%d multi-recorded=%d violations=%d"
-          % (len(rows), skipped, len(groups), len(multi), len(violations)))
+    print("   rows=%d skipped_frame0=%d groups=%d multi-recorded=%d "
+          "input_corrections=%d violations=%d"
+          % (len(rows), skipped, len(groups), len(multi), len(corrections),
+             len(violations)))
+    if corrections:
+        # Reported, never fatal. Named individually so an unexpected cluster is
+        # visible rather than hidden behind a count.
+        print("   INPUT-CORRECTION (mispredicted forward save, corrected by "
+              "resim -- NOT a determinism violation):")
+        for key, entries, diff in corrections[:8]:
+            kind, match, seg, frame = key
+            print("      %s match=%s seg=%s frame=%s: %s (%d saves)"
+                  % (kind, match, seg, frame, ",".join(diff), len(entries)))
+        if len(corrections) > 8:
+            print("      ... and %d more" % (len(corrections) - 8))
     if not multi:
         # Loud, because it is the failure mode the seam-window buffer exists to
         # prevent: a file with no resimmed frame proves nothing at all.
@@ -137,8 +210,9 @@ def check_file(path, verbose=False):
                   % (idx, r["replay"], r["rb"],
                      " ".join("%-12s" % r[f] for f in COMPARE)))
     if verbose and not violations and multi:
-        print("   OK: %d multiply-recorded frames all reproduced" % len(multi))
-    return len(violations), len(multi)
+        print("   OK: %d multiply-recorded frames all reproduced (%d were "
+              "input corrections)" % (len(multi), len(corrections)))
+    return len(violations), len(multi), len(corrections)
 
 
 def main(argv):
@@ -149,6 +223,7 @@ def main(argv):
         return 2
     total_v = 0
     total_m = 0
+    total_c = 0
     missing = 0
     for path in args:
         if not os.path.exists(path):
@@ -156,14 +231,16 @@ def main(argv):
             missing += 1
             continue
         try:
-            v, m = check_file(path, verbose)
+            v, m, c = check_file(path, verbose)
         except ValueError as exc:
             print("== parse error: %s" % exc)
             return 2
         total_v += v
         total_m += m
-    print("SEAM-RING-CHECK: files=%d missing=%d multi_recorded=%d violations=%d -- %s"
-          % (len(args), missing, total_m, total_v,
+        total_c += c
+    print("SEAM-RING-CHECK: files=%d missing=%d multi_recorded=%d "
+          "input_corrections=%d violations=%d -- %s"
+          % (len(args), missing, total_m, total_c, total_v,
              "FAIL" if total_v else "PASS"))
     return 1 if total_v else 0
 

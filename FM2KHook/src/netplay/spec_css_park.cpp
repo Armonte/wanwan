@@ -98,6 +98,56 @@
 //
 // KILL SWITCH: FM2K_SPEC_CSS_PARK=0 disables (default ON), for the causality
 // control run and for the field if this ever needs to come out without a build.
+//
+// ======================= NARROWED 2026-08-16 (review B1e) ==================
+// The first shipped shape of this fix called Fm2k_NeutralizeMatchEndScriptObjects()
+// -- a BLANKET park of every type-4 slot -- on every frame of the whole armed
+// window. Review finding B1e flagged that as a visibility risk on a screen the
+// spectator is looking at, and the owner asked the same question directly
+// ("it seems like your current solution is just ignoring character select?").
+// It was then MEASURED with the new [CSS-ANIM] instrument (css_window.cpp),
+// which reports per type-4 object whether its script program counter (+0x2C)
+// advances. wanwan, one between-match window, same run:
+//     HOST plane          296 objects, 296 ADVANCED, 0 frozen
+//     SPECTATOR park OFF  296 objects, 296 ADVANCED, 0 frozen  (matches host)
+//     SPECTATOR park ON   125 objects,   0 ADVANCED, 125 frozen
+// and whole object CLASSES were missing from the parked plane entirely (a
+// parked VM never spawns its animation children). So the blanket park froze
+// EVERYTHING the host animates: the character portraits (create_game_object(4,
+// 80, ...) per docs/analysis/css_state_machine.md), the confirm sprite
+// (CreateProjectileObject(..., 101, ...)), and the 36-object character-select
+// UI panel that lives for the whole window. Confirmed on vanguard-princess as
+// well (183-207 objects per window, all advancing with the park off).
+//
+// The park is therefore narrowed on TWO axes, both engine-derived:
+//
+//  (A) TEMPORAL -- only after both players have confirmed. g_round_timer_counter
+//      @ 0x424F00 is 0 for the entire selection phase and starts incrementing
+//      1/frame once both action states latch, triggering battle above 100
+//      (docs/analysis/css_state_machine.md; corroborated in every [HOST-CSS]
+//      line: timer=0 all through selection, 23/74 in the one sample that lands
+//      inside the ramp, back to 0 at the next window). The falling object lives
+//      ENTIRELY inside that ~101-frame ramp (laneB_css_window.md 8.4.1; the
+//      harness measured the fall over 28-93 of 1054 window frames, always at
+//      the end). So ~90% of the window -- all cursor movement, all portrait
+//      idle animation, the whole selection -- is now untouched.
+//
+//  (B) IDENTITY -- only objects that can actually run a FIGHTER script.
+//      entity_kind (+0x15A) 0/1/5 select a character slot; 2/3/4 select the
+//      static g_kgt_file_buffer / g_story_char_config / g_char_physics_table
+//      (round_events.cpp's field map, and the same predicate the [ENDSEAM-OOB]
+//      hazard probe uses). The falling object is kind=1 with a bound player
+//      slot (laneB 8.3: slot 0, type 4, owner 79/80, script 22/24, pslot 0/1,
+//      kind 1); the character-select UI is kind 2/3. So the UI and the confirm
+//      animation keep running even inside the ramp.
+//
+// Net effect on the hazard: unchanged. The object that falls is a kind-1
+// character object created after the confirm, i.e. inside the ramp and inside
+// the identity set, so it is still parked within one tick of its birth.
+//
+// LEVER: FM2K_SPEC_CSS_PARK_WIDE=1 restores the old blanket/whole-window shape
+// (default OFF). Diagnostic only -- it is the A/B control for the narrowing,
+// and it re-freezes the character-select screen.
 
 #if !defined(ENGINE_FM95)
 
@@ -122,16 +172,70 @@ constexpr size_t    OBJ_STRIDE       = 382;
 constexpr size_t    OBJ_COUNT        = 1024;
 constexpr ptrdiff_t OFF_OBJ_TYPE     = 0x00;
 constexpr ptrdiff_t OFF_OBJ_INIT_ST  = 0x152;
+constexpr ptrdiff_t OFF_OBJ_PLAYER   = 0x156;   // player_slot_id
+constexpr ptrdiff_t OFF_OBJ_KIND     = 0x15A;   // entity_kind
 constexpr int       OBJ_TYPE_SCRIPT_VM  = 4;    // character_state_machine
 constexpr int       OBJ_TYPE_CSS_DRIVER = 10;   // game_state_manager @ 0x406FC0
+constexpr int       CSM_STATE_INIT      = 0;
+constexpr int       CSM_STATE_RUNNING   = 1;
 constexpr int       CSM_STATE_DONE      = 2;
+constexpr size_t    NUM_CHAR_SLOTS      = 8;
+
+// g_round_timer_counter. 0 for the whole character-select SELECTION phase;
+// increments 1/frame once both players' action states latch; battle triggers
+// above 100. See the NARROWED block above and docs/analysis/css_state_machine.md.
+constexpr uintptr_t ADDR_ROUND_TIMER_COUNTER = 0x00424F00;
 
 bool        s_armed        = false;
 const char* s_why          = "";
 uint32_t    s_frames       = 0;   // in-window frames the park actually ran on
+uint32_t    s_ramp_frames  = 0;   // of those, frames inside the post-confirm ramp
 uint32_t    s_park_events  = 0;   // frames where it changed at least one slot
 uint32_t    s_park_slots   = 0;   // total slots changed across the window
 uint32_t    s_window_ord   = 0;
+int         s_wide         = -1;  // FM2K_SPEC_CSS_PARK_WIDE, -1 = env not read
+
+// The pre-narrowing shape, kept reachable as the A/B control for the narrowing.
+bool ParkWide() {
+    if (s_wide < 0) {
+        const char* v = std::getenv("FM2K_SPEC_CSS_PARK_WIDE");
+        s_wide = (v && v[0] && v[0] != '0') ? 1 : 0;
+        if (s_wide == 1) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "[CSSPARK] WIDE mode (FM2K_SPEC_CSS_PARK_WIDE=1) -- parking EVERY "
+                "type-4 object for the WHOLE character-select window; this is the "
+                "pre-2026-08-16 shape and it freezes the select screen the "
+                "spectator is watching. Diagnostic control only");
+        }
+    }
+    return s_wide == 1;
+}
+
+// The narrowed hazard set: type-4 script VMs whose entity_kind binds a CHARACTER
+// SLOT (0/1/5), with a valid player slot. These are the only objects that can
+// run a fighter script -- kinds 2/3/4 index the static tables and are the
+// character-select UI. Returns how many slots it CHANGED (one walk, unlike the
+// wide path's count-then-apply pair, because nothing here needs the dry run).
+int ParkHazardScriptObjects() {
+    uint8_t* pool = (uint8_t*)ADDR_OBJECT_POOL;
+    int n = 0;
+    for (size_t i = 0; i < OBJ_COUNT; ++i) {
+        uint8_t* obj = pool + i * OBJ_STRIDE;
+        if (*(const int*)(obj + OFF_OBJ_TYPE) != OBJ_TYPE_SCRIPT_VM) continue;
+        const int kind = *(const int*)(obj + OFF_OBJ_KIND);
+        if (kind != 0 && kind != 1 && kind != 5) continue;   // static-table kinds
+        const int pslot = *(const int*)(obj + OFF_OBJ_PLAYER);
+        if (pslot < 0 || (size_t)pslot >= NUM_CHAR_SLOTS) continue;
+        int* init_state = (int*)(obj + OFF_OBJ_INIT_ST);
+        if (*init_state != CSM_STATE_INIT && *init_state != CSM_STATE_RUNNING) continue;
+        ++n;
+        // Monotone + idempotent, exactly as Fm2k_NeutralizeMatchEndScriptObjects:
+        // only 0/1 can reach the opcode dispatch, anything else already returns
+        // at the 0x411C3F entry guard.
+        *init_state = CSM_STATE_DONE;
+    }
+    return n;
+}
 
 // The type-10 character-select driver. Its presence is the engine-derived
 // "the CSS transition has not handed off yet" predicate -- see (2) above.
@@ -148,8 +252,10 @@ void CloseWindow(const char* reason) {
     if (!s_armed) return;
     s_armed = false;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "[CSSPARK] win%u close (%s): frames=%u park_frames=%u slots=%u",
-        s_window_ord, reason, s_frames, s_park_events, s_park_slots);
+        "[CSSPARK] win%u close (%s): frames=%u ramp_frames=%u park_frames=%u "
+        "slots=%u wide=%d",
+        s_window_ord, reason, s_frames, s_ramp_frames, s_park_events,
+        s_park_slots, s_wide == 1 ? 1 : 0);
 }
 
 }  // namespace
@@ -178,12 +284,15 @@ void SpecCssPark_Engage(const char* why) {
     s_armed       = true;
     s_why         = why ? why : "?";
     s_frames      = 0;
+    s_ramp_frames = 0;
     s_park_events = 0;
     s_park_slots  = 0;
     ++s_window_ord;
+    (void)ParkWide();   // read + announce the lever once, at the first window
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "[CSSPARK] win%u engage (%s) mode=%u",
-        s_window_ord, s_why, *(const uint32_t*)FM2K::ADDR_GAME_MODE);
+        "[CSSPARK] win%u engage (%s) mode=%u wide=%d",
+        s_window_ord, s_why, *(const uint32_t*)FM2K::ADDR_GAME_MODE,
+        s_wide == 1 ? 1 : 0);
 }
 
 void SpecCssPark_Tick() {
@@ -197,13 +306,33 @@ void SpecCssPark_Tick() {
     }
     if (mode != 2000u) return;          // results screen / title: not our window
     if (!CssDriverAlive()) return;      // handed off to battle init: never park
-    const int parkable = Fm2k_CountParkableScriptObjects();
-    if (parkable > 0) {
-        Fm2k_NeutralizeMatchEndScriptObjects();
-        ++s_park_events;
-        s_park_slots += (uint32_t)parkable;
-    }
     ++s_frames;
+
+    if (ParkWide()) {
+        // Pre-2026-08-16 shape: every type-4 object, every in-window frame.
+        const int parkable = Fm2k_CountParkableScriptObjects();
+        if (parkable > 0) {
+            Fm2k_NeutralizeMatchEndScriptObjects();
+            ++s_park_events;
+            s_park_slots += (uint32_t)parkable;
+        }
+        return;
+    }
+
+    // (A) TEMPORAL narrowing: nothing is parked until BOTH players have
+    // confirmed. The counter is 0 for the whole selection phase, so the
+    // character-select screen animates on the spectator exactly as it does on
+    // the host right up to the confirm.
+    if (*(const uint32_t*)ADDR_ROUND_TIMER_COUNTER == 0u) return;
+    ++s_ramp_frames;
+
+    // (B) IDENTITY narrowing: only the character-bound script VMs. The
+    // character-select UI (entity_kind 2/3/4) keeps running through the ramp.
+    const int parked = ParkHazardScriptObjects();
+    if (parked > 0) {
+        ++s_park_events;
+        s_park_slots += (uint32_t)parked;
+    }
 }
 
 void SpecCssPark_OnBattleFrameZero() {

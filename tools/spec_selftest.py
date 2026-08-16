@@ -2180,6 +2180,12 @@ def main():
               # it -- a one-sided env list is how a probe silently measures one
               # plane against nothing.
               "FM2K_SPEC_CSS_PARK",
+              # Narrowing A/B control (2026-08-16, review B1e): =1 restores the
+              # pre-narrowing BLANKET park (every type-4 object, whole window),
+              # which the [CSS-ANIM] census proved freezes the entire spectator
+              # character-select screen. Default OFF; forwarded so the control
+              # arm is reachable from a WSL-side invocation.
+              "FM2K_SPEC_CSS_PARK_WIDE",
               # Phase 4e (review A4a(ii)): the topology gate's OWN escape hatch.
               # FM2K_CK_TOPOLOGY=0 makes ComputeTopology() return the "not
               # computed" sentinel, which the POOL terms now treat as a FAILED
@@ -2282,6 +2288,14 @@ def main():
     # Retune of the [CSS-OBJ] dump trigger only (px below the resting level) (never a verdict; the
     # harness FALL term compares against the host's own measured ceiling).
     _css_fall_delta = os.environ.get("FM2K_CSS_FALL_DELTA")
+    # [CSS-ANIM] per-object script-ADVANCE census (Wave-2 review B1e: does the
+    # spectator CSS park freeze the character previews the host animates?).
+    # Dark by default. Forwarded to the HOST and the SPECTATORS and deliberately
+    # NOT to the guest, for the same reason FM2K_CSS_WIN is host-only (review
+    # B2): the comparison is host-vs-spectator, P2's lines are read by nothing,
+    # and the extra per-frame pool walk is a one-sided timing perturbation in
+    # exactly the phase that decides the open player-plane desync.
+    _css_anim = os.environ.get("FM2K_CSS_ANIM")
 
     p1_env = {**common_env,
               "FM2K_CSS_WIN": _css_win,
@@ -2290,6 +2304,8 @@ def main():
               "FM2K_PARITY_RECORD_PATH": to_win(p1_pty)}
     if _css_fall_delta:
         p1_env["FM2K_CSS_FALL_DELTA"] = _css_fall_delta
+    if _css_anim:
+        p1_env["FM2K_CSS_ANIM"] = _css_anim
     if measure_host:
         # Host frame-time profiler ON for the load test -> [FRAMETIME]
         # over_budget=X/300 + [HICCUP] lines land in the host's debug log.
@@ -2348,6 +2364,10 @@ def main():
                "FM2K_CSS_WIN": _css_win}
         if _css_fall_delta:
             env["FM2K_CSS_FALL_DELTA"] = _css_fall_delta
+        # [CSS-ANIM] viewer half. The whole instrument is a host-vs-spectator
+        # comparison, so this MUST stay symmetric with P1's above.
+        if _css_anim:
+            env["FM2K_CSS_ANIM"] = _css_anim
         for kk in ("FM2K_SPEC_DROP", "FM2K_SPEC_DROP_SEED", "FM2K_CSS_TRACE",
                    "FM2K_SPECTATOR_DEBUG", "FM2K_SPEC_CONNECT_TIMEOUT_MS",
                    "FM2K_NET_DELAY_MS", "FM2K_NET_JITTER_MS", "FM2K_NET_LOSS", "FM2K_NET_SEED",
@@ -2371,6 +2391,9 @@ def main():
                    # Wave 2 CSS-window park kill-switch, viewer half -- this is
                    # the half that actually arms the window.
                    "FM2K_SPEC_CSS_PARK",
+                   # Narrowing A/B control, viewer half -- this is the half that
+                   # actually arms the window, so it MUST be here.
+                   "FM2K_SPEC_CSS_PARK_WIDE",
                    # Phase 4e: the topology gate escape hatch, viewer half. It
                    # MUST be symmetric with the player list -- the POOL terms
                    # compare the two planes, so a one-sided hatch would silently

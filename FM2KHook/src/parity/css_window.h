@@ -43,6 +43,19 @@
  *                              sample, so a window that did NOT trip still
  *                              leaves a full slot listing to diff against
  *
+ * PLUS, under its OWN env gate FM2K_CSS_ANIM=1 (dark by default, independent of
+ * FM2K_CSS_WIN):
+ *   [CSS-ANIM] ... ev=sum      once per window: how many type-4 objects ADVANCED
+ *                              their script program counter and how many stayed
+ *                              frozen, plus how many were parked
+ *   [CSS-ANIM] ... ev=rec      chunked per-object detail (identity + advance
+ *                              counts), so object CLASSES separate offline
+ * This answers Wave-2 review finding B1e -- the spectator character-select park
+ * (spec_css_park.cpp) writes script_init_state = 2 on EVERY type-4 slot for the
+ * whole window, and no other term in the tree can see whether that freezes the
+ * character previews the spectator is supposed to be watching. Rationale, field
+ * list and cost are in-source at the [CSS-ANIM] block in css_window.cpp.
+ *
  * [CSS-OBJ] is the DIAGNOSIS half: it names the falling object's identity
  * (slot, type, owner, script id, player-slot binding, entity kind, position)
  * so "present on one plane and not the other" is answerable offline. It is

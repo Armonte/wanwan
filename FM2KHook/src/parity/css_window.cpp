@@ -123,6 +123,72 @@ uint32_t s_battle_ord  = 0;     /* battles seen, 1-based, this process */
 int      s_census_done = 0;     /* bit 0 = f=0 emitted, bit 1 = f=1 emitted */
 int      s_census_last = -2;    /* last frame seen, for battle-restart detect */
 
+/* ---- [CSS-ANIM] -- per-object script-ADVANCE census (FM2K_CSS_ANIM=1) ----
+ *
+ * WHY: Wave-2 review finding B1e. The spectator character-select park
+ * (spec_css_park.cpp) writes script_init_state = 2 on EVERY type-4 slot for the
+ * whole of a between-match character-select window, which is a screen the user
+ * is looking at. Every existing term is blind to the consequence: FALL, CSSPOOL,
+ * CINPUT, CHECKSUM and CSS-FP are population/position/cursor terms, and
+ * [CSSPARK] logs only totals. "Are the character previews frozen on the
+ * spectator?" was therefore unanswerable from any artifact in the tree.
+ *
+ * WHAT IT MEASURES: for every type-4 object alive in the window, whether its
+ * SCRIPT PROGRAM COUNTER (item_idx, +0x2C -- the field character_state_machine
+ * increments per executed script item) ADVANCES between consecutive samples.
+ * That is the direct observable for "this VM is executing" and it is exactly
+ * what the park suppresses (a parked VM returns at the 0x411C3F entry guard, so
+ * item_idx cannot move). Recorded per object rather than in aggregate so the
+ * OBJECT CLASSES can be separated offline: entity_kind (+0x15A) 0/1/5 bind a
+ * character slot (the fighters -- the falling identity from laneB 8.3 is
+ * kind=1), 2/3/4 bind static tables (the character-select UI / portrait /
+ * preview spawns). Identity fields travel with every record so no class has to
+ * be guessed from a slot index.
+ *
+ * COST: one extra 1024-slot pool walk per in-window frame (~6 loads per active
+ * slot, no allocation, no formatting, no IO) and ONE chunked dump at window
+ * close. Dark unless FM2K_CSS_ANIM is set, and then only inside mode 2000.
+ * Diagnostic only -- it writes nothing to the pool and no term reads it. */
+/* Cap on closed records per window. 256 was measured too small on the FIRST
+ * run: wanwan churns ~300 short-lived type-4 objects through a 950-frame
+ * character-select window, and records are flushed in CLOSE order, so the ones
+ * lost to the cap were exactly the LONG-LIVED ones (the character-select UI
+ * panel, life == the whole window) -- i.e. the cap biased the census against
+ * the very class review B1e is about. 1024 = one record per pool slot, and
+ * `dropped` still reports any overflow rather than hiding it. */
+constexpr size_t kMaxAnim = 1024u;
+
+/* Offsets the [CSS-WIN] sampler does not need. item_idx is the script PC
+ * (parity_recorder.cpp's confirmed +0x2C); script_init_state is the VM
+ * lifecycle guard the park writes (round_events.cpp OFF_OBJ_INIT_STATE). */
+constexpr size_t kOffItemIdx   = 0x02Cu;
+constexpr size_t kOffInitState = 0x152u;
+constexpr int32_t kCsmStateDone = 2;
+
+struct AnimRec {
+    uint16_t slot;
+    uint16_t player_slot;
+    int32_t  owner;
+    int32_t  kind;
+    int32_t  script_first, script_last;
+    int32_t  item_first,   item_last;
+    int32_t  y_first,      y_last;
+    uint32_t born;        /* in-window frame index at first sight */
+    uint32_t life;        /* samples this object was seen for */
+    uint32_t adv;         /* samples where item_idx CHANGED (= VM executed) */
+    uint32_t scr;         /* samples where script_idx changed */
+    uint32_t park;        /* samples with script_init_state == 2 */
+    int32_t  first_adv;   /* in-window frame of the first advance, -1 = never */
+    int32_t  last_adv;
+};
+
+int      s_anim_en     = -1;    /* -1 = env not yet read */
+AnimRec  s_anim_open[ParityPool::kSlotCount];
+bool     s_anim_live[ParityPool::kSlotCount];
+AnimRec  s_anim_done[kMaxAnim];
+size_t   s_anim_done_n = 0;
+uint32_t s_anim_dropped = 0;    /* records past kMaxAnim -- reported, never silent */
+
 inline int32_t ToPixels(int32_t fixed_16_16) {
     /* Arithmetic shift keeps negatives sane; the field is 16.16 (verified:
      * the host's resting 35061760 == 535.0 px, the observed fall peak
@@ -142,6 +208,11 @@ void ReadEnv() {
         const long parsed = std::strtol(t, nullptr, 10);
         if (parsed > 0 && parsed < 100000) s_fall_delta = static_cast<int32_t>(parsed);
     }
+    /* [CSS-ANIM] is a SEPARATE gate on purpose: it must be able to run without
+     * the [CSS-WIN] per-30-frame log line (and vice versa), and it is the only
+     * instrument that answers review finding B1e. Dark unless set. */
+    const char* a = std::getenv("FM2K_CSS_ANIM");
+    s_anim_en = (a && a[0] && a[0] != '0') ? 1 : 0;
 }
 
 /* One ascending pass over the pool into `dst`, one dword load per inactive
@@ -243,8 +314,149 @@ void DumpSlots(const char* why, const SlotRec* recs, size_t n,
     DumpSlotsAs("[CSS-OBJ]", s_window_ord, why, recs, n, nobj, seq);
 }
 
+/* ---- [CSS-ANIM] implementation ----------------------------------------- */
+
+void AnimFlush(size_t slot) {
+    if (!s_anim_live[slot]) return;
+    s_anim_live[slot] = false;
+    if (s_anim_done_n < kMaxAnim) s_anim_done[s_anim_done_n++] = s_anim_open[slot];
+    else ++s_anim_dropped;
+}
+
+void AnimReset() {
+    for (size_t i = 0; i < ParityPool::kSlotCount; ++i) s_anim_live[i] = false;
+    s_anim_done_n  = 0;
+    s_anim_dropped = 0;
+}
+
+/* One pass over the pool. A record is keyed on (slot, identity): if a slot is
+ * recycled inside one window the old record is closed out and a new one opened,
+ * so "this object never advanced" can never be an artifact of two objects
+ * sharing a slot index. script_idx deliberately does NOT key the identity -- a
+ * running VM changes script legitimately, and that is counted (scr) rather than
+ * treated as a new object. */
+void AnimSample(uint32_t wframe) {
+    for (size_t i = 0; i < ParityPool::kSlotCount; ++i) {
+        const uint8_t* obj = reinterpret_cast<const uint8_t*>(
+            ParityPool::kPoolBase + i * ParityPool::kSlotStride);
+        const uint32_t type = *reinterpret_cast<const uint32_t*>(obj + ParityPool::kOffType);
+        if (type != ParityPool::kTypePlayerChar) { AnimFlush(i); continue; }
+
+        const int32_t  owner  = *reinterpret_cast<const int32_t*>(obj + ParityPool::kOffOwner);
+        const int32_t  kind   = *reinterpret_cast<const int32_t*>(obj + ParityPool::kOffEntityKind);
+        const uint16_t pslot  = *reinterpret_cast<const uint16_t*>(obj + ParityPool::kOffPlayerSlot);
+        const int32_t  script = *reinterpret_cast<const int32_t*>(obj + ParityPool::kOffScriptId);
+        const int32_t  item   = *reinterpret_cast<const int32_t*>(obj + kOffItemIdx);
+        const int32_t  init   = *reinterpret_cast<const int32_t*>(obj + kOffInitState);
+        const int32_t  y      = ToPixels(*reinterpret_cast<const int32_t*>(obj + ParityPool::kOffPosY));
+
+        AnimRec& r = s_anim_open[i];
+        if (s_anim_live[i] &&
+            (r.owner != owner || r.kind != kind || r.player_slot != pslot)) {
+            AnimFlush(i);
+        }
+        if (!s_anim_live[i]) {
+            s_anim_live[i] = true;
+            r.slot        = static_cast<uint16_t>(i);
+            r.player_slot = pslot;
+            r.owner       = owner;
+            r.kind        = kind;
+            r.script_first = r.script_last = script;
+            r.item_first   = r.item_last   = item;
+            r.y_first      = r.y_last      = y;
+            r.born      = wframe;
+            r.life      = 1;
+            r.adv       = 0;
+            r.scr       = 0;
+            r.park      = (init == kCsmStateDone) ? 1u : 0u;
+            r.first_adv = r.last_adv = -1;
+            continue;
+        }
+        ++r.life;
+        if (item != r.item_last) {
+            ++r.adv;
+            if (r.first_adv < 0) r.first_adv = static_cast<int32_t>(wframe);
+            r.last_adv = static_cast<int32_t>(wframe);
+        }
+        if (script != r.script_last) ++r.scr;
+        if (init == kCsmStateDone) ++r.park;
+        r.item_last   = item;
+        r.script_last = script;
+        r.y_last      = y;
+    }
+}
+
+/* Summary + chunked per-record detail, once per window. Its own chunker rather
+ * than DumpSlotsAs's because the record shape is different; same part=k/n
+ * contract so an incomplete capture is visible instead of silent. */
+void AnimDump(uint32_t win, uint32_t frames, uint32_t seq) {
+    for (size_t i = 0; i < ParityPool::kSlotCount; ++i) AnimFlush(i);
+    if (s_anim_done_n == 0 && s_anim_dropped == 0) return;
+
+    uint32_t adv_any = 0, frozen = 0, park_any = 0, park_all = 0;
+    for (size_t i = 0; i < s_anim_done_n; ++i) {
+        const AnimRec& r = s_anim_done[i];
+        if (r.adv > 0) ++adv_any; else ++frozen;
+        if (r.park > 0) ++park_any;
+        if (r.park >= r.life) ++park_all;
+    }
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "[CSS-ANIM] win=%u ev=sum tv=%u frames=%u seq=%u recs=%u dropped=%u "
+        "advanced=%u frozen=%u parked_any=%u parked_all=%u",
+        win, kLineVersion, frames, seq,
+        (unsigned)s_anim_done_n, s_anim_dropped,
+        adv_any, frozen, park_any, park_all);
+
+    char rec[128];
+    const char* kFields =
+        "slot:owner:kind:pslot:script0:script1:born:life:adv:firstadv:lastadv:park:item0:item1:y0:y1";
+    /* Count parts first so part=k/n is honest on the first line. */
+    size_t parts = 1, used = 0;
+    for (size_t pass = 0; pass < 2; ++pass) {
+        char buf[kChunkChars + 128];
+        size_t at = 0, part = 1;
+        if (pass == 1) { used = 0; }
+        for (size_t i = 0; i < s_anim_done_n; ++i) {
+            const AnimRec& r = s_anim_done[i];
+            const int len = std::snprintf(rec, sizeof(rec),
+                "%u:%d:%d:%u:%d:%d:%u:%u:%u:%d:%d:%u:%d:%d:%d:%d ",
+                (unsigned)r.slot, r.owner, r.kind, (unsigned)r.player_slot,
+                r.script_first, r.script_last, r.born, r.life, r.adv,
+                r.first_adv, r.last_adv, r.park,
+                r.item_first, r.item_last, r.y_first, r.y_last);
+            size_t l = (len > 0) ? (size_t)len : 0u;
+            if (l > sizeof(rec) - 1) l = sizeof(rec) - 1;
+            if (pass == 0) {
+                if (used + l > kChunkChars && used > 0) { ++parts; used = 0; }
+                used += l;
+                continue;
+            }
+            if (at + l > kChunkChars && at > 0) {
+                buf[at] = '\0';
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "[CSS-ANIM] win=%u ev=rec tv=%u n=%u dropped=%u part=%u/%u f=%s d=%s",
+                    win, kLineVersion, (unsigned)s_anim_done_n, s_anim_dropped,
+                    (unsigned)part, (unsigned)parts, kFields, buf);
+                ++part;
+                at = 0;
+            }
+            std::memcpy(buf + at, rec, l);
+            at += l;
+        }
+        if (pass == 1) {
+            buf[at] = '\0';
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "[CSS-ANIM] win=%u ev=rec tv=%u n=%u dropped=%u part=%u/%u f=%s d=%s",
+                win, kLineVersion, (unsigned)s_anim_done_n, s_anim_dropped,
+                (unsigned)part, (unsigned)parts, kFields, buf);
+        }
+    }
+}
+
 void CloseWindow() {
     if (!s_in_window) return;
+    if (s_anim_en == 1) AnimDump(s_window_ord, s_frames, s_last_seq);
+    if (s_enabled != 1) { s_in_window = false; return; }
     /* PEAK first: the sample from the frame with the deepest player object.
      * This is the one that names a falling object, because by the last
      * in-window frame the object is already gone (script_idx -1). */
@@ -293,7 +505,9 @@ void OnCapture(uint32_t seq, int32_t match_phase,
                int p1_slot, int32_t p1_pos_y, int32_t p1_script,
                int p2_slot, int32_t p2_pos_y, int32_t p2_script) {
     ReadEnv();
-    if (s_enabled != 1) return;
+    /* Either instrument keeps the window state machine running: [CSS-ANIM] is
+     * a separate gate (see ReadEnv) and must work with [CSS-WIN] off. */
+    if (s_enabled != 1 && s_anim_en != 1) return;
 
     if (match_phase != kPhaseCss) {
         CloseWindow();
@@ -319,8 +533,21 @@ void OnCapture(uint32_t seq, int32_t match_phase,
         s_rest_run[0] = s_rest_run[1] = 0;
         s_cur_y[0]    = s_cur_y[1]    = 0;
         s_cur_run[0]  = s_cur_run[1]  = 0;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "[CSS-WIN] win=%u ev=open tv=%u seq=%u", s_window_ord, kLineVersion, seq);
+        if (s_anim_en == 1) AnimReset();
+        if (s_enabled == 1) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "[CSS-WIN] win=%u ev=open tv=%u seq=%u", s_window_ord, kLineVersion, seq);
+        }
+    }
+
+    /* [CSS-ANIM] first: it must see the same frame the [CSS-WIN] sampler does,
+     * and it samples the pool directly rather than through s_last[] (it needs
+     * item_idx / script_init_state, which SlotRec does not carry). */
+    if (s_anim_en == 1) AnimSample(s_frames);
+    if (s_enabled != 1) {
+        s_last_seq = seq;   /* so the close line still carries a real seq */
+        ++s_frames;
+        return;
     }
 
     /* Per-frame: buffer the pool and track each player object's maximum pos_y.

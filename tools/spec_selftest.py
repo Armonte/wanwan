@@ -1080,8 +1080,12 @@ def _parity_gates(out_dir, specs):
     """The three correctness gates, over the PRESERVED live_ logs only.
 
     CINPUT (primary, frame-keyed input identity), CHECKSUM (the full-state
-    fencepost) and the rng/hp trace GATE. Returns (cin_fail, ck_fail) and sets
+    fencepost -- host-vs-spectator AND, since 2026-08-16, PLAYER-vs-PLAYER)
+    and the rng/hp trace GATE. Returns (cin_fail, ck_fail, pvp_fail) and sets
     `gate`/`ok` on each spec dict; prints its verdict lines as it goes.
+    `pvp_fail` is kept SEPARATE from `ck_fail` on purpose: the two flags name
+    different planes (players vs spectators) and this file has twice shipped a
+    verdict line that named the wrong gate (Wave-2 review B4c).
 
     Module-level (like _css_parity_gate, which tools/test_css_gate.py re-runs
     offline) for two reasons: main() must be able to call it BEFORE any early
@@ -1649,6 +1653,279 @@ def _parity_gates(out_dir, specs):
                         print(f"[harness] POOL {s['tag']} seg{si}: vs host-match{hi} "
                               f"off{O} {name}= {tn} frames IDENTICAL")
 
+    # ---- PLAYER-vs-PLAYER FULL-STATE FENCEPOST (the gate hole) ---------------
+    # Until 2026-08-16 the harness compared P1 against P2 on CINPUT ONLY --
+    # inputs, and nothing else -- while it ran the full [CHECKSUM] term set
+    # against every SPECTATOR. That hole hid a real cross-peer simulation
+    # divergence for the whole life of the campaign: on vanpri the GUEST enters
+    # battle carrying exactly TWO EXTRA live objects, from battle frame 1
+    # onward, in 6/6 desyncing sessions across both builds, and 0/11 clean
+    # sessions ever show it (ab_rate_verdict.md 5.1b). Every one of those runs
+    # printed "CINPUT P1-vs-P2 match0: N frames IDENTICAL (players lockstep)"
+    # while the two pools differed by two objects on all N of them.
+    #
+    # GekkoNet cannot see it either: its desync hash is the
+    # gameplay_fingerprint (rng / both HP / both timers / both current inputs --
+    # savestate_fm2k_diag.cpp), which has NO object-pool term at all (the
+    # documented "GDC GAP #1"). The divergence only becomes a DESYNC # at match
+    # end, thousands of frames later, when the extra objects finally push the
+    # peers onto different branches of the match-end state machine.
+    #
+    # Both players are host-shaped logs (segment on the f=-1 battle-entry
+    # marker, dedupe frame-LAST so re-sim emits collapse to the confirmed
+    # state) and they run the SAME gekko frame numbering, so the pairing offset
+    # is 0 by construction -- no _ck_align/_pair_key search, and no chance of
+    # the wrong-match mispairing the spectator side needs that machinery for.
+    #
+    # Fatality, and why each term is where it is:
+    #   nobj FATAL -- active-object population. THE term this hole hid; the
+    #                 complete predictor of the desync in 17/17 sessions, and
+    #                 the only one measured clean on every clean corpus.
+    #   top  ADVISORY on THIS plane (it stays FATAL host-vs-spectator, where 4c
+    #                 proved 0/34000+). It was fatal here for exactly one gate
+    #                 run: base-gate netplay run 2/4 (wanwan, --frames 1200)
+    #                 came back top= 1199/1199 red from f=0 with nobj=, crc= and
+    #                 CINPUT all IDENTICAL, while runs 1, 3 and 4 of the SAME
+    #                 stage were clean on all four terms. top= mixes only
+    #                 (slot index, type) + active_count and nothing process-
+    #                 dependent (ScanPool, parity_recorder.cpp), so that is a
+    #                 REAL intermittent player-plane slot-map divergence -- but
+    #                 it is sim-silent, it is NOT the phantom class (which moves
+    #                 nobj=), and shipping it fatal reds the base gate ~1 run in
+    #                 4 for a defect nothing else can see. Filed as its own
+    #                 ticket instead. Precedent: 4c demoted bind= for the same
+    #                 reason in the same words -- "a real difference, but not
+    #                 the one the term claimed to report, and useless as a gate
+    #                 at 100% red".
+    #   bind ADVISORY -- owner / player slot / kind / creator link. Strictly
+    #                 more sensitive than top=; red on the same run 2/4 above.
+    #   crc  ADVISORY -- this is gekko's OWN P1-vs-P2 hash and gekko already
+    #                 fires DESYNC # on it; the campaign rule is to judge by
+    #                 DESYNC # only. It also diverges legitimately in the
+    #                 match-end tail, where the two peers cross battle -> CSS on
+    #                 different frames and compute the frames in between from
+    #                 different planes. Counted and printed, never fatal.
+    #                 KNOWN LIMITATION, deliberately not fixed: crc rides
+    #                 _ck_term, so it inherits that helper's tv= version gate
+    #                 and topology-sentinel skip even though the fingerprint
+    #                 itself never changed across PTO1/PTO2. On a pre-4c corpus
+    #                 the crc line therefore reads SKIPPED. Left alone rather
+    #                 than special-cased, because _ck_term is shared with the
+    #                 FATAL spectator terms and crc is advisory here anyway.
+    # Fatal terms use the same longest-run > 3 rule as every other gate here, so
+    # a single-frame emit/dedupe artifact cannot flip a verdict.
+    pvp_fail = False
+    ck_G = _ck_host(out_dir / "live_FM2K_P2_Debug.log")
+    if not ck_H:
+        # NOT-COMPUTED MUST FAIL IN BOTH DIRECTIONS (review C4b). This branch
+        # used to be a bare `pass`, deferring to the "no host [CHECKSUM]"
+        # message printed above -- which only PRINTS and sets nothing. So a host
+        # log without [CHECKSUM] (FM2K_CINPUT stripped from P1, a host that
+        # never reached battle, an out-dir mixup) silently retired the ENTIRE
+        # full-state fencepost -- the spectator terms AND these PVP terms -- and
+        # the run could still be declared PASS by the remaining gates. That is
+        # the ShadowArts shape this campaign was burned by in d0455bc: a stage
+        # reporting PASS while its most important check never ran, and the rule
+        # (Phase 4e A4a(ii): a fatal term that cannot run must be RED, never a
+        # vacuous green) was being applied in one direction only. Same rule,
+        # same wording and the same FM95 advisory hatch as the guest branch.
+        if IS_FM95_RUN:
+            print("[harness] PVP: no host [CHECKSUM] -- ADVISORY SKIP "
+                  "(ENGINE_FM95 stage is advisory)")
+        else:
+            pvp_fail = True
+            print("[harness] PVP: the HOST emitted no [CHECKSUM] at all -- "
+                  "PLAYER-vs-PLAYER FULL-STATE GATE INACTIVE (FAIL). A fatal "
+                  "term that cannot run must not pass. Cause: FM2K_CINPUT "
+                  "missing from the host's environment, the host never reached "
+                  "a battle, or the harness read the wrong out-dir")
+    elif not ck_G:
+        # A fatal term that cannot run must be RED, never a vacuous green
+        # (Phase 4e review A4a(ii), same rule as the topology sentinel).
+        if IS_FM95_RUN:
+            print("[harness] PVP: no guest [CHECKSUM] -- ADVISORY SKIP "
+                  "(ENGINE_FM95 stage is advisory)")
+        else:
+            pvp_fail = True
+            print("[harness] PVP: the host emitted [CHECKSUM] but the GUEST did "
+                  "not -- PLAYER-vs-PLAYER FULL-STATE GATE INACTIVE (FAIL). "
+                  "Cause: FM2K_CINPUT missing from the guest's environment, or "
+                  "the guest never reached a battle")
+    else:
+        if len(ck_G) != len(ck_H):
+            print(f"[harness] PVP: host has {len(ck_H)} [CHECKSUM] match "
+                  f"segment(s), guest {len(ck_G)} -- comparing the first "
+                  f"{min(len(ck_H), len(ck_G))} (a truncated guest is the "
+                  f"spectator-stall/desync-terminate class, not a pairing bug)")
+        # TAIL GUARD for the FATAL terms only (review C4c). = MAX_ROLLBACK_FRAMES
+        # (savestate_internal.h:40), the deepest a peer's last emit can have been
+        # re-simulated from.
+        _PVP_TAIL_GUARD = 64
+        for i, hseg in enumerate(ck_H):
+            if i >= len(ck_G): break
+            gseg = ck_G[i]
+            _paired = [bf for bf in gseg if bf in hseg]
+            tail_cut = (max(_paired) - _PVP_TAIL_GUARD) if _paired else None
+            for idx, name, fatal in ((3, "nobj", True), (1, "top", False),
+                                     (2, "bind", False), (0, "crc", False)):
+                tmm, tn, tmx, tfb, tleg, tnc = _ck_term(gseg, hseg, 0, idx)
+                if tn == 0:
+                    if tnc:
+                        if IS_FM95_RUN:
+                            print(f"[harness] PVP match{i}: {name}= NOT COMPUTED "
+                                  f"on {tnc} paired frames (top=0x00000000 "
+                                  f"sentinel) -- ENGINE_FM95 build has no FM2K "
+                                  f"object pool to scan. ADVISORY SKIP")
+                        elif fatal:
+                            pvp_fail = True
+                            print(f"[harness] PVP match{i}: {name}= topology NOT "
+                                  f"COMPUTED on {tnc} paired frames "
+                                  f"(top=0x00000000 sentinel) -> PLAYER-vs-"
+                                  f"PLAYER POOL GATE INACTIVE (FAIL). Cause: "
+                                  f"FM2K_CK_TOPOLOGY=0 in a player's "
+                                  f"environment, or an ENGINE_FM95 build. "
+                                  f"UNSET FM2K_CK_TOPOLOGY and re-run")
+                        else:
+                            print(f"[harness] PVP match{i}: {name}= NOT COMPUTED "
+                                  f"on {tnc} paired frames [advisory, skipped]")
+                    elif tleg:
+                        print(f"[harness] PVP match{i}: {name}= SKIPPED on {tleg} "
+                              f"paired frames -- one or both player logs predate "
+                              f"the Phase-4c split (no tv=2). Their top= is the "
+                              f"retired PTO1 COMBINED digest, a different "
+                              f"quantity under the same name; comparing it would "
+                              f"be a false RED, not a verdict")
+                    else:
+                        print(f"[harness] PVP match{i}: {name}= absent from these "
+                              f"logs -- no verdict (build predates the term)")
+                    continue
+                if tnc or tleg:
+                    print(f"[harness] PVP match{i}: {name}= {tnc} not-computed + "
+                          f"{tleg} legacy frame(s) excluded from the {tn} compared")
+                if fatal and tmx > 3:
+                    # TAIL GUARD (review C4c). Both player segments dedupe
+                    # frame-LAST, which is the CONFIRMED state for confirmed
+                    # frames -- but the last frames before a hard terminate can
+                    # be a PREDICTED re-sim that was never re-confirmed, taken
+                    # independently on each peer. One mispredicted input near
+                    # the tail can move object creation for more than the 3
+                    # consecutive frames this rule needs, and this term is now
+                    # FATAL in ~5 gate stages. So the FATAL verdict is judged on
+                    # the segment MINUS its last MAX_ROLLBACK_FRAMES: a tolerated
+                    # truncation condition may only SHRINK the compared set, it
+                    # must never flip the verdict. Raw counts over the FULL
+                    # segment are still printed either way, and a red confined to
+                    # the tail prints loudly as an advisory instead of vanishing
+                    # (phantom_hunt 7.1 named that exact observable). The guard
+                    # is conservative, not blinding: the phantom class is red
+                    # from f=1 for the whole match, thousands of frames outside
+                    # the guarded window, and re-gating the corpora after this
+                    # change keeps 3/3 broken runs RED.
+                    gcore = ({bf: r for bf, r in gseg.items() if bf <= tail_cut}
+                             if tail_cut is not None else {})
+                    if gcore:
+                        cmm, cn, cmx, cfb, _cl, _cn = _ck_term(gcore, hseg, 0, idx)
+                    else:
+                        # Segment shorter than the guard: judging it on nothing
+                        # would be exactly the vacuous green this block refuses
+                        # everywhere else, so fall back to the full segment and
+                        # say so.
+                        cmm, cn, cmx, cfb = tmm, tn, tmx, tfb
+                        print(f"[harness] PVP match{i}: {name}= segment is shorter "
+                              f"than the {_PVP_TAIL_GUARD}-frame tail guard -- "
+                              f"judging it on all {tn} paired frames")
+                    fmt = (lambda v: str(v)) if name == "nobj" else (lambda v: f"0x{v:08X}")
+                    if cmx > 3:
+                        pvp_fail = True
+                        gv = gseg[cfb][idx]; hv = hseg[cfb][idx]
+                        print(f"[harness] PVP match{i}: {name}= {cmm}/{cn} mismatches "
+                              f"(longest run {cmx}) -> PLAYERS DESYNCED IN THE OBJECT "
+                              f"POOL (first f={cfb}: P1={fmt(hv)} P2={fmt(gv)}). This "
+                              f"is a REAL cross-peer sim divergence that the gekko "
+                              f"fingerprint cannot see (no pool term). [full segment "
+                              f"incl. the last {_PVP_TAIL_GUARD} frames: {tmm}/{tn}, "
+                              f"longest run {tmx}]")
+                    else:
+                        gv = gseg[tfb][idx]; hv = hseg[tfb][idx]
+                        print(f"[harness] PVP match{i}: {name}= {tmm}/{tn} mismatches "
+                              f"(longest run {tmx}, first f={tfb}: P1={fmt(hv)} "
+                              f"P2={fmt(gv)}) CONFINED TO THE LAST "
+                              f"{_PVP_TAIL_GUARD} FRAMES of the segment (longest run "
+                              f"{cmx} over the {cn} frames outside it) [advisory -- "
+                              f"tail guard: frame-LAST dedupe can leave predicted, "
+                              f"never-re-confirmed frames at a hard terminate. If "
+                              f"this line shows up on a run that ALSO has a DESYNC "
+                              f"#, treat it as real and re-check the guard]")
+                elif tmm:
+                    lbl = ("advisory" if not fatal else "isolated artifact")
+                    note = ""
+                    if name == "crc":
+                        note = " -- gekko owns this term; judge by DESYNC #"
+                    elif name in ("top", "bind") and tmx > 3:
+                        # Loud on purpose: this is a REAL player-plane slot-map
+                        # divergence, just not a fatal one yet (see the term
+                        # table above). Silent-advisory is how a finding gets
+                        # scrolled past.
+                        note = (" -- REAL player-plane pool divergence, sim-"
+                                "silent; advisory pending its own ticket")
+                    print(f"[harness] PVP match{i}: {name}= {tmm}/{tn} mismatches "
+                          f"(longest run {tmx}, first f={tfb}) [{lbl}{note}]")
+                else:
+                    print(f"[harness] PVP match{i}: {name}= {tn} frames IDENTICAL")
+
+    # ---- BATTLE-ENTRY LATCH RE-DERIVE, surfaced (loud ADVISORY) --------------
+    # netplay_barriers.cpp re-derives g_round_limit at the entry barrier and
+    # DETECTS -- deliberately never writes -- a stranded g_active_stage_id. Both
+    # of those used to print into the void: `grep -rn ROUNDS-RELATCH tools/`
+    # returned only log files, so the fix had no oracle of its own and a stage
+    # strand could only ever fail a run as an eventual nobj=/DESYNC with no
+    # attribution. Surfaced here, and ADVISORY ONLY -- nothing below touches
+    # pvp_fail:
+    #   contract:  the instrument is present in this binary and says whether the
+    #              FM2K_ROUNDS_RELATCH kill switch is on. Printed so "no
+    #              [ROUNDS-RELATCH] events" is distinguishable from "no
+    #              [ROUNDS-RELATCH] instrument".
+    #   CORRECTED: the fix FIRED -- this run raced and was repaired. A PASS with
+    #              this line is not the same result as a PASS without it.
+    #   REFUSED / SKIPPED: the re-derive declined (no true settings agreement,
+    #              non-VS mode flag, implausible wire-supplied round count).
+    #              Fail-closed = pre-fix behaviour, so not a failure by itself,
+    #              but it is the FIRST line to read when a fatal term above reds.
+    #   STAGE-LATCH MISMATCH: the same race stranded g_active_stage_id. NOT
+    #              repaired by the fix (the stale stage FILE is already loaded by
+    #              then), so expect a stage-driven divergence this match. Loudest
+    #              of the four, and still advisory: the fatal terms own verdicts.
+    _relatch_order = ("contract:", "CORRECTED", "REFUSED", "SKIPPED",
+                      "STAGE-LATCH MISMATCH")
+    for _tag, _lp in (("P1", out_dir / "live_FM2K_P1_Debug.log"),
+                      ("P2", out_dir / "live_FM2K_P2_Debug.log")):
+        hits = {}
+        try:
+            with open(_lp, errors="ignore") as fh:
+                for ln in fh:
+                    if "[ROUNDS-RELATCH]" not in ln: continue
+                    for p in _relatch_order:
+                        if p in ln:
+                            hits.setdefault(p, []).append(ln.rstrip()); break
+        except OSError:
+            continue
+        for p in _relatch_order:
+            lines = hits.get(p)
+            if not lines: continue
+            if p == "STAGE-LATCH MISMATCH":
+                print(f"[harness] RELATCH {_tag}: STAGE-LATCH MISMATCH x{len(lines)} "
+                      f"-- g_active_stage_id was stranded by the battle-entry "
+                      f"race and is NOT repaired (assets for the stale stage are "
+                      f"already loaded); expect a stage-driven divergence "
+                      f"[ADVISORY -- the fatal terms above own the verdict]")
+                print(f"    {lines[0]}")
+            elif p == "contract:":
+                print(f"[harness] RELATCH {_tag}: re-derive instrument present -- "
+                      f"{lines[0].split('contract:')[-1].split('(')[0].strip()}")
+            else:
+                print(f"[harness] RELATCH {_tag}: {len(lines)} {p} line(s) [advisory]")
+                print(f"    {lines[0]}")
+
     for s in specs:
         r = gate_one(s["live"])
         s["gate"] = r
@@ -1666,7 +1943,7 @@ def _parity_gates(out_dir, specs):
                   f"timing offset on a transitioning hp/script, not a desync")
         if r["mf"]:
             print(f"    FP hp/scripts PERSISTENT divergence (tail={r['trailing']}): {r['first_f']}")
-    return cin_fail, ck_fail
+    return cin_fail, ck_fail, pvp_fail
 
 
 def main():
@@ -1915,7 +2192,21 @@ def main():
               #   FM2K_EB_DIAG       -- shake/palette/screen timers (rank 4)
               #   FM2K_SPEC_FINGERPRINT -- [HOST-FP]/[SPEC-FP] pairing
               "FM2K_FACING_TRACE", "FM2K_FULL_CRCS", "FM2K_EB_DIAG",
-              "FM2K_SPEC_FINGERPRINT"):
+              "FM2K_SPEC_FINGERPRINT",
+              # [BATTLE-OBJ] battle-frame object census (css_window.h). MUST
+              # reach BOTH PLAYERS -- diffing P1's f=1 listing against P2's is
+              # the entire instrument, and a one-sided forward measures
+              # nothing. Deliberately NOT folded into FM2K_CSS_WIN, which is
+              # host-only by review B2; this one is symmetric by design and
+              # costs two dump events per battle rather than per-frame IO.
+              "FM2K_BATTLE_F1",
+              # FM2K_HOSTCONFIG_LATE: the forcing lever for the stale-latch
+              # race (host suppresses every HOST_CONFIG broadcast before the
+              # battle-entry signal, so the guest is GUARANTEED to latch its
+              # own game.ini round count instead of waiting on a ~1/4 packet
+              # loss coin flip). Dark by default and only "1" arms it, so
+              # plain truthiness forwarding is correct here.
+              "FM2K_HOSTCONFIG_LATE"):
         if os.environ.get(k):
             common_env[k] = os.environ[k]
     # FM2K_SPEC_DEEP_JOIN is forwarded SEPARATELY and by presence, not by
@@ -1938,6 +2229,18 @@ def main():
     # instead of relying on Python's "0" being truthy.
     if os.environ.get("FM2K_SEAM_LEGACY_PARK") is not None:
         common_env["FM2K_SEAM_LEGACY_PARK"] = os.environ["FM2K_SEAM_LEGACY_PARK"]
+    # FM2K_ROUNDS_RELATCH: battle-entry re-derive of g_round_limit (the stale
+    # latch that gives a late-HOST_CONFIG guest +2 HUD pips and a split
+    # match-end predicate). DEFAULT ON in the hook -- this is the KILL SWITCH,
+    # so the value that matters is "0", and it is forwarded BY PRESENCE for the
+    # same reason FM2K_SPEC_DEEP_JOIN is: an `if os.environ.get(k)` filter would
+    # forward "0" only by accident of Python truthiness, and one refactor to
+    # int()/== "1" would silently stop forwarding the OFF direction, turning
+    # every red-arm A/B run into a second measurement of the default. Both
+    # peers get it: the latch is per-process and the guest is the one that
+    # strands it, but a one-sided lever makes an A/B unreadable.
+    if os.environ.get("FM2K_ROUNDS_RELATCH") is not None:
+        common_env["FM2K_ROUNDS_RELATCH"] = os.environ["FM2K_ROUNDS_RELATCH"]
     # FM2K_SEAM_GUARD is RETIRED. It is still FORWARDED (so the hook's loud
     # "RETIRED and IGNORED" line lands in the Debug log) and warned about here,
     # because an old recipe that silently measures the default is exactly how a
@@ -2069,7 +2372,14 @@ def main():
                    # [HOST-FP] is gated on it and the pair is read together.
                    "FM2K_FACING_TRACE", "FM2K_FULL_CRCS", "FM2K_EB_DIAG",
                    "FM2K_SPEC_FINGERPRINT", "FM2K_HOST_TRACE",
-                   "FM2K_SEAM_TRACE"):
+                   "FM2K_SEAM_TRACE",
+                   # [BATTLE-OBJ] census, viewer half. Symmetric on principle
+                   # (the recorded trap is a one-sided env list), with an
+                   # honest note: the census hangs off SaveState_Save, which
+                   # Phase 4b established never runs on a spectator, so this
+                   # is expected to produce NO [BATTLE-OBJ] lines on S*. If it
+                   # ever does, that is itself a finding.
+                   "FM2K_BATTLE_F1"):
             if os.environ.get(kk):
                 env[kk] = os.environ[kk]
         # Bounded deep join -- the viewer only obeys the grant, but it must be
@@ -2078,6 +2388,15 @@ def main():
         # a split-brain run.
         if os.environ.get("FM2K_SPEC_DEEP_JOIN") is not None:
             env["FM2K_SPEC_DEEP_JOIN"] = os.environ["FM2K_SPEC_DEEP_JOIN"]
+        # FM2K_ROUNDS_RELATCH, viewer half. The re-derive site itself is
+        # unreachable on a spectator (hooks_update.cpp returns before the
+        # battle-sync block when g_spectator_mode), so this is expected to be
+        # inert here -- forwarded anyway because a one-sided env list is the
+        # recorded trap that makes a kill-switch run a split-brain run, and
+        # because the viewer inherits the corrected latch through the host's
+        # battle-entry snapshot, which the OFF arm must also be able to poison.
+        if os.environ.get("FM2K_ROUNDS_RELATCH") is not None:
+            env["FM2K_ROUNDS_RELATCH"] = os.environ["FM2K_ROUNDS_RELATCH"]
         # The spectator MUST run the same round count as the host, else a 1-round
         # host vs best-of-3 spectator diverges at the host's round-1 match-end.
         if args.rounds > 0:
@@ -2377,8 +2696,8 @@ def main():
     # sweep A round returned nothing at all. They read only the preserved live_
     # logs, so running them before the replay phase is also strictly safer (the
     # replay process overwrites the game-dir logs it would otherwise race).
-    cin_fail, ck_fail = _parity_gates(OUT_DIR, specs)
-    real_fail = (cin_fail or ck_fail or css_fail or csswin_fail
+    cin_fail, ck_fail, pvp_fail = _parity_gates(OUT_DIR, specs)
+    real_fail = (cin_fail or ck_fail or pvp_fail or css_fail or csswin_fail
                  or any(s["gate"]["checked"] > 0 and not s["ok"] for s in specs))
     checked_any = any(s["gate"]["checked"] > 0 for s in specs)
 
@@ -2390,7 +2709,7 @@ def main():
         # Same rule as the OVERALL line (review B4c): a term that can set the
         # verdict prints its OWN name. A CSS-WIN-only failure is not a desync
         # and must never be reported as one.
-        _csswin_only = csswin_fail and not (cin_fail or ck_fail or css_fail)
+        _csswin_only = csswin_fail and not (cin_fail or ck_fail or pvp_fail or css_fail)
         print("[harness] (correctness verdict from the gates above: "
               + ("CSS-WINDOW GATE FAILED (no desync term did)" if _csswin_only else
                  "DESYNC DETECTED" if real_fail else
@@ -2698,13 +3017,18 @@ def main():
         # that had not failed and a plane that may not be involved at all. That
         # line has already had to be annotated as "must NOT be read as a result"
         # in one report. A term that can set the verdict prints its own name.
-        why = ("CHECKSUM full-state / POOL topology desync (see above)" if ck_fail else
+        why = ("PVP player-vs-player object-pool divergence (see above)" if pvp_fail else
+               "CHECKSUM full-state / POOL topology desync (see above)" if ck_fail else
                "CINPUT input-frame desync (see above)" if cin_fail else
                "CSS-FP cursor/selection desync (see above)" if css_fail else
                "CSS-WIN character-select window gate (falling object, or the "
                "term could not be computed -- see above)" if csswin_fail else
                "rng/hp gate")
-        head = ("the CSS-WINDOW gate failed"
+        # The head names the PLANE. A PVP failure is the two PLAYERS disagreeing
+        # with each other; saying "a spectator desynced from host" there would be
+        # the exact mislabel review B4c fixed twice already.
+        head = ("THE TWO PLAYERS DESYNCED FROM EACH OTHER" if pvp_fail else
+                "the CSS-WINDOW gate failed"
                 if csswin_fail and not (ck_fail or cin_fail or css_fail)
                 else "a spectator desynced from host")
         print(f"[harness] OVERALL FAIL: {head} -- {why}.")

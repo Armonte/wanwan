@@ -860,9 +860,9 @@ def main() -> int:
     specs = [{"k": 0, "tag": "P3", "phase": "battle(hub-grant)",
               "live": p3_live, "first_host_match": 0}]
     try:
-        cin_fail, ck_fail = sst._parity_gates(OUT_DIR, specs)
+        cin_fail, ck_fail, pvp_fail = sst._parity_gates(OUT_DIR, specs)
     except Exception as e:                       # noqa: BLE001
-        cin_fail, ck_fail = False, False
+        cin_fail, ck_fail, pvp_fail = False, False, False
         notes.append(f"_parity_gates raised {e!r}")
         specs[0].setdefault("gate", {"checked": 0})
         specs[0].setdefault("ok", False)
@@ -897,6 +897,13 @@ def main() -> int:
                      "non-fatal by seam-gate precedent)")
     if ck_fail:
         notes.append("CHECKSUM segment noise present (non-fatal)")
+    # PVP is the PLAYER-vs-PLAYER pool term (2026-08-16). Unlike the two above
+    # it is not a known-noisy class here -- the two players are in one gekko
+    # session and their pools must agree -- so it is FATAL in this harness.
+    if pvp_fail:
+        fatal.append("PVP: the two PLAYERS' object pools diverged (see the "
+                     "[harness] PVP lines above) -- a real cross-peer sim "
+                     "divergence the gekko fingerprint cannot see")
     if css_fail:
         notes.append("CSS parity flagged (non-fatal: the trailing char-select "
                      "is cut by the hard terminate)")

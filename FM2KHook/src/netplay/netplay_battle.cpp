@@ -15,6 +15,7 @@
 #include "input.h"
 #include "savestate.h"
 #include "seam_trace.h"       // Phase 1bc seam instruments (diagnostic)
+#include "envelope_shadow.h"  // envelope-inversion phase 1 shadow mode (diagnostic)
 #include "spectator_node.h"
 #include "nat_traversal.h"
 #include "upload_queue.h"
@@ -77,6 +78,11 @@ bool Netplay_StartBattle() {
     // always-on "[SEAM] OPEN" line fires once per MATCH rather than once per
     // process in a multi-match harness run. (Diagnostic; dark by default.)
     SeamTrace_Reset();
+    // Same per-match contract for the shadow-mode rings: frame numbers restart
+    // at every battle, so a cached forward vector from the previous match would
+    // otherwise be diffed against this match's same-numbered frame. The
+    // accumulated hole list survives on purpose. (Diagnostic; dark by default.)
+    EnvelopeShadow_Reset();
 
     // Capture per-match character IDs + resolved .player filenames
     // while the CSS-side state is still live. Held in shared mem so

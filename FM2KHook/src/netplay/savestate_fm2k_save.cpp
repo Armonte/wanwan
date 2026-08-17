@@ -4,6 +4,7 @@
 #include "savestate_internal.h"
 #include "globals.h"
 #include "seam_trace.h"   // Phase 1bc per-save fingerprint ring (diagnostic)
+#include "envelope_shadow.h"  // envelope-inversion phase 1 shadow mode (diagnostic)
 #include "../parity/css_window.h"   // [BATTLE-OBJ] battle-frame object census
 #include <SDL3/SDL_log.h>
 #include <cstring>
@@ -111,6 +112,14 @@ bool SaveState_Save(int frame) {
     // frame_number AND a valid prior CRC snapshot.
     bool is_replay_save = (state->frame_number == (uint32_t)frame
                         && state->saved_region_crcs.valid);
+
+    // ENVELOPE INVERSION PHASE 1 -- SHADOW MODE (DIAGNOSTIC, FM2K_ENVELOPE_SHADOW=1,
+    // dark by default, observe only). Placed HERE, at the earliest point where
+    // the forward/replay discriminator is known and before the save touches
+    // anything, so both kinds of save sample the live image at the identical
+    // instant of the frame. Any later and the replay side would see bytes the
+    // forward side did not, and every block would differ for a trivial reason.
+    EnvelopeShadow_OnSave(frame, is_replay_save);
 
     // Byte-level first-diff detector + side-file writer. MUST run BEFORE the
     // memcpy block below overwrites state->object_pool / afterimage_pool /

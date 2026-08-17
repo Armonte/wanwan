@@ -86,6 +86,7 @@ set(FM2KHOOK_SOURCES
     src/netplay/savestate_fm2k_load.cpp # FM2K SaveState_Load (#if !ENGINE_FM95)
     src/netplay/savestate_fm2k_diag.cpp # FM2K snapshot/checksum/desync-diag (#if !ENGINE_FM95)
     src/netplay/seam_trace.cpp          # DIAGNOSTIC match-end-seam instruments + FM2K_SEAM_LEGACY_PARK A/B lever (dark by default)
+    src/netplay/envelope_shadow.cpp     # DIAGNOSTIC envelope-inversion phase 1 shadow mode: full-image forward-vs-replay block diff (FM2K_ENVELOPE_SHADOW, dark by default)
     src/netplay/spectator_node.cpp
     src/netplay/spec_wire.cpp  # SessionEvent wire codecs + zero-RLE (split from spectator_node)
     src/netplay/spec_transport.cpp  # UDP/TCP/relay send + EVENT_BATCH flush (split from spectator_node)

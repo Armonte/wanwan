@@ -57,7 +57,9 @@ void SeamTrace_PushSave(int frame, bool is_replay_save, bool rolling_back);
 
 // Flush both buffers + the episode list. Legal ONLY from paths that are about
 // to terminate the process (HandleDesyncDetected, harness auto-terminate) --
-// it is ~1000 fprintfs and hook logging is synchronous.
+// it is ~1000 fprintfs and hook logging is synchronous. Its two callers make it
+// the campaign's shared "terminating path" fan-out, so it also drives
+// SeamFreeProbe_LogSummary and EnvelopeShadow_Dump (both dark by default).
 void SeamTrace_Dump(int player_index, const char* reason);
 
 // Per-battle-session reset. Clears the primary ring and the episode list and

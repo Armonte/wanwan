@@ -120,7 +120,16 @@ def run_phase(label: str, args: list[str], env: dict[str, str],
               "FM2K_RUNAHEAD", "FM2K_PRED_WINDOW", "FM2K_PREDICTION_WINDOW", "FM2K_LOCAL_DELAY",
               "FM2K_CHECK_DISTANCE", "FM2K_PARITY_CAPTURE_TRACE",
               "FM2K_CAMTRACE", "FM2K_CAMTRACE_HEX", "FM2K_CAM_DIAG",
-              "FM2K_RING_TRACE"):
+              "FM2K_RING_TRACE",
+              # Envelope inversion phase 1 (SHADOW MODE). This harness is the
+              # instrument's HIGHEST-POWER regime by a wide margin: it forces
+              # rollbacks with FM2K_CHECK_DISTANCE on an autoplay session where
+              # both players' inputs are local, so a resim consumes IDENTICAL
+              # inputs and essentially every forward-vs-replay comparison is
+              # usable. Under a lossy netplay profile the opposite holds -- the
+              # rollbacks exist BECAUSE an input was corrected, and the control
+              # discards >99% of comparisons. Dark by default in the hook.
+              "FM2K_ENVELOPE_SHADOW", "FM2K_ENVELOPE_SHADOW_WITNESS"):
         if k not in env and os.environ.get(k):
             env[k] = os.environ[k]
 

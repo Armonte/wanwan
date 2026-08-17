@@ -27,6 +27,7 @@
 // engine-agnostic and call Dump/Reset); only the FM2K object-pool walk is
 // engine-gated, and nothing arms the ring on FM95.
 #include "seam_trace.h"
+#include "envelope_shadow.h"
 #include "savestate.h"
 #include "../core/globals.h"
 #include "../hooks/seam_free_probe.h"
@@ -411,6 +412,16 @@ void SeamTrace_Dump(int player_index, const char* reason) {
     // Paired finding: a DESYNC with in_window > 0 is the signature that would
     // justify the design's Stage 2 (character-reload suppression).
     SeamFreeProbe_LogSummary(reason);
+    // Envelope-inversion phase 1 (shadow mode) rides the same fan-out. This
+    // function is the campaign's canonical "we are about to terminate, flush the
+    // diagnostic rings" point -- it has exactly two callers, HandleDesyncDetected
+    // and the harness auto-terminate path, which are precisely the two paths the
+    // shadow dump is legal from. It is called from HERE rather than from those
+    // two sites directly for one concrete reason: netplay_battle_events.cpp is at
+    // 999 lines and the 1000-line-per-TU rule is a hard rule. Same precedent as
+    // SeamFreeProbe_LogSummary above. Dark by default: on an unarmed run this is
+    // one all-zero summary line and no file.
+    EnvelopeShadow_Dump(player_index, reason);
 
     if (g_episode_seen == 0 && g_ring_count == 0 && g_window_count == 0) return;
 

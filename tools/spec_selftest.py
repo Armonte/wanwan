@@ -2196,6 +2196,16 @@ def main():
               # match-end seam diagnosis (Phase 1bc): per-save fingerprint ring
               # + [SEAM] detail lines. Dark by default in the hook.
               "FM2K_SEAM_TRACE",
+              # Envelope inversion phase 1 (SHADOW MODE): full-image per-256B
+              # block hashes diffed forward-vs-replay, so every remaining hole in
+              # the save envelope names itself. Observe only -- it restores
+              # nothing -- but it costs ~360us per forward save, so it is dark by
+              # default in the hook and must be requested explicitly. Forwarded to
+              # BOTH players because the instrument is per-process and a one-sided
+              # forward is the recorded half-blind-run trap.
+              # FM2K_ENVELOPE_SHADOW_WITNESS=0 drops the byte-level witness ring
+              # (block resolution only, ~20MB and ~280us/save cheaper).
+              "FM2K_ENVELOPE_SHADOW", "FM2K_ENVELOPE_SHADOW_WITNESS",
               # Phase 4b spectator across-match-boundary diagnosis. ALL of
               # these must ALSO reach the spectators (see the spectator list
               # below) -- forwarding them here only is exactly the recorded
@@ -2408,6 +2418,14 @@ def main():
                    "FM2K_FACING_TRACE", "FM2K_FULL_CRCS", "FM2K_EB_DIAG",
                    "FM2K_SPEC_FINGERPRINT", "FM2K_HOST_TRACE",
                    "FM2K_SEAM_TRACE",
+                   # Envelope inversion phase 1 shadow mode, viewer half. Kept
+                   # symmetric with the player list on principle. Honest note,
+                   # same shape as the [BATTLE-OBJ] entry below: the instrument
+                   # hangs off SaveState_Save, which Phase 4b established never
+                   # runs on a spectator, so this is expected to produce an
+                   # all-zero [ENVSHADOW] summary and no CSV on S*. If a
+                   # spectator ever emits a non-zero one, that is itself a finding.
+                   "FM2K_ENVELOPE_SHADOW", "FM2K_ENVELOPE_SHADOW_WITNESS",
                    # [BATTLE-OBJ] census, viewer half. Symmetric on principle
                    # (the recorded trap is a one-sided env list), with an
                    # honest note: the census hangs off SaveState_Save, which

@@ -72,6 +72,34 @@ CFG_RX = re.compile(
     r"\[CFG\] plane=(\w+) match=(\d+) digest=0x([0-9A-Fa-f]+) stage=(\d+) "
     r"rounds=(\d+) time=(\d+) speed=(\d+) socd=(-?\d+) mode_flag=(-?\d+) "
     r"cfg_rx=(\d+) latch_rounds=(\d+) latch_stage=(-?\d+)")
+# The viewer-plane latch re-derive (spec_relatch.cpp). Needed here because the
+# [CFG] stamp's SAMPLE POINT on a viewer can precede the repair: [CFG] fires at
+# the engine's own RSS_ACTIVE edge, and on a boot-to-battle deep joiner the
+# host's MATCH_START -- the authoritative round count, and the thing that
+# repairs the latch -- drains a few milliseconds LATER. So a viewer that raced
+# stamps the STALE value and then runs the whole match on the CORRECT one. The
+# raw latch_rounds term below cannot see that, and would red a run the fix
+# actually made right. These three lines are the post-apply truth:
+#   CORRECTED match=M X -> Y   the repair, with both values
+#   frame-zero ok match=M = N  the value the viewer's FIRST BATTLE FRAME used
+#   TRIP                       the repair was reverted before that frame (fatal)
+#
+# THE match= ORDINAL IS LOAD-BEARING, not decoration. Without it the excuse
+# below is LOG-GLOBAL: a CORRECTED 3 -> 1 in match 1 would launder an
+# uncorrected latch_rounds=3 stamp in match 5, which is reachable the moment a
+# session runs more than one match with a viewer that raced once. The hook
+# stamps a per-process count of MATCH_START applies, which pairs 1:1 with
+# [CFG]'s own per-process match ordinal (both count this viewer's battles in
+# order). A missing / mismatched ordinal is FAIL-CLOSED: no excuse, term stays
+# fatal. Ordinal-less lines from a pre-amendment binary therefore also fail
+# closed rather than laundering.
+RELATCH_FIX_RX  = re.compile(
+    r"\[SPEC-RELATCH\] CORRECTED match=(\d+) g_round_limit (\d+) -> (\d+)")
+RELATCH_OK_RX   = re.compile(
+    r"\[SPEC-RELATCH\] frame-zero ok match=(\d+) -- g_round_limit=(\d+)")
+# Absent-plane default for parse_relatch's result, so every consumer sees the
+# same keys (a missing "legacy_lines" would KeyError a fatal path).
+RELATCH_NONE = {"fixes": {}, "effective": {}, "trips": 0, "legacy_lines": 0}
 OVERRIDE_RX = re.compile(r"RandomStage: LoadStageFile override (\d+) -> (\d+)")
 STAGECNT_RX = re.compile(r"RandomStage: game defines (\d+) stage")
 HCRX_RX     = re.compile(r"Received HOST_CONFIG #(\d+) \(stage=(\d+)")
@@ -97,6 +125,42 @@ def parse_cfg(path: Path) -> list[dict]:
     except OSError:
         pass
     return out
+
+
+def parse_relatch(path: Path) -> dict:
+    """Viewer-plane latch repairs seen in one log, keyed BY MATCH ORDINAL:
+      fixes[match]     = (from, to) the re-derive actually wrote
+      effective[match] = the value the viewer's FIRST BATTLE FRAME of that
+                         match really ran on (the frame-zero readback)
+      trips            = how many times a repair was reverted before that frame
+    Both maps are per-match because both consumers are per-match: the excuse
+    must name the match it repaired, and the effective value must be compared
+    against the host's latch for the SAME battle."""
+    fixes, effective, trips, legacy = {}, {}, 0, 0
+    try:
+        with open(path, errors="ignore") as fh:
+            for ln in fh:
+                if "[SPEC-RELATCH]" not in ln:
+                    continue
+                m = RELATCH_FIX_RX.search(ln)
+                if m:
+                    fixes[int(m.group(1))] = (int(m.group(2)), int(m.group(3)))
+                    continue
+                m = RELATCH_OK_RX.search(ln)
+                if m:
+                    effective[int(m.group(1))] = int(m.group(2)); continue
+                if "TRIP" in ln:
+                    trips += 1; continue
+                # A verdict line from a binary older than the match ordinal.
+                # Counted so a fatal can SAY it fell back rather than looking
+                # like a fresh regression (the "a term that cannot run must not
+                # be silent about it" rule from Phase 4d/4e).
+                if "CORRECTED" in ln or "frame-zero ok" in ln:
+                    legacy += 1
+    except OSError:
+        pass
+    return {"fixes": fixes, "effective": effective, "trips": trips,
+            "legacy_lines": legacy}
 
 
 def grep_count(path: Path, needle: str) -> int:
@@ -499,6 +563,7 @@ def judge_settings(out_dir: Path, name: str, rc: int,
     v = VARIANTS[name]
     planes = spec_logs(out_dir)
     per_plane = {tag: parse_cfg(p) for tag, p in planes}
+    relatch   = {tag: parse_relatch(p) for tag, p in planes}
     never_agreed = sum(grep_count(p, "MATCH SETTINGS NEVER AGREED")
                        for _t, p in planes)
     res = {"variant": name, "asked": v, "rc": rc,
@@ -602,9 +667,85 @@ def judge_settings(out_dir: Path, name: str, rc: int,
                     f"{tag} match{c['match']} rounds={c['rounds']} but host "
                     f"match{h['match']} rounds={h['rounds']}")
             if c["latch_rounds"] != h["latch_rounds"]:
+                # VIEWER SAMPLE-POINT CARVE-OUT (see RELATCH_FIX_RX above).
+                # [CFG] samples the latch at the engine's OWN RSS_ACTIVE edge,
+                # which on a viewer can precede the host's MATCH_START apply --
+                # the moment the authoritative round count arrives and the
+                # re-derive repairs the latch. So a stamped mismatch is only a
+                # real one if the repair did NOT happen for exactly this pair.
+                # Excused ONLY on evidence: a [SPEC-RELATCH] CORRECTED line
+                # naming this exact (stamped -> host) transition FOR THIS EXACT
+                # MATCH, and no TRIP anywhere in the log. Anything else stays
+                # fatal. The match key is what stops match 1's correction from
+                # laundering match 5's stale stamp.
+                rl = relatch.get(tag, RELATCH_NONE)
+                by_fix = (rl["fixes"].get(c["match"])
+                          == (c["latch_rounds"], h["latch_rounds"]))
+                # SECOND, STRONGER EVIDENCE PATH. The re-derive is not the only
+                # thing that can repair a raced latch before the first battle
+                # frame: on the SHIPPED default configuration the deep-join /
+                # pool-resync snapshot's GAME_STATE memcpy covers 0x470048 and
+                # frequently lands FIRST, so the match runs on the host's value
+                # with NO 'CORRECTED' line to point at. Measured live in this
+                # lane: AMEND_GREEN1 S1 and AMEND_NOAGREE S1 both stamped
+                # latch_rounds=3, ran frame zero on 1, and had no CORRECTED
+                # line. Requiring the CORRECTED line would red those runs for
+                # being repaired by the OTHER mechanism. The frame-zero readback
+                # is DIRECT evidence of the value the sim used (and is sampled
+                # after [CFG]), so it excuses on its own -- and the same term is
+                # FATAL below when it disagrees, so this cannot launder a real
+                # divergence.
+                by_readback = (rl["effective"].get(c["match"])
+                               == h["latch_rounds"]
+                               and c["match"] in rl["effective"])
+                excused = (by_fix or by_readback) and rl["trips"] == 0
+                msg = (f"{tag} match{c['match']} latch_rounds={c['latch_rounds']} "
+                       f"but host {h['latch_rounds']} (the SIM's copy)")
+                if not excused and rl["legacy_lines"] and not rl["fixes"]:
+                    msg += (f" -- NOTE: this log carries {rl['legacy_lines']} "
+                            f"[SPEC-RELATCH] verdict line(s) WITHOUT a match "
+                            f"ordinal, i.e. it was produced by a binary older "
+                            f"than the per-match excuse. The sample-point "
+                            f"carve-out fails CLOSED on those rather than "
+                            f"laundering them across matches; re-run on a "
+                            f"current build to re-gate")
+                if excused:
+                    why = (f"[SPEC-RELATCH] CORRECTED match={c['match']} "
+                           f"{c['latch_rounds']} -> {h['latch_rounds']} "
+                           "repaired it at the MATCH_START apply, which is "
+                           "AFTER this stamp's sample point"
+                           if by_fix else
+                           f"the frame-zero readback for match={c['match']} "
+                           f"says the sim ran on {rl['effective'][c['match']]} "
+                           "(= the host's latch); the repair came from the "
+                           "snapshot apply rather than the re-derive, so there "
+                           "is no CORRECTED line to quote")
+                    notes.append(msg + " -- EXCUSED: " + why +
+                                 ". Zero TRIP lines in this log.")
+                else:
+                    rounds_fails.append(msg)
+            # THE FRAME-ZERO TERM. The [CFG] stamp above is a PRE-repair sample
+            # on a viewer, so on its own it is blind in one direction: if the
+            # viewer stamped the host's value and was then CORRECTED AWAY from
+            # it, the stamped comparison is equal, nothing prints, and the
+            # viewer runs the whole match on a limit the host never used. The
+            # frame-zero readback is the only measurement of what the sim
+            # actually ran on, so it is compared here -- per match, against the
+            # host's own latch. Without this the carve-out above leaves the leg
+            # strictly WEAKER than before it existed.
+            rl = relatch.get(tag, RELATCH_NONE)
+            eff = rl["effective"].get(c["match"])
+            if eff is not None and eff != h["latch_rounds"]:
                 rounds_fails.append(
-                    f"{tag} match{c['match']} latch_rounds={c['latch_rounds']} "
-                    f"but host {h['latch_rounds']} (the SIM's copy)")
+                    f"{tag} match{c['match']} ran its FIRST BATTLE FRAME on "
+                    f"g_round_limit={eff} but host match{h['match']} latched "
+                    f"{h['latch_rounds']} -- [SPEC-RELATCH] frame-zero readback "
+                    f"(the value the SIM used), not the pre-repair [CFG] stamp")
+        rl = relatch.get(tag, RELATCH_NONE)
+        if rl["trips"]:
+            fails.append(f"{tag} {rl['trips']} [SPEC-RELATCH] TRIP line(s) -- "
+                         f"the viewer's round-limit re-derive was REVERTED "
+                         f"before its first battle frame")
         if tag.startswith("S") and cfgs and cfgs[-1]["cfg_rx"] < 1:
             fails.append(f"{tag} applied ZERO HOST_CONFIG packets (cfg_rx=0) -- "
                          f"it ran on its own game.ini")

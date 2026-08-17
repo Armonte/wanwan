@@ -14,6 +14,7 @@
 #include "input.h"
 #include "savestate.h"
 #include "spectator_node.h"
+#include "spec_relatch.h"      // RoundsRelatch_Enabled -- the ONE kill switch, both planes
 #include "nat_traversal.h"
 #include "upload_queue.h"
 #include "globals.h"
@@ -202,7 +203,13 @@ static bool EntryConfigGatePass() {
 //      => the first save of this battle is the StashSnapshot inside
 //      Netplay_StartBattle, strictly after this write. The host's spectator
 //      snapshot therefore carries the CORRECTED latch, so viewers inherit it.
-//   4. Spectator plane never reaches this site: hooks_update.cpp:202 returns
+//      SAME ORDERING IS NOW LOAD-BEARING FOR THE VIEWER PLANE: Netplay_Start
+//      Battle also calls SpectatorNode_OnMatchStart (netplay_battle.cpp:444,
+//      just before StashSnapshot at :464), which stamps this latch into the
+//      MATCH_START header at h+89 for spec_relatch.cpp to write from. If this
+//      re-derive is ever moved AFTER Netplay_StartBattle, both the snapshot
+//      and h+89 go stale together and the viewer fix loses its authority.
+//   4. Spectator plane never reaches this site: hooks_update.cpp:243 returns
 //      before the battle-sync block when g_spectator_mode, and the spectator
 //      trampoline drives its own tick. Replay/offline never reaches it either
 //      (trampoline_battle.cpp:60 -- the offline branch exists precisely
@@ -258,27 +265,14 @@ static bool EntryConfigGatePass() {
 // mismatch LOUDLY as its own attributable signature and fix nothing. Every run
 // of the diagnosing lane ran stage=0 on both peers, so this arm has never been
 // observed firing; a random-stage recipe would be its first test.
-static bool RoundsRelatchOn() {
-    static int s_on = -1;
-    if (s_on < 0) {
-        const char* v = std::getenv("FM2K_ROUNDS_RELATCH");
-        if (v == nullptr || v[0] == '\0') {
-            s_on = 1;                       // default ON -- this is the fix
-        } else if ((v[0] == '0' || v[0] == '1') && v[1] == '\0') {
-            s_on = v[0] - '0';              // strict: only "0" and "1" parse
-        } else {
-            s_on = 1;                       // fail SAFE (fix stays on), loudly
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                "[ROUNDS-RELATCH] FM2K_ROUNDS_RELATCH=\"%s\" is not \"0\" or "
-                "\"1\" -- refusing to guess; keeping the re-derive ON", v);
-        }
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "[ROUNDS-RELATCH] contract: enabled=%d (FM2K_ROUNDS_RELATCH, "
-            "default ON; =0 restores the pre-fix stale-latch behaviour for "
-            "A/B only -- it re-opens a real desync)", s_on);
-    }
-    return s_on == 1;
-}
+// KILL SWITCH: moved to spec_relatch.cpp as RoundsRelatch_Enabled() when the
+// VIEWER plane got its own re-derive (spec_relatch.cpp -- same bug, same
+// engine latch, a site this barrier cannot reach). ONE switch governs both
+// planes so an A/B arm can never be half-armed, and the contract line names
+// both. Semantics are unchanged and byte-for-byte the same parse: strict
+// "0"/"1", default ON, fail SAFE with a loud line on anything else, one
+// contract line per process on first evaluation.
+static bool RoundsRelatchOn() { return RoundsRelatch_Enabled(); }
 
 // true_agreement: the barrier reached REAL settings agreement (both digests
 // non-zero and equal), as opposed to one of EntryConfigGatePass's escape

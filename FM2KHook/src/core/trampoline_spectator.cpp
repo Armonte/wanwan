@@ -9,14 +9,14 @@
 #include "../netplay/game_hash.h"
 #include "../netplay/spectator_node.h"
 #include "../netplay/spec_css_park.h"  // Wave 2 CSS-window type-4 park + battle-frame-0 tripwire
+#include "../netplay/spec_relatch.h"   // viewer g_round_limit re-derive + its battle-frame-0 tripwire
 #include "../ui/shared_mem.h"
 #include "../parity/parity_recorder.h"
 #include "../parity/parity_pool.h"    // player-slot resolution + pool-topology fencepost term
 #include "../netplay/savestate.h"   // RegionChecksums + gameplay_fingerprint (GAP #1 fencepost)
-// SaveState_CalculateFingerprint is engine-internal (savestate_internal.h) but has
-// external linkage; forward-declare it so the spectator can RECOMPUTE the fingerprint
-// from its own live FM2K memory. SaveState_Save never runs on a spectator, so the
-// stored ring-slot checksum / g_region_checksums are stale here -- we must recompute.
+// SaveState_CalculateFingerprint is engine-internal (savestate_internal.h) but externally linked;
+// forward-declared so the spectator can RECOMPUTE the fingerprint from its own live FM2K memory --
+// SaveState_Save never runs on a spectator, so the stored ring-slot checksum / CRCs are stale here.
 uint32_t SaveState_CalculateFingerprint();
 #include <SDL3/SDL_log.h>
 #include <SDL3/SDL_timer.h>
@@ -119,7 +119,7 @@ static bool SpectatorSimOneFrame() {
         if (!s_spec_trace_in_battle) {
             s_spec_trace_in_battle = true;
             s_spec_trace_bf = 0;
-            specnode::SpecCssPark_OnBattleFrameZero();  // always-on tripwire
+            specnode::SpecCssPark_OnBattleFrameZero(); specnode::SpecRelatch_OnBattleFrameZero();  // always-on tripwires (1000-line cap: one line)
             if (g_spec_skip_next_battle_init ||
                 SpectatorNode_SnapshotAppliedOnce()) {
                 // #60 + spectate rng-desync fix: this battle's entry state came

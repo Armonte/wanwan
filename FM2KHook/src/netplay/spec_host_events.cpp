@@ -80,6 +80,38 @@ void SpectatorNode_OnMatchStart(
         uint32_t round_count    = *(uint32_t*)0x430124;  // g_default_round
         std::memcpy(h + 81, &round_time_sec, 4);
         std::memcpy(h + 85, &round_count,    4);
+        // h+89: THE HOST'S ACTUAL LATCH, not the source. reserved[0] of
+        // ReplayHeader::reserved[3] (replay.h), previously always zero.
+        //
+        // WHY A SECOND FIELD FOR "the same" NUMBER. h+85 is g_default_round
+        // (0x430124), the CONFIG SOURCE. What the host's SIM consumes is
+        // g_round_limit (0x470048), the LATCH the engine took from that source
+        // at 0x4087DA. 3297b25 exists precisely because those two can DISAGREE
+        // (a late HOST_CONFIG re-writes the source after the latch was taken),
+        // and its re-derive REFUSES to write on three paths -- no true settings
+        // agreement, mode_flag != 1, implausible source -- each of which leaves
+        // the host running latch L while h+85 advertises source S != L. A
+        // viewer deriving its latch from h+85 would then install S and diverge
+        // from the host by construction. So carry L itself.
+        //
+        // ORDERING (this stamp must be POST-relatch, and is):
+        //   Netplay_IsBattleSynced() takes the g_battle_synced=true transition
+        //   and calls RederiveBattleEntryLatches (netplay_barriers.cpp:451);
+        //   both of its call sites (trampoline_battle.cpp:164,
+        //   hooks_update.cpp:348) then call Netplay_StartBattle, which calls
+        //   SpectatorNode_OnMatchStart (this function) and only afterwards
+        //   SpectatorNode_StashSnapshot. So h+89 and the snapshot's 0x470048
+        //   are now genuinely two readings of ONE word at one instant.
+        //
+        // ENCODING: one byte, 1..9 (the engine's own UDM_SETRANGE 0x00090001
+        // on the 0x430124 spin control). 0 means NOT CARRIED -- the value the
+        // whole 96-byte header is memset to, so every legacy .fm2krep and every
+        // pre-this-build producer reads 0 and the consumer fail-closes. An
+        // out-of-range live latch also stamps 0 rather than a truncated byte.
+        const uint32_t host_round_latch = *(uint32_t*)0x470048;  // g_round_limit
+        h[89] = (host_round_latch >= 1u && host_round_latch <= 9u)
+                    ? (uint8_t)host_round_latch
+                    : (uint8_t)0;
     }
     // frame_count at h+92 stays 0 -- subscribers get INPUT_BATCH frames live.
     g_state.initial_match.valid = true;

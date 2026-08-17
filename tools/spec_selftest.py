@@ -1939,6 +1939,62 @@ def _parity_gates(out_dir, specs):
                 print(f"[harness] RELATCH {_tag}: {len(lines)} {p} line(s) [advisory]")
                 print(f"    {lines[0]}")
 
+    # ---- SPECTATOR-PLANE latch re-derive, surfaced (loud ADVISORY) -----------
+    # Sibling of the block above, for the viewer plane's own re-derive
+    # (spec_relatch.cpp, at the MATCH_START apply). Same reason it exists: the
+    # player block was added because a fix with no oracle only ever shows up as
+    # an unattributed nobj=/DESYNC later, and the viewer half had exactly that
+    # problem one plane over. Advisory only -- nothing here touches pvp_fail.
+    #   CORRECTED: the viewer HAD latched a stale round limit and it was
+    #              repaired. A PASS carrying this line is not the same result as
+    #              a PASS without it.
+    #   TRIP:      the frame-zero assertion failed -- something (prime suspect:
+    #              a snapshot apply, whose GAME_STATE memcpy covers 0x470048)
+    #              put a different value back between the MATCH_START apply and
+    #              the viewer's first battle frame. This is the loudest line the
+    #              instrument can emit and it means the ordering proof is wrong.
+    #   REFUSED / SKIPPED: the re-derive declined. The common one is "h+89 = 0",
+    #              i.e. the MATCH_START header does not carry the HOST'S LATCH
+    #              -- a legacy .fm2krep or a producer older than that stamp.
+    #              The re-derive deliberately does NOT fall back on h+85 (the
+    #              host's config SOURCE): a source is not a latch. Also non-VS
+    #              mode flag and out-of-range value. Fail-closed = pre-fix
+    #              behaviour, so a run full of SKIPPED is un-fixed, not broken.
+    #   KILL-SWITCH ARM: the OFF arm's measurement of the same thing -- the
+    #              viewer entered the match with the stale latch and nothing
+    #              repaired it. Expected (and required) in a red arm; in a run
+    #              that did NOT set FM2K_ROUNDS_RELATCH=0 it cannot appear.
+    _specrelatch_order = ("TRIP", "KILL-SWITCH ARM", "CORRECTED", "REFUSED",
+                          "SKIPPED", "STAGE-LATCH MISMATCH")
+    for s in specs:
+        hits = {}
+        try:
+            with open(s["live"], errors="ignore") as fh:
+                for ln in fh:
+                    if "[SPEC-RELATCH]" not in ln: continue
+                    for p in _specrelatch_order:
+                        if p in ln:
+                            hits.setdefault(p, []).append(ln.rstrip()); break
+        except OSError:
+            continue
+        for p in _specrelatch_order:
+            lines = hits.get(p)
+            if not lines: continue
+            if p == "TRIP":
+                print(f"[harness] SPEC-RELATCH {s['tag']}: TRIP x{len(lines)} -- "
+                      f"g_round_limit was NOT this match's MATCH_START value at "
+                      f"the viewer's first battle frame; something reverted the "
+                      f"re-derive [ADVISORY -- read this first]")
+            elif p == "KILL-SWITCH ARM":
+                print(f"[harness] SPEC-RELATCH {s['tag']}: KILL-SWITCH ARM "
+                      f"x{len(lines)} -- the viewer ran with the STALE round "
+                      f"limit (re-derive disabled). Expected only in a "
+                      f"FM2K_ROUNDS_RELATCH=0 red arm [advisory]")
+            else:
+                print(f"[harness] SPEC-RELATCH {s['tag']}: {len(lines)} {p} "
+                      f"line(s) [advisory]")
+            print(f"    {lines[0]}")
+
     # ---- [CFG] per-battle settings stamp: TEAM-MODE TRIPWIRE (advisory) ------
     # The hook stamps one [CFG] line per battle per plane (the
     # vs_round_function detour in round_events.cpp),
@@ -2363,6 +2419,9 @@ def main():
     # every red-arm A/B run into a second measurement of the default. Both
     # peers get it: the latch is per-process and the guest is the one that
     # strands it, but a one-sided lever makes an A/B unreadable.
+    # ONE SWITCH, BOTH PLANES: the same variable also arms/disarms the VIEWER
+    # re-derive at the MATCH_START apply (spec_relatch.cpp). See the viewer env
+    # list below -- it is no longer inert there.
     if os.environ.get("FM2K_ROUNDS_RELATCH") is not None:
         common_env["FM2K_ROUNDS_RELATCH"] = os.environ["FM2K_ROUNDS_RELATCH"]
     # FM2K_SEAM_GUARD is RETIRED. It is still FORWARDED (so the hook's loud
@@ -2565,13 +2624,15 @@ def main():
         # a split-brain run.
         if os.environ.get("FM2K_SPEC_DEEP_JOIN") is not None:
             env["FM2K_SPEC_DEEP_JOIN"] = os.environ["FM2K_SPEC_DEEP_JOIN"]
-        # FM2K_ROUNDS_RELATCH, viewer half. The re-derive site itself is
-        # unreachable on a spectator (hooks_update.cpp returns before the
-        # battle-sync block when g_spectator_mode), so this is expected to be
-        # inert here -- forwarded anyway because a one-sided env list is the
-        # recorded trap that makes a kill-switch run a split-brain run, and
-        # because the viewer inherits the corrected latch through the host's
-        # battle-entry snapshot, which the OFF arm must also be able to poison.
+        # FM2K_ROUNDS_RELATCH, viewer half -- NO LONGER INERT. It was, while the
+        # only re-derive lived at the player battle-entry barrier (unreachable on
+        # a spectator: hooks_update.cpp returns before the battle-sync block when
+        # g_spectator_mode). The viewer now has its OWN re-derive at the
+        # MATCH_START apply (spec_relatch.cpp, [SPEC-RELATCH] lines), under this
+        # SAME switch, so "0" here disarms a real fix on this plane -- which is
+        # exactly what the red arm needs. Presence-forwarded, never truthiness:
+        # `if os.environ.get(k)` would drop "0" and turn every red arm into a
+        # second measurement of the default.
         if os.environ.get("FM2K_ROUNDS_RELATCH") is not None:
             env["FM2K_ROUNDS_RELATCH"] = os.environ["FM2K_ROUNDS_RELATCH"]
         # FM2K_TEST_ROUNDS_HOST_ONLY, viewer half. The per-frame force it

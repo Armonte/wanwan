@@ -13,6 +13,7 @@
 #include "spec_playback_internal.h"   // SeamStep / SeamResetWalkState (spec_playback_seam.cpp)
 #include "spec_pool_sync.h"       // Phase 4c match-start pool resync (arm + bounded battle-entry hold)
 #include "spec_css_park.h"        // Wave 2 spectator CSS-window type-4 park (falling-fighters fix)
+#include "spec_relatch.h"         // viewer-plane g_round_limit re-derive at MATCH_START (sibling of 3297b25)
 #include "spec_wire.h"            // zero-RLE codec (SessionEvent_* live in spectator_node.h)
 #include "spec_relay_queue.h"     // hub-relay outbound queue (Phase 2c)
 #include "spectator_tcp.h"        // TCP transport for INPUT_BATCH stream
@@ -183,6 +184,24 @@ void ApplySessionEvent(const SessionEvent& ev) {
                     if (rc  && rc  != 0xFFFFFFFFu) *(uint32_t*)0x430124 = rc;   // g_default_round
                     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "SpectatorNode: restored round cfg -- time=%u count=%u", rts, rc);
+
+                    // ...and re-derive the LATCH the engine took from that
+                    // source word. Restoring 0x430124 alone repairs nothing on
+                    // a viewer whose own battle init already ran: the engine
+                    // latched g_round_limit at 0x4087DA and never reads the
+                    // source again. This is the spectator/replay sibling of
+                    // 3297b25's player-side re-derive; the bug, the
+                    // precedes-every-save proof and the trap dispositions are
+                    // in spec_relatch.cpp. Same kill switch, both planes.
+                    //
+                    // THE AUTHORITY IS h+89, NOT rc. rc (h+85) is the host's
+                    // config SOURCE and is only correct for the restore above;
+                    // h+89 (ReplayHeader::reserved[0]) is the host's own
+                    // g_round_limit LATCH, stamped after its own re-derive, and
+                    // the two legitimately differ whenever that re-derive
+                    // declined. 0 there = not carried (legacy/older producer)
+                    // -> the callee SKIPs loudly and writes nothing.
+                    SpecRelatch_OnMatchStart(h[89], rc, (int32_t)h[80]);
 
                     // Session-scoped settings from a LOADED FILE's 256-byte
                     // header (game speed, SOCD mode). They land HERE, not at

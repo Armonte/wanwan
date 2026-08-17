@@ -101,6 +101,7 @@ set(FM2KHOOK_SOURCES
     src/netplay/spec_deep_join.cpp   # bounded deep-join snapshot push + battle-entry hold (Wave 4)
     src/netplay/spec_pool_sync.cpp   # match-start pool resync: host snapshot re-applied at every match boundary (Phase 4c)
     src/netplay/spec_css_park.cpp    # spectator CSS-window type-4 park: stops the between-match falling fighters (Wave 2)
+    src/netplay/spec_relatch.cpp     # viewer-plane g_round_limit re-derive at MATCH_START + the ONE FM2K_ROUNDS_RELATCH switch (sibling of 3297b25)
     src/netplay/spec_session_file.cpp # .fm2kset/.fm2krep write + load/seek (split from spectator_node)
     src/netplay/spec_playback.cpp     # op-apply + PopFrameInputs driver (split from spectator_node)
     src/netplay/spec_playback_state.cpp # admission pacing + adaptive delay bank + state accessors (split from spec_playback)

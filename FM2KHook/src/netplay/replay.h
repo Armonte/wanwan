@@ -50,7 +50,15 @@ struct ReplayHeader {
     // restore is skipped (0xFFFFFFFF also skipped = "no override" sentinel).
     uint32_t round_time_sec;     // g_round_time    @0x430114 (0 = legacy/unknown)
     uint32_t round_count;        // g_default_round @0x430124 (0 = legacy/unknown)
-    uint8_t  reserved[3];        // Pad to 96 bytes
+    // reserved[0] (h+89) = round_limit_latch: the host's g_round_limit
+    //   (0x470048) -- the LATCH its own sim runs on -- sampled in
+    //   SpectatorNode_OnMatchStart, i.e. AFTER the host's own
+    //   RederiveBattleEntryLatches. 1..9, or 0 = NOT CARRIED (legacy producer,
+    //   or a live latch outside 1..9). round_count at h+85 is the config
+    //   SOURCE and the two can legitimately disagree, which is why the viewer-
+    //   side re-derive (spec_relatch.cpp) writes from THIS byte and never from
+    //   h+85. reserved[1..2] (h+90, h+91) stay zero.
+    uint8_t  reserved[3];        // [0]=round_limit_latch, [1..2] pad to 96 bytes
     uint32_t frame_count;        // Reserved (was finalized by legacy writer; v2 .fm2krep
                                  //   writer doesn't populate -- use FM2KSessionFileHeader's
                                  //   event_count / input_count instead).

@@ -622,11 +622,11 @@ def _css_parity_gate(out_dir, specs):
 # It was ADVISORY while the falling-object bug it measures was known-present and
 # unfixed -- a fatal term would have reddened every run on every build and
 # nobody could have told a regression from the backlog. The fix landed in
-# FM2KHook/src/netplay/spec_css_park.cpp (the spectator parks its type-4 script
-# VMs across the character-select window, so the fighters stop running their
-# battle-entry scripts under gravity while the CSS is up), so the diversion is
-# gone: FALL and CSSPOOL failures, and the not-computed-must-fail rule, now set
-# the run verdict like every other term.
+# FM2KHook/src/hooks/css_autoconfirm.cpp (the CssAutoConfirm pin now calls the
+# engine's own Css_UnloadPlayerPreview before writing selected = -1, so it stops
+# orphaning the outgoing preview over a char slot whose script blob is then
+# replaced under it), so the diversion is gone: FALL and CSSPOOL failures, and
+# the not-computed-must-fail rule, now set the run verdict like every other term.
 #
 # The red-proof was taken twice BEFORE the flip: offline against six archived
 # runs (exactly 2 windows red per vanpri run, 0 on wanwan) and live in a vanpri
@@ -667,6 +667,41 @@ CSS_REST_MIN_FRAMES = 10
 # object never rests; the "not one pair produced a verdict" rule below still
 # turns a run in which NOTHING was measured into a FAIL.
 CSS_WIN_MIN_FRAMES = 120
+
+# HOW FAR INTO A PLANE'S CAPTURE its FIRST character-select window may open and
+# still count as that plane's BOOT window.
+#
+# Why the FALL term needs to know. The windows are paired ordinal-from-the-end,
+# which is right for between-match windows but wrong when a viewer's window list
+# STARTS with its boot window: the boot character-select and the between-match
+# character-select are DIFFERENT FLOWS on some content, running different preview
+# intro scripts at different resting levels, and the host's between-match window
+# cannot bound the boot flow.
+#
+# Measured on kensei2023 (2026-08-17, tools/.spec_rotate_kensei2023): the css2
+# viewer's only window is its boot window and got paired against the host's
+# between-match window. The "fall" it produced -- 980.0 px on 29/915 frames --
+# is script 109 item 1241/1244/1245, which the HOST plays at the SAME 980.0 px
+# in its OWN boot window (verified frame by frame in both .pty captures); the
+# host's between-match window runs script 106 and never leaves 910-930, so its
+# resting level was never a valid ceiling for that window. Same shape measured
+# on pkmncc: its css2 viewer's boot window sits at 770.0 px on script 52 item
+# 671/672, which the host also plays at 770.0 px.
+#
+# 240 is ~4x above every observed boot open (kensei host 1 / spec 2, vanpri
+# spec 8, wanwan spec 10, pkmncc host 16 / spec 10) and ~10x below the earliest
+# observed BETWEEN-MATCH window open (2306-2345), so it separates the two
+# classes with a wide margin and cannot silently reclassify a real window.
+CSS_BOOT_OPEN_MAX = 240
+
+# How far a [CSS-ANIM] record's pos_y must descend INSIDE one character-select
+# window to count as a falling object, in pixels. 40 px is the value the
+# orphaned-preview lane scored its whole per-game table with: the real falls are
+# 480 -> 920 (vanpri) and 440 px in the smallest case, while the largest
+# legitimate in-window descent of a char-bound object measured anywhere in the
+# kept corpus (4 games, 12 runs, both planes) is a few px of placement settling.
+# The measured margin is an order of magnitude, so the constant is not delicate.
+CSS_ANIM_FALL_PX = 40
 
 
 def _css_windows(snaps):
@@ -833,6 +868,40 @@ def _css_window_gate(out_dir, specs, host_pty, multi_match_recipe=True):
         thr = max(CSS_REST_MIN_FRAMES, int(CSS_REST_FRACTION * len(v)))
         return {y for y, c in Counter(y for y in v if y != 0).items() if c >= thr}
 
+    def _is_boot(wins, j):
+        """Is window `j` of this plane's list that plane's BOOT window?
+
+        Index 0 AND opening within the first CSS_BOOT_OPEN_MAX captured frames.
+        Both halves are needed: a viewer that dialled in mid-battle also has an
+        index-0 window, but it opens thousands of frames in and IS a
+        between-match window.
+        """
+        return j == 0 and wins and wins[0][0] <= CSS_BOOT_OPEN_MAX
+
+    def _content_set(snaps, wins):
+        """Every (script_idx, item_idx, pos_y) this plane rendered IN `wins`.
+
+        The exemption key is deliberately TIGHT -- all three fields, exact
+        16.16 pos_y. Measured against the corpus (2026-08-17): it exempts
+        100% of the pkmncc over-ceiling frames and 16/29 of kensei's (both
+        false positives), and 0 of 121 over-ceiling frames across the four
+        known-broken vanpri windows, whose falling object executes script 24
+        at pos_y values the host never renders. A looser (script, pos_y) key
+        was tested and rejected: it eats 39 of those 93 real frames.
+
+        `wins` scopes it to the host's own character-select windows: what a
+        character-select frame may be excused by is what the host does at
+        character-select, never what it does mid-battle.
+        """
+        out = set()
+        for lo, hi in wins:
+            for i in range(lo, hi + 1):
+                for k in ("p1", "p2"):
+                    p = snaps[i][k]
+                    if p["script_idx"] != -1:
+                        out.add((p["script_idx"], p["item_idx"], p["pos_y"]))
+        return out
+
     H = _load(host_pty)
     hwin = []
     if H is None:
@@ -902,9 +971,21 @@ def _css_window_gate(out_dir, specs, host_pty, multi_match_recipe=True):
                          f"instrument checks below still run")
 
     verdicts = 0          # window/player pairs that actually produced one
+    boot_suppressed = 0   # pairs refused by the boot-flavour rule
     if hwin and not not_applicable:
         lines.append(f"[harness] CSS-WIN: host has {len(hwin)} character-select "
                      f"window(s)")
+        # CONTENT KEY SCOPE (review F6): the exemption set is built from the
+        # host's CHARACTER-SELECT frames only, not from its whole capture. A
+        # battle frame can never legitimately exempt a character-select frame,
+        # and the run-wide key was 5.7x-27x broader than it needed to be.
+        # Measured before tightening (2026-08-17, four corpora): restricting the
+        # set changes NOTHING -- r3_pkmncc 863 -> 150 triples with exempt counts
+        # 34/37/36 either way, r5_pkmncc 862 -> 150 with 39/41/40, r4_pkmncc
+        # 700 -> 137 with 0/29/28, vanpri2 4658 -> 174 with 0/0/0/0. So this is
+        # a free narrowing of the key, taken with the proof that it costs no
+        # existing exemption.
+        hcontent = _content_set(H, hwin)
         for s in specs:
             S = _load(s["pty"])
             if S is None:
@@ -918,9 +999,32 @@ def _css_window_gate(out_dir, specs, host_pty, multi_match_recipe=True):
                 continue
             npair = min(len(hwin), len(swin))
             bad = 0
+            pv = 0        # verdicts THIS plane produced (review A3)
+            prefused = 0  # pairs THIS plane had refused by the boot rule
             for j in range(npair):
-                hlo, hhi = hwin[len(hwin) - npair + j]
-                lo, hi   = swin[len(swin) - npair + j]
+                hj = len(hwin) - npair + j
+                sj = len(swin) - npair + j
+                hlo, hhi = hwin[hj]
+                lo, hi   = swin[sj]
+                # FLAVOUR GUARD (see CSS_BOOT_OPEN_MAX). Ordinal-from-the-end
+                # pairing is correct for between-match windows, but a viewer
+                # whose window list STARTS at its boot window gets that boot
+                # window paired against a host window that is not the host's
+                # boot -- two different character-select FLOWS, whose resting
+                # levels do not bound each other. Refuse rather than invent.
+                if _is_boot(swin, sj) and not _is_boot(hwin, hj):
+                    boot_suppressed += 1
+                    prefused += 1
+                    lines.append(
+                        f"[harness] CSS-WIN FALL {s['tag']} win{j} ({lo}-{hi}): "
+                        f"spectator BOOT window paired against host window "
+                        f"{hj} ({hlo}-{hhi}), which is not the host's boot "
+                        f"window -- NO VERDICT. Boot and between-match "
+                        f"character-select are different flows (different "
+                        f"preview intro scripts and resting levels), so the "
+                        f"host's between-match resting level cannot bound this "
+                        f"one")
+                    continue
                 # Independent corroboration of the ordinal pairing: both planes
                 # sim the same frame, so a correctly paired window opens on the
                 # same rng. Annotated, never used AS the pairing -- rng is too
@@ -954,9 +1058,36 @@ def _css_window_gate(out_dir, specs, host_pty, multi_match_recipe=True):
                             f"resting-level term cannot run here{pnote}")
                         continue
                     verdicts += 1
+                    pv += 1
                     ceil = max(hl)
-                    over = sum(1 for y in sv if y > ceil + TOL)
                     rest = ",".join(f"{y/65536.0:.1f}" for y in sorted(hl))
+                    # CONTENT EXEMPTION (see _content_set). An over-ceiling
+                    # spectator frame whose exact (script_idx, item_idx, pos_y)
+                    # the HOST also renders in one of its OWN character-select
+                    # windows is the SAME animation dwelled on longer, not a
+                    # falling object. A real fall is a script executing to
+                    # positions the host never reaches, so it exempts nothing.
+                    over_all, over_ex = 0, 0
+                    for i in range(lo, hi + 1):
+                        p = S[i][k]
+                        if p["script_idx"] == -1 or p["pos_y"] <= ceil + TOL:
+                            continue
+                        over_all += 1
+                        if (p["script_idx"], p["item_idx"],
+                                p["pos_y"]) in hcontent:
+                            over_ex += 1
+                    over = over_all - over_ex
+                    if over_ex and not over:
+                        lines.append(
+                            f"[harness] CSS-WIN FALL {s['tag']} win{j} "
+                            f"({lo}-{hi}) {k}: host rests at {{{rest}}} px, "
+                            f"spectator max {max(sv)/65536.0:.1f} px on "
+                            f"{over_all} over-ceiling frame(s) -- ALL are "
+                            f"(script,item,pos_y) triples the HOST also renders "
+                            f"in its OWN character-select windows, i.e. the "
+                            f"same animation dwelled on longer -> OK "
+                            f"(content-exempt){pnote}")
+                        continue
                     if over:
                         bad += 1
                         if CSS_WIN_FATAL:
@@ -969,21 +1100,69 @@ def _css_window_gate(out_dir, specs, host_pty, multi_match_recipe=True):
                             f"[harness] CSS-WIN FALL {s['tag']} win{j} ({lo}-{hi}) "
                             f"{k}: host rests at {{{rest}}} px, spectator peaks "
                             f"{peak/65536.0:.1f} px on {over}/{len(sv)} frames "
-                            f"-> CSS FALLING OBJECT (near spec idx {at})"
-                            f"{pnote}" + adv)
+                            f"({over_ex} further over-ceiling frame(s) "
+                            f"content-exempt) -> CSS FALLING OBJECT (near spec "
+                            f"idx {at}){pnote}" + adv)
                     else:
                         lines.append(
                             f"[harness] CSS-WIN FALL {s['tag']} win{j} ({lo}-{hi}) "
                             f"{k}: host rests at {{{rest}}} px, spectator max "
                             f"{max(sv)/65536.0:.1f} px -> OK{pnote}")
-            lines.append(f"[harness] CSS-WIN FALL {s['tag']}: {npair} paired "
-                         f"window(s) ({len(swin)} spectator / {len(hwin)} host), "
-                         f"{bad} with a falling object"
-                         + (" -> FAIL" + adv if bad else " -> PASS"))
+            # PER-PLANE NOT-COMPUTED (review A3). The global `verdicts == 0`
+            # guard below never fires when ANOTHER plane produced verdicts, so a
+            # viewer whose every window was refused used to print "N paired
+            # window(s), 0 with a falling object -> PASS" -- a vacuous green on
+            # the exact plane a mid-CSS joiner is measured on. Measured on the
+            # kept corpus: 4 of 6 (p4f_runs/wanwan, orphan r3/r4/r5_pkmncc) did
+            # exactly that on their css2 viewer. The rule this file already
+            # states run-wide ("a term that saw nothing must not read as a
+            # pass") is now enforced per plane.
+            #
+            # Two shapes, deliberately different verdicts:
+            #   * every pair REFUSED by the boot-flavour rule -> the pairing was
+            #     structurally declined, like the single-match NOT-APPLICABLE
+            #     hatch. Honestly SKIPPED, not a pass and not a red.
+            #   * pairs were attempted and none produced a verdict (no host
+            #     resting level / too short / no object) -> the term ran on this
+            #     plane and saw nothing: RED, the same call the run-wide rule
+            #     makes.
+            if pv == 0:
+                if prefused and prefused == npair:
+                    lines.append(
+                        f"[harness] CSS-WIN FALL {s['tag']}: {npair} paired "
+                        f"window(s) ({len(swin)} spectator / {len(hwin)} host), "
+                        f"ALL {prefused} refused on the boot-flavour pairing "
+                        f"rule -> NO VERDICT for this plane (not computed, "
+                        f"honestly skipped -- NOT a pass)")
+                else:
+                    _fail(f"[harness] CSS-WIN FALL {s['tag']}: {npair} paired "
+                          f"window(s) ({len(swin)} spectator / {len(hwin)} "
+                          f"host) and NOT ONE produced a verdict "
+                          f"({prefused} refused on the boot-flavour rule, the "
+                          f"rest had no host resting level / too few frames) "
+                          f"-- NOT COMPUTED on this plane. A term that saw "
+                          f"nothing must not read as a pass")
+            else:
+                lines.append(f"[harness] CSS-WIN FALL {s['tag']}: {npair} paired "
+                             f"window(s) ({len(swin)} spectator / {len(hwin)} host), "
+                             f"{pv} judged"
+                             + (f", {prefused} refused (boot flavour)" if prefused else "")
+                             + f", {bad} with a falling object"
+                             + (" -> FAIL" + adv if bad else " -> PASS"))
+        if boot_suppressed:
+            lines.append(f"[harness] CSS-WIN FALL: {boot_suppressed} "
+                         f"window(s) refused on the boot-flavour pairing rule "
+                         f"(spectator boot window vs host non-boot window)")
         if verdicts == 0:
             _fail("[harness] CSS-WIN FALL: not one window/player pair produced a "
-                  "verdict (no host resting level anywhere) -- NOT COMPUTED. A "
-                  "term that saw nothing must not read as a pass")
+                  "verdict"
+                  + (f" ({boot_suppressed} window(s) refused on the "
+                     f"boot-flavour pairing rule, the rest had no host resting "
+                     f"level)"
+                     if boot_suppressed
+                     else " (no host resting level anywhere)")
+                  + " -- NOT COMPUTED. A term that saw nothing must not read as "
+                    "a pass")
 
     # ---- CSSPOOL ------------------------------------------------------------
     _wpat = _re.compile(
@@ -1080,12 +1259,294 @@ def _css_window_gate(out_dir, specs, host_pty, multi_match_recipe=True):
                              f"{sbad + hbad} line(s) skipped at an unknown tv= "
                              f"(build/harness [CSS-WIN] format mismatch)")
 
+    # ---- CSSANIM: the PER-SLOT fall census (source = [CSS-ANIM] ev=rec) ------
+    # WHY THIS TERM EXISTS. FALL above compares the ONE object
+    # FindPlayerObjectSlot resolves per player (the first type-4 slot with a
+    # matching player slot id). An orphaned preview that falls while a SIBLING
+    # slot resolves as "the player object" is invisible to it: on the
+    # orphaned-preview lane's RED corpus (r1_vanpri_RED, 2026-08-17) FALL
+    # reported 0 falling objects across 12 paired windows on a run carrying four
+    # measured 480 -> 920 px descents. A fatal term that scores 0/4 on the only
+    # corpus where the bug is known to exist cannot be the assurance for it.
+    #
+    # [CSS-ANIM] records EVERY type-4 object in the window -- keyed on
+    # (slot, owner, kind, player_slot) and closed the instant the slot stops
+    # being type 4, so a record is a genuine object instance -- with y_first and
+    # y_last. The same window is therefore scorable per SLOT.
+    #
+    # THE PREDICATE, from the engine's own semantics rather than a heuristic:
+    # a record whose y descended more than CSS_ANIM_FALL_PX inside the window,
+    # restricted to the HAZARD class (entity_kind 0/1/5 with a valid player
+    # slot = the objects that run a fighter script through a character slot's
+    # command blob). Kinds 2/3/4 are the character-select UI, and the confirm
+    # sprite legitimately descends on BOTH planes.
+    #
+    # The verdict is a HOST-RELATIVE count per paired window: the spectator may
+    # not carry char-bound fallers the host does not. Measured over the kept
+    # corpus (4 games, 12 runs): the host scores 0 in every window of every run,
+    # and every GREEN spectator arm scores 0; only the two RED arms score.
+    #
+    # NOT COMPUTED: dark instrument (nobody armed FM2K_CSS_ANIM) is an honest
+    # SKIP, not a pass and not a red -- the gate stages that judge character
+    # select arm it (tools/run_all_tests.sh), an ad-hoc run may not. A
+    # ONE-SIDED instrument (present on the host, absent on a viewer, or the
+    # reverse) IS a red: that is the half-blind-run trap, and it is the only way
+    # this term can silently measure nothing while looking armed.
+    _anim_rx = _re.compile(
+        r"\[CSS-ANIM\] win=(\d+) ev=rec tv=(\d+) n=\d+ dropped=(\d+) "
+        r"part=\d+/\d+ f=\S+ d=(.*)$")
+    _ANIM_FIELDS = ("slot owner kind pslot script0 script1 born life adv "
+                    "firstadv lastadv park item0 item1 y0 y1").split()
+
+    def _anim_wins(path):
+        """{window_ordinal: [record dict]} from one plane's [CSS-ANIM] lines."""
+        out, bad_ver = {}, 0
+        try:
+            fh = open(path, errors="ignore")
+        except OSError:
+            return out, bad_ver
+        for ln in fh:
+            m = _anim_rx.search(ln)
+            if not m:
+                continue
+            if int(m.group(2)) != _CSS_WIN_VER:
+                bad_ver += 1
+                continue
+            recs = out.setdefault(int(m.group(1)), [])
+            for rec in m.group(4).split():
+                f = rec.split(":")
+                if len(f) != len(_ANIM_FIELDS):
+                    continue
+                try:
+                    recs.append(dict(zip(_ANIM_FIELDS, (int(x) for x in f))))
+                except ValueError:
+                    continue
+        return out, bad_ver
+
+    def _anim_falls(recs):
+        return [r for r in recs
+                if r["y0"] != 0 and (r["y1"] - r["y0"]) > CSS_ANIM_FALL_PX
+                and r["kind"] in (0, 1, 5) and 0 <= r["pslot"] < 8]
+
+    def _closed_a_window(path):
+        """Did this plane CLOSE a character-select window in this capture?
+
+        [CSS-ANIM] dumps its records at window CLOSE (css_window.cpp
+        CloseWindow), so a capture that ENDS inside a character-select window
+        legitimately carries zero records. Measured on the kept corpus: the
+        pkmncc css2 viewer of r3/r4 opens its boot window and is terminated
+        inside it (ev=open 1, why=close 0), which is why "host has records,
+        viewer has none" cannot be fatal on its own.
+        """
+        try:
+            with open(path, errors="ignore") as fh:
+                for ln in fh:
+                    if "why=close" in ln and "[CSS-OBJ]" in ln:
+                        return True
+        except OSError:
+            pass
+        return False
+
+    ha, habad = _anim_wins(out_dir / "live_FM2K_P1_Debug.log")
+    sa = {s["tag"]: _anim_wins(s["live"])[0] for s in specs}
+    if not ha and not any(sa.values()):
+        lines.append("[harness] CSS-WIN CSSANIM: no [CSS-ANIM] lines on any "
+                     "plane -- the per-slot fall census was NOT ARMED in this "
+                     "run (FM2K_CSS_ANIM unset). NOT COMPUTED, honestly skipped "
+                     "-- this is not a pass. The shipping gate stages that judge "
+                     "character select arm it")
+    elif not ha:
+        _fail("[harness] CSS-WIN CSSANIM: [CSS-ANIM] lines on a spectator but "
+              "NONE on the host -- a one-sided census measures the viewer "
+              "against nothing. NOT COMPUTED")
+    else:
+        hord = sorted(ha)
+        hfall_tot = sum(len(_anim_falls(ha[w])) for w in hord)
+        lines.append(f"[harness] CSS-WIN CSSANIM: host census "
+                     f"{sum(len(ha[w]) for w in hord)} record(s) over "
+                     f"{len(hord)} window(s), {hfall_tot} char-bound faller(s)"
+                     + (f"; {habad} line(s) at an unknown tv=" if habad else ""))
+        for s in specs:
+            sw = sa[s["tag"]]
+            if not sw:
+                if _closed_a_window(s["live"]):
+                    _fail(f"[harness] CSS-WIN CSSANIM {s['tag']}: no [CSS-ANIM] "
+                          f"lines while the HOST has them, on a viewer that DID "
+                          f"close a character-select window -- the census did "
+                          f"not reach this plane (one-sided instrument). NOT "
+                          f"COMPUTED")
+                else:
+                    lines.append(
+                        f"[harness] CSS-WIN CSSANIM {s['tag']}: no [CSS-ANIM] "
+                        f"lines and no closed character-select window in this "
+                        f"capture -- the census dumps at window CLOSE, so a "
+                        f"viewer terminated inside its window has nothing to "
+                        f"dump. NOT COMPUTED on this plane [LOUD, not fatal]")
+                continue
+            sord = sorted(sw)
+            npair = min(len(hord), len(sord))
+            sbad = 0
+            for j in range(npair):
+                ho = hord[len(hord) - npair + j]
+                so = sord[len(sord) - npair + j]
+                hf, sf = _anim_falls(ha[ho]), _anim_falls(sw[so])
+                if len(sf) <= len(hf):
+                    continue
+                sbad += 1
+                if CSS_WIN_FATAL:
+                    fail = True
+                lines.append(
+                    f"[harness] CSS-WIN CSSANIM {s['tag']} win{so} vs "
+                    f"host-win{ho}: {len(sf)} char-bound falling object(s) on "
+                    f"the spectator vs {len(hf)} on the host -> CSS FALLING "
+                    f"OBJECT (per-slot census). "
+                    + " ".join(
+                        f"slot{r['slot']}[own{r['owner']} k{r['kind']} "
+                        f"p{r['pslot']} scr{r['script0']}->{r['script1']} "
+                        f"born{r['born']} life{r['life']} "
+                        f"y{r['y0']}->{r['y1']}]" for r in sf[:6])
+                    + adv)
+            lines.append(f"[harness] CSS-WIN CSSANIM {s['tag']}: {npair} paired "
+                         f"window(s) ({len(sord)} spectator / {len(hord)} host), "
+                         f"{sum(len(_anim_falls(sw[w])) for w in sord)} "
+                         f"char-bound faller(s) total, {sbad} window(s) worse "
+                         f"than the host"
+                         + (" -> FAIL" + adv if sbad else " -> PASS"))
+
     if not CSS_WIN_FATAL:
         lines.append("[harness] CSS-WIN: ADVISORY -- explicitly downgraded by "
                      "FM2K_CSSWIN_FATAL=0, so these terms do not affect the run "
                      "verdict. The default is FATAL as of Wave 2 (the "
                      "character-select falling-object bug is fixed in "
-                     "spec_css_park.cpp); unset the variable to gate on them")
+                     "css_autoconfirm.cpp); unset the variable to gate on them")
+    return fail, lines
+
+
+def _css_pin_gate(out_dir, specs):
+    """The two ALWAYS-ON hook detectors on the character-select plane, parsed.
+
+    Returns (fail: bool, lines: list[str]).
+
+    WHY THIS FUNCTION EXISTS AT ALL. Both instruments below were shipped
+    always-on, and both printed into the void: `grep -rn "CSSPIN\\|CSSPARK-TRIP"
+    tools/` returned only env forwarders and archived logs. This repo has now
+    fixed that same shape three times (f8e4b67 "previously printed into the
+    void"; 09917b2's frame-zero tripwire; the [ROUNDS-RELATCH]/[SPEC-RELATCH]
+    blocks in _parity_gates), and the seam-fix hard rules allow a detector to
+    survive a deleted mechanism only BECAUSE a detector is not a fallback -- a
+    detector nobody parses is neither.
+
+    Deliberately NOT under FM2K_CSSWIN_FATAL. That switch exists to downgrade
+    the .pty-derived FALL/CSSPOOL/CSSANIM terms, which have a filed
+    false-positive class on pkmncc (orphan_fix.md 5.5) and are turned off on the
+    rotation leg because of it. These two terms are hook-side assertions with no
+    false-positive class: each one fires only on a state the engine itself never
+    produces.
+
+    CSSPIN (css_autoconfirm.cpp, one line per pin ARM)
+        `orphans>0 unloaded=0` means the CssAutoConfirm pin found live preview
+        objects bound to the char slot it was about to re-select and tore down
+        NONE of them -- i.e. the orphaned-preview defect, back. FATAL.
+        This is the ONLY automated detector of the class the 2026-08-17 fix
+        closed: the .pty-derived FALL term structurally cannot see it (it
+        resolves one object per player, and the orphan is usually a sibling), so
+        without this the gate would carry a fatal term on the bug's behalf that
+        scored 0 of 4 on the corpus where the bug is known present.
+
+        A pin ARM with NO [CSSPIN] line is LOUD but not fatal: measured on the
+        kept corpus (r11_wanwan_GREEN2 S1), a viewer can arm at a match-end seam
+        and leave character select without the pin's mode-2000 block ever
+        running, which produces an arm and no line legitimately.
+
+        A [CSSPIN] line on a PLAYER plane is FATAL: the pin arms from three
+        spectator/offline-replay sites plus the test-only FM2K_TEST_CSS_CHAR,
+        which no spec_selftest env list carries and which cannot leak in (the
+        harness passes env through a generated .bat, not the WSL environment).
+        A line there means plane containment broke.
+
+    CSSPARK-TRIP (spec_css_tripwire.cpp, battle frame 0)
+        Type-4 objects still PARKED (script_init_state == 2) at the spectator's
+        first battle frame: fighters that cannot execute their scripts. The
+        character-select park that used to cause it was deleted 2026-08-17, so a
+        line here now names a NEW +0x152 writer or the match-end seam park. This
+        is the detector the no-fallback rule kept when the mechanism went; FATAL,
+        matching the [SPEC-RELATCH] TRIP block's "read this first" prominence.
+    """
+    import re as _re
+    fail, lines = False, []
+
+    def _fail(msg):
+        nonlocal fail
+        fail = True
+        lines.append(msg)
+
+    _pin_rx = _re.compile(r"p(\d) sel=(-?\d+)->(-?\d+) slot=(-?\d+) "
+                          r"orphans=(\d+) unloaded=(\d+)")
+
+    def _scan(path):
+        """(csspin_lines, orphan_no_unload, cssparktrip_lines, armed)."""
+        pin, bad, trip, armed = 0, [], [], 0
+        try:
+            fh = open(path, errors="ignore")
+        except OSError:
+            return pin, bad, trip, armed
+        for ln in fh:
+            if "[CSSPARK-TRIP]" in ln:
+                trip.append(ln.rstrip())
+            elif "[CSSPIN] arm " in ln:
+                pin += 1
+                for m in _pin_rx.finditer(ln):
+                    if int(m.group(5)) > 0 and int(m.group(6)) == 0:
+                        bad.append(ln.rstrip())
+                        break
+            elif "CssAutoConfirm: armed" in ln:
+                armed += 1
+        return pin, bad, trip, armed
+
+    planes = [("P1", out_dir / "live_FM2K_P1_Debug.log"),
+              ("P2", out_dir / "live_FM2K_P2_Debug.log")]
+    planes += [(s["tag"], s["live"]) for s in specs]
+
+    n_pin, n_trip, n_armed = 0, 0, 0
+    for tag, path in planes:
+        pin, bad, trip, armed = _scan(path)
+        n_pin += pin
+        n_trip += len(trip)
+        n_armed += armed
+        is_player = tag in ("P1", "P2")
+        if pin and is_player:
+            _fail(f"[harness] CSSPIN {tag}: {pin} [CSSPIN] line(s) on a PLAYER "
+                  f"plane -- the CssAutoConfirm pin ARMED on a production "
+                  f"player process. It arms only from the spectator / "
+                  f"offline-replay sites and the test-only FM2K_TEST_CSS_CHAR, "
+                  f"which this harness never sets: plane containment is broken "
+                  f"and a sim-visible write ran where it must not")
+        if bad:
+            _fail(f"[harness] CSSPIN {tag}: ORPHANED PREVIEW x{len(bad)} -- the "
+                  f"pin re-selected a character while live preview objects were "
+                  f"still bound to that char slot and unloaded NONE of them "
+                  f"(orphans>0 unloaded=0). This is the falling-character-select-"
+                  f"object defect fixed 2026-08-17 in css_autoconfirm.cpp; "
+                  f"expected ONLY in an FM2K_SPEC_CSS_UNLOAD=0 red arm")
+            lines.append(f"    {bad[0]}")
+        if trip:
+            _fail(f"[harness] CSSPARK-TRIP {tag}: x{len(trip)} -- type-4 script "
+                  f"VMs were still PARKED at battle frame 0, so those fighters "
+                  f"cannot execute their scripts. The character-select park was "
+                  f"DELETED 2026-08-17, so this names a NEW +0x152 writer or the "
+                  f"match-end seam park (round_events.cpp sim-902)")
+            lines.append(f"    {trip[0]}")
+        if not is_player and armed and pin == 0:
+            lines.append(
+                f"[harness] CSSPIN {tag}: the pin ARMED {armed} time(s) and "
+                f"printed NO [CSSPIN] line -- the arm never reached the "
+                f"mode-2000 character-select block (a match-end-seam arm that "
+                f"left character select can do this legitimately), so the "
+                f"orphan census did not run on this viewer [LOUD, not fatal]")
+    if not fail:
+        lines.append(f"[harness] CSSPIN/CSSPARK-TRIP: {n_pin} pin census "
+                     f"line(s) over {n_armed} arm(s), 0 orphaned previews "
+                     f"(orphans>0 unloaded=0), 0 parked-VM tripwires -> PASS")
     return fail, lines
 
 
@@ -2316,19 +2777,14 @@ def main():
               # RECEIVER half owns the repair, so a one-sided switch would
               # measure half a fix.
               "FM2K_RC_LIVENESS",
-              # Wave 2 spectator CSS-window park kill-switch. Default ON in the
-              # hook; forwarded so the causality control run (=0 reproduces the
-              # falling objects) is reachable from a WSL-side invocation. Listed
-              # on the player side too even though only the spectator plane arms
-              # it -- a one-sided env list is how a probe silently measures one
-              # plane against nothing.
-              "FM2K_SPEC_CSS_PARK",
-              # Narrowing A/B control (2026-08-16, review B1e): =1 restores the
-              # pre-narrowing BLANKET park (every type-4 object, whole window),
-              # which the [CSS-ANIM] census proved freezes the entire spectator
-              # character-select screen. Default OFF; forwarded so the control
-              # arm is reachable from a WSL-side invocation.
-              "FM2K_SPEC_CSS_PARK_WIDE",
+              # ORPHANED-PREVIEW FIX causality control. FM2K_SPEC_CSS_UNLOAD=0
+              # makes CssAutoConfirm's pin write selected=-1 WITHOUT the
+              # engine's paired Css_UnloadPlayerPreview, i.e. reproduces the
+              # orphaned character-select preview byte-for-byte on the same
+              # binary. Default ON in the hook; forwarded to BOTH sides for the
+              # same reason as every other kill switch here -- a one-sided env
+              # list is how a control arm silently measures half a fix.
+              "FM2K_SPEC_CSS_UNLOAD",
               # Phase 4e (review A4a(ii)): the topology gate's OWN escape hatch.
               # FM2K_CK_TOPOLOGY=0 makes ComputeTopology() return the "not
               # computed" sentinel, which the POOL terms now treat as a FAILED
@@ -2605,12 +3061,9 @@ def main():
                    # that honours the holding advertisement and defers the
                    # starve escalation.
                    "FM2K_RC_LIVENESS",
-                   # Wave 2 CSS-window park kill-switch, viewer half -- this is
-                   # the half that actually arms the window.
-                   "FM2K_SPEC_CSS_PARK",
-                   # Narrowing A/B control, viewer half -- this is the half that
-                   # actually arms the window, so it MUST be here.
-                   "FM2K_SPEC_CSS_PARK_WIDE",
+                   # ORPHANED-PREVIEW FIX causality control, viewer half -- this
+                   # is the half that actually runs the pin, so it MUST be here.
+                   "FM2K_SPEC_CSS_UNLOAD",
                    # Phase 4e: the topology gate escape hatch, viewer half. It
                    # MUST be symmetric with the player list -- the POOL terms
                    # compare the two planes, so a one-sided hatch would silently
@@ -3045,6 +3498,14 @@ def main():
     for _l in _csswin_lines:
         print(_l)
 
+    # The two ALWAYS-ON hook detectors on the character-select plane, parsed and
+    # FATAL. Its own flag on purpose: it is not downgraded by FM2K_CSSWIN_FATAL
+    # (see the docstring) and, like every other term that can set the verdict, it
+    # must be able to print its OWN name on the OVERALL line.
+    csspin_fail, _csspin_lines = _css_pin_gate(OUT_DIR, specs)
+    for _l in _csspin_lines:
+        print(_l)
+
     # ---- CORRECTNESS GATES: CINPUT + CHECKSUM + rng/hp trace -----------------
     # Run HERE -- after preservation, before EVERY early return. Until 2026-08
     # they ran at the very end, so any earlier bail (most often
@@ -3055,7 +3516,7 @@ def main():
     # replay process overwrites the game-dir logs it would otherwise race).
     cin_fail, ck_fail, pvp_fail, teampin_fail = _parity_gates(OUT_DIR, specs)
     real_fail = (cin_fail or ck_fail or pvp_fail or css_fail or csswin_fail
-                 or teampin_fail
+                 or teampin_fail or csspin_fail
                  or any(s["gate"]["checked"] > 0 and not s["ok"] for s in specs))
     checked_any = any(s["gate"]["checked"] > 0 for s in specs)
 
@@ -3067,10 +3528,11 @@ def main():
         # Same rule as the OVERALL line (review B4c): a term that can set the
         # verdict prints its OWN name. A CSS-WIN-only failure is not a desync
         # and must never be reported as one.
-        _csswin_only = csswin_fail and not (cin_fail or ck_fail or pvp_fail
-                                            or css_fail or teampin_fail)
+        _csswin_only = (csswin_fail or csspin_fail) and not (
+            cin_fail or ck_fail or pvp_fail or css_fail or teampin_fail)
         print("[harness] (correctness verdict from the gates above: "
-              + ("CSS-WINDOW GATE FAILED (no desync term did)" if _csswin_only else
+              + ("CHARACTER-SELECT GATE FAILED (CSS-WINDOW and/or the CSSPIN/"
+                 "CSSPARK-TRIP detectors; no desync term did)" if _csswin_only else
                  "DESYNC DETECTED" if real_fail else
                  "no desync detected" if checked_any else
                  "INCONCLUSIVE -- no spectator trace frames")
@@ -3376,7 +3838,9 @@ def main():
         # that had not failed and a plane that may not be involved at all. That
         # line has already had to be annotated as "must NOT be read as a result"
         # in one report. A term that can set the verdict prints its own name.
-        why = ("PVP player-vs-player object-pool divergence (see above)" if pvp_fail else
+        why = ("CSSPIN orphaned character-select preview / CSSPARK-TRIP parked "
+               "script VMs at battle frame 0 (see above)" if csspin_fail else
+               "PVP player-vs-player object-pool divergence (see above)" if pvp_fail else
                "CHECKSUM full-state / POOL topology desync (see above)" if ck_fail else
                "CINPUT input-frame desync (see above)" if cin_fail else
                "CSS-FP cursor/selection desync (see above)" if css_fail else
@@ -3388,7 +3852,10 @@ def main():
         # The head names the PLANE. A PVP failure is the two PLAYERS disagreeing
         # with each other; saying "a spectator desynced from host" there would be
         # the exact mislabel review B4c fixed twice already.
-        head = ("THE TWO PLAYERS DESYNCED FROM EACH OTHER" if pvp_fail else
+        head = ("the CHARACTER-SELECT PIN detectors failed"
+                if csspin_fail and not (ck_fail or cin_fail or css_fail
+                                        or pvp_fail or teampin_fail)
+                else "THE TWO PLAYERS DESYNCED FROM EACH OTHER" if pvp_fail else
                 "the VS-1v1 MODE PIN failed"
                 if teampin_fail and not (ck_fail or cin_fail or css_fail or csswin_fail)
                 else "the CSS-WINDOW gate failed"

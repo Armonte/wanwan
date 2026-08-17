@@ -8,7 +8,7 @@
 #include "../netplay/control_channel.h"
 #include "../netplay/game_hash.h"
 #include "../netplay/spectator_node.h"
-#include "../netplay/spec_css_park.h"  // Wave 2 CSS-window type-4 park + battle-frame-0 tripwire
+#include "../netplay/spec_css_tripwire.h"  // battle-frame-0 parked-VM detector
 #include "../netplay/spec_relatch.h"   // viewer g_round_limit re-derive + its battle-frame-0 tripwire
 #include "../ui/shared_mem.h"
 #include "../parity/parity_recorder.h"
@@ -119,7 +119,7 @@ static bool SpectatorSimOneFrame() {
         if (!s_spec_trace_in_battle) {
             s_spec_trace_in_battle = true;
             s_spec_trace_bf = 0;
-            specnode::SpecCssPark_OnBattleFrameZero(); specnode::SpecRelatch_OnBattleFrameZero();  // always-on tripwires (1000-line cap: one line)
+            specnode::SpecCssTripwire_OnBattleFrameZero(); specnode::SpecRelatch_OnBattleFrameZero();  // always-on tripwires (1000-line cap: one line)
             if (g_spec_skip_next_battle_init ||
                 SpectatorNode_SnapshotAppliedOnce()) {
                 // #60 + spectate rng-desync fix: this battle's entry state came
@@ -164,7 +164,6 @@ static bool SpectatorSimOneFrame() {
         s_spec_trace_in_battle = false;
     }
 
-    specnode::SpecCssPark_Tick();  // Wave 2: park type-4 VMs across the CSS window
     if (original_process_game_inputs) original_process_game_inputs();
     if (original_update_game)         original_update_game();
     ++g_sim_step_count;   // sim-fps: one logic tick

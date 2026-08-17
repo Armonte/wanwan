@@ -159,12 +159,24 @@ stage "unit" "$OUT/0_unit.log"
 CMD="FRAMES=$FRAMES FM2K_CHECK_DISTANCE=$CD bash '$ROOT/tools/ci_determinism_gate.sh'"
 stage "determinism" "$OUT/1_determinism.log"
 
+# CSS-ANIM ARMING (2026-08-17, orphan-fix review A4). FM2K_CSS_ANIM=1 turns on
+# the PER-SLOT character-select animation/fall census on the host and every
+# spectator (never the guest -- see the forwarding comment in spec_selftest.py).
+# It is what makes the CSS-WIN CSSANIM term computable: the .pty-derived FALL
+# term resolves ONE object per player and measured 0 falls on a corpus carrying
+# four real ones, so without this census the shipping gate carries a fatal term
+# on the falling-object class's behalf that cannot see it. Cost is one extra
+# 1024-slot pool walk per character-select frame on planes that already do one
+# for [CSS-WIN], with no per-frame logging (the records are dumped chunked at
+# window close). Armed inline (never exported) on every spectator stage that can
+# contain a character-select window: 2, 2b, 2d, 2d-killswitch and 2g.
+#
 # Stage 2 — netplay + spectator under loss (bit-exact + live). Runs SPEC_RUNS
 # times; ALL must be OVERALL PASS. spec_selftest owns the desync + liveness asserts.
 s2_ok=1
 for i in $(seq 1 "$SPEC_RUNS"); do
     kill_games; sleep 0.6
-    FM2K_SPEC_RC=1 FM2K_NET_LOSS="$LOSS" FM2K_NET_DELAY_MS=80 FM2K_NET_SEED=$((40+i)) \
+    FM2K_CSS_ANIM=1 FM2K_SPEC_RC=1 FM2K_NET_LOSS="$LOSS" FM2K_NET_DELAY_MS=80 FM2K_NET_SEED=$((40+i)) \
       timeout 220 python3 "$ROOT/tools/spec_selftest.py" --frames 1200 \
       --spectators css --assert-spectator-live --keep > "$OUT/2_netplay_run${i}.log" 2>&1
     if grep -qE "OVERALL PASS" "$OUT/2_netplay_run${i}.log"; then
@@ -188,7 +200,7 @@ MM_RUNS="${MM_RUNS:-1}"; MM_TOTAL="${MM_TOTAL:-3200}"; MM_LOSS="${MM_LOSS:-0.06}
 s2b_ok=1
 for i in $(seq 1 "$MM_RUNS"); do
     kill_games; sleep 0.6
-    FM2K_SPEC_RC=1 FM2K_NET_LOSS="$MM_LOSS" FM2K_NET_DELAY_MS=80 FM2K_NET_SEED=$((70+i)) \
+    FM2K_CSS_ANIM=1 FM2K_SPEC_RC=1 FM2K_NET_LOSS="$MM_LOSS" FM2K_NET_DELAY_MS=80 FM2K_NET_SEED=$((70+i)) \
       timeout 300 python3 "$ROOT/tools/spec_selftest.py" \
       --rounds 1 --round-time 15 --total-frames "$MM_TOTAL" \
       --spectators css,battle1 --assert-spectator-live --keep \
@@ -276,7 +288,7 @@ deep_join_attempt() {   # $1 = attempt number; 0 = PASS
     # Clear the preserved live logs so a crashed/timed-out attempt cannot be
     # judged on the PREVIOUS attempt's evidence.
     rm -f "$SPEC_LIVE"/live_FM2K_*_Debug.log
-    FM2K_SPEC_DEEP_JOIN=1 FM2K_SPEC_RC=1 FM2K_NET_LOSS="$DJ_LOSS" \
+    FM2K_CSS_ANIM=1 FM2K_SPEC_DEEP_JOIN=1 FM2K_SPEC_RC=1 FM2K_NET_LOSS="$DJ_LOSS" \
       FM2K_NET_DELAY_MS=100 FM2K_NET_JITTER_MS=30 FM2K_NET_SEED=$((90 + att)) \
       FM2K_LIVE_EDGE_TOLERANCE="$DJ_TOL" \
       timeout "$DJ_TIMEOUT" python3 "$ROOT/tools/spec_selftest.py" \
@@ -402,7 +414,7 @@ else
     kill_games; sleep 0.6
     rm -f "$SPEC_LIVE"/live_FM2K_*_Debug.log
     ks_log="$OUT/2dks_killswitch.log"; ks_ev="$OUT/2dks_killswitch_evidence.txt"
-    FM2K_SPEC_DEEP_JOIN=0 FM2K_SPEC_RC=1 \
+    FM2K_CSS_ANIM=1 FM2K_SPEC_DEEP_JOIN=0 FM2K_SPEC_RC=1 \
       timeout "$KS_TIMEOUT" python3 "$ROOT/tools/spec_selftest.py" \
         --rounds 1 --round-time 15 --total-frames "$DJ_TOTAL" \
         --spectators css2 --keep \
@@ -564,7 +576,7 @@ else
     # so a later `python3 tools/test_css_gate.py` would read vanpri logs where it
     # expects wanwan's. Must sit on the Windows filesystem (recorded harness trap).
     CMD="FM2K_TEST_OUT_DIR='$ROOT/tools/.spec_selftest_vanpri' \
-      FM2K_SPEC_DEEP_JOIN=1 FM2K_NET_DELAY_MS=100 FM2K_NET_JITTER_MS=30 FM2K_NET_LOSS=0.10 \
+      FM2K_CSS_ANIM=1 FM2K_SPEC_DEEP_JOIN=1 FM2K_NET_DELAY_MS=100 FM2K_NET_JITTER_MS=30 FM2K_NET_LOSS=0.10 \
       timeout $SPECGAME_TIMEOUT python3 -u '$ROOT/tools/spec_selftest.py' --game vanpri \
       --game-exe '$VANPRI_EXE' \
       --rounds 1 --total-frames 16000 --spectators battle1,css2 --record-timeout 600 --keep"

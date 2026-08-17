@@ -8,7 +8,10 @@
 
 #include <SDL3/SDL_log.h>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <windows.h>
 
 #include "MinHook.h"
@@ -106,6 +109,218 @@ std::atomic<uint8_t> g_seam_hold_p1_color{0};
 std::atomic<uint8_t> g_seam_hold_p2_color{0};
 constexpr uintptr_t ADDR_CHARSLOT0_COLOR_PICK = 0x4DFD8B;
 constexpr size_t    CHARSLOT_STRIDE_BYTES     = 0xE03F;
+
+// ===================== ORPHANED-PREVIEW FIX (2026-08-17) ==================
+//
+// THE DEFECT. Phase A of the pin (below) forces `selected[i] = -1` with a bare
+// write. The ENGINE never produces that state transition with a bare write. All
+// three character-select flavours run the same shape, and the unload is ALWAYS
+// paired with the -1:
+//
+//   if (selected[i] != grid) {
+//       if (selected[i] == -1) { selected[i] = grid; player_data_file_loader();
+//                                create_game_object(4, 0x50, ...); }
+//       else                   { Css_UnloadPlayerPreview(slot); selected[i] = -1; }
+//   }
+//
+// verified by disassembly of game_state_manager @ 0x406FC0 on 2026-08-17:
+// 0x407425 (team), 0x407967 (VS 1v1), 0x407C2A (1P/story) -- and those three
+// are Css_UnloadPlayerPreview's ONLY xrefs in the binary.
+//
+// Skipping the unload leaves the outgoing preview object ALIVE. The engine then
+// creates a SECOND preview for the same player slot on the next engine pass,
+// and player_data_file_loader (0x4039F0) replaces that char slot's script blob
+// underneath the survivor whenever the pin target differs from what the viewer
+// had selected (its no-reload guard is g_slot_loaded_char_idx[slot] == target;
+// a real reload calls ClearCharacterSlot, which GlobalFrees the old blob). The
+// orphan keeps executing with a script_idx (+0x30) and item_idx (+0x2C) that
+// now index a DIFFERENT character's script buffer -- which is both the falling
+// character-select object the campaign has been suppressing with a park, and an
+// unmeasured out-of-bounds script fetch.
+//
+// THE FIX: restore the engine's own pairing, under exactly the engine's own
+// precondition (selected[i] >= 0). No ramp window, no entity-kind heuristic, no
+// per-game constant; it generalizes to every game and reaches the mid-CSS-join
+// and offline-replay windows, because it lives in the pin and those paths run
+// the pin.
+//
+// WHICH HALF IS THE FIX (review F1, and the code and the story must agree). On
+// the PRIMARY path -- the engine's character-select block runs in this same
+// g_orig() call -- the load-bearing half is NOT WRITING THE -1: the deferral is
+// what makes the engine take its own `else { Css_UnloadPlayerPreview(); selected
+// = -1; }` branch. The set our census marks at detour entry is the set the
+// engine would mark inside g_orig() (nothing between the two points creates a
+// type-4 object or iterates the pool), so on that path the explicit call below
+// is redundant with the engine's own.
+//
+// The explicit call is kept because it is NOT redundant on the paths where the
+// engine's block does not run on the frame the pin re-selects -- the mid-CSS
+// join and the re-join/seam arm, where the arm can land while character-select
+// is in state 0/2/3/4 or act != 0. There the pin's anti-hang fallback writes the
+// -1 itself on the NEXT tick, and without this call that write is the bare
+// pre-fix orphaning write. One call, those paths, that reason.
+//
+// PLANE CONTAINMENT. The pin arms from four sites only: spec_playback.cpp:284
+// (offline replay + live spectator at a match-end seam), spec_playback.cpp:301
+// (the battle-align path -- the mid-CSS joiner), spec_recv.cpp:430 (spectator
+// SNAPSHOT_BEGIN) and the test-only netplay_css.cpp:407 (FM2K_TEST_CSS_CHAR,
+// which appears in NO spec_selftest env list). No production player process
+// reaches it, and no plane that reaches it ever rolls back.
+constexpr uintptr_t ADDR_CSS_UNLOAD_PREVIEW = 0x00406520;
+typedef int (__cdecl *CssUnloadPlayerPreviewFn)(int char_slot);
+
+// Object pool literals -- same values as round_events.cpp / parity_pool.h /
+// spec_css_tripwire.cpp, repeated because each of those TUs deliberately owns
+// its own copy (WonderfulWorld absolute addresses, FM2K-only, and this whole
+// file is FM2K-gated).
+constexpr uintptr_t ADDR_OBJECT_POOL   = 0x004701E0;
+constexpr size_t    OBJ_STRIDE         = 382;
+constexpr size_t    OBJ_COUNT          = 1024;
+constexpr ptrdiff_t OFF_OBJ_TYPE       = 0x000;
+constexpr ptrdiff_t OFF_OBJ_POSY       = 0x00C;
+constexpr ptrdiff_t OFF_OBJ_ITEM_IDX   = 0x02C;
+constexpr ptrdiff_t OFF_OBJ_SCRIPT_IDX = 0x030;
+constexpr ptrdiff_t OFF_OBJ_PLAYER     = 0x156;
+constexpr ptrdiff_t OFF_OBJ_KIND       = 0x15A;
+constexpr int       OBJ_TYPE_SCRIPT_VM = 4;
+
+// g_slot_loaded_char_idx (int[8]) -- player_data_file_loader's no-reload guard
+// at 0x4452CC + 4*slot + 567060. Reading it tells us, BEFORE the engine acts,
+// whether this pin will swap the char slot's blob (the stale-blob precondition).
+constexpr uintptr_t ADDR_SLOT_LOADED_CHAR = 0x004CF9E0;
+
+// FM2K_SPEC_CSS_UNLOAD=0 restores the pre-fix behaviour byte-for-byte. This is
+// the causality control (the RED arm), not a fallback: default ON.
+bool CssUnloadEnabled() {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* v = std::getenv("FM2K_SPEC_CSS_UNLOAD");
+        cached = (v && v[0] == '0' && v[1] == '\0') ? 0 : 1;
+        if (cached == 0) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "[CSSPIN] DISABLED by FM2K_SPEC_CSS_UNLOAD=0 -- the pin will "
+                "write selected=-1 without the engine's paired preview unload, "
+                "orphaning the outgoing preview; causality control only");
+        }
+    }
+    return cached == 1;
+}
+
+// The CHAR SLOT the engine binds previews to (+0x156), per flavour. Derived
+// from the disassembly, not guessed: the VS 1v1 site pushes esi (the 0/1 player
+// loop index), the 1P site pushes ebx (= 0), and the team site pushes
+// lea edi,[esi+3] where esi is the BYTE offset 4*i, i.e. 4*i+3.
+// Returns -1 = REFUSE TO ACT.
+int PinCharSlotForPlayer(int i) {
+    const uint32_t flag = *(const uint32_t*)ADDR_GAME_MODE_FLAG;
+    if (flag == 1u) return i;                    // VS 1v1 -- the netplay/spectate pin
+    if (flag == 0u) return (i == 0) ? 0 : -1;    // 1P/story -- one cursor, slot 0
+    // Team (flag 2) uses 4*i+3, but team-mode netplay/spectate is an explicit
+    // non-goal and the pin itself is not team-correct today: refuse rather than
+    // unload a slot whose binding we do not drive.
+    static bool s_warned = false;
+    if (!s_warned) {
+        s_warned = true;
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "[CSSPIN] g_game_mode_flag=%u (not 1v1 or 1P) -- declining the "
+            "preview unload; team-mode char-select is not driven by this pin",
+            flag);
+    }
+    return -1;
+}
+
+// The ENGINE's own "these preview objects belong to this char slot" predicate,
+// verbatim from Css_UnloadPlayerPreview: type == 4 && entity_kind < 2 &&
+// player_slot_id == char_slot. Returns the count and fills `detail` with up to
+// `cap` "slot/script/item/y" records -- the slot identity the fall correlation
+// needs (cross-referenced offline against [CSS-ANIM]'s per-slot born/adv/y).
+int CensusPreviewObjects(int char_slot, char* detail, size_t detail_cap) {
+    const uint8_t* pool = (const uint8_t*)ADDR_OBJECT_POOL;
+    int n = 0;
+    size_t at = 0;
+    if (detail_cap) detail[0] = '\0';
+    for (size_t i = 0; i < OBJ_COUNT; ++i) {
+        const uint8_t* obj = pool + i * OBJ_STRIDE;
+        if (*(const int*)(obj + OFF_OBJ_TYPE) != OBJ_TYPE_SCRIPT_VM) continue;
+        if (*(const int*)(obj + OFF_OBJ_KIND) >= 2) continue;
+        if (*(const int*)(obj + OFF_OBJ_PLAYER) != char_slot) continue;
+        ++n;
+        if (at + 40 < detail_cap) {
+            const int len = std::snprintf(detail + at, detail_cap - at,
+                "%u/%d/%d/%d,", (unsigned)i,
+                *(const int*)(obj + OFF_OBJ_SCRIPT_IDX),
+                *(const int*)(obj + OFF_OBJ_ITEM_IDX),
+                *(const int*)(obj + OFF_OBJ_POSY) >> 16);
+            if (len > 0) at += (size_t)len;
+        }
+    }
+    return n;
+}
+
+// Per-arm [CSSPIN] accumulator. One line per pin ARM (not per frame): two
+// 1024-slot walks per player per arm, 2-4 arms per session, no per-frame work.
+bool g_pin_line_pending = false;
+bool g_pin_unloaded[2]  = { false, false };
+char g_pin_note[2][192];
+
+// Returns true if the teardown was performed and the caller must therefore let
+// the ENGINE write selected[i] = -1 (see the TIMING note at the call site).
+//
+// `*burn_one_shot` is set only when an ACTUAL re-select teardown was REACHED --
+// i.e. the flavour resolved a char slot AND the engine's own else-branch
+// condition (prev_sel >= 0) held, so the census ran. It is deliberately NOT set
+// on the two declined paths (unknown flavour; nothing bound to tear down),
+// because the caller's one-shot is what pairs the unload with the -1: burning it
+// on a path that unloaded nothing would spend the pairing before the first real
+// re-select of the arm and leave that one writing the bare pre-fix -1 (review
+// F1(c)). The one-shot still exists, and is still per arm: it stops the second
+// and later frames of the SAME re-select from walking the pool again, and it is
+// the anti-hang fallback's arming condition.
+bool PinUnloadOutgoingPreview(int i, int target_char, int prev_sel,
+                              bool* burn_one_shot) {
+    char* note = g_pin_note[i];
+    const int slot = PinCharSlotForPlayer(i);
+    if (slot < 0) {
+        std::snprintf(note, sizeof(g_pin_note[0]),
+                      "p%d sel=%d->%d DECLINED(flag)", i, prev_sel, target_char);
+        return false;
+    }
+    const int loaded = (slot < 8)
+        ? *(const int*)(ADDR_SLOT_LOADED_CHAR + 4 * (uintptr_t)slot) : -999;
+    const bool reload = (loaded != target_char);
+
+    // The engine's OWN else-branch condition. selected[i] == -1 is the CREATE
+    // branch's state (boot character-select, or a pin that already ran) and
+    // must NOT unload -- there is nothing bound to tear down.
+    if (prev_sel < 0) {
+        std::snprintf(note, sizeof(g_pin_note[0]),
+                      "p%d sel=%d->%d slot=%d orphans=0 unloaded=0 reload=%s",
+                      i, prev_sel, target_char, slot, reload ? "YES" : "no");
+        return false;
+    }
+
+    // From here on this IS the arm's first actual re-select: the census runs and
+    // (on the fix arm) the engine's own teardown is applied, so the one-shot is
+    // spent on work that happened.
+    *burn_one_shot = true;
+
+    // The census runs on BOTH arms -- it is the measurement that names the
+    // orphans, and the causality control needs it exactly as much as the fix.
+    char before[112];
+    const int n_before = CensusPreviewObjects(slot, before, sizeof(before));
+    int n_after = n_before;
+    const bool act = CssUnloadEnabled();
+    if (act) {
+        ((CssUnloadPlayerPreviewFn)ADDR_CSS_UNLOAD_PREVIEW)(slot);
+        char after[16];
+        n_after = CensusPreviewObjects(slot, after, sizeof(after));
+    }
+    std::snprintf(note, sizeof(g_pin_note[0]),
+                  "p%d sel=%d->%d slot=%d orphans=%d unloaded=%d reload=%s [%s]",
+                  i, prev_sel, target_char, slot, n_before, n_before - n_after,
+                  reload ? "YES" : "no", before);
+    return act;
+}
 
 // Apply team-mode dupe-lock: in team mode CSS, mask each player's confirm
 // bits if their cursor would land on a character already locked into one
@@ -338,9 +553,53 @@ char __cdecl Hook_GameStateManager() {
                 const uint32_t p1_bit = ColorBitForSlot(p1col);
                 const uint32_t p2_bit = ColorBitForSlot(p2col);
 
+                // ORPHANED-PREVIEW FIX, with the engine's own TIMING.
+                //
+                // The teardown runs in the detour, strictly before g_orig().
+                // The `selected[i] = -1` write is then DEFERRED TO THE ENGINE
+                // for that one frame, and this is the load-bearing half.
+                //
+                // Css_UnloadPlayerPreview only MARKS the outgoing previews
+                // type 1; Obj_ReapMarkedSlot frees them (type 0) on the next
+                // update_game_state pass. The engine's own transition is
+                // therefore two-pass: unload + `selected = -1` on frame N,
+                // create on frame N+1, with the reap in between -- so the new
+                // preview set is allocated into the SAME low slots the old one
+                // occupied. Writing the -1 ourselves compresses that into one
+                // frame: g_orig() then sees selected == -1 immediately, and
+                // create_game_object's first-free scan has to skip the
+                // still-marked slots, so the new preview set lands HIGHER than
+                // the host's and in a different intra-set order. Measured on
+                // kensei2023: the character portrait moved from slot 0 to slot
+                // 10/11 while its y=980 children took slots 3-5, which flipped
+                // which member FindPlayerObjectSlot resolves and reddened the
+                // CSS-WIN FALL term with no object having moved.
+                //
+                // The engine writes the -1 itself in the same g_orig() call:
+                // the cursor is pinned to the target above, so its grid ==
+                // target != selected[i] and != -1, which is exactly the
+                // `else { Css_UnloadPlayerPreview(); selected = -1; }` branch
+                // (0x407425 / 0x407967 / 0x407C2A). Its unload call is a no-op
+                // second application over ours (type == 4 no longer matches).
+                //
+                // FALLBACK, so a flavour whose cursor we do not drive can never
+                // hang the pin: if the engine did NOT clear it (we already
+                // unloaded once for this arm and selected[i] is still neither
+                // the target nor -1), write the -1 directly next tick, which is
+                // the pre-fix behaviour.
                 if (p1_act == 0u) {
                     if (selected[0] != static_cast<int>(p1c)) {
-                        selected[0] = -1;
+                        bool engine_writes = false;
+                        if (!g_pin_unloaded[0]) {
+                            bool burn = false;
+                            engine_writes = PinUnloadOutgoingPreview(
+                                0, static_cast<int>(p1c), selected[0], &burn);
+                            if (burn) {
+                                g_pin_unloaded[0] = true;
+                                g_pin_line_pending = true;
+                            }
+                        }
+                        if (!engine_writes) selected[0] = -1;
                         in_changes[0] &= ~0x3F0u;
                     } else {
                         in_changes[0] = (in_changes[0] & ~0x3F0u) | p1_bit;
@@ -348,11 +607,48 @@ char __cdecl Hook_GameStateManager() {
                 }
                 if (p2_act == 0u) {
                     if (selected[1] != static_cast<int>(p2c)) {
-                        selected[1] = -1;
+                        bool engine_writes = false;
+                        if (!g_pin_unloaded[1]) {
+                            bool burn = false;
+                            engine_writes = PinUnloadOutgoingPreview(
+                                1, static_cast<int>(p2c), selected[1], &burn);
+                            if (burn) {
+                                g_pin_unloaded[1] = true;
+                                g_pin_line_pending = true;
+                            }
+                        }
+                        if (!engine_writes) selected[1] = -1;
                         in_changes[1] &= ~0x3F0u;
                     } else {
                         in_changes[1] = (in_changes[1] & ~0x3F0u) | p2_bit;
                     }
+                }
+
+                // [CSSPIN] -- ALWAYS ON, one line per pin ARM. This is the
+                // measurement that says whether the orphan class is back:
+                // `orphans` counted with the ENGINE's own preview predicate
+                // BEFORE the unload, `unloaded` how many the call marked,
+                // `reload` whether the char slot's blob is about to be swapped
+                // (the stale-blob precondition). orphans>0 with unloaded=0 is
+                // the regression alarm. The bracketed list is slot/script/item/y
+                // per orphan -- the slot identity that correlates against
+                // [CSS-ANIM]'s per-slot born/adv/y records offline.
+                //
+                // The line is armed by the ARM and RE-armed by any actual
+                // re-select teardown (the `burn` sites above), so a teardown
+                // that happens LATER than the arm's first in-block frame still
+                // gets a line. Without the re-arm the one-shot could print
+                // "no-reselect" and then go silent over the teardown that
+                // followed, which would make the harness's fatal
+                // `orphans>0 unloaded=0` term blind to exactly the frames it
+                // exists to judge.
+                if (g_pin_line_pending) {
+                    g_pin_line_pending = false;
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "[CSSPIN] arm flag=%u unload=%d | %s | %s",
+                        *(const uint32_t*)ADDR_GAME_MODE_FLAG,
+                        CssUnloadEnabled() ? 1 : 0,
+                        g_pin_note[0], g_pin_note[1]);
                 }
 
                 const uint32_t tick = g_pin_tick.fetch_add(1, std::memory_order_relaxed);
@@ -423,6 +719,13 @@ void CssAutoConfirm_OnReplayMatchStart(uint8_t p1_char, uint8_t p1_color,
     g_target_p2_color.store(p2_color, std::memory_order_relaxed);
     g_target_stage_id.store(stage_id, std::memory_order_relaxed);
     g_pin_tick.store(0, std::memory_order_relaxed);
+    // Arm the one-shot [CSSPIN] census + the paired preview unload for this arm.
+    // Defaults describe the "pin had nothing to re-select" case, which is what a
+    // player whose selection already equals the target legitimately produces.
+    std::snprintf(g_pin_note[0], sizeof(g_pin_note[0]), "p0 no-reselect");
+    std::snprintf(g_pin_note[1], sizeof(g_pin_note[1]), "p1 no-reselect");
+    g_pin_unloaded[0] = g_pin_unloaded[1] = false;
+    g_pin_line_pending = true;
     g_active.store(true, std::memory_order_release);
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
         "CssAutoConfirm: armed for replay -- p1=%u/c%u p2=%u/c%u stage=%u",

@@ -47,6 +47,25 @@ constexpr unsigned kLineVersion = 1u;
  * HOST's own measured resting level and does not read this number at all. */
 constexpr int32_t kDefaultFallDelta = 32;
 
+/* PAIRED LATE-WINDOW DUMP -- closing laneB 9.1's recorded instrument hole.
+ *
+ * The two existing [CSS-OBJ] dumps cannot be diffed against each other across
+ * planes. `why=peak` is keyed on the deepest player pos_y, and on the HOST the
+ * object never leaves its resting level, so the host's peak sample lands at the
+ * window OPEN while a falling spectator's lands deep inside the post-confirm
+ * ramp. `why=close` lands after each plane's own demote. So every "the
+ * spectator carries +2 objects" reading so far has been a TWO-SAMPLE INFERENCE
+ * taken on opposite sides of the transition, which is exactly the mistake that
+ * produced the refuted demote-ordering premise.
+ *
+ * This dump fires at a point BOTH planes reach identically: g_round_timer_counter
+ * (0x424F00) -- 0 for the entire selection phase, incrementing 1/frame once both
+ * action states latch, battle above 100 -- reaching a fixed ramp offset. One
+ * extra dump per window per plane, and it makes the population comparison a
+ * measurement instead of an inference. */
+constexpr uintptr_t kAddrRoundTimerCounter = 0x00424F00;
+constexpr uint32_t  kRampDumpAt = 50u;
+
 /* Cap on per-slot records kept for the detail dump. The pool is 1024 slots;
  * character-select carries ~40 active on wanwan and up to ~160 on
  * vanguard-princess. Anything above the cap is reported as a shortfall
@@ -77,6 +96,7 @@ uint32_t s_window_ord  = 0;
 uint32_t s_frames      = 0;     /* frames seen inside the current window */
 uint32_t s_emits       = 0;
 bool     s_fall_dumped = false;
+bool     s_ramp_dumped = false;   /* one why=ramp dump per window */
 
 int      s_max_slot[2] = { -1, -1 };
 int32_t  s_max_y[2]    = { 0, 0 };
@@ -125,13 +145,21 @@ int      s_census_last = -2;    /* last frame seen, for battle-restart detect */
 
 /* ---- [CSS-ANIM] -- per-object script-ADVANCE census (FM2K_CSS_ANIM=1) ----
  *
- * WHY: Wave-2 review finding B1e. The spectator character-select park
- * (spec_css_park.cpp) writes script_init_state = 2 on EVERY type-4 slot for the
- * whole of a between-match character-select window, which is a screen the user
- * is looking at. Every existing term is blind to the consequence: FALL, CSSPOOL,
- * CINPUT, CHECKSUM and CSS-FP are population/position/cursor terms, and
- * [CSSPARK] logs only totals. "Are the character previews frozen on the
- * spectator?" was therefore unanswerable from any artifact in the tree.
+ * WHY: Wave-2 review finding B1e. The spectator character-select park (deleted
+ * 2026-08-17, once the orphaned-preview CAUSE was fixed in css_autoconfirm.cpp)
+ * wrote script_init_state = 2 over the type-4 slots of a between-match
+ * character-select window, which is a screen the user is looking at. Every
+ * existing term was blind to the consequence: FALL, CSSPOOL, CINPUT, CHECKSUM
+ * and CSS-FP are population/position/cursor terms. "Are the character previews
+ * frozen on the spectator?" was unanswerable from any artifact in the tree.
+ *
+ * It now has a SECOND, permanent job. The FALL term only ever sees the ONE
+ * object FindPlayerObjectSlot resolves per player (first type-4 slot with a
+ * matching player slot), so a falling SIBLING of a multi-object preview set is
+ * structurally invisible to it -- measured 2026-08-17 on vanguard-princess,
+ * where four orphaned previews descended 480 -> 920 px while FALL reported
+ * 0/12 windows clean. ev=rec carries y_first/y_last per SLOT, so the same
+ * window can be scored per object offline.
  *
  * WHAT IT MEASURES: for every type-4 object alive in the window, whether its
  * SCRIPT PROGRAM COUNTER (item_idx, +0x2C -- the field character_state_machine
@@ -520,6 +548,7 @@ void OnCapture(uint32_t seq, int32_t match_phase,
         s_frames      = 0;
         s_emits       = 0;
         s_fall_dumped = false;
+        s_ramp_dumped = false;
         s_last_n      = 0;
         s_last_nobj   = 0;
         s_peak_n      = 0;
@@ -607,6 +636,15 @@ void OnCapture(uint32_t seq, int32_t match_phase,
     if (trip && !s_fall_dumped) {
         s_fall_dumped = true;
         DumpSlots("fall", s_last, s_last_n, s_last_nobj, s_last_seq);
+    }
+
+    /* The paired late-window sample (see kRampDumpAt). Both planes take it at
+     * the same engine-derived point, so this pair -- unlike peak-vs-close -- is
+     * a like-for-like population and slot-identity comparison. */
+    if (!s_ramp_dumped &&
+        *reinterpret_cast<const uint32_t*>(kAddrRoundTimerCounter) >= kRampDumpAt) {
+        s_ramp_dumped = true;
+        DumpSlots("ramp", s_last, s_last_n, s_last_nobj, s_last_seq);
     }
 
     if ((s_frames % kEmitPeriod) == 0u) {

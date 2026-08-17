@@ -50,11 +50,16 @@
  *                              frozen, plus how many were parked
  *   [CSS-ANIM] ... ev=rec      chunked per-object detail (identity + advance
  *                              counts), so object CLASSES separate offline
- * This answers Wave-2 review finding B1e -- the spectator character-select park
- * (spec_css_park.cpp) writes script_init_state = 2 on EVERY type-4 slot for the
- * whole window, and no other term in the tree can see whether that freezes the
- * character previews the spectator is supposed to be watching. Rationale, field
- * list and cost are in-source at the [CSS-ANIM] block in css_window.cpp.
+ * This answered Wave-2 review finding B1e -- the spectator character-select
+ * park (deleted 2026-08-17) wrote script_init_state = 2 over the type-4 slots
+ * for the post-confirm ramp, and no other term in the tree could see whether
+ * that froze the character previews the spectator is supposed to be watching.
+ * It now serves the orphaned-preview fix as the per-slot fall detector the
+ * FALL term cannot be: FALL only ever sees the ONE object FindPlayerObjectSlot
+ * resolves per player, so a falling SIBLING of a multi-object preview set is
+ * invisible to it, while ev=rec carries y_first/y_last for every slot.
+ * Rationale, field list and cost are in-source at the [CSS-ANIM] block in
+ * css_window.cpp.
  *
  * [CSS-OBJ] is the DIAGNOSIS half: it names the falling object's identity
  * (slot, type, owner, script id, player-slot binding, entity kind, position)

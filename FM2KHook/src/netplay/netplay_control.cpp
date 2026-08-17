@@ -128,7 +128,7 @@ void HostApplyMatchSettingOverrides() {
 // stage and its settings digest stops matching the players'.
 //
 // Same family and same rules as FM2K_SEAM_LEGACY_PARK / FM2K_SPEC_POOL_SYNC /
-// FM2K_SPEC_CSS_PARK: default behaviour is unchanged, the switch only ever
+// FM2K_SPEC_CSS_UNLOAD: default behaviour is unchanged, the switch only ever
 // disables, it is named in the report, and it must never ship default-on.
 static bool SpecHostConfigDropLever() {
     static int s_on = -1;

@@ -147,6 +147,9 @@ tools/.spec_selftest_vanpri/
 # per GAME). Same transient class; several MB per run.
 tools/.spec_sweep_*/
 tools/.spec_rotate_*/
+# Orphaned-preview validation used one out-dir per game for the same reason.
+tools/.spec_selftest_pkmncc/
+tools/.spec_selftest_kensei/
 logs/spec_rotate/
 logs/spec_sweep/
 

@@ -574,6 +574,17 @@ def main() -> int:
         rc_liveness = os.environ.get("FM2K_RC_LIVENESS")
         if rc_liveness is not None:
             play_env["FM2K_RC_LIVENESS"] = rc_liveness
+        # ORPHANED-PREVIEW FIX causality control (FM2K_SPEC_CSS_UNLOAD=0 makes
+        # the CssAutoConfirm pin write selected=-1 without the engine's paired
+        # Css_UnloadPlayerPreview). Default ON in the hook, so this only ever
+        # needs forwarding to turn it OFF -- and it must reach BOTH planes for
+        # the same reason as the switch above and as spec_selftest's own
+        # two-sided list: a one-sided env list is how a control arm silently
+        # measures half a fix. Without this line the hubspec stage could not run
+        # the control arm at all (review F6).
+        css_unload = os.environ.get("FM2K_SPEC_CSS_UNLOAD")
+        if css_unload is not None:
+            play_env["FM2K_SPEC_CSS_UNLOAD"] = css_unload
         p1_pty = OUT_DIR / "p1_parity.pty"
         sp_pty = OUT_DIR / "spec_parity.pty"
         for f in (p1_pty, sp_pty):
@@ -607,6 +618,10 @@ def main() -> int:
                     "FM2K_PARITY_RECORD_PATH": sst.to_win(sp_pty)}
         if rc_liveness is not None:
             spec_env["FM2K_RC_LIVENESS"] = rc_liveness
+        # Viewer half of the orphaned-preview control -- this is the plane that
+        # actually runs the pin, so it MUST be here.
+        if css_unload is not None:
+            spec_env["FM2K_SPEC_CSS_UNLOAD"] = css_unload
         if args.relay:
             # Host advertises the relay data plane in its hello; the hub stores
             # it and echoes it into spectate_grant, so LaunchRemoteSpectator
@@ -870,7 +885,25 @@ def main() -> int:
     specs = [{"k": 0, "tag": "P3", "phase": "battle(hub-grant)",
               "live": p3_live, "first_host_match": 0}]
     try:
-        cin_fail, ck_fail, pvp_fail = sst._parity_gates(OUT_DIR, specs)
+        # FOUR values since 2026-08-16 (the VS-1v1 TEAM-PIN term). This call
+        # unpacked THREE until 2026-08-17 and therefore raised ValueError on
+        # every hubspec run, which the except below turned into a [note] while
+        # the stage still reported PASS -- i.e. this stage's PVP fatal term was
+        # silently not running. Found by the orphaned-preview amendment lane
+        # while auditing detectors that print into the void; measured in
+        # logs/run_all_tests/2f_hubspec.log as
+        # "[note] _parity_gates raised ValueError('too many values to unpack')".
+        # The spectator-identity check was unaffected (_parity_gates sets
+        # s["gate"]/s["ok"] before it returns, so only the returned flags were
+        # lost). TEAM-PIN is captured but left non-fatal here on purpose: this
+        # harness's own fatal set is a deliberate subset (see the PVP comment
+        # below), and widening it is not this lane's call.
+        cin_fail, ck_fail, pvp_fail, teampin_fail = sst._parity_gates(OUT_DIR,
+                                                                      specs)
+        if teampin_fail:
+            notes.append("TEAM-PIN: the session did not run VS 1v1, or the "
+                         "mode stamp was missing (see the [harness] TEAM-PIN "
+                         "line above)")
     except Exception as e:                       # noqa: BLE001
         cin_fail, ck_fail, pvp_fail = False, False, False
         notes.append(f"_parity_gates raised {e!r}")

@@ -28,6 +28,8 @@
 // IDA). Idempotent -- once installed for a given HWND, subsequent
 // install attempts are no-ops.
 
+#include <windows.h>
+
 namespace FM2KWndProc {
 
 // Try to find the FM2K main window and install our subclass. Cheap when
@@ -37,5 +39,11 @@ void TryInstall();
 
 // Tear down the subclass. Safe to call even if never installed.
 void Uninstall();
+
+// The main game window this process owns, or nullptr before TryInstall has
+// found it. Exposed so other hook-side code does not have to repeat the
+// class-name EnumWindows walk (background_mode.cpp needs it for the deferred
+// minimize).
+HWND GetHwnd();
 
 }  // namespace FM2KWndProc

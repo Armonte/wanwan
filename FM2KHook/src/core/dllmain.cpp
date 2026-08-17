@@ -23,6 +23,7 @@ extern void NeuterFullscreenTogglesForCncDdraw();
 #include "../hooks/round_events.h"
 #include "../hooks/facing_trace.h"  // Phase 4b [FACING] ring: last-chance flush at DETACH
 #include "../hooks/per_game_patches.h"
+#include "../hooks/background_mode.h"  // FM2K_TEST_BACKGROUND: harness-only no-foreground-steal mode
 #include "../netplay/upload_queue.h"
 #include "../netplay/spectator_node.h"  // SpectatorNode_GetSessionId
 #include "version_local.h"  // fm2k::kAppBranch / kAppVersion / kAppRevision
@@ -461,6 +462,20 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                     std::snprintf(title, sizeof(title),
                                   "FM2K P%d Console", g_player_index + 1);
                     SetConsoleTitleA(title);
+                    // FM2K_TEST_BACKGROUND: the harness sets
+                    // FM2K_SPECTATOR_DEBUG=1, so EVERY backgrounded gate process
+                    // allocates one of these. Measured with the window-state
+                    // poller: the game windows themselves minimize in ~0.6s, but
+                    // the consoles sat visible on the owner's desktop for ~19s
+                    // apiece and accounted for 124 of the 135 visible samples in
+                    // the run that was otherwise clean. Minimize them at
+                    // creation -- unlike the game window there is no ordering
+                    // hazard here, a console owns no renderer.
+                    if (FM2KBackground::GetMode() != FM2KBackground::Mode::OFF) {
+                        if (HWND con = GetConsoleWindow()) {
+                            ShowWindow(con, SW_SHOWMINNOACTIVE);
+                        }
+                    }
                 }
             }
             InitFileLogging();
@@ -587,6 +602,16 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                                 "LocaleSpoof: DISABLED via FM2K_NO_JP_LOCALE=1");
                 }
             }
+
+            // FM2K_TEST_BACKGROUND (harness-only, OFF unless set to an exact
+            // recognised value): detour the user32 entry points that activate a
+            // window, so a gate stage's game windows come up minimized-without-
+            // activation instead of stealing the owner's foreground. Must land
+            // here, before ResumeThread, so the detours are live by the time the
+            // engine reaches InitializeMainWindow @0x4056C0 and its single
+            // hardcoded ShowWindow(hwnd, SW_SHOW). No-op (nothing patched at
+            // all) on the shipping path.
+            FM2KBackground::Install();
 
             // Multi-instance bypass is engine-aware (FM2K 0x405D05 /
             // FM95 0x40AB7F) and expected-byte-guarded -- runs on both.

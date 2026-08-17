@@ -1,5 +1,6 @@
 // launcher_ui_notify.cpp -- LauncherUI notifications + audio-mute state. Split from FM2K_LauncherUI.cpp (pure move).
 #include "FM2K_Integration.h"
+#include "../core/FM2K_TestBackground.h"  // FM2K_TEST_BACKGROUND: suppress flash/beep in harness runs
 #include "launcher_ui_hubstate.h"  // LauncherUI::HubState full def
 #include "launcher_ui_internal.h"  // shared persistence helpers (namespace lui)
 #include "FM2K_HubClient.h"
@@ -115,7 +116,12 @@ void LauncherUI::FireChallengeNotification(const std::string& from_nick) {
     // window -- flashing while focused is annoying. FLASHW_ALL flashes both
     // window caption AND taskbar button. FLASHW_TIMERNOFG keeps flashing
     // until the user focuses the window. Cancels automatically on focus.
-    if (notify_flash_ && hwnd && hwnd != GetForegroundWindow()) {
+    if (notify_flash_ && hwnd && hwnd != GetForegroundWindow() &&
+        !fm2k::test_background::IsOn()) {
+        // FM2K_TEST_BACKGROUND suppresses this: a gate run drives 2-5 launchers
+        // through real challenge/accept flows, and a backgrounded run that
+        // flashes the owner's taskbar (FLASHW_TIMERNOFG flashes until focused)
+        // is still interrupting them, which is the thing the flag exists to stop.
         FLASHWINFO fi = { sizeof(fi), hwnd,
                           FLASHW_ALL | FLASHW_TIMERNOFG, 0, 0 };
         FlashWindowEx(&fi);
@@ -125,7 +131,7 @@ void LauncherUI::FireChallengeNotification(const std::string& from_nick) {
     // No assets to ship; the Windows default-event sound is what users
     // already recognize as a notification chirp. MB_ICONINFORMATION maps
     // to SystemAsterisk -- a short, non-jarring ding.
-    if (notify_sound_) {
+    if (notify_sound_ && !fm2k::test_background::IsOn()) {
         MessageBeep(MB_ICONINFORMATION);
     }
 
@@ -141,7 +147,10 @@ void LauncherUI::FireChallengeNotification(const std::string& from_nick) {
     //   NIM_DELETE                                   -- cleanup
     // Earlier impl set NIF_INFO on both ADD and MODIFY which fired TWO
     // balloons (one per call) -- fixed by splitting the flag set.
-    if (notify_toast_ && hwnd) {
+    // FM2K_TEST_BACKGROUND suppresses the toast for the same reason it
+    // suppresses the flash and the beep: a desktop balloon from a gate run is
+    // an interruption, and the hubspec stage fires real challenge events.
+    if (notify_toast_ && hwnd && !fm2k::test_background::IsOn()) {
         char body_utf8[256];
         std::snprintf(body_utf8, sizeof(body_utf8),
                       T("modal_incoming_challenge_body"), from_nick.c_str());
@@ -188,12 +197,17 @@ void LauncherUI::FireSystemNotification(const std::string& title_utf8,
                                             SDL_PROP_WINDOW_WIN32_HWND_POINTER,
                                             nullptr);
     }
-    if (notify_flash_ && hwnd && hwnd != GetForegroundWindow()) {
+    if (notify_flash_ && hwnd && hwnd != GetForegroundWindow() &&
+        !fm2k::test_background::IsOn()) {
+        // FM2K_TEST_BACKGROUND suppresses this: a gate run drives 2-5 launchers
+        // through real challenge/accept flows, and a backgrounded run that
+        // flashes the owner's taskbar (FLASHW_TIMERNOFG flashes until focused)
+        // is still interrupting them, which is the thing the flag exists to stop.
         FLASHWINFO fi = { sizeof(fi), hwnd,
                           FLASHW_ALL | FLASHW_TIMERNOFG, 0, 0 };
         FlashWindowEx(&fi);
     }
-    if (notify_sound_) {
+    if (notify_sound_ && !fm2k::test_background::IsOn()) {
         MessageBeep(MB_ICONWARNING);
     }
     if (notify_toast_ && hwnd) {

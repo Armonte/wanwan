@@ -2,6 +2,7 @@
 #include "FM2K_DDrawRedirect.h"
 #include "FM2K_GameIni.h"
 #include "FM2K_Integration.h"
+#include "FM2K_TestBackground.h"  // FM2K_TEST_BACKGROUND (harness-only no-foreground-steal)
 #include "FM2KHook/src/ui/shared_mem.h"  // FM2KSharedMemData (read-only stats from hook)
 // DLL injection approach - no direct hooks needed
 #include <SDL3/SDL.h>
@@ -229,6 +230,40 @@ bool FM2KGameInstance::Launch(const std::string& exe_path, FM2K::Engine engine) 
     STARTUPINFOW si = {};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi = {};
+
+    // FM2K_TEST_BACKGROUND (harness-only, OFF unless set to an exact recognised
+    // value). STARTF_USESHOWWINDOW is the cheapest possible answer to the
+    // engine's window: InitializeMainWindow @0x4056C0 ends with a single
+    // hardcoded ShowWindow(hwnd, SW_SHOW), and Windows overrides the nCmdShow
+    // argument of a process's FIRST ShowWindow call with STARTUPINFO.wShowWindow
+    // when the creator sets this flag -- so the game's window comes up
+    // WITHOUT ACTIVATION with zero code running inside the game.
+    //
+    // SW_SHOWNOACTIVATE, NOT SW_SHOWMINNOACTIVE, in BOTH modes, deliberately.
+    // cnc-ddraw creates its Direct3D9 device against this window; a window that
+    // is already minimized (zero-size client area) at device-creation time can
+    // fail it and drop cnc-ddraw into software blitting, which shows up as
+    // "-WARNING- Using slow software rendering" in the title bar and distorts
+    // frame pacing. The minimize is therefore DEFERRED into the hook, which
+    // performs it only after the engine has completed real renders
+    // (FM2KBackground::OnFrameRendered). See the ORDERING CONTRACT in
+    // FM2KHook/src/hooks/background_mode.h.
+    //
+    // STARTUPINFO is also not sufficient on its own: cnc-ddraw imports
+    // ShowWindow / SetWindowPos / SetForegroundWindow / SetFocus and re-shows
+    // the window when it takes over presentation, and that is a LATER
+    // ShowWindow, which the STARTUPINFO override does not cover. The hook's
+    // user32 detours own that half. Both halves read the same variable, which
+    // the launcher has already injected into the child's environment above.
+    if (fm2k::test_background::IsOn()) {
+        si.dwFlags |= STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_SHOWNOACTIVATE;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "[BGMODE] spawning game with STARTF_USESHOWWINDOW wShowWindow=%u "
+            "(FM2K_TEST_BACKGROUND=%s; any minimize is deferred to the hook, "
+            "after the renderer is up)",
+            (unsigned)si.wShowWindow, fm2k::test_background::ModeName());
+    }
 
     // Convert wide_working_dir back to UTF-8 just for the debug log
     // (SDL_LogDebug takes narrow). The actual CreateProcessW call below

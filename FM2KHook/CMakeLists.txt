@@ -55,6 +55,7 @@ set(FM2KHOOK_SOURCES
     src/hooks/csm_diag.cpp
     src/hooks/combat_state.cpp
     src/hooks/wndproc_subclass.cpp
+    src/hooks/background_mode.cpp     # FM2K_TEST_BACKGROUND user32 detours (harness-only, OFF by default)
     src/hooks/render_simd.cpp
     # Netplay
     src/netplay/netplay.cpp

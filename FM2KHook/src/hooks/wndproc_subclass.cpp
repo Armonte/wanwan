@@ -312,6 +312,8 @@ void TryInstall() {
                 hwnd, (void*)prev);
 }
 
+HWND GetHwnd() { return g_hwnd; }
+
 void Uninstall() {
     if (g_hwnd == nullptr) return;
     if (g_in_modal_loop) {

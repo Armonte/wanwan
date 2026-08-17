@@ -17,6 +17,7 @@
 #include "game_discovery.h"  // game scan/cache/sniff + async discovery (moved out of this file)
 #include "FM2K_GameIni.h"
 #include "FM2K_Utf8Path.h"
+#include "FM2K_TestBackground.h"  // FM2K_TEST_BACKGROUND (harness-only no-foreground-steal)
 #include "FM2KHook/src/ui/shared_mem.h"
 #include "FM2KHook/src/ui/input_binder.h"  // RefreshGamepads() on SDL hot-plug events
 #include "FM2KHook/src/netplay/spec_relay_queue.h"  // hub-relay outbound drain (Phase 2c)
@@ -188,7 +189,23 @@ bool FM2KLauncher::InitializeSDL() {
     // Create window with SDL_Renderer graphics context
     float main_scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
     SDL_WindowFlags window_flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
-    
+
+    // FM2K_TEST_BACKGROUND (harness-only, OFF unless set to an exact recognised
+    // value): a gate run spawns 2-5 launchers, and each one taking the
+    // foreground makes the machine unusable for the duration. NOT_FOCUSABLE is
+    // the load-bearing flag (WS_EX_NOACTIVATE on Windows) -- it stops the later
+    // SDL_ShowWindow from activating.
+    //
+    // Deliberately NOT SDL_WINDOW_MINIMIZED here: SDL_CreateRenderer runs a few
+    // lines below, and a renderer created against a minimized (zero-size) window
+    // is exactly the ordering that drops a D3D backend into a software fallback.
+    // The minimize happens after the window is shown, once the renderer exists.
+    // Same ordering contract the hook side follows for the game window.
+    if (fm2k::test_background::IsOn()) {
+        window_flags |= SDL_WINDOW_NOT_FOCUSABLE;
+    }
+
+
     window_ = SDL_CreateWindow("FM2K Rollback Launcher", 
         (int)(1280 * main_scale), (int)(720 * main_scale), 
         window_flags);
@@ -389,7 +406,24 @@ bool FM2KLauncher::InitializeSDL() {
 
     SDL_SetWindowPosition(window_, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
     SDL_ShowWindow(window_);
-    
+    // Background mode: SDL_ShowWindow on a NOT_FOCUSABLE window does not
+    // activate. The minimize happens HERE rather than via a creation flag, so
+    // the renderer above was built against a normally-sized window (ordering
+    // contract -- see FM2KHook/src/hooks/background_mode.h). There is
+    // deliberately no SDL_RaiseWindow anywhere in the launcher: this is the
+    // only show site.
+    if (fm2k::test_background::IsOn()) {
+        if (fm2k::test_background::GetMode() ==
+                fm2k::test_background::Mode::MINIMIZE) {
+            SDL_MinimizeWindow(window_);
+        }
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "[BGMODE] launcher window mode=%s (FM2K_TEST_BACKGROUND) -- "
+            "not-focusable, never raised",
+            fm2k::test_background::ModeName());
+    }
+
+
     return true;
 }
 

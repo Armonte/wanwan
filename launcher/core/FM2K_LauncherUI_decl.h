@@ -367,8 +367,17 @@ private:
     void LoadDDrawCfgIfNeeded();
     // Per-player SOCD picker rendered above/below each player's
     // binding tab. SOCD is a local input filter applied before the
-    // 11-bit mask hits the wire, so different modes on the two peers
-    // do NOT cause desyncs -- each peer's slot has its own setting.
+    // 11-bit mask hits the wire, so a mismatch cannot make the two sims
+    // diverge -- each peer's slot has its own setting.
+    // CORRECTION (2026-08-16): the second half of that sentence used to read
+    // "so different modes on the two peers do NOT cause desyncs", which is
+    // true about the SIM and false about the PRODUCT. socd_mode is one of the
+    // five fields in Netplay_MatchSettingsDigest, so the battle-entry barrier
+    // (netplay_barriers.cpp) refuses to start the match while the two peers
+    // disagree, and after FM2K_CFG_BARRIER_FORCE_MS it force-enters with a
+    // loud ERROR. What SHIPS is host-authoritative: the host's mode is pushed
+    // in HOST_CONFIG and adopted by the guest and by every spectator. This
+    // picker therefore sets the LOCAL default; online it is overridden.
     // Persisted to settings.ini (`socd_mode_p1`, `socd_mode_p2`).
     void RenderInputBindingsTab(int player_slot);
     // Per-launcher SOCD state. Loaded from settings.ini on first menu

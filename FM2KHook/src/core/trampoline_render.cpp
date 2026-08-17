@@ -3,6 +3,7 @@
 #include "globals.h"
 #include "../hooks/hooks.h"
 #include "../hooks/wndproc_subclass.h"
+#include "../hooks/background_mode.h"  // FM2K_TEST_BACKGROUND deferred demotion marker
 #include "../netplay/netplay.h"
 #include "../netplay/control_channel.h"
 #include "../netplay/game_hash.h"
@@ -253,6 +254,16 @@ void RenderFrameWithSnapshot() {
     }
     g_render_game_only_ns = SDL_GetPerformanceCounter() - _rg0;
     g_in_render_rng = false;
+
+    // FM2K_TEST_BACKGROUND: THIS is the observable marker the deferred minimize
+    // waits on. A returned original_render_game() means the engine completed a
+    // full frame through DirectDraw -- i.e. cnc-ddraw's renderer context exists
+    // and has presented. Minimizing before that point can make D3D9 device
+    // creation fail against a zero-size client area and drop cnc-ddraw into its
+    // software-blit fallback ("-WARNING- Using slow software rendering" in the
+    // title bar), which distorts frame pacing. No-op except on the one tick that
+    // performs the demotion, and entirely absent unless the flag is set.
+    FM2KBackground::OnFrameRendered();
 
     // Render sub-profiler report (FM2K_RENDER_PROFILE=1). Decomposes the heavy-
     // stage render cost into blit (per-sprite pixel push, timed in

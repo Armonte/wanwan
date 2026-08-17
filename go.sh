@@ -51,7 +51,7 @@ cp dist/FM95Hook.dll /mnt/c/games/2dfm/wanwan/
 # <exedir>\locales at runtime; stale deployed copies cause new translation
 # keys to render as the literal key name in the UI.
 mkdir -p /mnt/c/games/locales
-cp locales/*.ini /mnt/c/games/locales/
+cp dist/locales/*.ini /mnt/c/games/locales/
 
 echo "Build completed successfully!"
 echo "Deployed (stripped) sizes:"

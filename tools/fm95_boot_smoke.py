@@ -14,7 +14,7 @@ the gate we run AFTER that patch lands.
 
 Usage: python3 tools/fm95_boot_smoke.py [game_key] [boot_secs]
 """
-import subprocess, sys, time
+import os, subprocess, sys, time
 sys.path.insert(0, "tools")
 import spec_selftest as s
 
@@ -41,10 +41,15 @@ if __name__ == "__main__":
         # intact), NOT via s.launch()'s temp-.bat trick: cmd.exe reads the .bat
         # in the ANSI codepage and mangles the full-width ＣＰＷ filename. A boot
         # smoke needs no env vars, so the .bat's `set K=V` machinery isn't
-        # needed either.
+        # needed either -- except FM2K_TEST_BACKGROUND, which needs WSLENV to
+        # cross the WSL->Windows boundary at all.
         log = open(s.OUT_DIR / f"smoke_{label}.log", "w")
+        env = dict(os.environ)
+        env["FM2K_TEST_BACKGROUND"] = os.environ.get("FM2K_TEST_BACKGROUND", "1")
+        prev = env.get("WSLENV", "")
+        env["WSLENV"] = "FM2K_TEST_BACKGROUND" + ((":" + prev) if prev else "")
         return subprocess.Popen([str(s.LAUNCHER), "--offline", s.to_win(GAME)],
-                                stdout=log, stderr=subprocess.STDOUT)
+                                env=env, stdout=log, stderr=subprocess.STDOUT)
 
 
     def markers(path):

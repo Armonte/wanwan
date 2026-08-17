@@ -486,6 +486,73 @@ static char __cdecl Hook_vs_round_function() {
         // interceptor to read.)
     }
 
+    // [CFG] -- the per-battle SETTINGS STAMP, emitted on EVERY plane: host,
+    // guest AND SPECTATOR. One line per MATCH per process.
+    //
+    // PLACED ABOVE THE g_player_index > 1 RETURN ON PURPOSE. That is the whole
+    // reason it exists: [ROUND-START] below is player-only, and [BATTLE-CFG]
+    // (css_window.cpp) hangs off SaveState_Save, which Phase 4b established
+    // never runs on a spectator -- so no existing line can see the plane this
+    // one is for. The two PLAYERS have the battle-entry barrier proving they
+    // agreed on the five sim-relevant settings; the SPECTATOR has nothing, by
+    // construction (netplay_control.cpp gates barrier emission on
+    // g_player_index <= 1), so "did the viewer actually apply the host's
+    // settings" has never been checkable. The Phase 6 settings leg compares
+    // these three lines: digests AND raw values, because three EQUAL digests
+    // can still be three wrong planes.
+    //
+    // ALSO THE TEAM-MODE TRIPWIRE. mode_flag = g_game_mode_flag: netplay and
+    // spectating are pinned to VS 1v1 in several independent places (the hook
+    // writes the flag at startup; MATCH_START and SPEC_JOIN_ACK carry room for
+    // exactly two characters), team mode is a documented non-goal, and the pin
+    // was a silent assumption everywhere. Stamping it makes every existing
+    // spectator/netplay stage check it for free.
+    //
+    // ONE PER MATCH, not per round: armed at the match-complete edge (and once
+    // at process start), consumed at the first RSS_ACTIVE entry after that.
+    // Rollback re-sim is excluded via g_is_rolling_back, the same guard the
+    // event emitters below use -- a resim re-traverses this edge.
+    //
+    // WHY RSS_ACTIVE AND NOT THE MODE FLIP: no peer runs a sim frame before its
+    // entry barrier completes, so a sample taken at the game_mode=3000 write
+    // could read a guest's PRE-agreement settings and red a healthy run. By the
+    // time the round is ACTIVE the barrier has released, HOST_CONFIG has been
+    // applied and the match-init latches are stable.
+    //
+    // Default ON: one synchronous line per match per process, the same budget
+    // as [ROUND-START]. FM2K_CFG_TRACE=0 turns it off.
+    if constexpr (FM2K::kIsFM2K) {
+        static const bool s_cfg_trace = []{
+            const char* v = std::getenv("FM2K_CFG_TRACE");
+            return !(v && v[0] == '0' && v[1] == '\0');
+        }();
+        static bool     s_cfg_armed     = true;   // first match of the process
+        static uint32_t s_cfg_match_ord = 0;
+        if (post >= RSS_MATCH_COMPLETE) s_cfg_armed = true;
+        if (s_cfg_trace && s_cfg_armed && !g_is_rolling_back &&
+            pre != RSS_ACTIVE && post == RSS_ACTIVE) {
+            s_cfg_armed = false;
+            ++s_cfg_match_ord;
+            const char* plane = g_spectator_mode ? "spec"
+                              : (g_player_index == 0) ? "host" : "guest";
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "[CFG] plane=%s match=%u digest=0x%08X stage=%u rounds=%u "
+                "time=%u speed=%u socd=%d mode_flag=%d cfg_rx=%u "
+                "latch_rounds=%u latch_stage=%d",
+                plane, s_cfg_match_ord,
+                Netplay_MatchSettingsDigest(),
+                *(uint32_t*)FM2K::ADDR_SELECTED_STAGE,   // 0x43010C  source
+                *(uint32_t*)0x430124,                    // g_default_round
+                *(uint32_t*)0x430114,                    // round time sec
+                *(uint32_t*)0x430104,                    // game speed pct
+                Hook_GetSOCDModePublic(),
+                *(int32_t*)ADDR_GAME_MODE_FLAG_RND,      // 1 = VS 1v1
+                Netplay_HostConfigRxCount(),
+                *(uint32_t*)0x470048,                    // g_round_limit    (LATCH)
+                *(int32_t*) 0x470040);                   // g_active_stage_id (LATCH)
+        }
+    }
+
     // Emit from BOTH player nodes (host index 0 + guest index 1) so each
     // player's own local .fm2krep carries ROUND_START/END (and thus
     // round_offsets for round-level seek). Each player is the SINGLE source

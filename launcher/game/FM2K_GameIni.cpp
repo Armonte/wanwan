@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <SDL3/SDL_log.h>
+#include <chrono>         // the orphaned-temp sweep's age floor
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -315,10 +316,95 @@ std::filesystem::path BackupPathFor(const std::filesystem::path& ini_path) {
     return p;
 }
 
+// Sweep ORPHANED per-pid save temps next to `ini_path` (item B3a).
+//
+// THE RESIDUAL THIS CLEANS UP. Save() writes "<ini>.<pid>.tmp" and renames;
+// the only removal sits inside the rename-FAILURE branch, so a crash or a kill
+// between the ofstream closing and the rename leaves the temp behind. The old
+// fixed "<ini>.tmp" name was self-overwriting and therefore capped at one file;
+// the per-pid name (which fixed a worse bug -- two launchers racing on one
+// shared temp, one of them silently losing its rename) removed that cap, so
+// orphans can now accumulate without bound.
+//
+// WHY IT IS NOT A ONE-LINER. Deleting "<ini>.*.tmp" unconditionally at startup
+// can delete ANOTHER LIVE LAUNCHER's in-flight temp -- which is the exact
+// multi-instance case the per-pid name exists for (the hub-brokered E2E
+// harness runs three launchers against one game directory). So each candidate
+// is deleted only when its owner is provably gone:
+//   1. the middle field must parse as a pid (anything else is not ours),
+//   2. never our own pid,
+//   3. never a pid that still has a live process (OpenProcess +
+//      GetExitCodeProcess == STILL_ACTIVE means a launcher owns it),
+//   4. never a file modified in the last 60 seconds -- the age floor is the
+//      guard against the one way step 3 can be wrong, pid REUSE: a recycled
+//      pid makes a dead owner look alive (safe: we skip, and the next launch
+//      retries) or, in the other direction, a live owner's brand-new temp can
+//      only be missed by the liveness test if the pid was recycled between the
+//      write and this check, which the floor covers.
+// One summary line, never one line per file.
+//
+// SCOPE LIMIT, deliberate: the PRE-per-pid name (`<ini>.tmp`, no middle field)
+// is NOT swept. It carries no pid, so its owner's liveness cannot be tested,
+// and a launcher old enough to write it is exactly the process that might still
+// own it. It was also self-overwriting, so at most one can exist per install.
+void SweepOrphanedSaveTemps(const std::filesystem::path& ini_path) {
+    std::error_code ec;
+    const auto dir = ini_path.parent_path();
+    if (dir.empty() || !std::filesystem::is_directory(dir, ec)) return;
+    const std::wstring prefix = ini_path.filename().wstring() + L".";
+    const std::wstring suffix = L".tmp";
+    const unsigned long self = GetCurrentProcessId();
+    const auto now = std::filesystem::file_time_type::clock::now();
+
+    int removed = 0, kept_live = 0, kept_young = 0;
+    for (std::filesystem::directory_iterator it(dir, ec), end; it != end;
+         it.increment(ec)) {
+        if (ec) break;
+        const std::wstring name = it->path().filename().wstring();
+        if (name.size() <= prefix.size() + suffix.size()) continue;
+        if (name.compare(0, prefix.size(), prefix) != 0) continue;
+        if (name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0)
+            continue;
+        // Middle field must be all digits, or this is not one of our temps.
+        const std::wstring mid = name.substr(
+            prefix.size(), name.size() - prefix.size() - suffix.size());
+        if (mid.empty()) continue;
+        bool digits = true;
+        for (wchar_t c : mid) if (c < L'0' || c > L'9') { digits = false; break; }
+        if (!digits) continue;
+        const unsigned long pid = wcstoul(mid.c_str(), nullptr, 10);
+        if (pid == 0 || pid == self) continue;
+
+        std::error_code tec;
+        const auto mtime = std::filesystem::last_write_time(it->path(), tec);
+        if (!tec && (now - mtime) < std::chrono::seconds(60)) { ++kept_young; continue; }
+
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)pid);
+        if (h) {
+            DWORD code = 0;
+            const bool alive = GetExitCodeProcess(h, &code) && code == STILL_ACTIVE;
+            CloseHandle(h);
+            if (alive) { ++kept_live; continue; }
+        }
+        std::error_code rm;
+        if (std::filesystem::remove(it->path(), rm) && !rm) ++removed;
+    }
+    if (removed || kept_live || kept_young) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "GameIni: swept %d orphaned save temp(s) next to %s "
+            "(kept %d owned by a live launcher, %d younger than 60s)",
+            removed, ini_path.filename().string().c_str(), kept_live, kept_young);
+    }
+}
+
 }  // namespace
 
 bool ApplyForLaunch(const std::filesystem::path& exe_path, bool is_online) {
     auto ini = PathForExe(exe_path);
+    // Hygiene, before anything else touches this directory: remove save temps
+    // left behind by launchers that died between the write and the rename.
+    // Skips anything a LIVE process owns (see SweepOrphanedSaveTemps).
+    SweepOrphanedSaveTemps(ini);
     GamePlayConfig override_;
     LoadOverride(exe_path, override_);
     const bool has_overrides = override_.any_set();

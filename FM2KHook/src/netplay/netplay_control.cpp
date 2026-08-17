@@ -94,7 +94,54 @@ void HostApplyMatchSettingOverrides() {
             return (v && v[0]) ? std::atoi(v) : -1;
         }();
         if (s_test_round_time >= 0) *(uint32_t*)0x430114 = (uint32_t)s_test_round_time;
+        // FM2K_TEST_GAME_SPEED=P: force the game-speed percentage (uValue @
+        // 0x430104, from Editor.TestPlay.GameSpeed). Added for the Phase 6
+        // settings-variance leg: game speed was the ONE HOST_CONFIG dimension
+        // with no test lever at all, so no gate had ever varied it, and the
+        // alternatives (editing the game.ini key, or the per-game override
+        // file) set the value on BOTH sides and would mask the delivery path
+        // this leg exists to test. Host-only for exactly the reason the round
+        // timer above is: the guest and every spectator must reach the same
+        // value through HOST_CONFIG. <= 0 = unset (leave the game default).
+        static const int s_test_game_speed = []{
+            const char* v = std::getenv("FM2K_TEST_GAME_SPEED");
+            return (v && v[0]) ? std::atoi(v) : 0;
+        }();
+        if (s_test_game_speed > 0) *(uint32_t*)0x430104 = (uint32_t)s_test_game_speed;
     }
+}
+
+// TEST-ONLY DIAGNOSTIC LEVER (FM2K_SPEC_HOSTCFG_DROP=1, DARK BY DEFAULT,
+// host-side only): suppress every SPECTATOR-directed HOST_CONFIG -- the
+// per-match fan-out in Netplay_BroadcastHostConfig and the one-shot push at
+// each spectator bind. The peer (guest) path is untouched, so the players'
+// settings plane and the entry barrier behave exactly as they do with the
+// lever off.
+//
+// It exists to RED-PROOF the Phase 6 spectator legs. The spectator has no
+// equivalent of the two-player entry barrier: it applies HOST_CONFIG and
+// nothing ever checks that it did, which is the hole the stage-switching and
+// settings-variance legs close. A gate that has never been shown to fail is
+// the ShadowArts shape, and this is the cheapest lever that makes both of them
+// fail for the RIGHT reason: with it armed a viewer keeps whatever stage /
+// round count / timer it had at bind time, so it plays the PREVIOUS match's
+// stage and its settings digest stops matching the players'.
+//
+// Same family and same rules as FM2K_SEAM_LEGACY_PARK / FM2K_SPEC_POOL_SYNC /
+// FM2K_SPEC_CSS_PARK: default behaviour is unchanged, the switch only ever
+// disables, it is named in the report, and it must never ship default-on.
+static bool SpecHostConfigDropLever() {
+    static int s_on = -1;
+    if (s_on < 0) {
+        const char* v = std::getenv("FM2K_SPEC_HOSTCFG_DROP");
+        s_on = (v && v[0] == '1' && v[1] == '\0') ? 1 : 0;
+        if (s_on)
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "[SPEC-HOSTCFG-DROP] TEST LEVER ARMED -- every HOST_CONFIG "
+                "aimed at a SPECTATOR is suppressed (peer delivery untouched). "
+                "Red-proof only; never use outside a red/green arm.");
+    }
+    return s_on == 1;
 }
 
 // Count of HOST_CONFIG packets this node has APPLIED. Surfaced in the
@@ -193,6 +240,11 @@ CtrlPacket BuildHostConfigPacket() {
 void Netplay_SendHostConfigToSpec(const sockaddr_in& to) {
     if (g_player_index != 0) return;
     CtrlPacket pkt = BuildHostConfigPacket();
+    if (SpecHostConfigDropLever()) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "[SPEC-HOSTCFG-DROP] suppressed the one-shot bind push to a spectator");
+        return;
+    }
     ControlChannel_SendTo(pkt, to);
 }
 
@@ -254,6 +306,12 @@ void Netplay_BroadcastHostConfig() {
         /*session_id*/      hc.session_id);
 
     // Also push to subscribed spectators on the same multiplex channel.
+    if (SpecHostConfigDropLever()) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "[SPEC-HOSTCFG-DROP] suppressed the per-match spectator fan-out "
+            "(peer copy above was sent normally)");
+        return;
+    }
     auto subs = SpectatorNode_GetSubscriberAddrs();
     for (const auto& s : subs) {
         ControlChannel_SendTo(pkt, s);

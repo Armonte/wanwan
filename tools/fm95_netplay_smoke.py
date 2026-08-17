@@ -39,6 +39,10 @@ if __name__ == "__main__":
         "FM2K_AUTO_TITLE_SKIP":         "1",
         "FM2K_AUTO_TERMINATE_AT_FRAME": str(frames),
         "FM2K_PRODUCTION_MODE":         "0",
+        # FM2K_TEST_BACKGROUND: ON BY DEFAULT (opt out with =0). Sits in
+        # `common` so make_env() puts it in WSLENV, which is what carries it
+        # across the WSL->Windows boundary for these direct-Popen launches.
+        "FM2K_TEST_BACKGROUND": os.environ.get("FM2K_TEST_BACKGROUND", "1"),
     }
 
     def make_env(extra):

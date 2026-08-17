@@ -33,6 +33,14 @@ SECS="${SECS:-11}"
 #   2021        -> ...\ヒャッキャコー2021\
 FILTERS="${FILTERS:-lightgreen8 AC_R7 2021}"
 
+# FM2K_TEST_BACKGROUND: ON BY DEFAULT (opt out with FM2K_TEST_BACKGROUND=0).
+# This stage launches the Windows exe DIRECTLY from bash, so the variable needs
+# WSLENV to survive the WSL->Windows boundary -- a plain `export` is dropped
+# there (the same trap the python harnesses dodge with the temp-.bat).
+BG="${FM2K_TEST_BACKGROUND:-1}"
+export FM2K_TEST_BACKGROUND="$BG"
+export WSLENV="FM2K_TEST_BACKGROUND${WSLENV:+:$WSLENV}"
+
 # Graceful skip on machines without the deployed launcher / game library (e.g.
 # headless CI) so this can sit in the unified gate without turning it red there.
 if [ ! -x "$LAUNCH" ] || [ ! -d "$GAMES_ROOT" ]; then

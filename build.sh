@@ -29,5 +29,13 @@ for f in FM2K_RollbackLauncher.exe FM2KHook.dll FM95Hook.dll FM2KUpdater.exe; do
     i686-w64-mingw32-strip --strip-debug "$DIST/$f"
 done
 
+# Locale .ini files. T() reads <exedir>\locales at runtime
+# (launcher/game/FM2K_Locale.cpp Locale::Init) and LoadIni fails SILENTLY on a
+# missing file, so a dist/ without these renders every UI string as its raw
+# translation key with no error anywhere. Staging them here makes dist/ a
+# complete deployable, which go.sh and package_release.sh both rely on.
+mkdir -p "$DIST/locales"
+cp "$(cd .. && pwd)/locales"/*.ini "$DIST/locales/"
+
 echo "Build OK. Stripped binaries staged in dist/:"
 ls -la "$DIST"/*.exe "$DIST"/*.dll | awk '{printf "  %-36s %s bytes\n", $NF, $5}'

@@ -50,6 +50,27 @@
 #                    so spectate against an 80-150-object game with projectiles
 #                    and recursive stage scripts had NEVER been gated. That is
 #                    where the object-pool index incoherence decides a hit.
+#   6a. specstage    spec_sweep.py --leg stage (FULL only) -- RANDOM STAGE across
+#                    matches, WITH spectators. The spectator does not roll the
+#                    stage, it is TOLD: Hook_LoadStageFile excludes
+#                    g_spectator_mode, so the viewer's stage arrives exclusively
+#                    through HOST_CONFIG and a lost/late one shows it the
+#                    PREVIOUS match's stage. Runs pkmncc, not wanwan -- wanwan
+#                    has 2 stages, which makes a "random stage" run untestable.
+#   6b. specsettings spec_sweep.py --leg settings (FULL: V0+V1; SPECSWEEP adds
+#                    V2+V3) -- the HOST_CONFIG payload dimensions (round time,
+#                    round count, game speed, SOCD) varied across runs and
+#                    asserted on ALL THREE PLANES via the hook's [CFG] stamp.
+#                    The two PLAYERS have the entry-barrier digest; the
+#                    SPECTATOR has nothing, by construction, which is the hole.
+#                    Sets FM2K_TEST_ROUNDS_HOST_ONLY=1, which makes this the
+#                    first thing ever to test round-count DELIVERY.
+#   6c. specrotate   spec_rotate_gate.sh (SPECSWEEP=1 only, 45-70 min) -- the
+#                    spectator pointed at the real game library the determinism
+#                    sweep already rotates: SPACE paths, a kanji path + long
+#                    intro, a 71MB packed exe, plus vanpri and urorfg. Its own
+#                    opt-in tier on purpose: FULL is the before-a-cut tier and a
+#                    70-minute leg inside it is a leg that stops being run.
 #   3. ddraw         ddraw_redirect_test.sh — cnc-ddraw redirect applied.
 #   4. multigame     multigame_determinism_sweep.sh (FULL only) — byte-identical
 #                    engine determinism across the real FM2K game library.
@@ -77,14 +98,30 @@
 #      SEAM_VANPRI_SKIP(0) SEAM_VANPRI_SEEDS(130)  -- stage 2e vanpri leg (FULL)
 #      HUBSPEC_SKIP(0) HUBSPEC_TIMEOUT(480)     -- stage 2f hub-brokered spectate
 #      SPECGAME_SKIP(0) SPECGAME_TIMEOUT(720) VANPRI_EXE(...)  -- stage 2g
+#      SPECSWEEP(0)                             -- the opt-in Phase 6 tier (6c)
+#      SPECSTAGE_SKIP(0) SPECSTAGE_EXE(...)     -- stage 6a stage switching
+#      SPECSETTINGS_SKIP(0) SPECSETTINGS_ROUNDS(fatal|advisory)  -- stage 6b
+#      SPECROTATE_SKIP(0) SPECROTATE_GAMES("")  -- stage 6c rotation subset
 #      CPW_EXE(/mnt/c/dev/fm95/CPW/ＣＰＷ.exe) FM95_NETPLAY(0)  — stage 5
+#      FM2K_TEST_BACKGROUND(1)  -- every stage launches its launcher AND game
+#                    windows minimized-without-activation so a gate run does not
+#                    steal the foreground for its whole duration. This is a
+#                    HARNESS default only: the flag is OFF in a normal user
+#                    launch and OFF unless set to an exact recognised value.
+#                    Set FM2K_TEST_BACKGROUND=0 to WATCH a run (windows behave
+#                    exactly as they did before this existed); "noactivate"
+#                    keeps the windows visible but never focused.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FRAMES="${FRAMES:-1500}"; LOSS="${LOSS:-0.15}"; SPEC_RUNS="${SPEC_RUNS:-4}"
 CD="${FM2K_CHECK_DISTANCE:-10}"; FULL="${FULL:-0}"
 OUT="$ROOT/logs/run_all_tests"; rm -rf "$OUT"; mkdir -p "$OUT"
 
-kill_games() { for p in WonderfulWorld_ver_0946 WonderfulRvl FM2K_RollbackLauncher fm2k FM2K CPW ＣＰＷ vanpri; do
+# Every process stem any stage can spawn. The Phase 6 rotation adds the library
+# games AND `_hrun` (the ASCII-staged copy a SPACE/kanji path runs as): a wedged
+# rotation process that outlives its stage poisons the next one's logs.
+kill_games() { for p in WonderfulWorld_ver_0946 WonderfulRvl FM2K_RollbackLauncher fm2k FM2K CPW ＣＰＷ vanpri \
+    _hrun pkmncc DragonPuppy_version01a kensei2023 "REQUIEM FINAL" 闘闘 ShadowArts URORFGRelease102; do
     taskkill.exe /F /IM "${p}.exe" >/dev/null 2>&1; done; }
 
 # FM95/CPW reference exe (fullwidth filename). Stage 5 self-skips if absent so
@@ -108,6 +145,7 @@ stage() {  # stage <name> <logfile> -- runs $CMD, verdict by EXIT CODE
 }
 
 echo "[run_all] FRAMES=$FRAMES LOSS=$LOSS SPEC_RUNS=$SPEC_RUNS CHECK_DISTANCE=$CD FULL=$FULL"
+echo "[run_all] FM2K_TEST_BACKGROUND=${FM2K_TEST_BACKGROUND:-1 (default)} -- set 0 to watch the run"
 
 # Stage 0 — host-native unit tests (doctest suite + delay math + reliable
 # channel). Cheap and toolchain-free, so it runs FIRST: if the wire format or
@@ -531,6 +569,84 @@ else
       --game-exe '$VANPRI_EXE' \
       --rounds 1 --total-frames 16000 --spectators battle1,css2 --record-timeout 600 --keep"
     stage "specgame-vanpri" "$OUT/2g_specgame_vanpri.log"
+fi
+
+# ===========================================================================
+# PHASE 6 -- SPECTATOR FEATURE-PARITY SWEEP (6a / 6b / 6c)
+# ---------------------------------------------------------------------------
+# Owner directive: "spectator needs to follow everything a normal match can do
+# ala the stage switching etc". Until these stages, the spectator plane was
+# gated at ONE game, ONE stage, ONE set of match settings, while the settings
+# and the stage are exactly the things a real session varies between matches --
+# on the same between-matches reconstruction path Phase 4c had to fix.
+#
+# TIERING, and it is deliberate: BASE gains NOTHING (the base gate is what runs
+# before every cut and already carries unit + determinism + 4 spectator runs +
+# multi-match + CSS + deep-join x2 + seamdesync + hubspec + ddraw). FULL gains
+# ~10 minutes (6a + 6b V0/V1). The 45-70 minute rotation gets its OWN opt-in
+# variable, SPECSWEEP=1, rather than being folded into FULL: FULL is the
+# before-a-cut tier and is expected to stay near 30 added minutes, and a tier
+# that takes 70 minutes inside it is a tier people start skipping -- which is
+# how a stage quietly stops running. The multigame sweep set this precedent.
+SPECSWEEP="${SPECSWEEP:-0}"
+
+# Stage 6a -- STAGE SWITCHING with spectators (FULL). Runs pkmncc: wanwan
+# defines TWO stages, so a random-stage run there tests a 2-element range and
+# can never show a viewer tracking a real change. Self-skips when pkmncc is not
+# installed (a contributor without the D: library is unaffected); the path is
+# handed to the harness as --game-exe, so it is LOAD-BEARING rather than
+# decorative (Phase 4e review A4d).
+SPECSTAGE_EXE="${SPECSTAGE_EXE:-/mnt/d/Games/fm2k/_NODEV/pkmncc/pkmncc.exe}"
+if [ "${SPECSTAGE_SKIP:-0}" = 1 ]; then
+    echo "[run_all] specstage: SKIPPED (SPECSTAGE_SKIP=1)"
+elif [ "$FULL" != 1 ]; then
+    echo "[run_all] specstage: SKIPPED (set FULL=1 -- ~6 min)"
+elif [ ! -f "$SPECSTAGE_EXE" ]; then
+    echo "[run_all] specstage: SKIPPED (pkmncc not installed at $SPECSTAGE_EXE)"
+else
+    CMD="SPECSWEEP_STAGE_EXE='$SPECSTAGE_EXE' timeout 700 python3 -u '$ROOT/tools/spec_sweep.py' \
+      --leg stage --out '$OUT/6a_stage'"
+    stage "specstage" "$OUT/6a_specstage.log"
+fi
+
+# Stage 6b -- SETTINGS VARIANCE on all three planes (FULL: V0 + V1; SPECSWEEP
+# additionally V2 infinite-timer + V3 SOCD). Judged on the hook's per-battle
+# [CFG] stamp: the three planes must carry the SAME settings digest AND the raw
+# values the harness asked for (three equal-but-wrong planes is a real failure
+# mode this catches and digest-equality alone does not), zero
+# "MATCH SETTINGS NEVER AGREED", and a spectator cfg_rx > 0.
+#
+# SPECSETTINGS_ROUNDS: the leg sets FM2K_TEST_ROUNDS_HOST_ONLY=1, which stops
+# the harness from writing the right round count onto every peer 100 times a
+# second -- so it is the FIRST thing ever to exercise round-count DELIVERY.
+# 'advisory' reports a round-count mismatch loudly without failing the stage,
+# which is the correct setting only while a real, filed delivery bug is
+# undispositioned. Default is fatal.
+if [ "${SPECSETTINGS_SKIP:-0}" = 1 ]; then
+    echo "[run_all] specsettings: SKIPPED (SPECSETTINGS_SKIP=1)"
+elif [ "$FULL" != 1 ] && [ "$SPECSWEEP" != 1 ]; then
+    echo "[run_all] specsettings: SKIPPED (set FULL=1 -- ~9 min)"
+else
+    if [ "$SPECSWEEP" = 1 ]; then SPECSETTINGS_VARIANTS="V0,V1,V2,V3"
+    else                          SPECSETTINGS_VARIANTS="V0,V1"; fi
+    CMD="timeout 2000 python3 -u '$ROOT/tools/spec_sweep.py' --leg settings \
+      --variants $SPECSETTINGS_VARIANTS \
+      --rounds-term ${SPECSETTINGS_ROUNDS:-fatal} --out '$OUT/6b_settings'"
+    stage "specsettings" "$OUT/6b_specsettings.log"
+fi
+
+# Stage 6c -- GAME ROTATION with spectators (SPECSWEEP=1 only, 45-70 min).
+# tools/spec_rotate_gate.sh owns the recipe, the staging and the verdict; the
+# rationale lives in that file's header. A listed game that is missing is an
+# ERROR there, not a skip -- that is the whole point -- so the wiring here does
+# NOT set SPECROTATE_ALLOW_MISSING.
+if [ "${SPECROTATE_SKIP:-0}" = 1 ]; then
+    echo "[run_all] specrotate: SKIPPED (SPECROTATE_SKIP=1)"
+elif [ "$SPECSWEEP" != 1 ]; then
+    echo "[run_all] specrotate: SKIPPED (set SPECSWEEP=1 -- 45-70 min, its own tier)"
+else
+    CMD="SPECROTATE_OUT='$OUT/6c_rotate' bash '$ROOT/tools/spec_rotate_gate.sh'"
+    stage "specrotate" "$OUT/6c_specrotate.log"
 fi
 
 # Stage 3 — cnc-ddraw redirect (the "SJIS folder -> fullscreen" class). Drives

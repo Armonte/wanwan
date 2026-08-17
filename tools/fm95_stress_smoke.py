@@ -55,6 +55,12 @@ if __name__ == "__main__":
         # at CSS (#46). Safe since the _lopen/OpenFile share fix; harness-scope
         # only -- the DLL default stays opt-in.
         "FM95_SKIP_LOGOS":              "1",
+        # FM2K_TEST_BACKGROUND: ON BY DEFAULT (opt out with =0). This smoke
+        # launches the exe directly (see the note below on why it cannot use
+        # spec_selftest.launch), so it carries the var itself -- and because it
+        # is in harness_env it is also added to WSLENV below, which is what
+        # actually gets it across the WSL->Windows boundary.
+        "FM2K_TEST_BACKGROUND": os.environ.get("FM2K_TEST_BACKGROUND", "1"),
     }
     env = dict(os.environ)
     env.update(harness_env)

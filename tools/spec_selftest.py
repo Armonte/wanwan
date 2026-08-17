@@ -133,6 +133,19 @@ def report_host_pacing(host_log, n_fake):
 def launch(label, args, env_extra, log_path, timeout, done_when=None):
     # WSL->Windows env vars don't cross subprocess.Popen(env=); use the
     # cmd.exe `set K=V&& ...` trick (same as the other harnesses).
+    #
+    # FM2K_TEST_BACKGROUND: ON BY DEFAULT FOR EVERY HARNESS PROCESS. A gate run
+    # spawns 2-5 launcher windows plus 2-5 game windows; each one taking the
+    # foreground makes the machine unusable for the length of the run. Injected
+    # HERE rather than in the per-role env dicts on purpose -- this is the single
+    # funnel every P1/P2/spectator/REPLAY launch goes through, so no role can be
+    # forgotten. The launcher reads it for its own SDL window AND for the
+    # STARTUPINFO it spawns the game with; the injected hook reads the same
+    # variable for its user32 detours.
+    #   Watch a run:  FM2K_TEST_BACKGROUND=0 python3 tools/spec_selftest.py ...
+    env_extra = dict(env_extra)
+    env_extra.setdefault("FM2K_TEST_BACKGROUND",
+                         os.environ.get("FM2K_TEST_BACKGROUND", "1"))
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_f = open(log_path, "w")
     win_args = []
@@ -1926,6 +1939,56 @@ def _parity_gates(out_dir, specs):
                 print(f"[harness] RELATCH {_tag}: {len(lines)} {p} line(s) [advisory]")
                 print(f"    {lines[0]}")
 
+    # ---- [CFG] per-battle settings stamp: TEAM-MODE TRIPWIRE (advisory) ------
+    # The hook stamps one [CFG] line per battle per plane (the
+    # vs_round_function detour in round_events.cpp),
+    # carrying the five digest fields plus mode_flag = g_game_mode_flag. Two
+    # things are surfaced here, both ADVISORY -- the Phase 6 settings leg owns
+    # the fatal three-plane comparison, and an ungated-red assertion in the
+    # SHARED harness is how a stage gets disabled:
+    #   * mode_flag != 1 anywhere = the VS-1v1 pin moved. Netplay and spectating
+    #     are pinned to 1v1 by construction (the hook writes the flag at
+    #     startup; MATCH_START and SPEC_JOIN_ACK carry exactly two characters),
+    #     and team mode is a documented NON-GOAL. This converts that silent
+    #     assumption into a checked one in EVERY existing stage, at the cost of
+    #     one regex over the preserved logs.
+    #   * no [CFG] lines at all = the instrument is absent from this binary (or
+    #     FM2K_CFG_TRACE=0), which must stay distinguishable from "the pin is
+    #     fine" -- the sentinel lesson from Phase 4d/4e.
+    import re as _re_cfg
+    _cfg_rx = _re_cfg.compile(r"\[CFG\] plane=(\w+) match=(\d+) .*?mode_flag=(-?\d+)")
+    _cfg_planes, _cfg_bad = {}, []
+    for _tag, _lp in ([("P1", out_dir / "live_FM2K_P1_Debug.log"),
+                       ("P2", out_dir / "live_FM2K_P2_Debug.log")]
+                      + [(s["tag"], s["live"]) for s in specs]):
+        try:
+            with open(_lp, errors="ignore") as fh:
+                for ln in fh:
+                    m = _cfg_rx.search(ln)
+                    if not m:
+                        continue
+                    _cfg_planes.setdefault(_tag, 0)
+                    _cfg_planes[_tag] += 1
+                    if int(m.group(3)) != 1:
+                        _cfg_bad.append(f"{_tag} match{m.group(2)} "
+                                        f"mode_flag={m.group(3)}")
+        except OSError:
+            continue
+    if not _cfg_planes:
+        print("[harness] TEAM-PIN: no [CFG] lines on any plane -- the settings "
+              "stamp is NOT PRESENT in this build (or FM2K_CFG_TRACE=0). The "
+              "VS-1v1 pin was NOT checked this run [advisory]")
+    elif _cfg_bad:
+        print(f"[harness] TEAM-PIN: g_game_mode_flag != 1 (VS 1v1) on "
+              f"{len(_cfg_bad)} battle(s): {', '.join(_cfg_bad[:4])} -- netplay "
+              f"and spectating are PINNED to 1v1 (MATCH_START / SPEC_JOIN_ACK "
+              f"carry two characters); team mode is a documented non-goal. "
+              f"[ADVISORY -- the fatal terms above own the verdict]")
+    else:
+        print("[harness] TEAM-PIN: g_game_mode_flag == 1 (VS 1v1) on every "
+              "stamped battle -- "
+              + ", ".join(f"{k}:{v}" for k, v in sorted(_cfg_planes.items())))
+
     for s in specs:
         r = gate_one(s["live"])
         s["gate"] = r
@@ -2230,9 +2293,46 @@ def main():
               # own game.ini round count instead of waiting on a ~1/4 packet
               # loss coin flip). Dark by default and only "1" arms it, so
               # plain truthiness forwarding is correct here.
-              "FM2K_HOSTCONFIG_LATE"):
+              "FM2K_HOSTCONFIG_LATE",
+              # Phase 6 (a) STAGE SWITCHING. The three random-stage vars go to
+              # every plane on purpose, spectators INCLUDED. The spectator must
+              # never roll (Hook_LoadStageFile excludes g_spectator_mode and
+              # takes the stage from HOST_CONFIG instead), and the leg asserts
+              # exactly that -- an assertion which is VACUOUS if the viewer
+              # simply never received the env. Handing it the seed and then
+              # proving it still emits no override line tests the code gate.
+              "FM2K_STAGE_RANDOM_SEED", "FM2K_STAGE_RANDOM_MIN",
+              "FM2K_STAGE_RANDOM_MAX",
+              # Phase 6 (b) SETTINGS VARIANCE. FM2K_TEST_GAME_SPEED is exported
+              # to both players and read HOST-ONLY inside HostApplyMatchSetting
+              # Overrides, exactly like FM2K_TEST_ROUND_TIME: the guest and the
+              # spectators must reach the same speed through HOST_CONFIG or the
+              # harness masks the delivery path it is supposed to gate.
+              "FM2K_TEST_GAME_SPEED",
+              # [CFG] per-battle three-plane settings stamp (round_events.cpp).
+              # DEFAULT ON in the hook; forwarded so a run can turn it off.
+              "FM2K_CFG_TRACE",
+              # Battle-entry settings barrier budget. The settings leg's
+              # PLAYER-half red proof shortens it so a starved guest reaches
+              # the "MATCH SETTINGS NEVER AGREED" force-complete inside the
+              # run's wall clock instead of after the default 10s.
+              "FM2K_CFG_BARRIER_FORCE_MS"):
         if os.environ.get(k):
             common_env[k] = os.environ[k]
+    # FM2K_TEST_ROUNDS_HOST_ONLY: suppresses the per-frame g_default_round force
+    # in hooks_update.cpp so round count travels the real HOST_CONFIG delivery
+    # path. Forwarded BY PRESENCE for the usual reason, and it must reach EVERY
+    # plane -- the force it disables runs on the guest and the spectator too, so
+    # a one-sided forward would leave the very peers under test writing the right
+    # answer on top of whatever was delivered. The spectator half is in the
+    # per-spectator list below.
+    if os.environ.get("FM2K_TEST_ROUNDS_HOST_ONLY") is not None:
+        common_env["FM2K_TEST_ROUNDS_HOST_ONLY"] = os.environ["FM2K_TEST_ROUNDS_HOST_ONLY"]
+    # FM2K_SOCD_MODE is deliberately NOT in the list above: it is read
+    # per-process (hooks_input.cpp) and setting it on both peers would make the
+    # SOCD variant a local-config test instead of a delivery test. It goes to
+    # the HOST ONLY, below, and every other plane must obtain it from
+    # HOST_CONFIG -- which is also what the entry barrier's digest gates.
     # FM2K_SPEC_DEEP_JOIN is forwarded SEPARATELY and by presence, not by
     # truthiness. The hook now defaults the bounded deep join ON and this
     # variable is the KILL-SWITCH, so the value that matters most is "0" --
@@ -2316,6 +2416,19 @@ def main():
         p1_env["FM2K_CSS_FALL_DELTA"] = _css_fall_delta
     if _css_anim:
         p1_env["FM2K_CSS_ANIM"] = _css_anim
+    # HOST-ONLY by design (Phase 6 settings-variance leg):
+    #   FM2K_SOCD_MODE          -- a per-process input filter. On the host it is
+    #                              the authoritative value HOST_CONFIG carries;
+    #                              on any other plane it would be a local
+    #                              setting, and the leg would stop testing
+    #                              delivery. Also one of the five digest fields,
+    #                              so a failure to deliver blocks battle entry.
+    #   FM2K_SPEC_HOSTCFG_DROP  -- the RED-PROOF lever: the host stops sending
+    #                              HOST_CONFIG to spectators (peer untouched).
+    #                              Host-side only by construction.
+    for _hk in ("FM2K_SOCD_MODE", "FM2K_SPEC_HOSTCFG_DROP"):
+        if os.environ.get(_hk):
+            p1_env[_hk] = os.environ[_hk]
     if measure_host:
         # Host frame-time profiler ON for the load test -> [FRAMETIME]
         # over_budget=X/300 + [HICCUP] lines land in the host's debug log.
@@ -2426,6 +2539,17 @@ def main():
                    # all-zero [ENVSHADOW] summary and no CSV on S*. If a
                    # spectator ever emits a non-zero one, that is itself a finding.
                    "FM2K_ENVELOPE_SHADOW", "FM2K_ENVELOPE_SHADOW_WITNESS",
+                   # Phase 6 (a) stage switching, viewer half. Forwarded so the
+                   # "the spectator NEVER rolls" assertion tests the code gate
+                   # (Hook_LoadStageFile's g_spectator_mode exclusion) rather
+                   # than the absence of the env -- see the player list above.
+                   "FM2K_STAGE_RANDOM_SEED", "FM2K_STAGE_RANDOM_MIN",
+                   "FM2K_STAGE_RANDOM_MAX",
+                   # [CFG] three-plane settings stamp, viewer half. This is the
+                   # plane the stamp EXISTS for: a spectator can neither emit a
+                   # barrier packet nor be checked by one, so its line is the
+                   # only evidence that it applied the host's settings.
+                   "FM2K_CFG_TRACE",
                    # [BATTLE-OBJ] census, viewer half. Symmetric on principle
                    # (the recorded trap is a one-sided env list), with an
                    # honest note: the census hangs off SaveState_Save, which
@@ -2450,8 +2574,19 @@ def main():
         # battle-entry snapshot, which the OFF arm must also be able to poison.
         if os.environ.get("FM2K_ROUNDS_RELATCH") is not None:
             env["FM2K_ROUNDS_RELATCH"] = os.environ["FM2K_ROUNDS_RELATCH"]
+        # FM2K_TEST_ROUNDS_HOST_ONLY, viewer half. The per-frame force it
+        # disables runs on the SPECTATOR too (hooks_update.cpp is reached before
+        # the g_spectator_mode early return), and the spectator is the plane
+        # whose round-count delivery has never been tested precisely because of
+        # it. Presence-forwarded like the other kill switches.
+        if os.environ.get("FM2K_TEST_ROUNDS_HOST_ONLY") is not None:
+            env["FM2K_TEST_ROUNDS_HOST_ONLY"] = os.environ["FM2K_TEST_ROUNDS_HOST_ONLY"]
         # The spectator MUST run the same round count as the host, else a 1-round
         # host vs best-of-3 spectator diverges at the host's round-1 match-end.
+        # Under FM2K_TEST_ROUNDS_HOST_ONLY this variable is INERT here (the force
+        # that consumed it is off) and the value has to arrive via HOST_CONFIG --
+        # which is the entire point of that switch. Still exported, so turning
+        # the switch off restores the pre-Phase-6 behaviour byte-for-byte.
         if args.rounds > 0:
             env["FM2K_TEST_ROUNDS"] = str(args.rounds)
         sargs = [str(LAUNCHER), "--host", game_arg,

@@ -142,6 +142,13 @@ tools/.spec_selftest_b/
 # Phase 4e: stage 2g (specgame-vanpri) gets its own out-dir so it cannot re-gate
 # the shared one's wanwan logs. Same transient class as the lines above.
 tools/.spec_selftest_vanpri/
+# Phase 6: the sweep legs each get their own out-dir for the same reason (a
+# per-leg dir cannot re-gate another stage's logs, and the rotation writes one
+# per GAME). Same transient class; several MB per run.
+tools/.spec_sweep_*/
+tools/.spec_rotate_*/
+logs/spec_rotate/
+logs/spec_sweep/
 
 # Machine-local RE / recovery scratch. artifacts/ holds IDA pack backups, carved
 # probes and copied Windows binaries -- 5.1 MB of it defeated the *.i64 rule

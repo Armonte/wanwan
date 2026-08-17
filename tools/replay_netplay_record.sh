@@ -17,6 +17,11 @@
 
 set -e
 LAUNCHER="C:/games/FM2K_RollbackLauncher.exe"
+# FM2K_TEST_BACKGROUND: ON BY DEFAULT (opt out with FM2K_TEST_BACKGROUND=0).
+# This script builds its own `cmd.exe /C "set K=V&& ..."` lines, so the variable
+# is injected as another `set` below rather than exported (a plain export does
+# not cross the WSL->Windows boundary).
+BG="${FM2K_TEST_BACKGROUND:-1}"
 GAME="C:/games/2dfm/wanwan/WonderfulWorld_ver_0946.exe"
 OUT_DIR="/mnt/c/dev/wanwan/tools/.netplay_manual"
 mkdir -p "$OUT_DIR"
@@ -45,13 +50,13 @@ echo "Spawning the two clients now..."
 P1_LOG="$OUT_DIR/p1.log"
 P2_LOG="$OUT_DIR/p2.log"
 
-cmd.exe /C "set FM2K_PARITY_RECORD_PATH=$P1_PTY&& set FM2K_LOCAL_PORT=7000&& set FM2K_REMOTE_ADDR=127.0.0.1:7001&& $LAUNCHER --host $GAME --port 7000" > "$P1_LOG" 2>&1 &
+cmd.exe /C "set FM2K_TEST_BACKGROUND=$BG&& set FM2K_PARITY_RECORD_PATH=$P1_PTY&& set FM2K_LOCAL_PORT=7000&& set FM2K_REMOTE_ADDR=127.0.0.1:7001&& $LAUNCHER --host $GAME --port 7000" > "$P1_LOG" 2>&1 &
 P1_PID=$!
 echo "P1 spawned: pid=$P1_PID  log=$P1_LOG"
 
 sleep 1.0
 
-cmd.exe /C "set FM2K_PARITY_RECORD_PATH=$P2_PTY&& set FM2K_LOCAL_PORT=7001&& set FM2K_REMOTE_ADDR=127.0.0.1:7000&& $LAUNCHER --connect 127.0.0.1:7000 $GAME --port 7001" > "$P2_LOG" 2>&1 &
+cmd.exe /C "set FM2K_TEST_BACKGROUND=$BG&& set FM2K_PARITY_RECORD_PATH=$P2_PTY&& set FM2K_LOCAL_PORT=7001&& set FM2K_REMOTE_ADDR=127.0.0.1:7000&& $LAUNCHER --connect 127.0.0.1:7000 $GAME --port 7001" > "$P2_LOG" 2>&1 &
 P2_PID=$!
 echo "P2 spawned: pid=$P2_PID  log=$P2_LOG"
 

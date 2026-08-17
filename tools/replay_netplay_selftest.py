@@ -71,6 +71,13 @@ def launch(label, args, env_extra, log_path, timeout, done_when=None):
     # WSL→Windows env vars don't cross via subprocess.Popen(env=) directly.
     # Use cmd.exe /C "set K=V && ... && exe args" so the Windows process
     # sees the env vars. Same trick the older replay_selftest.py uses.
+    #
+    # FM2K_TEST_BACKGROUND: ON BY DEFAULT (opt out with =0). Same single-funnel
+    # placement as spec_selftest.launch -- every launcher/game this harness
+    # opens comes up minimized-without-activation.
+    env_extra = dict(env_extra)
+    env_extra.setdefault("FM2K_TEST_BACKGROUND",
+                         os.environ.get("FM2K_TEST_BACKGROUND", "1"))
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_f = open(log_path, "w")
     set_parts = [f"set {k}={v}" for k, v in env_extra.items()]

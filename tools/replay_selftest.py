@@ -116,6 +116,12 @@ def run_phase(label: str, args: list[str], env: dict[str, str],
     # dicts only carry the harness-essential vars; anything in this passthrough
     # list is layered on top if present in os.environ (phase env wins on clash).
     env = dict(env)
+    # FM2K_TEST_BACKGROUND: ON BY DEFAULT. The determinism gate and the
+    # multigame sweep both drive this harness, so a single default here
+    # backgrounds every RECORD/REPLAY launcher + game window those stages open.
+    # Watch a run with FM2K_TEST_BACKGROUND=0.
+    env.setdefault("FM2K_TEST_BACKGROUND",
+                   os.environ.get("FM2K_TEST_BACKGROUND", "1"))
     for k in ("FM2K_PERF_PROFILE", "FM2K_STRESS_DIAG", "FM2K_FULL_CRCS",
               "FM2K_RUNAHEAD", "FM2K_PRED_WINDOW", "FM2K_PREDICTION_WINDOW", "FM2K_LOCAL_DELAY",
               "FM2K_CHECK_DISTANCE", "FM2K_PARITY_CAPTURE_TRACE",

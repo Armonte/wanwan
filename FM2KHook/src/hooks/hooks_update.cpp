@@ -68,13 +68,54 @@ int __cdecl Hook_UpdateGameState() {
     // here keeps all peers on the same round count. Test harness only; no-op unset.
     // FM2K-only: g_default_round's FM95 equivalent is unmapped (RE-3 in
     // docs/FM95_Support_Status.md) -- the harness override is inert there.
+    //
+    // MEASURED 2026-08-16 (Phase 6): ON FM2K THIS WHOLE FUNCTION IS DEAD CODE.
+    // TrampolineMainLoop owns the loop and every phase calls
+    // original_update_game() -- the MinHook TRAMPOLINE -- directly
+    // (trampoline_battle.cpp, _css.cpp, _native.cpp, _spectator.cpp), so this
+    // detour is never entered. Proof: a per-battle log line placed here emitted
+    // ZERO lines on all three planes, and the FM2K_TEST_ROUNDS_HOST_ONLY switch
+    // below logs on arm and never logged once with the variable set on host,
+    // guest and spectator. Consequence for anyone reading the comment above:
+    // the "force on every peer every frame" has NOT been in effect on FM2K
+    // since the trampoline took the loop, so it cannot have been masking
+    // round-count delivery either -- round count reaches a guest or a spectator
+    // through HOST_CONFIG and nothing else, which the Phase 6 settings leg
+    // measures directly (guest and spectator both latched rounds=2 from a
+    // host-only override). Kept, not deleted: the block is correct where it
+    // lives, FM95 still reaches this function through its host-driven path, and
+    // deleting a dead safety net is a separate decision from documenting it.
+    //
+    // FM2K_TEST_ROUNDS_HOST_ONLY=1 (default OFF) SUPPRESSES the every-frame
+    // force, leaving only the host-side write in netplay_control.cpp's
+    // HostApplyMatchSettingOverrides, so round count follows the same delivery
+    // path as round time / game speed / stage. Default-off keeps every existing
+    // stage bit-identical; on FM2K it is inert either way (see above).
     if constexpr (FM2K::kIsFM2K) {
+        static const bool s_rounds_host_only = []{
+            const char* v = std::getenv("FM2K_TEST_ROUNDS_HOST_ONLY");
+            const bool on = (v && v[0] == '1' && v[1] == '\0');
+            if (on)
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "[TEST-ROUNDS] HOST_ONLY armed -- the per-frame "
+                    "g_default_round force is OFF on this peer; round count "
+                    "must arrive via HOST_CONFIG");
+            return on;
+        }();
         static const int s_test_rounds = []{
             const char* v = std::getenv("FM2K_TEST_ROUNDS");
             return (v && v[0]) ? std::atoi(v) : 0;
         }();
-        if (s_test_rounds > 0) *(uint32_t*)0x430124 = (uint32_t)s_test_rounds;
+        if (s_test_rounds > 0 && !s_rounds_host_only)
+            *(uint32_t*)0x430124 = (uint32_t)s_test_rounds;
     }
+
+    // (The per-battle three-plane [CFG] settings stamp lives in
+    //  round_events.cpp's vs_round_function detour, NOT here: FM2K's
+    //  TrampolineMainLoop calls original_update_game directly, so this detour
+    //  is not on the per-frame battle path at all. Measured, not assumed -- the
+    //  first build that stamped from here produced zero [CFG] lines on every
+    //  plane.)
 
     // FM95 host-driven trampoline activation (opt-in via FM95_TRAMPOLINE=1).
     // FM2K's main_game_loop is replaced wholesale by TrampolineMainLoop,

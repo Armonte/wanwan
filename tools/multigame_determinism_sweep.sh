@@ -31,51 +31,14 @@ CD="${FM2K_CHECK_DISTANCE:-12}"
 RECORD_TIMEOUT="${RECORD_TIMEOUT:-180}"
 REPLAY_TIMEOUT="${REPLAY_TIMEOUT:-180}"
 
-# /mnt/d/games/fm2k/REQUIEM FINAL -> D:\games\fm2k\REQUIEM FINAL
-win_path() { local p="${1#/mnt/}"; local d="${p%%/*}"; echo "${d^^}:\\${p#*/}" | sed 's|/|\\|g'; }
-
-# Remove ALL staging debris. Junctions MUST go via cmd rmdir — `rm -rf` would
-# follow the junction and delete the REAL game data. Runs at start + on any exit.
-cleanup_all_staging() {
-    local j
-    for j in $(find "$LIB" -maxdepth 1 -iname "_hstage*" 2>/dev/null); do
-        cmd.exe /c rmdir "$(win_path "$j")" >/dev/null 2>&1
-    done
-    find "$LIB" -iname "_hrun.exe" -o -iname "_hrun.kgt" 2>/dev/null | while read -r f; do rm -f "$f"; done
-}
+# Path staging (SPACE / kanji paths, the .kgt stem rule, and the `cmd /c rmdir`
+# junction teardown that must never be `rm -rf`) lives in tools/game_staging.sh
+# since Phase 6: the spectator rotation leg needs exactly the same handling, and
+# a second copy of it would be a second list that can drift -- which is what the
+# ShadowArts hole was. Behaviour is unchanged; the functions moved verbatim.
+source "$ROOT/tools/game_staging.sh"
 trap cleanup_all_staging EXIT INT TERM
 cleanup_all_staging   # clear any debris from a prior killed run
-
-# stage_game <exe> -> prints an ASCII-clean /mnt exe path to run; sets STAGED_JUNC
-# + STAGED_EXECOPY for unstage_game. Passthrough when the path is already clean.
-STAGED_JUNC=""; STAGED_EXECOPY=""
-stage_game() {
-    local exe="$1"; STAGED_JUNC=""; STAGED_EXECOPY=""
-    # clean = ASCII AND no spaces
-    if LC_ALL=C grep -qP '^[\x20-\x7E]*$' <<<"$exe" && [[ "$exe" != *" "* ]]; then
-        echo "$exe"; return 0
-    fi
-    local dir stem; dir="$(dirname "$exe")"; stem="$(basename "$exe" .exe)"
-    # FM2K derives <stem>.kgt (character-system data) from the exe stem via
-    # GetModuleFileNameA, so the exe AND its .kgt must share the new ASCII stem.
-    [ -f "$dir/$stem.kgt" ] || { echo "$exe"; return 1; }   # no kgt => don't risk it
-    local junc="$LIB/_hstage_$$"
-    cmd.exe /c rmdir "$(win_path "$junc")" >/dev/null 2>&1
-    rm -f "$dir/_hrun.exe" "$dir/_hrun.kgt" 2>/dev/null
-    cp "$exe" "$dir/_hrun.exe" 2>/dev/null && cp "$dir/$stem.kgt" "$dir/_hrun.kgt" 2>/dev/null \
-        || { rm -f "$dir/_hrun.exe" "$dir/_hrun.kgt" 2>/dev/null; echo "$exe"; return 1; }
-    cmd.exe /c mklink /J "$(win_path "$junc")" "$(win_path "$dir")" >/dev/null 2>&1
-    if [ -e "$junc/_hrun.exe" ]; then
-        STAGED_JUNC="$junc"; STAGED_EXECOPY="$dir/_hrun"; echo "$junc/_hrun.exe"
-    else
-        rm -f "$dir/_hrun.exe" "$dir/_hrun.kgt" 2>/dev/null; echo "$exe"   # staging failed -> raw
-    fi
-}
-unstage_game() {
-    [ -n "$STAGED_JUNC" ]    && cmd.exe /c rmdir "$(win_path "$STAGED_JUNC")" >/dev/null 2>&1
-    [ -n "$STAGED_EXECOPY" ] && rm -f "${STAGED_EXECOPY}.exe" "${STAGED_EXECOPY}.kgt" 2>/dev/null
-    STAGED_JUNC=""; STAGED_EXECOPY=""
-}
 
 WW="${FM2K_REF_EXE:-/mnt/c/games/2dfm/wanwan/WonderfulWorld_ver_0946.exe}"
 # A real FM2K game = its engine code+rdata (first 0x120000) is byte-identical to

@@ -71,6 +71,16 @@ public:
     // Shared memory input polling
     void PollInputs();
     void InitializeSharedMemory();
+    // ONE non-blocking attach attempt, safe to call every frame until it
+    // succeeds. InitializeSharedMemory() above is the blocking 40x50ms variant
+    // and has NO callers -- so shared_memory_data_ was permanently null and
+    // GetSharedMemoryData() always returned nullptr. This exists because the
+    // launcher must be able to read the hook's LAST published outcome AFTER
+    // the game process exits: the section object is kernel-refcounted, so
+    // holding our own view keeps it readable past process death. Without a
+    // held view the mapping dies with the process and a refusal that
+    // terminates (no-VS-mode, desync) is unreadable on any non-hub path.
+    bool TryAttachSharedMemory();
     void ApplyDeferredSettings();
     void CleanupSharedMemory();
 

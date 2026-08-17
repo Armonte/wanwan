@@ -4,6 +4,7 @@
 #include "css_autoconfirm.h"  // CSS lock-and-confirm for offline replay playback
 #include "css_fastsound.h"    // FM2K_FPK_CSS_FASTSOUND: lazy DSound buffers (CSS dip fix)
 #include "per_game_patches.h" // damage multiplier MinHook + team-size override
+#include "title_mode_select.h" // resolve the real VS menu index; refuse story-only content
 #include "render_simd.h"      // FM2K_BLIT_SIMD: blit + case -10 blur reimplementation
 #include "globals.h"
 
@@ -242,6 +243,16 @@ void CheckGameModeTransition() {
     }
 
     uint32_t current_mode = *(uint32_t*)FM2K::ADDR_GAME_MODE;
+
+    // Title-menu VS resolution + the story-only refusal. Deliberately OUTSIDE
+    // the mode-change branch and NOT in the input hook alone: a HOST parked in
+    // the pre-rendezvous HELLO loop reaches game_mode 1000 and then runs no
+    // input frames at all (measured on DragonPuppy -- the guest refused in 90ms
+    // while the host span on HELLO for the full harness timeout). The
+    // trampolines drive this function every outer-loop iteration, so it is the
+    // one place that ticks whether or not the sim does. Self-latching: the call
+    // is three reads until it resolves, then nothing.
+    TitleModeSelect_Tick(current_mode, /*from_input_hook=*/false);
 
     if (current_mode != g_last_game_mode) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,

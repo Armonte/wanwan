@@ -5,6 +5,7 @@
 #include "css_autoconfirm.h"  // CSS lock-and-confirm for offline replay playback
 #include "css_fastsound.h"    // FM2K_FPK_CSS_FASTSOUND: lazy DSound buffers (CSS dip fix)
 #include "per_game_patches.h" // damage multiplier MinHook + team-size override
+#include "title_mode_select.h" // resolve the real VS menu index; refuse story-only content
 #include "render_simd.h"      // FM2K_BLIT_SIMD: blit + case -10 blur reimplementation
 #include "globals.h"
 
@@ -333,25 +334,12 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
         return result;
     };
 
-    // Title-screen menu-cursor write. Must fire on BOTH host AND spectator --
-    // it's a state side-effect of the auto-title-skip protocol, not an
-    // input. session_history only records returned input values, so a
-    // spectator replaying host's recorded auto-mash button-A pulses would
-    // navigate from g_menu_selection=0 (default = "VS CPU"/first option)
-    // and end up in the wrong scene tree. We force g_menu_selection=1
-    // ("VS Player") on every node so the same recorded input pattern
-    // resolves to the same menu transitions everywhere.
-    {
-        static const char* env_skip = std::getenv("FM2K_AUTO_TITLE_SKIP");
-        const bool auto_skip = !(env_skip && std::strcmp(env_skip, "0") == 0);
-        static bool s_cursor_set_global = false;
-        if (auto_skip && !s_cursor_set_global && game_mode == 1000) {
-            *(uint32_t*)0x424780 = 1;  // g_menu_selection = VS Player
-            s_cursor_set_global = true;
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "TitleMenuCursor: pre-set g_menu_selection=1 (host or spectator)");
-        }
-    }
+    // Title-screen menu cursor: the g_menu_selection pre-set (which must fire on
+    // BOTH host AND spectator -- it is a state side-effect of the auto-title-skip
+    // protocol, not an input) plus the VS-index resolution and the story-only
+    // refusal. All of it lives in title_mode_select.cpp; see that header for the
+    // mechanism and the byte-identity argument for VS-capable games.
+    TitleModeSelect_Tick(game_mode, /*from_input_hook=*/true);
 
     // Spectator process -- SINGLE source of truth: the popped input pair
     // (host's recorded p1/p2 for the current sim frame). No keyboard read,

@@ -192,6 +192,37 @@ void FM2KGameInstance::InitializeSharedMemory() {
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open shared memory after 40 attempts (2 seconds)");
 }
 
+bool FM2KGameInstance::TryAttachSharedMemory() {
+    if (shared_memory_data_) return true;
+    if (process_id_ == 0) return false;
+
+    const std::string name = "FM2K_SharedMem_" + std::to_string(process_id_);
+    HANDLE h = OpenFileMappingA(FILE_MAP_READ, FALSE, name.c_str());
+    if (!h) return false;   // hook has not created it yet -- try again next frame
+
+    void* view = MapViewOfFile(h, FILE_MAP_READ, 0, 0, sizeof(FM2KSharedMemData));
+    if (!view) { CloseHandle(h); return false; }
+
+    const auto* data = static_cast<const FM2KSharedMemData*>(view);
+    if (data->magic != FM2K_SHARED_MEM_MAGIC) {
+        // Mapping exists but is not ours (or not written yet). Do NOT latch --
+        // drop it and retry; the hook writes magic in InitializeSharedMemory
+        // before any other field.
+        UnmapViewOfFile(view);
+        CloseHandle(h);
+        return false;
+    }
+
+    shared_memory_handle_ = h;
+    shared_memory_data_   = view;
+    last_processed_frame_ = 0;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "Shared memory attached (%s, version=%u) -- the hook's outcome channel "
+        "stays readable after the game process exits.",
+        name.c_str(), data->version);
+    return true;
+}
+
 void FM2KGameInstance::CleanupSharedMemory() {
     if (shared_memory_data_) {
         UnmapViewOfFile(shared_memory_data_);

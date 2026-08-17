@@ -639,6 +639,32 @@ void LauncherUI::PollMatchOutcome() {
                     return;
                 }
 
+                // No VS mode: the selected game's title menu is story-only
+                // (the .kgt's mode-enable bits have the VS bit clear), so
+                // g_game_mode_flag can never reach 1 and the session would have
+                // run 1P/STORY -- one pad sampled per battle frame, fighters
+                // taken from the story progression table instead of the two
+                // character indices MATCH_START/SPEC_JOIN_ACK carry. The hook
+                // refuses and terminates before any battle, so there is nothing
+                // to record. Offline play on these titles still works.
+                // See FM2KHook/src/hooks/title_mode_select.h.
+                if (outcome_u8 == FM2K_MATCH_OUTCOME_NO_VS_MODE) {
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "Hub: NO VS MODE -- this game is story-only; netplay "
+                        "and spectating are not supported on it (no record). "
+                        "See the hook log's [NOVSMODE] line.");
+                    hs.status_line = T("hub_status_game_has_no_vs_mode");
+                    FireSystemNotification(T("toast_no_vs_mode_title"),
+                                           T("toast_no_vs_mode_body"));
+                    if (on_session_stop) on_session_stop();
+                    hs.current_match_token.clear();
+                    hs.current_match_peer_id.clear();
+                    hs.current_match_peer_nick.clear();
+                    UnmapViewOfFile(data);
+                    CloseHandle(h);
+                    return;
+                }
+
                 const char* outcome_str = nullptr;
                 switch (outcome_u8) {
                     case FM2K_MATCH_OUTCOME_SELF_WON:   outcome_str = "self_won"; break;

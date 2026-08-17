@@ -44,6 +44,31 @@ source "$ROOT/tools/game_staging.sh"
 trap cleanup_all_staging EXIT INT TERM
 cleanup_all_staging
 
+# KNOWN STORY-ONLY TITLES (netplay/spectate = documented NON-GOAL).
+#
+# A static census of the 98 engine-identical games (the kgt title-mode byte at
+# block+0xE430, the same byte title_screen_manager's menu builder reads) found
+# EIGHT whose menu enables 1P/STORY and nothing else:
+#
+#     The Police 24                                     cfg=0x66
+#     DragonPuppy_version01a                            cfg=0x05
+#     Otenba Princess no Daibouken, episodes 0..5       cfg=0x04  (6 entries)
+#
+# On those titles g_game_mode_flag can never reach 1 (VS 1v1): the mode list is
+# COMPACTED, so the hardcoded cursor index 1 read an unwritten BSS slot and all
+# three planes booted into 1P/STORY netplay, where the engine samples ONE pad
+# per battle frame and picks the fighters from the story progression table.
+# DragonPuppy additionally has ZERO VS-selectable characters, so even forcing
+# the flag would give an empty VS grid. The hook now REFUSES the session and
+# spec_selftest returns rc=3 = NOT APPLICABLE.
+#
+# This list exists so the leg can say WHY before it even runs -- a silent skip
+# is the ShadowArts shape. It is documentation, not a gate: the verdict still
+# comes from the harness's own rc=3, so an unlisted story-only game is still
+# reported correctly, and a listed game that unexpectedly RUNS is still gated.
+# Census tool: /home/teo/specrel-2026-08-07/dp_diag/kgt_title_modes.py
+STORY_ONLY_KEYS=" DragonPuppy "
+
 # Per-game: key|exe|total_frames|timeout_s. The frame budget is "reach at least
 # two match boundaries", because every spectator defect this campaign found
 # lives at a boundary and match 1 is always clean. The TIMEOUT is what absorbs
@@ -81,7 +106,7 @@ kill_rotation() {
 }
 
 echo "[rotate] games=${#ROT[@]} lib=$LIB out=$OUT"
-pass=0; fail=0; err=0; declare -a RESULTS
+pass=0; fail=0; err=0; na=0; declare -a RESULTS
 for row in "${ROT[@]}"; do
     IFS='|' read -r key exe total tmo <<< "$row"
     if [ ! -f "$exe" ]; then
@@ -91,6 +116,10 @@ for row in "${ROT[@]}"; do
         fi
         RESULTS+=("MISSING  $key  ($exe)"); err=$((err+1))
         echo "[rotate] ${RESULTS[-1]}"; continue
+    fi
+    if [[ " $STORY_ONLY_KEYS " == *" $key "* ]]; then
+        echo "[rotate] $key is a KNOWN STORY-ONLY title (no VS mode in its .kgt)"
+        echo "[rotate]   -- expecting the hook's [NOVSMODE] refusal and rc=3."
     fi
     kill_rotation; sleep 0.6
     run_exe="$(stage_game "$exe")"
@@ -125,6 +154,18 @@ for row in "${ROT[@]}"; do
         RESULTS+=("PASS     $key"); pass=$((pass+1))
     elif [ "$rc" -eq 2 ]; then
         RESULTS+=("ERROR    $key  (harness FATAL: --game-exe not found)"); err=$((err+1))
+    elif [ "$rc" -eq 3 ]; then
+        # NOT APPLICABLE -- the hook refused the session because this title has
+        # no VS mode. Counted separately from PASS (it proves nothing about the
+        # spectator) and from FAIL (it is the CORRECT behaviour). Holding the
+        # leg red on a documented non-goal is how a 45-70 minute stage stops
+        # being run at all.
+        na=$((na+1))
+        if [[ " $STORY_ONLY_KEYS " == *" $key "* ]]; then
+            RESULTS+=("N/A      $key  (story-only: no VS mode -- expected, in the census list)")
+        else
+            RESULTS+=("N/A      $key  (story-only: no VS mode -- NOT in STORY_ONLY_KEYS, add it)")
+        fi
     else
         why="$(grep -aE "OVERALL FAIL|FAIL:" "$log" | tail -1 | cut -c1-150)"
         RESULTS+=("FAIL     $key  rc=$rc [$why]"); fail=$((fail+1))
@@ -138,10 +179,14 @@ for row in "${ROT[@]}"; do
     # rotation: DragonPuppy_version01a came back mode_flag=0 (1P/story) on host,
     # guest AND spectator, alongside a full-state spectator desync from battle
     # frame 0 with inputs identical -- i.e. the pin does not hold on that title.
-    # Printed next to the verdict so a rotation red is attributable at a glance
-    # instead of looking like a harness defect.
-    grep -a "TEAM-PIN: g_game_mode_flag != 1" "$log" 2>/dev/null \
+    # FATAL in the harness since the story-only refusal work; still surfaced
+    # here so a rotation red is attributable at a glance instead of looking like
+    # a harness defect.
+    grep -a "TEAM-PIN FAIL" "$log" 2>/dev/null \
         | sed "s/^\[harness\]/[rotate]   $key TEAM-PIN:/" || true
+    # The story-only refusal, surfaced per game for the same reason.
+    grep -a "NOT APPLICABLE (rc=3)" "$log" 2>/dev/null \
+        | sed "s/^\[harness\]/[rotate]   $key NO-VS-MODE:/" || true
     # Persist the per-game verdict AS IT HAPPENS: a 45-70 minute rotation on a
     # box that has BSOD'd mid-campaign must not lose everything before it.
     printf '%s\n' "${RESULTS[-1]}" >> "$OUT/verdicts.txt"
@@ -149,5 +194,7 @@ done
 kill_rotation
 echo "========================================"
 printf '%s\n' "${RESULTS[@]}"
-echo "[rotate] PASS=$pass FAIL=$fail ERROR=$err"
+echo "[rotate] PASS=$pass FAIL=$fail ERROR=$err N/A=$na"
+# N/A does NOT fail the leg: a story-only title has no VS mode, so refusing the
+# session is the correct outcome. It is counted and named, never silent.
 [ "$fail" -eq 0 ] && [ "$err" -eq 0 ]

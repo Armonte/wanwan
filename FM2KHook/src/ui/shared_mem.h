@@ -86,6 +86,19 @@ enum FM2KMatchOutcome : uint8_t {
     // diagnostic-frozen state to inspect. No W/L/D recorded -- the
     // match's outcome is undefined once sim diverges.
     FM2K_MATCH_OUTCOME_DESYNC      = 7,
+    // The game has NO VS MODE. Its title menu is story-only (the .kgt's
+    // mode-enable bits have the VS bit clear), so g_game_mode_flag can never
+    // reach 1 and the session would run 1P/STORY -- where the engine samples
+    // one pad per battle frame and takes the fighters from the story
+    // progression table, neither of which our netplay/spectator protocols can
+    // represent. The hook publishes this at content-load time and terminates
+    // before any battle. Same no-record treatment as CSS_ABORT/HASH_MISMATCH.
+    // OFFLINE play, offline replay and the determinism sweep never publish it.
+    // NOTE: adding an enum value does NOT change FM2KSharedMemData's layout,
+    // so FM2K_SHARED_MEM_VERSION is deliberately NOT bumped -- an older
+    // launcher paired with a newer hook falls through to the "unknown outcome"
+    // path instead of hard-rejecting the whole mapping on a version mismatch.
+    FM2K_MATCH_OUTCOME_NO_VS_MODE  = 8,
 };
 
 struct FM2KSharedMemData {

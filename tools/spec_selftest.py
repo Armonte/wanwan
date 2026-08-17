@@ -1995,22 +1995,33 @@ def _parity_gates(out_dir, specs):
                       f"line(s) [advisory]")
             print(f"    {lines[0]}")
 
-    # ---- [CFG] per-battle settings stamp: TEAM-MODE TRIPWIRE (advisory) ------
+    # ---- [CFG] per-battle settings stamp: VS-1v1 MODE PIN (FATAL) ------------
     # The hook stamps one [CFG] line per battle per plane (the
     # vs_round_function detour in round_events.cpp),
     # carrying the five digest fields plus mode_flag = g_game_mode_flag. Two
-    # things are surfaced here, both ADVISORY -- the Phase 6 settings leg owns
-    # the fatal three-plane comparison, and an ungated-red assertion in the
-    # SHARED harness is how a stage gets disabled:
-    #   * mode_flag != 1 anywhere = the VS-1v1 pin moved. Netplay and spectating
-    #     are pinned to 1v1 by construction (the hook writes the flag at
-    #     startup; MATCH_START and SPEC_JOIN_ACK carry exactly two characters),
-    #     and team mode is a documented NON-GOAL. This converts that silent
-    #     assumption into a checked one in EVERY existing stage, at the cost of
-    #     one regex over the preserved logs.
+    # things are surfaced here:
+    #   * mode_flag != 1 anywhere = the VS-1v1 pin moved. FATAL as of the
+    #     story-only refusal work. Netplay and spectating are pinned to 1v1 by
+    #     construction (MATCH_START and SPEC_JOIN_ACK carry exactly two
+    #     characters), team mode is a documented NON-GOAL, and 1P/STORY is
+    #     STRUCTURALLY unplayable online: process_game_inputs @0x4146D0 samples
+    #     ONE pad per battle frame when mode_flag==0, and vs_round_function
+    #     picks the fighters out of the story progression table instead of
+    #     g_p1/p2_selected_char_idx. A mode!=1 netplay session is NEVER a pass.
+    #     It earned the promotion on its first outing: DragonPuppy came back
+    #     mode_flag=0 on host, guest AND spectator alongside a full-state
+    #     spectator desync from battle frame 0 with inputs identical, and the
+    #     advisory wording let the run's verdict be attributed to the desync.
+    #     Story-only CONTENT is now refused earlier and louder (rc=3
+    #     NOT-APPLICABLE above); this term catches the other way in -- a
+    #     VS-capable game that nonetheless ran a non-VS session.
     #   * no [CFG] lines at all = the instrument is absent from this binary (or
     #     FM2K_CFG_TRACE=0), which must stay distinguishable from "the pin is
-    #     fine" -- the sentinel lesson from Phase 4d/4e.
+    #     fine" -- the sentinel lesson from Phase 4d/4e. Now that the term is
+    #     fatal, "could not run" is fatal too (review A4a: a FATAL term that
+    #     could not run must not print a positive verdict), with the same
+    #     ENGINE_FM95 advisory hatch the POOL terms use -- [CFG] is inside
+    #     `if constexpr (FM2K::kIsFM2K)`, so an FM95 stage legitimately has none.
     import re as _re_cfg
     _cfg_rx = _re_cfg.compile(r"\[CFG\] plane=(\w+) match=(\d+) .*?mode_flag=(-?\d+)")
     _cfg_planes, _cfg_bad = {}, []
@@ -2030,16 +2041,29 @@ def _parity_gates(out_dir, specs):
                                         f"mode_flag={m.group(3)}")
         except OSError:
             continue
+    teampin_fail = False
     if not _cfg_planes:
-        print("[harness] TEAM-PIN: no [CFG] lines on any plane -- the settings "
-              "stamp is NOT PRESENT in this build (or FM2K_CFG_TRACE=0). The "
-              "VS-1v1 pin was NOT checked this run [advisory]")
+        if IS_FM95_RUN:
+            print("[harness] TEAM-PIN: no [CFG] lines -- the stamp is inside "
+                  "`if constexpr (FM2K::kIsFM2K)`, so an ENGINE_FM95 build has "
+                  "none. ADVISORY SKIP (the FM95 stage is advisory).")
+        else:
+            teampin_fail = True
+            print("[harness] TEAM-PIN FAIL: no [CFG] lines on any plane -- the "
+                  "settings stamp is NOT PRESENT in this build (or "
+                  "FM2K_CFG_TRACE=0), so the VS-1v1 pin was NOT CHECKED this "
+                  "run. A fatal term that could not run is a FAIL, not a pass "
+                  "(review A4a). Set FM2K_CFG_TRACE=1 or use a build that "
+                  "stamps [CFG].")
     elif _cfg_bad:
-        print(f"[harness] TEAM-PIN: g_game_mode_flag != 1 (VS 1v1) on "
+        teampin_fail = True
+        print(f"[harness] TEAM-PIN FAIL: g_game_mode_flag != 1 (VS 1v1) on "
               f"{len(_cfg_bad)} battle(s): {', '.join(_cfg_bad[:4])} -- netplay "
               f"and spectating are PINNED to 1v1 (MATCH_START / SPEC_JOIN_ACK "
-              f"carry two characters); team mode is a documented non-goal. "
-              f"[ADVISORY -- the fatal terms above own the verdict]")
+              f"carry two characters). mode_flag=0 is 1P/STORY, where the engine "
+              f"samples ONE pad per battle frame and takes the fighters from the "
+              f"story table; mode_flag=2 is TEAM, a documented non-goal. Either "
+              f"way the session is not the one the protocol describes.")
     else:
         print("[harness] TEAM-PIN: g_game_mode_flag == 1 (VS 1v1) on every "
               "stamped battle -- "
@@ -2062,7 +2086,7 @@ def _parity_gates(out_dir, specs):
                   f"timing offset on a transitioning hp/script, not a desync")
         if r["mf"]:
             print(f"    FP hp/scripts PERSISTENT divergence (tail={r['trailing']}): {r['first_f']}")
-    return cin_fail, ck_fail, pvp_fail
+    return cin_fail, ck_fail, pvp_fail, teampin_fail
 
 
 def main():
@@ -2365,6 +2389,17 @@ def main():
               # spectators must reach the same speed through HOST_CONFIG or the
               # harness masks the delivery path it is supposed to gate.
               "FM2K_TEST_GAME_SPEED",
+              # Story-only refusal (title_mode_select.cpp). All three are
+              # DEFAULT-CORRECT in the hook and forwarded only so a run can
+              # exercise the red arms: FM2K_NO_VS_REFUSE=0 is the kill switch
+              # (restores the pre-fix silent 1P/STORY netplay),
+              # FM2K_TITLE_FORCE_NO_VS=1 makes a VS-capable game take the
+              # refusal path, and FM2K_TITLE_FORCE_MODE_INDEX=<n> pins the
+              # title cursor at a non-VS entry so the TEAM-PIN term can be
+              # red-proofed on wanwan.
+              "FM2K_NO_VS_REFUSE",
+              "FM2K_TITLE_FORCE_NO_VS",
+              "FM2K_TITLE_FORCE_MODE_INDEX",
               # [CFG] per-battle three-plane settings stamp (round_events.cpp).
               # DEFAULT ON in the hook; forwarded so a run can turn it off.
               "FM2K_CFG_TRACE",
@@ -2604,6 +2639,11 @@ def main():
                    # than the absence of the env -- see the player list above.
                    "FM2K_STAGE_RANDOM_SEED", "FM2K_STAGE_RANDOM_MIN",
                    "FM2K_STAGE_RANDOM_MAX",
+                   # Story-only refusal, viewer half -- the spectator plane
+                   # runs the SAME title path and must refuse identically.
+                   "FM2K_NO_VS_REFUSE",
+                   "FM2K_TITLE_FORCE_NO_VS",
+                   "FM2K_TITLE_FORCE_MODE_INDEX",
                    # [CFG] three-plane settings stamp, viewer half. This is the
                    # plane the stamp EXISTS for: a spectator can neither emit a
                    # barrier packet nor be checked by one, so its line is the
@@ -2669,7 +2709,36 @@ def main():
 
     start_ts = time.time()
 
+    # STORY-ONLY EARLY EXIT. On a title with no VS mode the hook refuses and
+    # terminates within ~1.5s of boot, but every wait in this file is keyed on
+    # host progress that will now never happen, so the run would sit out its
+    # full record-timeout (measured: players done at +60s, leg still waiting at
+    # +300s) before the rc=3 verdict below could even be read. Fold the marker
+    # into the completion predicates so the leg finishes in seconds.
+    #
+    # Safe by construction: the marker is emitted ONLY by the refusal path, on
+    # content where every gate in this file is moot anyway.
+    _refused_state = {"seen": False, "checked": 0.0}
+    def session_refused():
+        if _refused_state["seen"]:
+            return True
+        now = time.time()
+        if now - _refused_state["checked"] < 1.0:
+            return False
+        _refused_state["checked"] = now
+        for lf in ("FM2K_P1_Debug.log", "FM2K_P2_Debug.log"):
+            try:
+                with open(game_dir / "logs" / lf, "rb") as fh:
+                    if b"[NOVSMODE] REFUSING SESSION" in fh.read():
+                        _refused_state["seen"] = True
+                        return True
+            except OSError:
+                continue
+        return False
+
     def has_new_replay():
+        if session_refused():
+            return True
         return find_latest_fm2krep(game_dir, start_ts, suffix="_p0_harness") is not None
 
     p1_args = [str(LAUNCHER), "--host", game_arg, "--port", str(P1_PORT)]
@@ -2691,6 +2760,8 @@ def main():
     def make_spec_done(s):
         st = {"size": -1, "since": 0.0}
         def done():
+            if session_refused():
+                return True
             if not has_new_replay():
                 return False
             try:
@@ -2785,7 +2856,8 @@ def main():
         n = int(suffix) if suffix.isdigit() else 1
         marker = "CSS: Entered" if kind == "css" else "GekkoNet battle session created"
         deadline = time.time() + args.record_timeout
-        while time.time() < deadline and count_marker(marker) < n:
+        while (time.time() < deadline and count_marker(marker) < n
+               and not session_refused()):
             time.sleep(0.25)
         # Settle: a css spec waits spec_join_delay into the CSS; a battle spec waits
         # battle_join_offset so the Nth battle session exists before the snapshot.
@@ -2837,6 +2909,42 @@ def main():
                 shutil.copy2(src, OUT_DIR / f"live_{lf}")
             except OSError as e:
                 print(f"[harness] (warn) could not preserve {lf}: {e}")
+
+    # ---- STORY-ONLY CONTENT: NOT-APPLICABLE, not FAIL (rc=3) -----------------
+    # Eight of the 98 engine-identical games in the library are story-only:
+    # their .kgt enables 1P/STORY and nothing else, so g_game_mode_flag can
+    # never reach 1 (VS 1v1) and the hook now REFUSES to arm a netplay or
+    # spectator session on them ([NOVSMODE] REFUSING SESSION, then terminate).
+    # That refusal is the CORRECT behaviour, so a rotation leg pointed at such a
+    # game must report NOT-APPLICABLE, never FAIL. A leg that stays red on a
+    # documented non-goal gets disabled, taking its real coverage with it -- the
+    # same argument the CSS-window advisory already won.
+    #
+    # It must also never be SILENT: rc=3 is distinct from both PASS (0) and FAIL
+    # (1), and the reason is printed. Offline determinism keeps these games (see
+    # multigame_determinism_sweep.sh) -- they legitimately pass there.
+    _novs = []
+    for _tag, _lp in ([("P1", OUT_DIR / "live_FM2K_P1_Debug.log"),
+                       ("P2", OUT_DIR / "live_FM2K_P2_Debug.log")]
+                      + [(s["tag"], s["live"]) for s in specs]):
+        try:
+            with open(_lp, errors="ignore") as fh:
+                for ln in fh:
+                    if "[NOVSMODE] REFUSING SESSION" in ln:
+                        _novs.append((_tag, ln.strip()[:200]))
+                        break
+        except OSError:
+            continue
+    if _novs:
+        print(f"[harness] NOT APPLICABLE (rc=3): this game has NO VS MODE -- the "
+              f"hook refused the session on {len(_novs)} plane(s) "
+              f"({', '.join(t for t, _ in _novs)}). Story-only content cannot "
+              f"run netplay or spectating by construction (1P/STORY samples one "
+              f"pad per battle frame and picks fighters from the story table), "
+              f"so this is a DOCUMENTED NON-GOAL, not a regression. Offline play "
+              f"and the offline determinism sweep are unaffected.")
+        print(f"[harness]   {_novs[0][1]}")
+        return 3
 
     # ---- LIVE-EDGE metric (the REAL "held the live edge" pass condition) ------
     # Computed from the PRESERVED live_ logs, right after preservation, so it runs
@@ -2945,8 +3053,9 @@ def main():
     # sweep A round returned nothing at all. They read only the preserved live_
     # logs, so running them before the replay phase is also strictly safer (the
     # replay process overwrites the game-dir logs it would otherwise race).
-    cin_fail, ck_fail, pvp_fail = _parity_gates(OUT_DIR, specs)
+    cin_fail, ck_fail, pvp_fail, teampin_fail = _parity_gates(OUT_DIR, specs)
     real_fail = (cin_fail or ck_fail or pvp_fail or css_fail or csswin_fail
+                 or teampin_fail
                  or any(s["gate"]["checked"] > 0 and not s["ok"] for s in specs))
     checked_any = any(s["gate"]["checked"] > 0 for s in specs)
 
@@ -2958,7 +3067,8 @@ def main():
         # Same rule as the OVERALL line (review B4c): a term that can set the
         # verdict prints its OWN name. A CSS-WIN-only failure is not a desync
         # and must never be reported as one.
-        _csswin_only = csswin_fail and not (cin_fail or ck_fail or pvp_fail or css_fail)
+        _csswin_only = csswin_fail and not (cin_fail or ck_fail or pvp_fail
+                                            or css_fail or teampin_fail)
         print("[harness] (correctness verdict from the gates above: "
               + ("CSS-WINDOW GATE FAILED (no desync term did)" if _csswin_only else
                  "DESYNC DETECTED" if real_fail else
@@ -3270,6 +3380,8 @@ def main():
                "CHECKSUM full-state / POOL topology desync (see above)" if ck_fail else
                "CINPUT input-frame desync (see above)" if cin_fail else
                "CSS-FP cursor/selection desync (see above)" if css_fail else
+               "TEAM-PIN: the session did not run VS 1v1, or the mode stamp was "
+               "missing so the pin could not be checked (see above)" if teampin_fail else
                "CSS-WIN character-select window gate (falling object, or the "
                "term could not be computed -- see above)" if csswin_fail else
                "rng/hp gate")
@@ -3277,7 +3389,9 @@ def main():
         # with each other; saying "a spectator desynced from host" there would be
         # the exact mislabel review B4c fixed twice already.
         head = ("THE TWO PLAYERS DESYNCED FROM EACH OTHER" if pvp_fail else
-                "the CSS-WINDOW gate failed"
+                "the VS-1v1 MODE PIN failed"
+                if teampin_fail and not (ck_fail or cin_fail or css_fail or csswin_fail)
+                else "the CSS-WINDOW gate failed"
                 if csswin_fail and not (ck_fail or cin_fail or css_fail)
                 else "a spectator desynced from host")
         print(f"[harness] OVERALL FAIL: {head} -- {why}.")

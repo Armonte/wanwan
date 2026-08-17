@@ -47,6 +47,7 @@ set(FM2KHOOK_SOURCES
     src/hooks/round_events.cpp
     src/hooks/seam_free_probe.cpp        # [ENDSEAM-FREE] ClearCharacterSlot telemetry (counts only)
     src/hooks/facing_trace.cpp           # DIAGNOSTIC Phase 4b [FACING] ring, both planes (FM2K_FACING_TRACE, dark by default)
+    src/hooks/title_mode_select.cpp      # resolve the real VS title-menu index; REFUSE netplay on story-only content
     src/hooks/css_autoconfirm.cpp
     src/hooks/css_fastsound.cpp
     src/hooks/per_game_patches.cpp        # FM2K: damage/kof + input/mode toggles (#if !ENGINE_FM95)

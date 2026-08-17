@@ -16,6 +16,7 @@
 #include "FM2K_Integration.h"
 #include "game_discovery.h"  // game scan/cache/sniff + async discovery (moved out of this file)
 #include "FM2K_GameIni.h"
+#include "FM2K_Locale.h"     // T() -- the story-only session-refusal status line
 #include "FM2K_Utf8Path.h"
 #include "FM2KHook/src/ui/shared_mem.h"
 #include "FM2KHook/src/ui/input_binder.h"  // RefreshGamepads() on SDL hot-plug events
@@ -386,11 +387,49 @@ void FM2KLauncher::Update(float delta_time SDL_UNUSED) {
     // host-gone watchdog, a desync-terminate, or a crash) left the LAUNCHER
     // zombie-ing forever (the "launcher didnt kill" stuck window the harness
     // then had to timeout-kill at 300s). Watch BOTH.
+    // Keep a READ view of each live instance's shared mem. One cheap
+    // OpenFileMapping attempt per frame until it lands, then never again. The
+    // point is the view we HOLD: the hook's refusal codes are published
+    // immediately before TerminateProcess, and without our own handle the
+    // section dies with the process and the reason is unreadable below.
+    if (game_instance_ && game_instance_->IsRunning())
+        game_instance_->TryAttachSharedMemory();
+    if (spectator_instance_ && spectator_instance_->IsRunning())
+        spectator_instance_->TryAttachSharedMemory();
+
     const bool game_gone = game_instance_ && !game_instance_->IsRunning();
     const bool spec_gone = spectator_instance_ && !spectator_instance_->IsRunning();
     if (game_gone || spec_gone) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
             "Hosted %s process has terminated.", game_gone ? "game" : "spectator");
+        // WHY the outcome is read HERE and not only in PollMatchOutcome: that
+        // poll early-returns on `hs.current_match_token.empty()`, i.e. it only
+        // ever runs for a HUB-BROKERED match. Direct-IP netplay, the harness
+        // and every --spectate launch have no token, so a hook-side refusal
+        // published on the outcome channel would have died with the process and
+        // the user would have seen a window vanish with no reason given. The
+        // section object stays alive while we still hold our mapped view, so
+        // reading it after the process exits is valid.
+        //
+        // Story-only content (FM2K_MATCH_OUTCOME_NO_VS_MODE): the game has no
+        // VS mode at all, so netplay/spectating are refused by construction.
+        // See FM2KHook/src/hooks/title_mode_select.h.
+        {
+            FM2KGameInstance* dead =
+                game_gone ? game_instance_.get() : spectator_instance_.get();
+            const auto* sm = dead
+                ? static_cast<const FM2KSharedMemData*>(dead->GetSharedMemoryData())
+                : nullptr;
+            if (sm && sm->magic == FM2K_SHARED_MEM_MAGIC &&
+                sm->match_outcome_seq != 0 &&
+                sm->match_outcome == FM2K_MATCH_OUTCOME_NO_VS_MODE) {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                    "Session REFUSED: the selected game has no VS mode "
+                    "(story-only content) -- netplay and spectating are not "
+                    "supported on it. See the hook log's [NOVSMODE] line.");
+                if (ui_) ui_->NotifyHubMatchAborted(T("hub_status_game_has_no_vs_mode"));
+            }
+        }
         if (game_gone) {
             StopSession();              // player-session teardown -> GameSelection
         } else {

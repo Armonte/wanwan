@@ -261,7 +261,7 @@ const uint8_t* SaveState_PeekLastSavedSlotBytes();
 //     receiver path)
 //
 // Callers (spectator-join SNAPSHOT_END handler) should fall back to
-// FULL_SESSION replay if this returns false.
+// session-start replay if this returns false.
 bool           SaveState_LoadFromBytes(const uint8_t* bytes, size_t n);
 
 // Back-patch the most-recently-saved slot's rng_seed with the post-render

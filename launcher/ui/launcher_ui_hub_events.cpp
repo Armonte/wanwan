@@ -101,12 +101,7 @@ void LauncherUI::HandleHubEvent(const fm2k::HubEvent& ev) {
                 // their already-configured network_config_.local_port.
                 // For LAN/internet, replace "127.0.0.1" with the hub-
                 // observed reflexive IP (Phase 2 -- STUN responder).
-                // Spec hook binds its TCP listener to the same port as UDP
-                // (convention enforced in spectator_tcp.cpp's Start). Send
-                // both so the hub can forward spec_tcp_port in the
-                // spectator_incoming event for the host's TCP punch.
                 hs.client.SendUdpAddr("127.0.0.1", network_config_.local_port,
-                                      network_config_.local_port,
                                       fm2k::LocalLanIp(),
                                       fm2k::LocalLanIpV6());
 
@@ -497,24 +492,19 @@ void LauncherUI::HandleHubEvent(const fm2k::HubEvent& ev) {
                 break;
             case K::SpectatorIncoming: {
                 // We're the host of an in-progress match; hub forwarded a
-                // spectator's external UDP+TCP addr. Forward to game-instance
-                // shared mem → hook's TickHostMaintenance fires both:
-                //   * UDP heartbeat burst (existing -- opens NAT for the
-                //     spectator's first SPEC_JOIN_REQ replies)
-                //   * TCP simultaneous-open punch (new in v0.2.35 -- opens
-                //     NAT for inbound TCP from spec:tcp_port to our
-                //     listener port, the path the INPUT_BATCH stream uses)
+                // spectator's external UDP addr. Forward to game-instance
+                // shared mem → hook's TickHostMaintenance fires the UDP
+                // heartbeat burst that opens our NAT for the spectator's
+                // SPEC_JOIN_REQ and the reliable-channel stream behind it.
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "Hub: spectator_incoming nick=%s addr=%s udp:%d tcp:%d -- punching",
+                    "Hub: spectator_incoming nick=%s addr=%s udp:%d -- punching",
                     ev.spectator_incoming.spec_nick.c_str(),
                     ev.spectator_incoming.spec_udp_ip.c_str(),
-                    ev.spectator_incoming.spec_udp_port,
-                    ev.spectator_incoming.spec_tcp_port);
+                    ev.spectator_incoming.spec_udp_port);
                 if (on_spectator_punch_target) {
                     on_spectator_punch_target(
                         ev.spectator_incoming.spec_udp_ip,
                         ev.spectator_incoming.spec_udp_port,
-                        ev.spectator_incoming.spec_tcp_port,
                         ev.spectator_incoming.spec_user_id);
                 }
                 break;

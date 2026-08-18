@@ -50,49 +50,6 @@ void ControlChannel_SendPing() {
     g_ping_send_time = GetTimeMs();
 }
 
-void ControlChannel_SendCursor(uint8_t x, uint8_t y) {
-    CtrlPacket pkt = {};
-    pkt.header.type = CtrlMsg::CSS_CURSOR;
-    pkt.data.cursor.x = x;
-    pkt.data.cursor.y = y;
-    ControlChannel_Send(pkt);
-}
-
-void ControlChannel_SendCharSelect(uint8_t slot, uint8_t color) {
-    CtrlPacket pkt = {};
-    pkt.header.type = CtrlMsg::CSS_CHAR_SELECT;
-    pkt.data.character.slot = slot;
-    pkt.data.character.color = color;
-    ControlChannel_Send(pkt);
-}
-
-void ControlChannel_SendCharLock(uint8_t slot, uint8_t color) {
-    CtrlPacket pkt = {};
-    pkt.header.type = CtrlMsg::CSS_LOCK;
-    pkt.data.character.slot = slot;
-    pkt.data.character.color = color;
-    ControlChannel_Send(pkt);
-
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ControlChannel: Sent CSS_LOCK (slot=%d, color=%d)",
-                slot, color);
-}
-
-void ControlChannel_SendCharUnlock() {
-    CtrlPacket pkt = {};
-    pkt.header.type = CtrlMsg::CSS_UNLOCK;
-    ControlChannel_Send(pkt);
-
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ControlChannel: Sent CSS_UNLOCK");
-}
-
-void ControlChannel_SendCSSStart() {
-    CtrlPacket pkt = {};
-    pkt.header.type = CtrlMsg::CSS_START;
-    ControlChannel_Send(pkt);
-
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ControlChannel: Sent CSS_START");
-}
-
 void ControlChannel_SendBattleReady() {
     CtrlPacket pkt = {};
     pkt.header.type = CtrlMsg::BATTLE_READY;

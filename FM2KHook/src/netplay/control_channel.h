@@ -83,13 +83,6 @@ void ControlChannel_Send(const CtrlPacket& packet);
 // route the ACK to the wrong client and put it in an unintended state.
 void ControlChannel_SendTo(const CtrlPacket& packet, const sockaddr_in& dest);
 
-// Send a raw datagram (no CtrlPacket header) on the shared control socket.
-// Used by the Phase F spectator UDP input accelerator (0xCE
-// UDP_INPUT_BATCH datagrams to subscriber addresses). The receiver's
-// RawReceive demux routes by first byte, so the payload must begin with
-// its own magic.
-void ControlChannel_SendRawTo(const void* buf, size_t len, const sockaddr_in& dest);
-
 // Check if control channel is connected (received HELLO_ACK)
 bool ControlChannel_IsConnected();
 
@@ -146,25 +139,10 @@ void ControlChannel_SendHelloAck(uint8_t player_id);
 // Send PING for keepalive
 void ControlChannel_SendPing();
 
-// CSS raw inputs were sent via the control channel as a custom CCCaster-style
-// ring buffer. They now ride a dedicated GekkoNet CSS session (prediction=0
-// lockstep). The CtrlMsg::CSS_INPUT enum and the css_input payload struct are
-// kept as deprecated stubs for backward-compat with peers running older code.
-
-// Send CSS cursor position update [deprecated - use CSS input instead]
-void ControlChannel_SendCursor(uint8_t x, uint8_t y);
-
-// Send CSS character selection (highlighted, not locked)
-void ControlChannel_SendCharSelect(uint8_t slot, uint8_t color);
-
-// Send CSS character lock (confirmed selection)
-void ControlChannel_SendCharLock(uint8_t slot, uint8_t color);
-
-// Send CSS character unlock (cancelled selection)
-void ControlChannel_SendCharUnlock();
-
-// Send CSS start signal (both players synced, start counting frames NOW)
-void ControlChannel_SendCSSStart();
+// CSS raw inputs used to ride the control channel as a custom CCCaster-style
+// ring buffer. CSS is a dedicated GekkoNet session (prediction=0 lockstep) now,
+// so the whole CSS control plane -- senders, handlers, payload structs -- is
+// gone. Only the wire NUMBERING is frozen (see CtrlMsg in netplay_state.h).
 
 // Send battle ready signal (for CSS sync). No payload -- just a CSS-sync
 // rendezvous signal. Input delay is negotiated separately over

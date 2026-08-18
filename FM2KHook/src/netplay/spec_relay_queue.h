@@ -12,7 +12,7 @@
 // WS, the spec launcher writes them into a second ring buffer in shared
 // memory, and the spec hook polls and dispatches through the existing
 // receive-handler path (the same handlers that today consume bytes from
-// SpectatorTCP).
+// the direct reliable channel).
 //
 // Two rings per process:
 //   Outbound: hook -> launcher (hook produces, launcher consumes)

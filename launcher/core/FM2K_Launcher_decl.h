@@ -158,21 +158,14 @@ private:
     // Multi-client testing helpers
     bool LaunchLocalClient(const std::string& game_path, bool is_host, int port);
     // Launch a local spectator pointing at the host (client1) on host_port.
-    // Spectator-mode hook will SPEC_JOIN_REQ the host and start replaying
-    // the streamed input history (CSS + battle).
-    // mode: "current" (default; CCCaster-style snapshot join -- v0.2.42's
-    // Phases C+D+E made this the preferred path: /F boots spec straight
-    // to battle for mid-battle joiners, per-round refresh keeps mid-set
-    // joiners fresh, CSS snapshot covers mid-CSS joiners) or "full"
-    // (legacy replay-from-session-start input log; falls back here when
-    // CURRENT_MATCH can't apply -- version mismatch, snapshot transfer
-    // interrupted, etc.). Default flipped from "full" → "current" on
-    // 2026-05-13 after the vanpri sim-determinism leak in the replay
-    // path made FULL_SESSION untrustworthy past ~4000 frames.
+    // The spectator-mode hook sends SPEC_JOIN_REQ and the host decides how
+    // to serve "the match happening now" from its own state: a battle-entry
+    // snapshot mid-battle, the bounded backfill from the current char select
+    // between matches, or the session so far when no match has ended yet.
+    // There is no viewer-selectable join flavour.
     bool LaunchLocalSpectator(const std::string& game_path,
                               int spectator_port,
-                              int host_port,
-                              const std::string& mode = "current");
+                              int host_port);
     // Daisy-chain test: launches a second spectator that subscribes to the
     // first spectator instead of the host. Verifies relay-node forwarding.
     bool LaunchLocalSpectator2(const std::string& game_path,
@@ -184,28 +177,26 @@ public:
     // active match to watch it" path AND the --spectate CLI flag for e2e
     // testing. spectator_port is local UDP bind; host_ip:host_port is
     // where the spectator's FM2K_REMOTE_ADDR points and SpectatorNode
-    // JOIN_REQ is sent. mode default "current" -- see LaunchLocalSpectator
-    // for the 2026-05-13 v0.2.42 flip rationale.
-    // spec_transport ("tcp" or "relay") -- Phase 4. If "relay", the
-    // launcher sets FM2K_SPEC_TRANSPORT=relay on the spec game spawn
-    // so the hook enters relay mode without the user setting an env.
-    // Default "tcp" preserves legacy P2P TCP spec data plane.
+    // JOIN_REQ is sent.
+    // spec_transport: "relay" makes the launcher set FM2K_SPEC_TRANSPORT=relay
+    // on the spec game spawn so the hook routes through the hub's WS relay;
+    // "direct" (and the legacy spelling "tcp" an older hub still sends for the
+    // non-relay case) explicitly clears it. Negotiated via the hub grant, never
+    // by the user.
     //
-    // NO DEFAULTS on session_kind / mode / spec_transport (Phase 4e, review
-    // A7b). They used to default to "menu" / "current" / "tcp", which is how a
-    // 6-argument call with the TRANSPORT in the 6th slot compiled clean, warned
-    // nothing, and silently pinned FM2K_SPEC_TRANSPORT=tcp on every
+    // NO DEFAULTS on session_kind / spec_transport (Phase 4e, review A7b).
+    // They used to default to "menu" / "current" / "tcp", which is how a
+    // 6-argument call with the TRANSPORT in the mode slot compiled clean,
+    // warned nothing, and silently pinned FM2K_SPEC_TRANSPORT=tcp on every
     // hub-brokered spectator for the whole life of the feature (relay spectate
     // could not have worked in the field). A wrong-arity call must be a compile
-    // error, not a behaviour change that is invisible for tcp hosts. Only
-    // player_index -- the one argument no caller has ever varied -- keeps a
-    // default.
+    // error. Only player_index -- the one argument no caller has ever varied
+    // -- keeps a default.
     bool LaunchRemoteSpectator(const std::string& game_path,
                                int spectator_port,
                                const std::string& host_ip,
                                int host_port,
                                const std::string& session_kind,
-                               const std::string& mode,
                                const std::string& spec_transport,
                                int player_index = 2);
 

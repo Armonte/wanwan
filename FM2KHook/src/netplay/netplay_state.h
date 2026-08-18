@@ -60,29 +60,27 @@ enum class CtrlMsg : uint8_t {
     HELLO_ACK,          // Connection accepted
     DISCONNECT,         // Clean disconnect
 
-    // CSS synchronization
-    CSS_INPUT,          // Raw input for CSS (simple approach)
-    CSS_CURSOR,         // Cursor position update (x, y) [deprecated]
-    CSS_CHAR_SELECT,    // Character slot highlighted [deprecated]
-    CSS_LOCK,           // Character locked (ready)
-    CSS_UNLOCK,         // Character unlocked (cancel)
-    CSS_START,          // CSS sync complete - start counting frames NOW
+    // Values 5..10 were the CCCaster-style CSS control plane (raw CSS input,
+    // cursor, char-select, lock, unlock, start). CSS is a GekkoNet lockstep
+    // session now (prediction_window = 0), so those messages are DELETED --
+    // no sender, no handler, no payload struct. The NUMBERING below is frozen
+    // at its historical values because the 0xCC control channel has no version
+    // handshake: an old peer that still emits one of those types must land on
+    // the dispatch default and be ignored, which it only does if every LIVE
+    // type keeps the number it has always had.
 
     // Battle coordination
-    BATTLE_READY,       // Ready to start GekkoNet session (CSS sync)
+    BATTLE_READY = 11,  // Ready to start GekkoNet session (CSS sync)
     BATTLE_ACK,         // Acknowledged battle ready
     BATTLE_ENTERING,    // Game mode changed to battle, waiting for sync
     BATTLE_START,       // Begin battle (both confirmed)
     BATTLE_END,         // Match over
 
-    // Chat (peer-to-peer text over the control channel). Short messages only
-    // -- full chat with history / lobby goes over the lobby TCP channel once
-    // the matchmaking server lands (phase 2+ of matchmaking design).
+    // Chat (peer-to-peer text over the control channel). Short messages only.
     CHAT,
 
-    // Spectator tree coordination (see docs/FM2K_Spectator_Design.md).
-    // Bulk stream data (INITIAL_MATCH / INPUT_BATCH / MATCH_END / CSS_UPDATE)
-    // goes over a separate 0xCE-prefixed datagram path -- too variable-size
+    // Spectator tree coordination (see docs/dev/architecture_spectate.md).
+    // Bulk stream data rides the reliable channel (0xCB) -- too variable-size
     // for the fixed CtrlPacket. These CtrlMsg values cover control-plane
     // coordination only.
     SPEC_JOIN_REQ,      // Viewer asks upstream node to be a subscriber
@@ -132,12 +130,6 @@ inline const char* CtrlMsgToString(CtrlMsg msg) {
         case CtrlMsg::HELLO:        return "HELLO";
         case CtrlMsg::HELLO_ACK:    return "HELLO_ACK";
         case CtrlMsg::DISCONNECT:   return "DISCONNECT";
-        case CtrlMsg::CSS_INPUT:    return "CSS_INPUT";
-        case CtrlMsg::CSS_CURSOR:   return "CSS_CURSOR";
-        case CtrlMsg::CSS_CHAR_SELECT: return "CSS_CHAR_SELECT";
-        case CtrlMsg::CSS_LOCK:     return "CSS_LOCK";
-        case CtrlMsg::CSS_UNLOCK:   return "CSS_UNLOCK";
-        case CtrlMsg::CSS_START:    return "CSS_START";
         case CtrlMsg::BATTLE_READY: return "BATTLE_READY";
         case CtrlMsg::BATTLE_ACK:   return "BATTLE_ACK";
         case CtrlMsg::BATTLE_ENTERING: return "BATTLE_ENTERING";
@@ -177,24 +169,6 @@ struct CtrlPacket {
     CtrlPacketHeader header;
 
     union {
-        // CSS_INPUT data - raw input bits with frame for lockstep
-        struct {
-            uint16_t input;     // Input bits (same as GekkoNet format)
-            uint32_t frame;     // Frame number for synchronization
-        } css_input;
-
-        // CSS_CURSOR data
-        struct {
-            uint8_t x;
-            uint8_t y;
-        } cursor;
-
-        // CSS_CHAR_SELECT / CSS_LOCK data
-        struct {
-            uint8_t slot;       // Character slot index
-            uint8_t color;      // Color/palette selection
-        } character;
-
         // HELLO data
         struct {
             uint8_t version;    // Protocol version
@@ -276,7 +250,6 @@ struct CtrlPacket {
         // 0xFF means "unknown / not in battle" → leave BTB env unset.
         struct {
             uint8_t  host_session_kind;
-            uint16_t host_tcp_port;
             uint8_t  host_p1_char;   // FM2K char grid index (0..49), 0xFF=unset
             uint8_t  host_p2_char;
             uint8_t  host_stage;
@@ -288,17 +261,14 @@ struct CtrlPacket {
             uint8_t  host_p2_color;
         } spec_join_ack;
 
-        // SPEC_JOIN_REQ -- viewer's mode preference.
-        //   mode = 0 (FULL_SESSION):  legacy default, replay from session
-        //                             frame 0 (streamer / archivist mode).
-        //   mode = 1 (CURRENT_MATCH): CCCaster-style snapshot join, host
-        //                             ships its most recent SaveState blob
-        //                             so the spectator skips all previous
-        //                             matches. Default for live viewers.
-        // Older spectator builds send this struct as zeros, which lands
-        // on FULL_SESSION -- the back-compat path.
+        // SPEC_JOIN_REQ. byte 0 used to carry a join-mode preference
+        // (from-frame-0 vs current-match); there is one join flavour now
+        // -- "the match happening right now" -- so the host answers from
+        // its own session state and never reads it. Kept as a reserved
+        // zero byte rather than reused, so a stale value from a peer that
+        // slipped the version gate cannot mean anything.
         struct {
-            uint8_t mode;          // SpecJoinMode value
+            uint8_t _reserved0;
             uint8_t reserved[7];
         } spec_join_req;
 

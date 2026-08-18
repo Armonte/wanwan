@@ -3,7 +3,6 @@
 #include "spec_wire.h"            // zero-RLE codec (SessionEvent_* live in spectator_node.h)
 #include "spec_relay_queue.h"     // hub-relay outbound queue (Phase 2c)
 #include "spec_pool_sync.h"       // Phase 4c match-start pool resync (apply-side arm/latch)
-#include "spectator_tcp.h"        // TCP transport for INPUT_BATCH stream
 #include "control_channel.h"
 #include "netplay.h"
 #include "replay.h"
@@ -48,7 +47,7 @@ namespace {
 
 // Legacy SendInitialMatchTo / INITIAL_MATCH packet path removed in C12.
 // MATCH_START flows as a SessionEvent op interleaved with INPUTs in the
-// EVENT_BATCH stream; late joiners get it via SendSessionBackfillTo.
+// EVENT_BATCH stream; late joiners get it via SendSessionBackfillFromStart.
 
 
 // Legacy SendMatchEndToAll / MATCH_END packet path removed in C12.
@@ -80,27 +79,21 @@ void SpectatorNode_Init() {
     g_state = State{};
     g_state.capacity = SPECTATOR_DEFAULT_CAPACITY;
 
-    // Wire the ReliableChannel deliver dispatcher for the FM2K_SPEC_RC A/B path
-    // (harmless if nothing ever arrives on RC_CHAN_SPEC). Runs regardless of
-    // transport mode below.
+    // Wire the ReliableChannel deliver dispatcher (harmless if nothing ever
+    // arrives on RC_CHAN_SPEC). Runs regardless of transport mode below.
     SpectatorNode_RegisterRcDeliver();
 
-    // FM2K_SPEC_TRANSPORT (Phase 2b of v0.3 spec rebuild). "relay" =
-    // route spec data through hub WS binary frames instead of P2P TCP.
-    // When set, we skip the entire TCP-listener + TCP-STUN dance below
-    // -- no listener to bind, no external port to discover, no NAT
-    // punch dance to coordinate. Spec data plane comes online once the
-    // launcher's shared-mem queue is wired (Phase 2c).
-    //
-    // Default "tcp" preserves legacy behavior for every client up
-    // through v0.2.57. Read once here at Init -- env changes mid-run
+    // FM2K_SPEC_TRANSPORT: "relay" routes spec data through hub WS binary
+    // frames instead of the direct reliable channel. Anything else (and
+    // unset) means direct. The launcher sets it from the hub's grant; a
+    // user never picks it. Read once here at Init -- env changes mid-run
     // wouldn't be safe (existing subscribers expect one mode).
     if (const char* transport = std::getenv("FM2K_SPEC_TRANSPORT");
         transport && std::strcmp(transport, "relay") == 0) {
         g_state.spec_transport_relay = true;
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "SpectatorNode: FM2K_SPEC_TRANSPORT=relay -- skipping TCP "
-            "listener + TCP-STUN, creating shared-mem queues for "
+            "SpectatorNode: FM2K_SPEC_TRANSPORT=relay -- direct reliable "
+            "channel suppressed, creating shared-mem queues for "
             "launcher <-> hub forwarding");
         // Create BOTH outbound (hook->launcher) and inbound
         // (launcher->hook) rings unconditionally. Either could be used
@@ -125,74 +118,10 @@ void SpectatorNode_Init() {
         return;
     }
 
-    // Bring up the TCP listener for the host→spectator INPUT_BATCH stream.
-    //
-    // Bind strategy is tiered because Windows reserves chunks of the
-    // dynamic port range for Hyper-V / WSL2 / docker / etc., and the
-    // reserved chunks shift across reboots. Three attempts in order:
-    //
-    //   1. UDP_port + 100  (deterministic, gives predictable port for
-    //      debugging when it succeeds)
-    //   2. UDP_port + 1000 (different bucket; usually clear of the
-    //      WSL-reserved range)
-    //   3. port = 0        (OS picks any free port; always succeeds)
-    //
-    // JOIN_ACK includes our actual listener port via
-    // SpectatorTCP::GetListenPort(), so spectators learn whichever port
-    // we ended up on with no client-side coordination. The deterministic
-    // attempts are first only to keep logs readable; the OS-picked
-    // fallback is what guarantees we never come up listener-less.
-    //
-    // Real-world repro on pkmncc 2026-05-13: P1 udp=51376 → +100=51476
-    // failed with WSAEACCES (Windows-reserved range), needed +1000 OR
-    // port=0 to bind successfully.
-    //
-    // Idempotent -- re-Init won't double-bind.
-    const uint16_t udp_port = NetSocket_GetLocalPort();
-    const uint16_t candidate_ports[] = {
-        (uint16_t)(udp_port + 100),
-        (uint16_t)(udp_port + 1000),
-        0,  // OS picks
-    };
-    bool spec_listener_bound = false;
-    for (uint16_t cand : candidate_ports) {
-        if (SpectatorTCP::StartListener(cand)) {
-            spec_listener_bound = true;
-            if (cand == 0) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: TCP listener bound via OS-picked port "
-                    "(actual port %u -- preferred offsets all hit "
-                    "WSAEACCES, usually Windows reserved-port range)",
-                    (unsigned)SpectatorTCP::GetListenPort());
-            }
-            break;
-        }
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "SpectatorNode: TCP listener bind on port %u failed -- "
-            "trying next candidate", (unsigned)cand);
-    }
-    if (!spec_listener_bound) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-            "SpectatorNode: Init -- TCP listener failed to bind on ANY "
-            "candidate port (udp=%u, +100, +1000, OS-picked all failed); "
-            "spectator subscriptions will fail",
-            (unsigned)udp_port);
-    }
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "SpectatorNode: Init (capacity=%zu, batch=%zu frames, "
-                "tcp_port=%u)",
-                g_state.capacity, BROADCAST_BATCH_FRAMES,
-                (unsigned)SpectatorTCP::GetListenPort());
-
-    // TCP-STUN -- discover external TCP addr by source-binding an outbound
-    // connect to (hub:tcp_stun) from our listener port. Only meaningful
-    // for spectators (where the cross-NAT punch path needs the *external*
-    // tcp_port for the host-side punch to fire at the right port). Hosts
-    // run this too for symmetry -- costs ~50ms once and pre-populates
-    // the field if the host ever later acts as a spectator (daisy chain).
-    // Failure here is logged but non-fatal; punching falls back to local
-    // listener port which works on port-preserving NATs.
-    SpectatorTCP::PerformTcpStun();
+                "transport=rc/udp)",
+                g_state.capacity, BROADCAST_BATCH_FRAMES);
 }
 
 void SpectatorNode_Shutdown() {
@@ -248,11 +177,6 @@ void SpectatorNode_Shutdown() {
     g_state.css_anchor_op_count    = 0;
     g_state.have_prior_match       = false;
     g_state.ops_seen               = 0;
-    g_state.udp_epoch_armed        = false;
-    g_state.udp_highest_op_seq     = 0;
-    g_state.udp_admitted_total     = 0;
-    g_state.udp_paused_on_gate     = 0;
-    g_state.udp_dropped_on_gap     = 0;
     g_state.broadcasting = false;
     g_state.subscribed_upstream = false;
     g_state.ever_subscribed     = false;   // task #70
@@ -263,7 +187,6 @@ void SpectatorNode_Shutdown() {
     g_state.pb_snapshot_applied_once = false;
     g_state.pb_started               = false;
     CssAutoConfirm_SetSeamHold(false);
-    SpectatorTCP::Shutdown();
     // Tear down both relay rings if we created them. Close handles
     // nullptr. Kernel mapping refcount keeps the object alive while
     // launcher still has it mapped; we just drop our side.
@@ -631,7 +554,7 @@ void SpectatorNode_ApplyPendingSnapshot() {
     // 1100+, spec expecting 333).
     //
     // Only reset state when our cursor is BEHIND the anchor -- that's the
-    // FULL_SESSION → CURRENT_MATCH renegotiation case where pb_queue
+    // grant-renegotiation case where pb_queue
     // holds stale pre-anchor frames the snapshot supersedes.
     if (!g_state.have_frame_baseline ||
         g_state.next_expected_frame < anchor)
@@ -646,7 +569,7 @@ void SpectatorNode_ApplyPendingSnapshot() {
     } else {
         // Cursor is at/past the anchor, so the branch above trusts pb_queue as
         // "anchor..live". That trust holds for a normal CURRENT_MATCH bind --
-        // the host ships only the tail -- but NOT after a FULL_SESSION ->
+        // the host ships only the tail -- but NOT after a session-start ->
         // CURRENT_MATCH re-pin: the pre-subscribe stash is deliberately kept
         // across a re-JOIN to the same upstream, so the replayed queue can
         // still start at INPUT-frame 0 while live batches have already run the
@@ -721,7 +644,7 @@ void SpectatorNode_ApplyPendingSnapshot() {
     // CSS edge to eat -- clear any stale seam as before.
     if (game_mode >= 2000u && game_mode < 3000u) {
         g_state.pb_post_css_mask_pops = 10;
-        CssAutoConfirm_SetSeamHold(true, 0xFF, 0xFF);  // mask confirm bits only
+        CssAutoConfirm_SetSeamHold(true);   // mask confirm bits only
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
             "SpectatorNode: CSS-landing snapshot -- re-armed confirm mask "
             "(10 pops) to eat the first-input rising-confirm (0/0 flash fix)");

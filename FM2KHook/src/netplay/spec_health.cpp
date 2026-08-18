@@ -7,7 +7,6 @@
 #include "spec_wire.h"            // zero-RLE codec (SessionEvent_* live in spectator_node.h)
 #include "spec_relay_queue.h"     // hub-relay outbound queue (Phase 2c)
 #include "spec_pool_sync.h"       // Phase 4c match-start pool resync (hold supervision)
-#include "spectator_tcp.h"        // TCP transport for INPUT_BATCH stream
 #include "control_channel.h"
 #include "netplay.h"
 #include "replay.h"
@@ -33,26 +32,14 @@
 #include <cstdio>
 using namespace specnode;
 
-// In-flight TCP punch sockets -- see TickHostMaintenance comment for why
-// we defer close. Each entry holds a SOCKET handle and the wall-clock
-// deadline (ms) after which it's safe to closesocket(). The sweep at
-// the bottom of TickHostMaintenance (which runs every frame) processes
-// expired entries. Bounded by spectator-join rate, ~1/sec at most.
-struct PendingPunchSock {
-    SOCKET   handle;
-    uint64_t close_after_ms;
-};
-std::vector<PendingPunchSock> g_pending_punch_sockets;
-
 void SpectatorNode_TickHealth() {
     const uint64_t now = (uint64_t)GetTickCount64();
 
     // ---- Spec hub-relay inbound drain (Phase 3) -------------------------
     // When the launcher has WS binary frames forwarded from the hub, it
     // writes them into the inbound shared-mem ring. Each Slot's payload
-    // is a SpecDataHeader-prefixed wire frame -- byte-identical to what
-    // SpectatorTCP::PollUpstream would have produced from the TCP path
-    // it's replacing. Feed straight into HandleSpecData.
+    // is a SpecDataHeader-prefixed wire frame -- byte-identical to what the
+    // direct RC path delivers. Feed straight into HandleSpecData.
     //
     // Bound work-per-tick so a snapshot burst doesn't monopolize the
     // hook tick. ~32 slots = up to 512 KB per tick which covers most
@@ -63,10 +50,9 @@ void SpectatorNode_TickHealth() {
             const fm2k::spec_relay::Slot* slot =
                 fm2k::spec_relay::PeekFront(g_state.spec_relay_in);
             if (!slot) break;
-            // payload bytes are exactly what SpectatorTCP's framer
-            // would deliver to HandleSpecData via the TCP path. The
-            // sockaddr_in second arg is a debug breadcrumb; zero
-            // works (TCP path also passes zero).
+            // The sockaddr_in second arg is a debug breadcrumb; zero works.
+            // rc_channel defaults to 0 = single ordered stream, which is
+            // exactly what the relay is.
             sockaddr_in zero_from{};
             zero_from.sin_family = AF_INET;
             SpectatorNode_HandleSpecData(
@@ -82,30 +68,6 @@ void SpectatorNode_TickHealth() {
             hb.header.type = CtrlMsg::SPEC_HEARTBEAT;
             ControlChannel_SendTo(hb, g_state.upstream_addr);
             g_state.last_heartbeat_send_ms = now;
-        }
-
-        // Phase F: silent-TCP-death detector. A connection can die
-        // asymmetrically -- the host's side errors out while ours never
-        // surfaces anything (observed 2026-06-11: host "subscriber read
-        // error" at the match-2 boundary, spec recv just went quiet; the
-        // op gate then paused UDP forever and nothing re-joined). The UDP
-        // datagrams announce the host's op count: if ops we provably lack
-        // (udp_highest_op_seq > ops_seen) stay undeliverable while the
-        // TCP stream has been silent for several seconds, the stream is
-        // wedged regardless of HOW it died. Re-join is cheap (~2s).
-        if (!g_state.spec_transport_relay &&
-            g_state.udp_epoch_armed &&
-            g_state.udp_highest_op_seq > g_state.ops_seen) {
-            const uint64_t tcp_last = SpectatorTCP::LastUpstreamRecvMs();
-            if (tcp_last > 0 && now > tcp_last && now - tcp_last >= 4000) {
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: op-gap stall -- UDP announces op_seq=%u "
-                    "but ops_seen=%u and TCP silent %llums; declaring "
-                    "upstream TCP dead",
-                    g_state.udp_highest_op_seq, g_state.ops_seen,
-                    (unsigned long long)(now - tcp_last));
-                SpectatorNode_OnUpstreamTcpDead();
-            }
         }
 
         // Surgical gap-fill pull. The live stream is flowing but our
@@ -243,7 +205,7 @@ void SpectatorNode_TickHealth() {
         // "a snapshot is coming". If the stream then turns up (baseline set)
         // and no snapshot ever does -- inbox never touched, none applied --
         // the ACK we obeyed did not describe the stream the host assigned us.
-        // That is the FULL_SESSION-grant-vs-BATTLE-ACK mismatch: the viewer
+        // That is the CSS-grant-vs-BATTLE-ACK mismatch: the viewer
         // replays a from-frame-0 CSS stream as battle input from uninitialised
         // state, which is a deterministic desync rather than a visible fault.
         // Refuse to keep simulating on a contradiction: log loudly and re-JOIN
@@ -289,8 +251,7 @@ void SpectatorNode_TickHealth() {
                     s_grant_since_ms = 0;
                     if (g_state.root_addr.sin_port != 0 && !g_state.session_ended) {
                         g_state.last_reconnect_attempt_ms = now;
-                        SpectatorNode_RequestJoin(g_state.root_addr,
-                                                  g_state.last_requested_mode);
+                        SpectatorNode_RequestJoin(g_state.root_addr);
                     }
                 }
             }
@@ -308,77 +269,6 @@ void SpectatorNode_TickHealth() {
         // battle-entry snapshot. One nudge per interval, no escalation: the
         // hold is bounded and releases into ordinary playback on its own.
         PoolSync_HoldTick(now);
-
-        // Silence-based failover. TCP receive activity is the only
-        // liveness signal -- the bulk stream lives entirely there.
-        //
-        // Suppressed when:
-        //   (a) Catchup is active. The catchup loop runs sim+disk-IO at
-        //       full speed and may legitimately go quiet for seconds --
-        //       especially during CSS replay when each cursor move blocks
-        //       on a .player file load. Tearing down here would force a
-        //       backfill replay that re-incurs the same cost, never
-        //       finishing.
-        //   (b) pb_queue still has events to drain. recv_ms only updates
-        //       on NEW TCP bytes; if the host already sent us 16k events
-        //       of backfill in one burst and we're slowly chewing through
-        //       them, recv_ms goes stale even though we're actively
-        //       processing data. The previous gate (a alone) wasn't
-        //       enough -- once initial catchup ended (s_initial_catchup_done
-        //       latched true), reconnect-and-backfill paths bypassed
-        //       catchup entirely and the failover here would fire mid-
-        //       drain → tear down the connection we're using → reconnect
-        //       → re-receive backfill → same cycle. Death loop observed
-        //       in P3 logs after a host network blip.
-        extern bool g_spectator_catchup;
-        const uint64_t recv_ms     = SpectatorTCP::LastUpstreamRecvMs();
-        const bool     queue_idle  = SpectatorNode_PendingFrameCount() == 0;
-        //   (c) snapshot transfer in progress. Under real loss the 1MB
-        //       snapshot trickles at TCP-throughput pace (~30KB/s at 20%
-        //       loss / 140ms RTT) and a single retransmit-backoff stall
-        //       can exceed 5s. Failing over mid-transfer drops the inbox
-        //       and restarts the 1MB from scratch -- at high loss the
-        //       join NEVER completes (observed: failover at 311296/1081196
-        //       bytes, repeating forever). While the inbox is mid-
-        //       transfer, allow a much longer window (30s without ANY
-        //       TCP bytes) before declaring the upstream dead.
-        const auto& snap_inbox = g_state.pb_snapshot_inbox;
-        const bool snapshot_in_flight =
-            snap_inbox.active &&
-            snap_inbox.bytes_received < snap_inbox.meta.total_bytes;
-        const uint64_t silence_budget_ms =
-            (snapshot_in_flight || !g_state.live_established)
-                ? (uint64_t)30000
-                : (uint64_t)SPECTATOR_SILENCE_FAILOVER_MS;
-        // UDP is the primary liveness signal now: inputs + ops ride
-        // datagrams, so TCP being quiet is NORMAL (retransmit storms
-        // under loss, host swap stalls, nothing bulk to send). The old
-        // TCP-only condition fired at every battle->CSS return under
-        // clumsy -- queue drained (host stalled production), TCP quiet
-        // past budget -> the viewer sent SPEC_LEAVE, unsubscribed
-        // ITSELF, killed its own UDP fan-out, and span through a full
-        // reconnect against a host mid-swap. Fail over only when BOTH
-        // transports are silent.
-        const bool udp_alive = g_state.last_udp_recv_ms > 0 &&
-            now - g_state.last_udp_recv_ms < 2000;
-        if (!g_spectator_catchup &&
-            queue_idle &&
-            !udp_alive &&
-            recv_ms > 0 &&
-            now - recv_ms >= silence_budget_ms)
-        {
-            char buf[48] = {}; FormatAddr(g_state.upstream_addr, buf, sizeof(buf));
-            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                        "SpectatorNode: upstream %s silent for %llu ms -- failing over",
-                        buf,
-                        (unsigned long long)(now - recv_ms));
-            CtrlPacket leave = {};
-            leave.header.type = CtrlMsg::SPEC_LEAVE;
-            ControlChannel_SendTo(leave, g_state.upstream_addr);
-            g_state.subscribed_upstream = false;
-            g_state.live_established    = false;
-            SpectatorTCP::DisconnectUpstream();
-        }
     }
 
     // Reconnect path: not subscribed, but we have a root we can fall
@@ -392,8 +282,7 @@ void SpectatorNode_TickHealth() {
         SpectatorNode_MsSinceLastAdmit() < 1000) {
         g_state.reconnect_fail_count = 0;       // live again -> reset backoff
     }
-    const uint32_t recon_base =
-        g_state.tcp_rejoin_pending ? 500u : (uint32_t)SPECTATOR_RECONNECT_BACKOFF_MS;
+    const uint32_t recon_base = (uint32_t)SPECTATOR_RECONNECT_BACKOFF_MS;
     const uint32_t recon_shift =
         g_state.reconnect_fail_count > 4 ? 4u : g_state.reconnect_fail_count;
     uint32_t recon_interval = recon_base << recon_shift;
@@ -402,7 +291,7 @@ void SpectatorNode_TickHealth() {
     // task #70: once we've been subscribed but never admitted (the handshake
     // burst was lost), REPEAT re-JOINs must be SLOWER than RC's 7s message
     // retirement -- the standard 2-4s reconnect backoff resets the host's bind
-    // state and RESTARTS the OP_BASELINE+snapshot+backfill burst before RC can
+    // state and RESTARTS the snapshot+backfill burst before RC can
     // finish retransmitting it, so the two fight and nothing ever completes.
     // Give each re-ship a full retransmit window. (Pre-subscribe retries stay
     // fast to establish the connection quickly.)
@@ -425,21 +314,14 @@ void SpectatorNode_TickHealth() {
         recon_interval = (uint32_t)noadmit_interval;
     }
     if (!g_state.session_ended &&            // host said SESSION_END: stop, no storm
-        (!g_state.subscribed_upstream || g_state.tcp_rejoin_pending) &&
+        !g_state.subscribed_upstream &&
         g_state.root_addr.sin_port != 0 &&
-        // Never fire a new JOIN while an upstream connection exists --
-        // the host's existing-sub re-JOIN path drops connections from
-        // our addr, so a retry during an in-flight handshake/backfill
-        // kills its own transfer ("End of stream" loop, 2026-06-11).
-        !SpectatorTCP::IsUpstreamConnected() &&
         now - g_state.last_reconnect_attempt_ms >= recon_interval)
     {
         char buf[48] = {}; FormatAddr(g_state.root_addr, buf, sizeof(buf));
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: reconnecting to root %s (mode=%s, attempt %u, "
+                    "SpectatorNode: reconnecting to root %s (attempt %u, "
                     "next backoff %ums)", buf,
-                    g_state.last_requested_mode == SpecJoinMode::CURRENT_MATCH
-                        ? "CURRENT_MATCH" : "FULL_SESSION",
                     g_state.reconnect_fail_count + 1, recon_interval);
         g_state.last_reconnect_attempt_ms = now;
         ++g_state.reconnect_fail_count;
@@ -448,15 +330,14 @@ void SpectatorNode_TickHealth() {
         // subscribed_upstream latch (a re-JOIN clears it, so whichever one
         // fires first, the next one must already be on the slow cadence).
         if (noadmit_shape) ++s_noadmit_rejoin_count;
-        SpectatorNode_RequestJoin(g_state.root_addr, g_state.last_requested_mode);
+        SpectatorNode_RequestJoin(g_state.root_addr);
     }
 
     // RC full-transport handshake watchdog (task #70): subscribed but NEVER
     // admitted. The reconnect gate above is off (subscribed_upstream latched at
-    // JOIN_ACK), but if the host's one-shot OP_BASELINE+snapshot+backfill burst
-    // was lost beyond RC's 7s retirement, no other path re-JOINs in RC full-
-    // transport mode -- the silence-failover + op-gap detectors need a TCP recv
-    // stamp that's 0 here, and gap-fill needs have_frame_baseline (not yet set).
+    // JOIN_ACK), but if the host's one-shot snapshot+backfill burst
+    // was lost beyond RC's 7s retirement, nothing else re-JOINs -- gap-fill
+    // needs have_frame_baseline, which is not set yet.
     // Without this the viewer sat subscribed-but-never-admitted (total=0,
     // spec_max_frame=0) until the 30s process-exit under heavy loss. Re-JOIN so
     // the host resets bind state (HandleJoinReq's destructive-reset branch) and
@@ -468,7 +349,6 @@ void SpectatorNode_TickHealth() {
         g_state.subscribed_upstream &&
         !SpectatorNode_HasEverAdmitted() &&
         g_state.root_addr.sin_port != 0 &&
-        !SpectatorTCP::IsUpstreamConnected() &&
         now - g_state.last_reconnect_attempt_ms >= noadmit_interval)
     {
         char buf[48] = {}; FormatAddr(g_state.root_addr, buf, sizeof(buf));
@@ -476,7 +356,7 @@ void SpectatorNode_TickHealth() {
                     "SpectatorNode: subscribed but NO frame admitted in %llums "
                     "(handshake burst lost under loss; q=%zu reorder=%zu "
                     "baseline=%d snap_bytes=%zu) -- no-admit re-JOIN #%u to %s "
-                    "to force the host to re-ship OP_BASELINE+backfill "
+                    "to force the host to re-ship the backfill "
                     "(+snapshot if past its re-ship floor)",
                     (unsigned long long)noadmit_interval,
                     g_state.pb_queue.size(), g_state.pb_reorder.size(),
@@ -485,7 +365,7 @@ void SpectatorNode_TickHealth() {
                     s_noadmit_rejoin_count + 1, buf);
         g_state.last_reconnect_attempt_ms = now;
         ++s_noadmit_rejoin_count;
-        SpectatorNode_RequestJoin(g_state.root_addr, g_state.last_requested_mode);
+        SpectatorNode_RequestJoin(g_state.root_addr);
     }
 
     SpectatorNode_TickHostMaintenance();
@@ -554,102 +434,20 @@ void SpectatorNode_TickHostMaintenance() {
                     ControlChannel_SendTo(hb, target);
                 }
 
-                // TCP simultaneous-open punch (v0.2.35). UDP heartbeat
-                // above only opens our NAT for inbound UDP; the
-                // INPUT_BATCH stream rides TCP, which uses an entirely
-                // separate NAT mapping. Without a TCP-side punch, spec's
-                // TCP SYN to our listener gets dropped at our NAT and
-                // they sit on "Connecting..." through every reconnect.
-                //
-                // Strategy: create a temporary raw TCP socket, set
-                // SO_REUSEADDR so we can bind to the same port our
-                // listener already holds, bind to that port, mark
-                // non-blocking, and call connect() toward the spec's
-                // external TCP addr. The connect almost certainly fails
-                // (spec hasn't punched their side yet, or even if they
-                // have the simultaneous-open negotiation usually doesn't
-                // succeed in time) -- that's fine. The point is the SYN
-                // we send out registers an outbound flow in our NAT's
-                // state table from listener_port -> spec_ext_ip:tcp_port.
-                // When spec's connect SYN arrives at listener_port from
-                // that exact remote endpoint, our NAT lets it through.
-                // Listener accept() picks it up normally.
-                //
-                // Skip when spec_tcp_port == 0 (older spec client without
-                // TCP-port reporting) -- UDP-only path is what they had.
-                const uint16_t tcp_port = shm->spectator_punch_tcp_port;
-                const uint16_t our_listen = SpectatorTCP::GetListenPort();
-                if (tcp_port != 0 && our_listen != 0) {
-                    SOCKET s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-                    if (s != INVALID_SOCKET) {
-                        BOOL reuse = TRUE;
-                        ::setsockopt(s, SOL_SOCKET, SO_REUSEADDR,
-                                     (const char*)&reuse, sizeof(reuse));
-                        sockaddr_in local{};
-                        local.sin_family      = AF_INET;
-                        local.sin_addr.s_addr = INADDR_ANY;
-                        local.sin_port        = htons(our_listen);
-                        if (::bind(s, (sockaddr*)&local, sizeof(local)) == 0) {
-                            // Non-blocking so connect() returns
-                            // immediately with WSAEWOULDBLOCK. We let
-                            // the SYN actually leave the kernel before
-                            // closing -- see g_pending_punch_sockets
-                            // below.
-                            u_long nb = 1;
-                            ::ioctlsocket(s, FIONBIO, &nb);
-                            sockaddr_in dst{};
-                            dst.sin_family      = AF_INET;
-                            dst.sin_addr.s_addr = ip_be;
-                            dst.sin_port        = htons(tcp_port);
-                            ::connect(s, (sockaddr*)&dst, sizeof(dst));
-                            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                                "SpectatorNode: TCP punch %s:%u from local "
-                                "port %u (listener) -- SYN out, deferred close",
-                                ip_str, (unsigned)tcp_port,
-                                (unsigned)our_listen);
-                            // Defer close. Closing immediately races the
-                            // kernel's SYN emission (non-blocking
-                            // connect just queues; close + linger=0
-                            // would abort the unsent SYN). Stash with
-                            // a 2-second cleanup deadline; the bottom
-                            // of TickHostMaintenance sweeps expired
-                            // entries on every tick. By then the SYN
-                            // is long-gone and our NAT mapping is
-                            // established for ~30 s.
-                            g_pending_punch_sockets.push_back(
-                                {s, now + 2000});
-                        } else {
-                            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                                "SpectatorNode: TCP punch bind to :%u failed "
-                                "(WSA=%d) -- punch skipped",
-                                (unsigned)our_listen, WSAGetLastError());
-                            ::closesocket(s);
-                        }
-                    } else {
-                        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                            "SpectatorNode: TCP punch socket() failed "
-                            "(WSA=%d)", WSAGetLastError());
-                    }
-                }
             }
         }
     }
 
-    // ---- Upstream-side: bind newly-arrived TCP clients to subscribers ----
-    // Spectator's async TCP dial completes some frames after JOIN_ACK; the
-    // accept queue carries a fresh socket waiting to be paired by IP. On
-    // first successful pair, ship INITIAL_MATCH + backfill -- those bytes
-    // were deferred at JOIN_REQ accept time because the socket didn't
-    // exist yet.
+    // ---- Upstream-side: bind subscribers and ship their opener ----
+    // On the direct path the reliable channel is already up when the
+    // JOIN_REQ arrives (it is the same UDP socket), so a subscriber binds
+    // immediately and the snapshot+backfill ship on the next pass.
     //
-    // Relay mode (Phase 2c): there's no TCP listener and no async dial;
-    // the launcher's WS-to-hub data path is already up at JOIN_REQ time.
-    // So as soon as we have a spec_user_id (for addressing relay sends),
-    // mark the sub "bound" immediately so the snapshot+backfill ship.
-    // Without this short-circuit, sub.tcp_bound stayed false forever in
-    // relay mode and the spec saw zero data after subscribing.
+    // Relay mode (Phase 2c): the launcher's WS-to-hub data path is already
+    // up at JOIN_REQ time too, but sends are addressed by spec_user_id, so
+    // that field has to land before the sub can bind.
     for (auto& sub : g_state.subscribers) {
-        if (sub.tcp_bound) continue;
+        if (sub.bound) continue;
         // Never frame-0-backfill a CURRENT_MATCH viewer: defer the bind
         // until a snapshot exists (next StashSnapshot = next battle
         // entry). The legacy fallback replayed the host's title/CSS
@@ -658,12 +456,11 @@ void SpectatorNode_TickHostMaintenance() {
         // binding at the battle-entry tick raced StashSnapshot by ~50ms.
         // The viewer meanwhile holds at title until the battle-entry
         // JOIN_ACK re-broadcast seeds its BTB chars.
-        // Keyed on the PINNED grant, not on join_mode + live kind. Since the
-        // Design 2 downgrade removal, a between-matches joiner keeps
-        // join_mode == CURRENT_MATCH, so the old test would park it here the
-        // moment the host crossed into battle -- waiting for a snapshot it is
-        // never going to be sent. pinned_ack_kind == BATTLE is exactly "this
-        // sub was granted a snapshot join", decided atomically at JOIN time.
+        // Keyed on the PINNED grant, never on the live kind: the old test
+        // parked a between-matches joiner here the moment the host crossed
+        // into battle -- waiting for a snapshot it is never going to be sent.
+        // pinned_ack_kind == BATTLE is exactly "this sub was granted a
+        // snapshot join", decided atomically at JOIN time.
         if (sub.pinned_ack_kind == SPEC_ACK_KIND_BATTLE &&
             !g_state.current_snapshot.valid) {
             // Battle just started but StashSnapshot hasn't run yet (the
@@ -689,20 +486,14 @@ void SpectatorNode_TickHostMaintenance() {
             // JOIN_REQ arrived), wait for the existing-sub re-JOIN path
             // to backfill it. Next bind-loop tick succeeds.
             if (!sub.spec_user_id.empty()) {
-                sub.tcp_bound = true;
+                sub.bound = true;
                 just_bound = true;
             }
-        } else if (SpecRcSnapshotEnabled()) {
-            // RC full transport (task #55): snapshot+backfill AND live all
-            // ride RC to the sub's UDP addr, known since JOIN_REQ. Same
-            // shape as the relay short-circuit above -- there is no TCP
-            // accept to wait for (the viewer doesn't even dial in this
-            // mode). Without this the sub stayed unbound forever and the
-            // viewer's 30s connect watchdog killed the process.
-            sub.tcp_bound = true;
-            just_bound = true;
-        } else if (SpectatorTCP::RegisterAcceptedClient(sub.addr)) {
-            sub.tcp_bound = true;
+        } else {
+            // Direct path: snapshot+backfill AND live all ride the reliable
+            // channel to the sub's UDP addr, which is known from the JOIN_REQ
+            // itself. There is nothing to wait for -- no dial, no accept.
+            sub.bound = true;
             just_bound = true;
         }
         if (just_bound) {
@@ -725,7 +516,7 @@ void SpectatorNode_TickHostMaintenance() {
 
             // Phase 3 branch: CURRENT_MATCH-mode sub WITH a valid cached
             // snapshot → ship snapshot + tail events from snapshot's
-            // anchor frame. Otherwise (FULL_SESSION, OR no snapshot yet
+            // anchor frame. Otherwise (a CSS grant, OR no snapshot yet
             // because this is the first match before its StashSnapshot
             // ran) fall back to legacy from-frame-0 backfill.
             // Light re-join: a mid-stream viewer declared its resume
@@ -734,25 +525,20 @@ void SpectatorNode_TickHostMaintenance() {
             // re-delivery; one round trip and the stream is whole.
             const bool resume_bind = sub.resume_frame > 0;
             // The snapshot is served ONLY to a sub whose grant was BATTLE.
-            // Before Design 2 that was implied by join_mode (anything joining
-            // outside battle got downgraded to FULL_SESSION); now that the
-            // downgrade is gone, join_mode stays CURRENT_MATCH between matches
-            // and current_snapshot still holds the PREVIOUS battle's blob, so
-            // keying on join_mode alone would drop a between-matches viewer
+            // current_snapshot still holds the PREVIOUS battle's blob between
+            // matches, so anything looser would drop a between-matches viewer
             // into the last match's battle state. pinned_ack_kind is the
             // grant, and BATTLE means and only means "a snapshot is coming".
             const bool use_snapshot = !resume_bind &&
                 sub.pinned_ack_kind == SPEC_ACK_KIND_BATTLE &&
                 g_state.current_snapshot.valid;
-            // Design 2: a CURRENT_MATCH sub that was NOT granted a snapshot
-            // join is a between-matches joiner. It mirrors the current
-            // char-select and enters the next battle by simulating
-            // MATCH_START, exactly like a continuing spectator at a rematch
-            // seam -- so it only needs the stream from the current
-            // CSS_ENTERED, not from frame 0.
-            // DEFAULT ON since the bleeding flip; FM2K_SPEC_DEEP_JOIN=0 is the
-            // kill-switch back to the from-frame-0 path. The history matters
-            // for anyone touching this, so it stays recorded:
+            // A sub that was NOT granted a snapshot join is a
+            // between-matches joiner. It mirrors the current char-select and
+            // enters the next battle by simulating MATCH_START, exactly like
+            // a continuing spectator at a rematch seam -- so it only needs
+            // the stream from the current CSS_ENTERED, not from frame 0.
+            // The history matters for anyone touching this, so it stays
+            // recorded:
             //
             // Wave 3.1 gated this OFF. The bounded anchor's latency win was
             // proven (2.0-2.9s boot-to-play, 90.6-92.9% of events skipped, 7/7)
@@ -761,8 +547,8 @@ void SpectatorNode_TickHostMaintenance() {
             // sat at spawn while a continuing spectator's had moved. Skipping
             // match 1's simulation leaves engine state that battle-entry init
             // does not reset and that the event stream does not carry, and
-            // OP_BASELINE fixes the op COUNT for the skipped prefix but cannot
-            // supply state that prefix's simulation would have produced.
+            // an op-count fix-up for the skipped prefix cannot supply state
+            // that prefix's simulation would have produced.
             //
             // Wave 4 closed that desync by shipping the battle savestate to a
             // held deep joiner at the host's next battle entry, and moved the
@@ -770,20 +556,19 @@ void SpectatorNode_TickHostMaintenance() {
             // the same read as the grant kind, so the SPEC_ACK_DEEP_JOIN bit
             // the viewer booted on and the payload shipped here are the same
             // decision rather than two derivations against state that moved in
-            // between. The env gate lives in DeepJoinEnabled(), consulted at
-            // pin time; a sub can only be eligible if it was on.
+            // between.
             //
             // The bar that let the default flip, and the bar for keeping it:
             // full-state fencepost identity (CHECKSUM, NOT the subset GATE --
             // the subset gate passed all 7 of the Wave 3.1 failing runs), which
-            // run_all_tests stage 2d now asserts on every gate run.
+            // run_all_tests stage 2d asserts on every gate run.
             const bool use_recent_anchor = sub.deep_join_eligible &&
                 !resume_bind && !use_snapshot;
             // Re-ship floor: this sub already got THIS match's snapshot very
             // recently, so this rebind is a re-JOIN retry, not a fresh join.
             // Ship the tail only. use_snapshot itself is NOT cleared -- the
-            // OP_BASELINE first_idx and the backfill anchor must stay keyed to
-            // the snapshot the viewer is (still) assembling. Never twice in a
+            // the backfill anchor must stay keyed to the snapshot the viewer
+            // is (still) assembling. Never twice in a
             // row: see Subscriber::snapshot_reship_skips.
             const bool snapshot_throttled = use_snapshot &&
                 sub.last_snapshot_ship_ms != 0 &&
@@ -791,44 +576,21 @@ void SpectatorNode_TickHostMaintenance() {
                 sub.last_snapshot_match_idx == g_state.current_snapshot.match_index &&
                 now - sub.last_snapshot_ship_ms < SPECTATOR_SNAPSHOT_RESHIP_MS;
 
-            // Phase F: op-count baseline FIRST on the fresh connection --
-            // before snapshot/backfill -- so the viewer's ops_seen starts
-            // exact for everything this connection delivers. The
-            // connection ships ops from min(backfill_first_idx,
-            // live-flush cursor) onward; the baseline counts the ops
-            // BELOW that point (which a mid-session joiner never sees).
-            // Gated on udp_ok: an old build's TCP framer drops the
-            // connection on an unknown SpecDataType.
-            if (sub.udp_ok && SpecUdpEnabled() &&
-                !g_state.spec_transport_relay) {
-                // Must name the SAME first event the backfill below ships,
-                // or the viewer's ops_seen starts off by the difference.
-                const size_t first_idx = resume_bind
-                    ? BackfillFirstIdxForFrame(sub.resume_frame)
-                    : use_snapshot
-                    ? BackfillFirstIdxForFrame(g_state.current_snapshot.input_frame)
-                    : (use_recent_anchor && g_state.have_css_anchor)
-                    ? g_state.css_anchor_event_idx
-                    : 0;
-                const size_t clamp = std::min(g_state.last_flushed_event_idx,
-                                              g_state.session_events.size());
-                const size_t effective_start = std::min(first_idx, clamp);
-                uint32_t baseline = 0;
-                for (size_t i = 0; i < effective_start; ++i) {
-                    if (g_state.session_events[i].type != SessionEventType::INPUT)
-                        ++baseline;
-                }
-                SendOpBaselineTo(sub.addr, baseline);
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: OP_BASELINE=%u sent (first_idx=%zu, "
-                    "clamp=%zu, total_ops=%u)",
-                    baseline, first_idx, clamp, g_state.total_op_count);
-            }
+            // NO op-count baseline is shipped. The OP_BASELINE packet existed
+            // to seed the viewer's ops_seen and to re-arm the deleted 0xCE
+            // accelerator's admission epoch, and it was gated on that
+            // accelerator's capability bit -- which defaults OFF, so in every
+            // shipped configuration the packet was never sent. What survives
+            // of its job is redundant: EVENT_BATCH2 carries each batch's
+            // ABSOLUTE op base, so the viewer's dedupe watermark self-seeds
+            // from the first op it accepts and needs no per-bind priming.
+            // Deleted rather than switched on, because switching it on would
+            // be a behaviour change smuggled into a deletion.
 
-            const char* xport = g_state.spec_transport_relay ? "RELAY" : "TCP";
+            const char* xport = g_state.spec_transport_relay ? "RELAY" : "RC";
             // Host settings (rounds-to-win, timer, SOCD, etc) go to EVERY
             // joiner regardless of bind flavor -- the push lived only in
-            // the snapshot branch, so natural/FULL_SESSION viewers ran
+            // the snapshot branch, so natural-boot viewers ran
             // engine defaults (wrong round settings, 2026-06-11).
             {
                 extern void Netplay_SendHostConfigToSpec(const sockaddr_in& to);
@@ -914,19 +676,15 @@ void SpectatorNode_TickHostMaintenance() {
                 DeepJoinOnBind(sub);
             } else {
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "SpectatorNode: %s bound for %s%s%s -- %s "
-                    "(legacy from-frame-0 backfill)",
+                    "SpectatorNode: %s bound for %s%s%s -- session-start "
+                    "backfill (no prior match to bound against yet)",
                     xport, buf,
                     g_state.spec_transport_relay ? " user_id=" : "",
-                    g_state.spec_transport_relay ? sub.spec_user_id.c_str() : "",
-                    sub.join_mode == SpecJoinMode::CURRENT_MATCH
-                        ? "CURRENT_MATCH requested but no snapshot yet"
-                        : "FULL_SESSION");
-                SendSessionBackfillTo(sub.addr);
+                    g_state.spec_transport_relay ? sub.spec_user_id.c_str() : "");
+                SendSessionBackfillFromStart(sub.addr);
             }
 
             sub.last_seen_ms = now;            // post-backfill liveness anchor
-            SpectatorTCP::MarkBackfillComplete(sub.addr);
             const double bf_ms = (double)(SDL_GetPerformanceCounter() - bf_start)
                                  * 1000.0 / (double)SDL_GetPerformanceFrequency();
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
@@ -968,29 +726,10 @@ void SpectatorNode_TickHostMaintenance() {
             CtrlPacket leave = {};
             leave.header.type = CtrlMsg::SPEC_LEAVE;
             ControlChannel_SendTo(leave, it->addr);
-            SpectatorTCP::DisconnectSubscriber(it->addr);
             it = g_state.subscribers.erase(it);
         } else {
             ++it;
         }
     }
 
-    // ---- Sweep deferred TCP-punch sockets --------------------------------
-    // 2 s after each punch the SYN has long since left the kernel and our
-    // NAT mapping is established for the typical 30 s+ TCP-NAT TTL. Safe
-    // to close. Linger=0 so Windows sends an RST instead of waiting in
-    // FIN_WAIT (which we don't need -- the spec's incoming SYN goes to
-    // our LISTENER, not this transient connect socket).
-    for (auto it = g_pending_punch_sockets.begin();
-         it != g_pending_punch_sockets.end(); ) {
-        if (now >= it->close_after_ms) {
-            struct linger lng = { 1, 0 };
-            ::setsockopt(it->handle, SOL_SOCKET, SO_LINGER,
-                         (const char*)&lng, sizeof(lng));
-            ::closesocket(it->handle);
-            it = g_pending_punch_sockets.erase(it);
-        } else {
-            ++it;
-        }
-    }
 }

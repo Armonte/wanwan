@@ -6,7 +6,6 @@
 #include "spectator_node_internal.h"  // shared State model + g_state (split for sibling TUs)
 #include "spec_wire.h"            // zero-RLE codec (SessionEvent_* live in spectator_node.h)
 #include "spec_relay_queue.h"     // hub-relay outbound queue (Phase 2c)
-#include "spectator_tcp.h"        // TCP transport for INPUT_BATCH stream
 #include "control_channel.h"
 #include "netplay.h"
 #include "replay.h"

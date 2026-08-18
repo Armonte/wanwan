@@ -31,7 +31,6 @@
 #include "../netplay/savestate.h"  // WaveCAddrs
 
 uint64_t g_render_game_only_ns = 0;  // #63 diag: original_render_game() time, set by RenderFrameWithSnapshot
-static uint8_t s_render_saved_object_pool[FM2K::SIZE_OBJECT_POOL];
 static uint8_t s_render_saved_afterimage[WaveCAddrs::AFTERIMAGE_POOL_SZ];
 static uint8_t s_render_saved_input_tracking[0xA0];
 
@@ -221,7 +220,6 @@ void RenderFrameWithSnapshot() {
         // sim:render (a stalled tick skips both). The unprotected-render
         // exposure itself is unchanged in code and still applies to the NATIVE
         // (title/menu) phase, which no barrier makes frame-equal.
-        (void)s_render_saved_object_pool; // (kept allocated for backward compat)
         // Afterimage save: three slices skipping both EFFECT_SYS1 (palette
         // flash 1) and SHAKE_EFFECTS so render-side state evolution for
         // each propagates back into sim memory:

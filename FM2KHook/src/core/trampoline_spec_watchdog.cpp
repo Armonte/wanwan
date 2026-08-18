@@ -180,7 +180,7 @@ void SpecWatchdogTick(bool offline_replay) {
         // unreachable)", which is both a 30s stare at a dead window and a
         // wrong diagnosis: the handshake was fine, the host simply left first.
         //
-        // Short grace rather than an instant exit: OP_BASELINE / backfill
+        // Short grace rather than an instant exit: the backfill
         // datagrams already on the wire when the host shut down can still land
         // and admit, at which point HasEverAdmitted() flips, this branch stops
         // matching, and the normal graceful-drain path above (plus the 20s

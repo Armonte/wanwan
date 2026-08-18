@@ -266,24 +266,6 @@ void LauncherUI::HandleMatchStartEvent(const fm2k::HubEvent& ev) {
                     ::SetEnvironmentVariableA("FM2K_HUB_UDP_ADDR",   hub_udp.c_str());
                     ::SetEnvironmentVariableA("FM2K_HUB_USER_ID",    hs.my_id.c_str());
                     ::SetEnvironmentVariableA("FM2K_HUB_MATCH_TOKEN", ev.match.token.c_str());
-                    // TCP-STUN endpoint -- same hub host, port+2 (UDP-STUN
-                    // is +0, UDP-relay is +1). Hook's PerformTcpStun reads
-                    // this; absent → hook skips TCP-STUN and the spec
-                    // falls back to local listener port (works on port-
-                    // preserving NATs only).
-                    if (!hub_udp.empty()) {
-                        const auto colon = hub_udp.rfind(':');
-                        std::string tcp_stun;
-                        if (colon != std::string::npos) {
-                            // hub_udp port is :7711 by convention; +2 = 7713
-                            tcp_stun = hub_udp.substr(0, colon) + ":7713";
-                        }
-                        if (!tcp_stun.empty()) {
-                            ::SetEnvironmentVariableA(
-                                "FM2K_HUB_TCP_STUN_ADDR", tcp_stun.c_str());
-                        }
-                    }
-
                     // Per-player local SOCD mode. The hook reads
                     // FM2K_SOCD_MODE on first GetSOCDMode() call;
                     // we pick the local slot's value (host == P1,

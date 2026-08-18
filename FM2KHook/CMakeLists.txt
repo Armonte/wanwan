@@ -97,7 +97,6 @@ set(FM2KHOOK_SOURCES
     src/netplay/spec_backfill.cpp   # session-history + snapshot backfill to joiners (split from spectator_node)
     src/netplay/spec_health.cpp     # per-tick health + host-maintenance drivers (split from spectator_node)
     src/netplay/spec_recv.cpp       # incoming spec-data dispatch (EVENT_BATCH/SNAPSHOT/UDP) (split from spectator_node)
-    src/netplay/spec_impair.cpp     # test-only spectator-downlink loss shim (FM2K_SPEC_DROP)
     src/netplay/spec_host_events.cpp # host-side event recording + fingerprint (split from spectator_node)
     src/netplay/spec_join.cpp        # join/redirect protocol + GekkoSpectator dedup (split from spectator_node)
     src/netplay/spec_join_viewer.cpp # viewer-side JOIN_REQ/ACK/redirect/kick (split from spec_join)
@@ -109,7 +108,6 @@ set(FM2KHOOK_SOURCES
     src/netplay/spec_playback.cpp     # op-apply + PopFrameInputs driver (split from spectator_node)
     src/netplay/spec_playback_state.cpp # admission pacing + adaptive delay bank + state accessors (split from spec_playback)
     src/netplay/spec_playback_seam.cpp  # match-boundary (SEAM/PINNING) state machine (split from spec_playback)
-    src/netplay/spectator_tcp.cpp
     src/netplay/nat_traversal.cpp
     src/netplay/game_hash.cpp
     src/netplay/content_tag.cpp     # ungated install fingerprint for replay provenance (also built into the launcher)
@@ -175,7 +173,6 @@ set(FM2KHOOK_INCLUDES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/locale
     ${CMAKE_SOURCE_DIR}/vendored/minhook/include
     ${CMAKE_SOURCE_DIR}/vendored/SDL/include
-    ${CMAKE_SOURCE_DIR}/vendored/SDL_net/include
     ${CMAKE_SOURCE_DIR}/vendored/GekkoNet/include
     ${CMAKE_SOURCE_DIR}/vendored/GekkoNet/GekkoLib/include
     ${CMAKE_SOURCE_DIR}/vendored/imgui
@@ -209,7 +206,6 @@ set(FM2KHOOK_LIBS
     MinHook
     GekkoNet
     SDL3::SDL3-static
-    SDL3_net::SDL3_net-static
     imgui_dx
     ws2_32
     winmm

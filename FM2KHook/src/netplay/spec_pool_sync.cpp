@@ -230,7 +230,7 @@ bool PoolSync_Active() {
     if (g_state.spec_deep_join) return false;
     // Do not race a JOIN snapshot that is still the thing in flight. Two
     // disjoint populations reach playback:
-    //   * natural_boot viewers (FULL_SESSION from frame 0, and deep joiners
+    //   * natural_boot viewers (session-start replay, and deep joiners
     //     after their apply) never receive a join snapshot at all, so there is
     //     nothing to race and they are active from their very first match --
     //     which matters, because their match 1 is exactly as index-incoherent

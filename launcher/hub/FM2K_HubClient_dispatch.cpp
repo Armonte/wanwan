@@ -355,7 +355,6 @@ void HubClient::OnMessage(const std::string& msg) {
         ev.spectator_incoming.spec_nick     = GetStr(msg, "spec_nick");
         ev.spectator_incoming.spec_udp_ip   = GetStr(msg, "spec_udp_ip");
         ev.spectator_incoming.spec_udp_port = GetInt(msg, "spec_udp_port", 0);
-        ev.spectator_incoming.spec_tcp_port = GetInt(msg, "spec_tcp_port", 0);
         EmitEvent(std::move(ev));
         return;
     }

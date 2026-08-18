@@ -15,7 +15,6 @@
 #include "spec_relatch.h"         // viewer-plane g_round_limit re-derive at MATCH_START (sibling of 3297b25)
 #include "spec_wire.h"            // zero-RLE codec (SessionEvent_* live in spectator_node.h)
 #include "spec_relay_queue.h"     // hub-relay outbound queue (Phase 2c)
-#include "spectator_tcp.h"        // TCP transport for INPUT_BATCH stream
 #include "control_channel.h"
 #include "netplay.h"
 #include "replay.h"
@@ -267,7 +266,7 @@ void ApplySessionEvent(const SessionEvent& ev) {
             //     INPUTs are battle-phase only, CSS must be driven by pins.
             //   - Live spectator at a match boundary (pb_boundary==SEAM):
             //     same reasoning. The old assumption ("live-spec walks CSS
-            //     via the upstream input log") only holds for FULL_SESSION
+            //     via the upstream input log") only holds for natural-boot
             //     specs on their FIRST CSS, where the fresh boot matches
             //     the host's initial CSS state. At match 2+ the seam can't
             //     align (see PbBoundary), so picks must come from this
@@ -285,7 +284,7 @@ void ApplySessionEvent(const SessionEvent& ev) {
                         g_state.pb_p2_char, g_state.pb_p2_color,
                         g_state.pb_stage_id);
                 } else if (*(uint32_t*)FM2K::ADDR_GAME_MODE < 3000u) {
-                    // Live FULL_SESSION first-CSS walk: the host's MATCH_START
+                    // Live first-CSS walk: the host's MATCH_START
                     // drained while we're STILL in CSS (mode<3000) -- the host
                     // already entered battle, but our seam-hold-mask-delayed
                     // CSS lock hasn't fired. A naive walk now consumes the
@@ -718,7 +717,7 @@ bool SpectatorNode_PopFrameInputs(uint16_t* p1_input, uint16_t* p2_input) {
                 // masking hold for the first 60 CSS frames to eat the
                 // stray edge; released in the post-release guard below.
                 if (mode_now == 2000u) {
-                    CssAutoConfirm_SetSeamHold(true, 0xFF, 0xFF);  // mask only
+                    CssAutoConfirm_SetSeamHold(true);   // mask only
                 }
             }
             // Bank-building hold: once our CSS is open, do NOT start the

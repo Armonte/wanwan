@@ -7,7 +7,7 @@ Spins up THREE launcher instances on 127.0.0.1:
   P2   --connect 127.0.0.1:7000 --port 7001   (autoplay)
   SPEC --spectate 127.0.0.1:7000 --port 7002  (passive viewer,
        parity -> spec_parity.pty, joins during title/CSS so the host
-       backfills the full session -- FULL_SESSION-equivalent path)
+       backfills from the session start -- the no-prior-match case)
 
 The host terminates at FM2K_AUTO_TERMINATE_AT_FRAME battle frames; the
 harness then waits for the spectator's parity stream to go quiescent,
@@ -76,8 +76,6 @@ P1_PORT, P2_PORT, SPEC_PORT = _PORT_BASE, _PORT_BASE + 1, _PORT_BASE + 2
 # Fake-spectator UDP ports start at 7200 -- clear of the real spec range (7002+)
 # AND the host's TCP listener (tries udp+100 = 7100 first). Fakes dial whatever
 # TCP port the JOIN_ACK reports, so no fake TCP bind collision.
-FAKE_PORT_BASE = 7200
-FAKE_SPEC_TOOL = Path(__file__).parent / "fake_spectator.py"
 # Fakes run as WINDOWS processes (so 127.0.0.1 reaches the Windows-side host;
 # NAT-mode WSL2 loopback would not). Windows Python on the test box.
 WIN_PYTHON = r"C:\Program Files\Python313\python.exe"
@@ -337,7 +335,7 @@ def spectator_liveness(host_log, spec_log, tolerance=LIVE_EDGE_TOLERANCE,
 
     `first_host_match` = index of the EARLIEST host match this viewer could
     possibly have observed (0 = it was in the session from the start). It exists
-    for the BOUNDED deep join (FM2K_SPEC_DEEP_JOIN): a viewer that dials in
+    for the BOUNDED between-matches deep join: a viewer that dials in
     BETWEEN matches is served a backfill anchored at the CURRENT char-select and
     therefore has legitimately FEWER battle segments than the host -- that is the
     entire point of the feature. The old rule
@@ -3210,7 +3208,7 @@ def main():
                          "silently running the hardcoded copy.")
     ap.add_argument("--spectators", default="css",
                     help="comma-list of spectator join-phases. 'css' = dial in "
-                         "during the host's CSS (FULL_SESSION / CSS-walk); "
+                         "during the host's CSS (CSS-walk, natural boot); "
                          "'battle' = dial in after battle starts (CURRENT_MATCH "
                          "snapshot). e.g. 'css,battle' = the E2E case (p3 on CSS + "
                          "p4 mid-battle). Each gets a distinct port + player-index "
@@ -3227,22 +3225,6 @@ def main():
                          "instant char0/char0 path that exercises the spectator "
                          "battle-align fix (host confirms inside the seam-hold "
                          "window).")
-    # Phase 3 host-no-hiccup load test: N protocol-level FAKE spectators
-    # (tools/fake_spectator.py) join/churn the host WITHOUT running a game, so we
-    # load the host's fan-out path at N=3..7 without N real game instances lagging
-    # the box (which would confound the host frame-time measurement). Enables
-    # FM2K_PERF_PROFILE on the host so [FRAMETIME] over_budget is logged + parsed.
-    ap.add_argument("--fake-spectators", type=int, default=0,
-                    help="spawn N protocol-only fake spectators to load the host's "
-                         "fan-out (no game instances); reports host over_budget/hiccups")
-    ap.add_argument("--fake-schedule", default="",
-                    help="override the per-fake join/leave schedule "
-                         "(e.g. join@0,leave@8,join@12); default auto-staggers + churns the last")
-    ap.add_argument("--fake-duration", type=float, default=180.0,
-                    help="max seconds a fake spectator runs (killed when the host finishes)")
-    ap.add_argument("--no-fake-churn", action="store_true",
-                    help="disable the last fake spectator's leave/rejoin churn "
-                         "(churn re-triggers the host's snapshot+backfill = the heaviest path)")
     ap.add_argument("--assert-spectator-live", action="store_true",
                     help="exit nonzero if any spectator's applied battle-frame "
                          "progression did NOT reach/hold near the host's final "
@@ -3265,10 +3247,7 @@ def main():
                          "recovers it)")
     args = ap.parse_args()
     min_coverage = args.min_coverage if args.min_coverage >= 0 else args.frames - 100
-    # Measure host pacing when fakes are present OR when explicitly asked (so the
-    # N=0 baseline run -- FM2K_PERF_PROFILE=1 ... --fake-spectators 0 -- also logs
-    # [FRAMETIME], giving a clean delta vs the N=7 load run).
-    measure_host = args.fake_spectators > 0 or bool(os.environ.get("FM2K_PERF_PROFILE"))
+    measure_host = bool(os.environ.get("FM2K_PERF_PROFILE"))
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     p1_pty   = OUT_DIR / "p1_parity.pty"
@@ -3370,14 +3349,13 @@ def main():
         # char0/char0 lock. The os.environ forward below still lets FM2K_AUTOPLAY_
         # CSS_DWELL override it.
         common_env["FM2K_AUTOPLAY_CSS_DWELL"] = str(args.css_dwell)
-    for k in ("FM2K_LOCAL_DELAY", "FM2K_PRED_WINDOW", "FM2K_PREDICTION_WINDOW", "FM2K_RUNAHEAD", "FM2K_SPEC_UDP", "FM2K_AUTOPLAY_CSS_DWELL", "FM2K_SPECTATOR_DEBUG", "FM2K_HOST_TRACE", "FM2K_FA_TRACE", "FM2K_TEST_BATTLE_SEED",
+    for k in ("FM2K_LOCAL_DELAY", "FM2K_PRED_WINDOW", "FM2K_PREDICTION_WINDOW", "FM2K_RUNAHEAD", "FM2K_AUTOPLAY_CSS_DWELL", "FM2K_SPECTATOR_DEBUG", "FM2K_HOST_TRACE", "FM2K_FA_TRACE", "FM2K_TEST_BATTLE_SEED",
               # host-clock sync + rift frame pacing A/B
               "FM2K_HOST_CLOCK",
               # ReliableChannel spectator A/B transport (reliable-ordered+FEC over UDP)
-              "FM2K_SPEC_RC", "FM2K_SPEC_RC_SNAPSHOT", "FM2K_RC_FEC", "FM2K_RC_FEC_K",
+              "FM2K_RC_FEC", "FM2K_RC_FEC_K",
               # task #55: dead-TCP simulation (spectator dials a dead port);
               # with RC default-on the spectate must fully work regardless.
-              "FM2K_TEST_SPEC_TCP_BLACKHOLE",
               "FM2K_RC_RESEND_MS", "FM2K_RC_RATE_PPS", "FM2K_RC_CWND",
               "FM2K_RC_STATS",
               # in-process link impairment (players' gekko+control path)
@@ -3505,19 +3483,6 @@ def main():
     # SOCD variant a local-config test instead of a delivery test. It goes to
     # the HOST ONLY, below, and every other plane must obtain it from
     # HOST_CONFIG -- which is also what the entry barrier's digest gates.
-    # FM2K_SPEC_DEEP_JOIN is forwarded SEPARATELY and by presence, not by
-    # truthiness. The hook now defaults the bounded deep join ON and this
-    # variable is the KILL-SWITCH, so the value that matters most is "0" --
-    # which does survive the `if os.environ.get(k)` filter above (the STRING
-    # "0" is truthy in Python) but only by accident, and one refactor to
-    # `int(...)`/`== "1"` would silently stop forwarding the OFF direction,
-    # making every "kill-switch" run measure the default and reach the exact
-    # wrong triage conclusion. The empty string is forwarded too: the hook
-    # treats empty/whitespace as unset, so it round-trips faithfully.
-    # BOTH sides need it (host decides eligibility, viewer obeys the grant) --
-    # see the spectator list below for the other half.
-    if os.environ.get("FM2K_SPEC_DEEP_JOIN") is not None:
-        common_env["FM2K_SPEC_DEEP_JOIN"] = os.environ["FM2K_SPEC_DEEP_JOIN"]
     # FM2K_SEAM_LEGACY_PARK: same presence-not-truthiness rule. It is the
     # DIAGNOSTIC A/B lever that restores the deleted blanket load-site park
     # (i.e. reinstates the match-end-seam desync on purpose), default OFF in
@@ -3529,7 +3494,7 @@ def main():
     # latch that gives a late-HOST_CONFIG guest +2 HUD pips and a split
     # match-end predicate). DEFAULT ON in the hook -- this is the KILL SWITCH,
     # so the value that matters is "0", and it is forwarded BY PRESENCE for the
-    # same reason FM2K_SPEC_DEEP_JOIN is: an `if os.environ.get(k)` filter would
+    # same reason FM2K_SEAM_LEGACY_PARK is: an `if os.environ.get(k)` filter would
     # forward "0" only by accident of Python truthiness, and one refactor to
     # int()/== "1" would silently stop forwarding the OFF direction, turning
     # every red-arm A/B run into a second measurement of the default. Both
@@ -3670,7 +3635,7 @@ def main():
     # kept minimal (no common_env merge) so a spec never gains autoplay; the
     # test-only downlink-loss shim knobs are forwarded (else a loss run silently
     # impairs nothing). session-kind stays default boot-to-battle; the host
-    # decides FULL_SESSION (backfill-from-0 / CSS-walk) vs CURRENT_MATCH snapshot
+    # decides session-start backfill (CSS-walk) vs battle snapshot
     # purely by WHEN the spec dials in (phase = css joins early, battle joins
     # after the host's battle session is created).
     specs = []
@@ -3729,7 +3694,7 @@ def main():
                    # P1 kill switch (A/B scaffolding, default armed): the red
                    # arm of the self-stall credit. Presence-forwarded via the
                    # explicit block below so "0" is never dropped.
-                   "FM2K_SPEC_DROP", "FM2K_SPEC_DROP_SEED", "FM2K_CSS_TRACE",
+                   "FM2K_CSS_TRACE",
                    "FM2K_SPECTATOR_DEBUG", "FM2K_SPEC_CONNECT_TIMEOUT_MS",
                    "FM2K_NET_DELAY_MS", "FM2K_NET_JITTER_MS", "FM2K_NET_LOSS", "FM2K_NET_SEED",
                    "FM2K_NET_REORDER", "FM2K_NET_DUP",
@@ -3738,9 +3703,8 @@ def main():
                    # streaming RC while the viewer runs TCP-primary logic
                    # incl. the TCP-fail give-up) -- this exact gap
                    # invalidated a night of A/B runs.
-                   "FM2K_SPEC_RC", "FM2K_SPEC_RC_SNAPSHOT", "FM2K_RC_STATS",
+                   "FM2K_RC_STATS",
                    "FM2K_RC_FEC", "FM2K_RC_FEC_K",
-                   "FM2K_TEST_SPEC_TCP_BLACKHOLE",
                    # mid-join spectate desync hunt: per-region full-state fingerprint
                    "FM2K_FULLFP", "FM2K_POOLSET",
                    # Phase 4c match-start pool resync kill-switch (viewer half).
@@ -3799,12 +3763,6 @@ def main():
                    "FM2K_BATTLE_F1"):
             if os.environ.get(kk):
                 env[kk] = os.environ[kk]
-        # Bounded deep join -- the viewer only obeys the grant, but it must be
-        # able to obey it. Presence-forwarded for the same kill-switch reason as
-        # the host side above; "0" must reach BOTH ends or a kill-switch run is
-        # a split-brain run.
-        if os.environ.get("FM2K_SPEC_DEEP_JOIN") is not None:
-            env["FM2K_SPEC_DEEP_JOIN"] = os.environ["FM2K_SPEC_DEEP_JOIN"]
         # FM2K_SPEC_SELFSTALL, viewer-only by construction (the watchdog it
         # gates runs on the spectator plane). Presence-forwarded, never
         # truthiness: `if os.environ.get(k)` drops "0" and turns every red arm
@@ -3937,51 +3895,12 @@ def main():
                          OUT_DIR / f"spec{s['k']}.log",
                          args.record_timeout + 60, make_spec_done(s))
 
-    def gen_fake_schedule(k):
-        # Stagger joins 1s apart so the host sees a steady ramp of subscribers.
-        # The LAST fake churns (leave -> rejoin twice) to repeatedly re-trigger
-        # the host's snapshot + full session-backfill -- the heaviest fan-out
-        # path -- landing in battle where the snapshot is a ~1MB savestate.
-        t = k * 1.0
-        if not args.no_fake_churn and k == args.fake_spectators - 1:
-            return (f"join@{t},leave@{t+6},join@{t+10},"
-                    f"leave@{t+16},join@{t+20}")
-        return f"join@{t}"
-
-    fake_procs = []
-    def spawn_fakes():
-        fake_win = to_win(FAKE_SPEC_TOOL)
-        for k in range(args.fake_spectators):
-            sched = args.fake_schedule or gen_fake_schedule(k)
-            log_win = to_win(OUT_DIR / f"fake{k}.log")
-            # Run the fake as a WINDOWS process (Windows Python, via .bat like the
-            # launcher). A WSL python on 127.0.0.1 hits WSL's loopback, NOT the
-            # Windows host (NAT-mode WSL2) -- the host never sees the JOIN. Windows
-            # python on 127.0.0.1 reaches the host exactly like the real clients.
-            bat = OUT_DIR / f".fake{k}.bat"
-            cmd = (f'"{WIN_PYTHON}" "{fake_win}" --host-udp 127.0.0.1:{P1_PORT} '
-                   f'--local-udp-port {FAKE_PORT_BASE + k} --schedule {sched} '
-                   f'--duration {args.fake_duration} --label fake{k}')
-            bat.write_text("@echo off\r\n" + cmd + f' > "{log_win}" 2>&1\r\n')
-            fp = subprocess.Popen(["cmd.exe", "/C", to_win(bat)],
-                                  stdout=subprocess.DEVNULL,
-                                  stderr=subprocess.DEVNULL)
-            fake_procs.append(fp)
-        print(f"[harness] spawned {args.fake_spectators} fake spectators "
-              f"(Windows py, UDP {FAKE_PORT_BASE}..{FAKE_PORT_BASE + args.fake_spectators - 1}); "
-              f"host FM2K_PERF_PROFILE on")
-
     t1.start()
     time.sleep(1.0)
     t2.start()
 
     spec_threads = []
     host_live = game_dir / "logs" / "FM2K_P1_Debug.log"
-    # Fake spectators start loading the host now too (their own schedules then
-    # stagger joins + churn through CSS into battle).
-    if args.fake_spectators > 0:
-        spawn_fakes()
-
     def count_marker(marker):
         """Occurrences of `marker` in the host's LIVE debug log, counting ONLY
         what THIS run wrote. Defence in depth with the log-lifecycle block
@@ -4004,7 +3923,7 @@ def main():
 
     def schedule_spec(s):
         # phase = "css[N]" or "battle[N]": dial in during the host's Nth CSS / Nth
-        # battle (default N=1). css[N] -> a FULL_SESSION/seam join while the host is
+        # battle (default N=1). css[N] -> a CSS-walk/seam join while the host is
         # in its Nth char-select; battle[N] -> a CURRENT_MATCH snapshot join mid the
         # host's Nth battle. Keyed off host-log markers so it tracks the real phase
         # under loss/jitter rather than a fixed wall clock.
@@ -4025,7 +3944,7 @@ def main():
         # host's first N-1 battles, so its first observable match index is that
         # battle count; a battle[N] joiner dials into battle N itself, index
         # count-1. For a BOUNDED deep joiner (css[N>1] with
-        # FM2K_SPEC_DEEP_JOIN=1) this is exactly the set of matches it is
+        # the bounded between-matches join) this is exactly the set of matches it is
         # designed never to replay.
         battles_seen = count_marker("GekkoNet battle session created")
         s["first_host_match"] = (battles_seen if kind == "css"
@@ -4042,17 +3961,6 @@ def main():
     t1.join(); t2.join()
     for t in spec_threads:
         t.join()
-    for fp in fake_procs:
-        try:
-            fp.terminate()
-        except OSError:
-            pass
-    if fake_procs:
-        # Backstop: subscribed fakes self-exit on host_gone, but a churning fake
-        # parked in a 'left' window when the host dies would linger to
-        # --fake-duration. The fakes are the only Windows python.exe in a test.
-        subprocess.run(["taskkill.exe", "/F", "/IM", "python.exe"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     kill_strays()
     print(f"[harness] rcs: P1={rcs[0]} P2={rcs[1]} "
           + " ".join(f"{s['tag']}={s['rc']}" for s in specs))
@@ -4637,9 +4545,9 @@ def main():
     #  see the _css_parity_gate + _parity_gates calls before the first early
     #  return. real_fail / checked_any were computed there.)
 
-    # Phase 3: host-no-hiccup report (host ran with FM2K_PERF_PROFILE on).
+    # Host-no-hiccup report (host ran with FM2K_PERF_PROFILE on).
     if measure_host:
-        report_host_pacing(OUT_DIR / "live_FM2K_P1_Debug.log", args.fake_spectators)
+        report_host_pacing(OUT_DIR / "live_FM2K_P1_Debug.log", 0)
 
     # LIVENESS gates, folded in HERE rather than returning early: they are not
     # correctness verdicts and must never suppress one (see _parity_gates).

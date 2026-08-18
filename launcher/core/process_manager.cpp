@@ -159,8 +159,7 @@ bool FM2KLauncher::LaunchLocalClient(const std::string& game_path, bool is_host,
 
 bool FM2KLauncher::LaunchLocalSpectator(const std::string& game_path,
                                         int spectator_port,
-                                        int host_port,
-                                        const std::string& mode)
+                                        int host_port)
 {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "Launching local spectator: %s (port=%d -> host_port=%d)",
@@ -185,11 +184,6 @@ bool FM2KLauncher::LaunchLocalSpectator(const std::string& game_path,
     spectator_instance_->SetEnvironmentVariable("FM2K_PRODUCTION_MODE", "0");
     spectator_instance_->SetEnvironmentVariable("FM2K_INPUT_RECORDING", "0");
     spectator_instance_->SetEnvironmentVariable("FM2K_FORCE_RNG_SEED",  "12345678");
-    {
-        const std::string normalized =
-            (mode == "full" || mode == "FULL" || mode == "FULL_SESSION") ? "full" : "current";
-        spectator_instance_->SetEnvironmentVariable("FM2K_SPECTATE_MODE", normalized);
-    }
     if (!std::getenv("FM2K_PARITY_RECORD_PATH")) {
         spectator_instance_->SetEnvironmentVariable("FM2K_PARITY_RECORD_PATH",
             "c:/games/2dfm/wanwan/parity_p3.pty");
@@ -219,15 +213,14 @@ bool FM2KLauncher::LaunchRemoteSpectator(const std::string& game_path,
                                          const std::string& host_ip,
                                          int host_port,
                                          const std::string& session_kind,
-                                         const std::string& mode,
                                          const std::string& spec_transport,
                                          int player_index)
 {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "Launching remote spectator: %s (port=%d -> %s:%d, mode=%s, "
+                "Launching remote spectator: %s (port=%d -> %s:%d, "
                 "session_kind=%s, transport=%s)",
                 game_path.c_str(), spectator_port, host_ip.c_str(), host_port,
-                mode.c_str(), session_kind.c_str(), spec_transport.c_str());
+                session_kind.c_str(), spec_transport.c_str());
 
     if (spectator_instance_ && spectator_instance_->IsRunning()) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Spectator already running");
@@ -254,19 +247,16 @@ bool FM2KLauncher::LaunchRemoteSpectator(const std::string& game_path,
     spectator_instance_->SetEnvironmentVariable("FM2K_PRODUCTION_MODE", "0");
     spectator_instance_->SetEnvironmentVariable("FM2K_INPUT_RECORDING", "0");
     spectator_instance_->SetEnvironmentVariable("FM2K_FORCE_RNG_SEED",  "12345678");
-    // Phase 4: auto-derived spec transport from host's spectate_grant.
-    // Setting "tcp" explicitly clears any inherited relay env from a
-    // previous spec session; setting "relay" enables the hub-relay
-    // data plane in the spec hook. User no longer needs to set this
-    // env manually -- it's negotiated via hub.
-    if (spec_transport == "tcp" || spec_transport == "relay") {
+    // Auto-derived spec transport from the host's spectate_grant. "relay"
+    // enables the hub-relay data plane in the spec hook; "direct" (and the
+    // legacy spelling "tcp" an older hub still sends for the non-relay case)
+    // explicitly clears any inherited relay env from a previous spec session.
+    // The user never sets this by hand -- it is negotiated via the hub.
+    if (spec_transport == "direct" || spec_transport == "tcp" ||
+        spec_transport == "relay") {
         spectator_instance_->SetEnvironmentVariable("FM2K_SPEC_TRANSPORT", spec_transport);
     }
     {
-        const std::string normalized =
-            (mode == "full" || mode == "FULL" || mode == "FULL_SESSION") ? "full" : "current";
-        spectator_instance_->SetEnvironmentVariable("FM2K_SPECTATE_MODE", normalized);
-
         // /F boot-to-battle for spectators -- conditional on host's
         // current session_kind (forwarded by the hub in spectate_grant,
         // sourced from the host hook's published game_mode transitions

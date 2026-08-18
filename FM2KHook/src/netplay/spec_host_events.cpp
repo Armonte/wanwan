@@ -7,7 +7,6 @@
 #include "spectator_node_internal.h"  // shared State model + g_state (split for sibling TUs)
 #include "spec_wire.h"            // zero-RLE codec (SessionEvent_* live in spectator_node.h)
 #include "spec_relay_queue.h"     // hub-relay outbound queue (Phase 2c)
-#include "spectator_tcp.h"        // TCP transport for INPUT_BATCH stream
 #include "control_channel.h"
 #include "netplay.h"
 #include "replay.h"
@@ -119,7 +118,7 @@ void SpectatorNode_OnMatchStart(
     // C6: append MATCH_START as a SessionEvent op so the metadata flows in
     // the same ordered stream as INPUTs. Spectator's drain applies the op
     // at exactly the logical frame the host set the match up. Late joiners
-    // get this op as part of SendSessionBackfillTo. The legacy INITIAL_MATCH
+    // get this op as part of SendSessionBackfillFromStart. The legacy INITIAL_MATCH
     // packet path (still sent below) is kept for back-compat; once all
     // peers run C6+ builds we can retire it.
     SpectatorNode_AppendMatchStart(g_state.initial_match.header_bytes);
@@ -138,10 +137,6 @@ void SpectatorNode_OnFrameConfirmed(uint16_t p1_input, uint16_t p2_input) {
     ev.u.input.p1 = p1_input;
     ev.u.input.p2 = p2_input;
     g_state.session_events.push_back(ev);
-    // Phase F: mirror into the UDP accelerator ring, keyed by this input's
-    // session-relative frame index (= total_input_count pre-increment).
-    g_state.udp_ring_p1[g_state.total_input_count % SPEC_UDP_WINDOW] = p1_input;
-    g_state.udp_ring_p2[g_state.total_input_count % SPEC_UDP_WINDOW] = p2_input;
     ++g_state.total_input_count;
 
     // Live broadcast batching window -- only fan out to existing subscribers.
@@ -150,12 +145,6 @@ void SpectatorNode_OnFrameConfirmed(uint16_t p1_input, uint16_t p2_input) {
         g_state.total_input_count - g_state.flushed_input_count;
     if (pending_inputs >= BROADCAST_BATCH_FRAMES) {
         FlushBatch();
-    }
-
-    // Phase F: redundant UDP window every SPEC_UDP_SEND_INTERVAL confirmed
-    // frames. Internally no-ops when disabled / relay-mode / no udp_ok subs.
-    if ((g_state.total_input_count % SPEC_UDP_SEND_INTERVAL) == 0) {
-        SendUdpInputBatches();
     }
 }
 
@@ -195,21 +184,9 @@ void AppendOpAndFlush(const SessionEvent& ev) {
     // exactly the meaning of SendSessionEventsTo's op_cursor prefix. Only
     // consumed by the CSS-anchor stamp further down.
     const uint32_t ops_before_this = g_state.total_op_count;
-    // Phase F: single choke point for non-INPUT appends -- the running op
-    // count ships as op_seq in UDP_INPUT_BATCH so viewers can order
-    // inputs after ops (see admission invariant in spectator_node.h).
-    // Pre-encode into the redundant ops ring for the datagram tail.
-    {
-        std::vector<uint8_t> w;
-        AppendEventToWire(w, ev, g_state.match_headers);
-        if (!w.empty() && w.size() <= sizeof(State::OpWire::bytes)) {
-            auto& slot = g_state.udp_ops_ring[g_state.total_op_count % State::OPS_RING];
-            slot.op_index  = g_state.total_op_count;
-            slot.input_pos = g_state.total_input_count;
-            slot.len       = (uint8_t)w.size();
-            std::memcpy(slot.bytes, w.data(), w.size());
-        }
-    }
+    // Single choke point for non-INPUT appends -- the running op count is
+    // what EVENT_BATCH2 ships as its absolute op base, so viewers dedupe
+    // ops idempotently.
     ++g_state.total_op_count;
     // Deep-join anchor (Design 2): remember where the CURRENT char-select
     // starts so a between-matches joiner can be backfilled from here instead
@@ -232,7 +209,7 @@ void AppendOpAndFlush(const SessionEvent& ev) {
     // Flush eagerly when subscribers exist (host with live spectators OR
     // relay node with sub-spectators). When the subscriber list is empty,
     // there's nothing to send; late joiners get the full backlog via
-    // SendSessionBackfillTo. Note: we don't gate on `broadcasting` --
+    // SendSessionBackfillFromStart. Note: we don't gate on `broadcasting` --
     // that flag is host-side match state and doesn't apply to the relay
     // path where a spectator's HandleSpecData re-Appends incoming ops
     // to its own session_events for sub-spectator forwarding.

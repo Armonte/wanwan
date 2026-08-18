@@ -23,12 +23,11 @@ namespace mirror {
 constexpr uint8_t SPEC_DATA_MAGIC = 0xCE;
 
 enum class SpecDataType : uint8_t {
-    INITIAL_MATCH   = 1,
-    INPUT_BATCH     = 2,
-    MATCH_END       = 3,
-    // Phase F (UDP input accelerator).
-    UDP_INPUT_BATCH = 9,
-    OP_BASELINE     = 10,
+    // 1..5, 9 and 10 are RETIRED values that must never be reused (see
+    // SpecDataType in spectator_node.h): the pre-EVENT_BATCH2 wire types,
+    // the deleted UDP input accelerator and its OP_BASELINE priming packet.
+    SNAPSHOT_BEGIN = 6,
+    EVENT_BATCH2   = 11,
 };
 
 #pragma pack(push, 1)
@@ -58,23 +57,12 @@ TEST_CASE("SpecDataHeader field offsets are stable") {
 }
 
 TEST_CASE("SpecDataType enum values are stable on the wire") {
-    CHECK(static_cast<uint8_t>(mirror::SpecDataType::INITIAL_MATCH) == 1);
-    CHECK(static_cast<uint8_t>(mirror::SpecDataType::INPUT_BATCH)   == 2);
-    CHECK(static_cast<uint8_t>(mirror::SpecDataType::MATCH_END)     == 3);
-    // Phase F: UDP_INPUT_BATCH rides raw datagrams; OP_BASELINE rides TCP.
-    // Old builds drop TCP connections on unknown types, so these values
-    // must never be reused for anything else.
-    CHECK(static_cast<uint8_t>(mirror::SpecDataType::UDP_INPUT_BATCH) == 9);
-    CHECK(static_cast<uint8_t>(mirror::SpecDataType::OP_BASELINE)     == 10);
-}
-
-TEST_CASE("UDP_INPUT_BATCH payload layout (Phase F)") {
-    // payload = u32 op_seq + frame_count x {u16 p1, u16 p2}; flags carries
-    // the payload byte count. Window 64 keeps the datagram at 270 bytes.
-    constexpr size_t kWindow = 64;
-    constexpr size_t kPayload = 4 + kWindow * 4;
-    CHECK(sizeof(mirror::SpecDataHeader) + kPayload == 270);
-    CHECK(kPayload <= 0xFFFF);  // must fit hdr.flags
+    // The LIVE values keep their historical numbers; the retired ones
+    // (1..5 pre-EVENT_BATCH2 framing, 9 the deleted UDP accelerator, 10 its
+    // OP_BASELINE priming packet) are never reused, so a stray packet from
+    // an old peer decodes as unknown rather than as something else.
+    CHECK(static_cast<uint8_t>(mirror::SpecDataType::SNAPSHOT_BEGIN) == 6);
+    CHECK(static_cast<uint8_t>(mirror::SpecDataType::EVENT_BATCH2)   == 11);
 }
 
 TEST_CASE("SPEC_DATA_MAGIC distinguishes from CtrlPacket and GekkoNet") {

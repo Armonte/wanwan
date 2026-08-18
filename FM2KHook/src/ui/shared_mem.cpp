@@ -175,12 +175,10 @@ void SharedMem_PublishRoundResult(uint8_t  winner_idx,
     g_shared_mem->match_rounds_count = i + 1;
 }
 
-void SharedMem_PublishSpectatorPunchTarget(uint32_t ip_be, uint16_t udp_port,
-                                           uint16_t tcp_port) {
+void SharedMem_PublishSpectatorPunchTarget(uint32_t ip_be, uint16_t udp_port) {
     if (!g_shared_mem) return;
     g_shared_mem->spectator_punch_ip_be    = ip_be;
     g_shared_mem->spectator_punch_port     = udp_port;
-    g_shared_mem->spectator_punch_tcp_port = tcp_port;
     // Bump seq AFTER writing the addr fields so a hook poll racing the
     // launcher's write reads either the old (seq=N) or new (seq=N+1)
     // addr cleanly, never half-written. x86 stores are sequentially
@@ -188,17 +186,6 @@ void SharedMem_PublishSpectatorPunchTarget(uint32_t ip_be, uint16_t udp_port,
     g_shared_mem->spectator_punch_seq  += 1;
 }
 
-void SharedMem_PublishExternalTcp(uint32_t ip_be, uint16_t port) {
-    if (!g_shared_mem) return;
-    if (g_shared_mem->tcp_stun_ext_ip_be == ip_be &&
-        g_shared_mem->tcp_stun_ext_port  == port  &&
-        g_shared_mem->tcp_stun_seq       != 0) {
-        return;  // unchanged -- don't bump seq
-    }
-    g_shared_mem->tcp_stun_ext_ip_be = ip_be;
-    g_shared_mem->tcp_stun_ext_port  = port;
-    g_shared_mem->tcp_stun_seq      += 1;
-}
 
 void SharedMem_PublishLocalV6(const uint8_t addr[16], uint16_t port_be) {
     if (!g_shared_mem) return;

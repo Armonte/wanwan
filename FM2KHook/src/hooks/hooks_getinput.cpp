@@ -284,7 +284,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
     // screen no-ops, auto-mash, pre-rendezvous CSS, post-rendezvous
     // GekkoNet-merged inputs, battle frames -- one canonical log spanning
     // the entire connection. Late-joining spectators get this whole log
-    // via SendSessionBackfillTo and replay deterministically from frame 0.
+    // via SendSessionBackfillFromStart and replay deterministically from frame 0.
     //
     // Spectators (g_spectator_mode) DO NOT record -- they consume from
     // pb_queue, not produce. Stress / offline DO record but the log is

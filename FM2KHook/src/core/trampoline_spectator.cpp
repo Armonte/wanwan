@@ -46,7 +46,7 @@ uint32_t SaveState_CalculateFingerprint();
 //                                 burn through backfill at ~1000 Hz
 //
 // Pre-JOIN_ACK: queue is empty, no sim runs, screen holds the boot snapshot.
-// JOIN_ACK fires SendSessionBackfillTo from the host → queue fills with
+// JOIN_ACK fires SendSessionBackfillFromStart from the host → queue fills with
 // every confirmed frame from session start → spectator drains those at
 // FF speed → catches up to live edge.
 // Jitter cushion: hold playback until this many frames are buffered,
@@ -471,24 +471,24 @@ void RunSpectatorTick() {
     // the burn-down.
     //
     // Network poll interleave: WITHOUT this, the inner loop holds the
-    // trampoline thread for 100s of ms processing thousands of events,
-    // and SpectatorTCP::Poll never gets called. The kernel's TCP receive
-    // buffer fills up; the host's send blocks via TCP backpressure; from
-    // the spectator's perspective the upstream goes silent.
+    // trampoline thread for 100s of ms processing thousands of events, and
+    // the reliable channel is never serviced -- acks stop going out, the
+    // host's retransmit window fills, and from the spectator's perspective
+    // the upstream goes silent.
     //
-    // ControlChannel_Poll drains UDP control + TCP receive (which feeds
-    // new EVENT_BATCH packets into pb_queue and updates
-    // LastUpstreamRecvMs). We poll every iteration during catchup since
+    // ControlChannel_Poll drains UDP control + the reliable channel (which
+    // feeds new EVENT_BATCH2 packets into pb_queue). We poll every
+    // iteration during catchup since
     // a single SpectatorSimOneFrame can take 100s of ms when FM2K's
     // CSS-cursor-move triggers a synchronous .player character file
     // load -- much longer than the ~10ms a normal sim tick takes.
     //
-    // We do NOT call SpectatorNode_TickHealth here: its silence-failover
+    // We do NOT call SpectatorNode_TickHealth here: its recovery ladders
     // would fire during legitimate catchup (we've been "silent" because
-    // we're disk-blocked, not because the upstream died) and tear down
-    // the very connection we're using to receive the backfill. The
-    // top-level RunSpectatorTick path calls TickHealth post-catchup
-    // when we're back at the live edge.
+    // we're disk-blocked, not because the upstream died) and re-JOIN the
+    // very upstream we are draining the backfill from. The top-level
+    // RunSpectatorTick path calls TickHealth post-catchup when we're back
+    // at the live edge.
     // Catchup policy (post-mvp tuning):
     //
     //   1. ONE-SHOT at join. On the first run where the queue is over the

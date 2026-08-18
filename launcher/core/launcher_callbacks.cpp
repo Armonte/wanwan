@@ -43,21 +43,13 @@ void FM2KLauncher::WireUICallbacks() {
     };
     ui_->on_spectator_punch_target = [this](const std::string& spec_udp_ip,
                                             int                spec_udp_port,
-                                            int                spec_tcp_port,
                                             const std::string& spec_user_id) {
-        // Hub forwarded a spectator's external UDP+TCP addr (we're the
-        // host of an active match). Write into our running game instance's
-        // shared mem so the hook's TickHostMaintenance polls the seq
-        // bump and fires:
-        //   * UDP heartbeat burst toward spec_udp_addr (existing -- opens
-        //     NAT for the spectator's first SPEC_JOIN_REQ replies),
-        //   * TCP simultaneous-open punch toward spec_tcp_addr (new in
-        //     v0.2.35 -- opens NAT for inbound TCP from spec:tcp_port to
-        //     our listener port, the data path the INPUT_BATCH stream
-        //     actually rides).
-        // spec_tcp_port = 0 sentinel for older spec clients that don't
-        // know their own TCP listener port -- host falls back to UDP-only
-        // (no TCP punch).
+        // Hub forwarded a spectator's external UDP addr (we're the host of
+        // an active match). Write into our running game instance's shared
+        // mem so the hook's TickHostMaintenance polls the seq bump and
+        // fires a UDP heartbeat burst toward it, opening our NAT for the
+        // spectator's SPEC_JOIN_REQ and the reliable-channel stream that
+        // follows on the same UDP socket.
         DWORD target_pid = 0;
         if (game_instance_ && game_instance_->IsRunning()) {
             target_pid = game_instance_->GetProcessId();
@@ -68,8 +60,8 @@ void FM2KLauncher::WireUICallbacks() {
         if (target_pid == 0) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                 "Hub: spectator_incoming with no running game instance "
-                "to deliver punch target to (addr=%s:%d/%d) -- dropping",
-                spec_udp_ip.c_str(), spec_udp_port, spec_tcp_port);
+                "to deliver punch target to (addr=%s:%d) -- dropping",
+                spec_udp_ip.c_str(), spec_udp_port);
             return;
         }
         // Resolve dotted IPv4 -> network-byte-order u32 for StartPunch.
@@ -81,9 +73,6 @@ void FM2KLauncher::WireUICallbacks() {
                 spec_udp_ip.c_str(), spec_udp_port);
             return;
         }
-        const uint16_t tcp_port_u16 =
-            (spec_tcp_port > 0 && spec_tcp_port <= 0xFFFF)
-                ? (uint16_t)spec_tcp_port : 0u;
         const std::string mapping_name =
             "FM2K_SharedMem_" + std::to_string((unsigned)target_pid);
         HANDLE h = OpenFileMappingA(FILE_MAP_WRITE, FALSE,
@@ -100,12 +89,11 @@ void FM2KLauncher::WireUICallbacks() {
         if (shm && shm->magic == FM2K_SHARED_MEM_MAGIC) {
             shm->spectator_punch_ip_be    = addr_bin.S_un.S_addr;
             shm->spectator_punch_port     = (uint16_t)spec_udp_port;
-            shm->spectator_punch_tcp_port = tcp_port_u16;
             // Phase 2c: also write spec_user_id (relay-mode addressing).
             // Truncate to fit (32-byte buffer, 31 chars + NUL). Empty
             // when the hub doesn't include spec_user_id (older hub);
             // hook treats absent user_id as "no relay routing" and
-            // falls back to addr-only TCP behavior.
+            // addresses the sub by its UDP tuple instead.
             std::memset(shm->spectator_punch_user_id, 0,
                         sizeof(shm->spectator_punch_user_id));
             const size_t uid_max = sizeof(shm->spectator_punch_user_id) - 1;
@@ -118,9 +106,9 @@ void FM2KLauncher::WireUICallbacks() {
             // only when seq advances, so a torn write is harmless.
             shm->spectator_punch_seq  += 1;
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "Hub: queued spectator-punch target %s udp:%d tcp:%d "
+                "Hub: queued spectator-punch target %s udp:%d "
                 "user_id=%s to game pid %lu (seq=%u)",
-                spec_udp_ip.c_str(), spec_udp_port, (int)tcp_port_u16,
+                spec_udp_ip.c_str(), spec_udp_port,
                 spec_user_id.empty() ? "(none)" : spec_user_id.c_str(),
                 (unsigned long)target_pid,
                 (unsigned)shm->spectator_punch_seq);
@@ -217,7 +205,7 @@ void FM2KLauncher::WireUICallbacks() {
                 "(red) indicate snapshot or event corruption.");
         } else {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "Spectate: legacy P2P TCP mode (spec_transport=tcp). "
+                "Spectate: direct P2P mode (reliable channel over UDP). "
                 "If this fails behind symmetric NAT, ask host to set "
                 "FM2K_SPEC_TRANSPORT=relay and retry.");
         }
@@ -227,19 +215,15 @@ void FM2KLauncher::WireUICallbacks() {
         // false; user can stop it from the multi-client tools first.
         constexpr int SPEC_LOCAL_PORT = 7002;
         // ARGUMENT ORDER. LaunchRemoteSpectator is
-        //   (game, port, host_ip, host_port, session_kind, mode, spec_transport)
-        // and this call used to pass spec_transport in the SIXTH slot, i.e. as
-        // `mode`, leaving spec_transport at its "tcp" default. So the hub path
-        // -- the ONLY path that negotiates a transport -- set
+        //   (game, port, host_ip, host_port, session_kind, spec_transport)
+        // and this call used to pass spec_transport into a since-deleted
+        // `mode` slot, leaving spec_transport at its "tcp" default. So the hub
+        // path -- the ONLY path that negotiates a transport -- pinned
         // FM2K_SPEC_TRANSPORT=tcp on every spectator no matter what the grant
         // said, and relay-mode spectating could never work for a real user.
-        // Invisible for a tcp host (mode "tcp" normalizes to "current", which
-        // is also the default), which is why it survived; the hub-brokered E2E
-        // harness caught it on its first relay run ("mode=relay, transport=tcp"
-        // in the launch line, host subscribed but zero frames admitted).
+        // The defaults are gone so a wrong-arity call is a compile error now.
         LaunchRemoteSpectator(selected_game_.exe_path, SPEC_LOCAL_PORT,
-                              host_ip, host_port, session_kind,
-                              /*mode=*/"current", spec_transport);
+                              host_ip, host_port, session_kind, spec_transport);
     };
     ui_->on_exit = [this]() {
         running_ = false;

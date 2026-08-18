@@ -37,7 +37,7 @@ for i in $(seq 1 "$RUNS"); do
     sleep 0.6
     # Host dies at battle frame $FRAMES (mid-match); spectator joins at CSS so
     # it is solidly LIVE before the host vanishes.
-    FM2K_SPECTATOR_DEBUG=1 FM2K_SPEC_RC=1 FM2K_NET_LOSS="$LOSS" FM2K_NET_DELAY_MS=80 \
+    FM2K_SPECTATOR_DEBUG=1 FM2K_NET_LOSS="$LOSS" FM2K_NET_DELAY_MS=80 \
       FM2K_NET_SEED=$((100+i)) FM2K_SPEC_HOST_GONE_MS="$GONE_MS" \
       timeout 200 python3 "$ROOT/tools/spec_selftest.py" --frames "$FRAMES" \
       --spectators css --keep >/dev/null 2>&1
@@ -46,7 +46,7 @@ for i in $(seq 1 "$RUNS"); do
 
     S1="$rd/S1.log"
     # 1) Spectator got LIVE before the host vanished. A css-phase join is
-    #    FULL_SESSION (streams from frame 0, no snapshot), so key off the
+    #    the session-start backfill (no snapshot), so key off the
     #    admitted-input counter reaching well into battle rather than a
     #    "SNAPSHOT applied" line (which only a mid-battle snapshot join emits).
     peak_total=$(grep -oE "total=[0-9]+" "$S1" 2>/dev/null | grep -oE "[0-9]+" | sort -n | tail -1)

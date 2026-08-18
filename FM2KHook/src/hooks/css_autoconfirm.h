@@ -61,8 +61,6 @@ void CssAutoConfirm_SetTeamDupeLock(bool enabled);
 // ahead of the source clients. Set on SEAM entry; the pin arming
 // (OnReplayMatchStart) takes precedence via the !armed gate; cleared at
 // boundary teardown.
-// p1_color/p2_color carry the just-finished match's color slots so the
-// held portraits keep the palettes the viewer just watched (the engine
-// only assigns colors at confirm, which the hold suppresses).
-void CssAutoConfirm_SetSeamHold(bool enabled,
-                                uint8_t p1_color = 0, uint8_t p2_color = 0);
+// It masks only: it never writes the slot colour fields. See the body for
+// why (AssignPlayerColor's collision scan reads them).
+void CssAutoConfirm_SetSeamHold(bool enabled);

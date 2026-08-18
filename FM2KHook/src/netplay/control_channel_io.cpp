@@ -204,7 +204,6 @@ void RawReceive() {
             const bool peer_only_type =
                 ctrl_type == CtrlMsg::PING || ctrl_type == CtrlMsg::PONG ||
                 ctrl_type == CtrlMsg::HELLO || ctrl_type == CtrlMsg::HELLO_ACK ||
-                ctrl_type == CtrlMsg::CSS_INPUT || ctrl_type == CtrlMsg::CSS_START ||
                 ctrl_type == CtrlMsg::BATTLE_READY || ctrl_type == CtrlMsg::BATTLE_ACK ||
                 ctrl_type == CtrlMsg::BATTLE_ENTERING || ctrl_type == CtrlMsg::BATTLE_START ||
                 ctrl_type == CtrlMsg::BATTLE_END;
@@ -339,16 +338,10 @@ void RawReceive() {
                 reinterpret_cast<const uint8_t*>(eff_data) + 1,
                 static_cast<int>(eff_len) - 1);
         } else if (eff_len >= 1 && first == 0xCE) {
-            // Spectator UDP input accelerator (Phase F). Narrow handler:
-            // accepts ONLY UDP_INPUT_BATCH from the current upstream;
-            // everything else is dropped there. Keeps the datagram out of
-            // GekkoNet's queue (old builds without this branch fed 0xCE
-            // to gekko, which discards on bad magic -- harmless but noisy).
-            extern void SpectatorNode_HandleUdpInputDatagram(
-                const uint8_t* buf, size_t len, const sockaddr_in& from);
-            SpectatorNode_HandleUdpInputDatagram(
-                reinterpret_cast<const uint8_t*>(eff_data), eff_len,
-                *reinterpret_cast<const sockaddr_in*>(&from_addr));
+            // 0xCE was the spectator UDP input accelerator, deleted with the
+            // TCP transport it accelerated around. Swallow the tag rather
+            // than hand it to GekkoNet: an old peer can still emit one and
+            // gekko would log a bad-magic discard for every datagram.
         } else {
             // GekkoNet packet - queue for adapter
             std::vector<char> pkt_data(

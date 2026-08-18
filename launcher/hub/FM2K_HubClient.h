@@ -240,7 +240,6 @@ struct HubEvent {
         std::string spec_nick;
         std::string spec_udp_ip;    // post-STUN external IPv4 dotted
         int         spec_udp_port = 0;
-        int         spec_tcp_port = 0;  // 0 if older spec client
     } spectator_incoming;
 
     // RecordReceived payload. Filled when Kind::RecordReceived fires.
@@ -366,7 +365,7 @@ public:
     // v6 (optional): this machine's GLOBAL IPv6 host candidate
     // (fm2k::LocalLanIpV6()). The hub relays it so the peer can connect
     // directly over IPv6, bypassing CGNAT entirely. Empty = omit (backward).
-    void SendUdpAddr(const std::string& ip, int port, int tcp_port = -1,
+    void SendUdpAddr(const std::string& ip, int port,
                      const std::string& local_ip = "",
                      const std::string& v6 = "");
 
@@ -375,7 +374,7 @@ public:
     // IGD-reported external endpoint so the hub can advertise it to a peer
     // as an authoritative any-source inbound mapping (D5 precedence:
     // verified-UPnP > STUN-learned > client-claimed). The first
-    // SendUdpAddr(ip,port,tcp_port) still fires immediately at connect time
+    // SendUdpAddr(ip,port) still fires immediately at connect time
     // with upnp absent, so behavior is unchanged when UPnP is slow/absent.
     //
     // ext_ip / ext_udp_port are the WAN side the router granted; upnp=true
@@ -383,7 +382,7 @@ public:
     // return empty), so this is backward-compatible. The hub additionally
     // CGNAT-guards the claim by comparing ext_ip against the WS-source IP
     // (D6) before honoring the port.
-    void SendUdpAddrUpnp(const std::string& ip, int port, int tcp_port,
+    void SendUdpAddrUpnp(const std::string& ip, int port,
                          const std::string& ext_ip, int ext_udp_port,
                          bool upnp, const std::string& local_ip = "",
                          const std::string& v6 = "");
@@ -399,12 +398,6 @@ public:
     // hubs ignore the unknown nat_type field -- backward compatible.
     void SendNatType(const std::string& nat_type);
 
-    // External TCP addr discovered by the spec hook via hub TCP-STUN
-    // (see FM2KHook/src/netplay/spectator_tcp.cpp PerformTcpStun). Sent
-    // separately from SendUdpAddr because TCP-STUN is async -- the
-    // hook's outbound STUN connect happens after Init, the launcher
-    // polls SharedMem for the result, and forwards once it arrives.
-    void SendTcpAddr(const std::string& ip, int port);
     void ListRooms();
     void JoinRoom(const std::string& game_id, const std::string& display_name = "");
     void LeaveRoom();

@@ -25,7 +25,7 @@ enum {
 // -block the live stream even on one endpoint.
 enum {
     RC_CHAN_SPEC           = 1,  // host->spectator LIVE EVENT_BATCH stream (latency-critical, ordered)
-    RC_CHAN_SPEC_SNAPSHOT  = 2,  // host->spectator backfill EVENT_BATCH + OP_BASELINE (ordered bulk)
+    RC_CHAN_SPEC_SNAPSHOT  = 2,  // host->spectator backfill EVENT_BATCH2 (ordered bulk)
     RC_CHAN_SPEC_BLOB      = 3,  // host->spectator SNAPSHOT_BEGIN/CHUNK/END -- UNORDERED, offset-reassembled
                                  // (a lost chunk must not head-of-line-block the other 65 chunks)
 };

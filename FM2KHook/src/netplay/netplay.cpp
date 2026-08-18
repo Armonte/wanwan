@@ -619,17 +619,6 @@ bool Netplay_InitAsSpectator(uint16_t local_port, const char* host_addr) {
     extern void SpectatorNode_SetRootAddr(const sockaddr_in& root);
     SpectatorNode_SetRootAddr(*upstream);
 
-    // Phase 5: launcher controls the join mode via FM2K_SPECTATE_MODE env var.
-    //   "current" → CURRENT_MATCH (CCCaster-style snapshot join, default)
-    //   "full"    → FULL_SESSION  (replay-from-frame-0)
-    // Anything else (or unset) defaults to CURRENT_MATCH -- the user-facing
-    // intent for live spectating; FULL_SESSION is opt-in for streamers.
-    SpecJoinMode mode = SpecJoinMode::CURRENT_MATCH;
-    if (const char* env = std::getenv("FM2K_SPECTATE_MODE")) {
-        if (env[0] == 'f' || env[0] == 'F') {
-            mode = SpecJoinMode::FULL_SESSION;
-        }
-    }
     // Hub-driven NAT registration. Same as Netplay_Init's player path:
     // fire a STUN probe so the hub learns OUR external UDP mapping
     // (from the spec hook's UDP socket -- same one ControlChannel uses
@@ -652,10 +641,9 @@ bool Netplay_InitAsSpectator(uint16_t local_port, const char* host_addr) {
         }
     }
 
-    SpectatorNode_RequestJoin(*upstream, mode);
+    SpectatorNode_RequestJoin(*upstream);
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "Netplay (spectator): SPEC_JOIN_REQ sent to host (mode=%s)",
-                mode == SpecJoinMode::CURRENT_MATCH ? "CURRENT_MATCH" : "FULL_SESSION");
+                "Netplay (spectator): SPEC_JOIN_REQ sent to host");
     return true;
 }
 
@@ -719,30 +707,6 @@ bool Netplay_IsSessionReady() {
 // identical confirmed inputs -- same determinism as today, but riding a
 // well-tested transport.
 // =============================================================================
-// LEGACY API
-// =============================================================================
-
-bool Netplay_StartGekkoSession() {
-    return Netplay_StartBattle();
-}
-
-void Netplay_StopGekkoSession() {
-    Netplay_EndBattle();
-}
-
-void Netplay_PollGekkoNet() {
-    if (g_session) {
-        gekko_network_poll(g_session);
-        int event_count = 0;
-        auto events = gekko_session_events(g_session, &event_count);
-        for (int i = 0; i < event_count; i++) {
-            auto event = events[i];
-            if (event->type == GekkoSessionStarted || event->type == GekkoPlayerConnected) {
-                g_session_ready = true;
-            }
-        }
-    }
-}
 
 void Netplay_ResetCSSState() {
     // Tear down the CSS GekkoSession if it's still alive -- happens when this

@@ -107,7 +107,6 @@ void LauncherUI::RenderHubPanel() {
                 hs.client.SendUdpAddrUpnp(
                     "127.0.0.1",
                     network_config_.local_port,
-                    network_config_.local_port,
                     st.ext_ip,
                     static_cast<int>(st.ext_udp_port),
                     /*upnp=*/true,
@@ -521,9 +520,7 @@ void LauncherUI::RenderHubPanel() {
                         hs.status_line = "spectate request sent: " + a->nick;
                     }
                 }
-                ImGui::SetItemTooltip("Watch this match (FULL_SESSION -- "
-                                      "replays from session start; snapshot-join "
-                                      "still baking)");
+                ImGui::SetItemTooltip("Watch this match live");
                 ImGui::PopID();
             }
             ImGui::EndTable();

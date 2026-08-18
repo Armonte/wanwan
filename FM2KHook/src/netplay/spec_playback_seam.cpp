@@ -155,7 +155,7 @@ SeamStepResult SeamStep(uint16_t* p1_input, uint16_t* p2_input) {
                 if (g_state.pb_queue.empty()) return SeamStepResult::HOLD;  // (a)
                 if (!s_seam_walk_masked) {                           // (b)
                     s_seam_walk_masked = true;
-                    CssAutoConfirm_SetSeamHold(true, 0xFF, 0xFF);
+                    CssAutoConfirm_SetSeamHold(true);
                     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "SpectatorNode: seam results-overrun walk -- confirm "
                         "mask armed before feeding synthetic edges (q=%zu)",
@@ -216,7 +216,7 @@ SeamStepResult SeamStep(uint16_t* p1_input, uint16_t* p2_input) {
                 // at battle entry. The 2026-06-11 "hold never released"
                 // deadlock predates the pin and cannot recur.
                 g_state.pb_boundary = State::PbBoundary::NONE;
-                CssAutoConfirm_SetSeamHold(true, 0xFF, 0xFF);  // mask only
+                CssAutoConfirm_SetSeamHold(true);   // mask only
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "SpectatorNode: lean seam -> mirror (CSS aligned at "
                     "host frame 0, confirm mask held until MATCH_START pin, "

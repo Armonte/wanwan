@@ -5,7 +5,6 @@
 #include "spectator_node_internal.h"  // shared State model + g_state (split for sibling TUs)
 #include "spec_wire.h"            // zero-RLE codec (SessionEvent_* live in spectator_node.h)
 #include "spec_relay_queue.h"     // hub-relay outbound queue (Phase 2c)
-#include "spectator_tcp.h"        // TCP transport for INPUT_BATCH stream
 #include "control_channel.h"
 #include "netplay.h"
 #include "replay.h"
@@ -239,7 +238,7 @@ void SendSessionEventsTo(const sockaddr_in& to,
         // was informational-only under EVENT_BATCH).
         hdr.frame_count = static_cast<uint16_t>(std::min<uint32_t>(chunk_op_base, 0xFFFFu));
         // EVENT_BATCH: flags carries payload byte count for the receiver's
-        // TCP framer (see PayloadLenForType in spectator_tcp.cpp). The
+        // receiver without re-decoding events. The
         // BACKFILL_CHUNK_BYTES cap keeps this well under the 16-bit
         // limit. (Was: bit 0 flagged deferred-ops chunk -- moot now since
         // the framer needs the byte count regardless.)
@@ -257,29 +256,32 @@ void SendSessionEventsTo(const sockaddr_in& to,
     }
 }
 
-// Legacy entry point: ships ALL session_events from frame 0. Used by
-// FULL_SESSION-mode subscribers and as the back-compat fallback when
-// CURRENT_MATCH was requested but no snapshot has been captured yet
-// (e.g. JOIN_REQ landed mid-CSS before any battle started).
-void SendSessionBackfillTo(const sockaddr_in& to) {
+// Ships session_events from the START of the session. This is NOT a join
+// flavour: it is what "the match happening now" means for a viewer that
+// dialled in before any match has ENDED, i.e. when there is no prior match to
+// skip and no bounded anchor to skip to (HaveBoundedAnchor() false). At that
+// point the session is a title walk plus the current char select, and the
+// prefix is load-bearing -- the handshake PIN_RNG is appended at peer connect,
+// BEFORE the first CSS_ENTERED, so anchoring on that CSS_ENTERED would drop
+// it. See the comment on State::have_prior_match.
+void SendSessionBackfillFromStart(const sockaddr_in& to) {
     SendSessionEventsTo(to, 0, g_state.session_start_frame);
 }
 
-// Design 2 entry point: ship only the CURRENT char-select phase onward, i.e.
+// The between-matches entry point: ship only the CURRENT char-select onward, i.e.
 // from the most recent CSS_ENTERED. This is what a viewer joining an ongoing
 // set between matches gets instead of the whole session.
 //
 // Why this is bounded and the old path was not: session_events is never
-// trimmed, so SendSessionBackfillTo replays every prior CSS phase and every
+// trimmed, so SendSessionBackfillFromStart replays every prior CSS phase and every
 // prior battle. Battle frames are cheap in catchup (~0.1ms, render every
 // 64th) but CSS frames are not -- each mirrored cursor move can trigger a
 // synchronous cold .player load of 100-500ms, and needs_css_catchup is
 // hard-wired false, so N prior CSS phases cost tens of seconds. Anchoring
 // here crosses AT MOST ONE seam and replays AT MOST ONE char-select.
 //
-// Falls back to the full backfill when the session has no CSS_ENTERED yet
-// (the very first char-select of a session), which is the fresh
-// session-start join -- that path stays byte-for-byte what it is today.
+// Falls back to the session-start backfill when there is no usable anchor yet
+// (no match has ENDED), which is the fresh session-start join.
 // Single source of truth for "is the bounded anchor usable". The bind path
 // consults this BEFORE logging which path it is taking -- otherwise a
 // fresh-session joiner announces BETWEEN-MATCHES and then retracts it one line
@@ -295,9 +297,9 @@ void SendSessionBackfillFromRecentAnchor(const sockaddr_in& to) {
     if (!HaveBoundedAnchor()) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
             "SpectatorNode: no bounded anchor yet (prior_match=%d css_anchor=%d)"
-            " -- shipping the full from-frame-0 backfill",
+            " -- shipping the session-start backfill",
             (int)g_state.have_prior_match, (int)g_state.have_css_anchor);
-        SendSessionBackfillTo(to);
+        SendSessionBackfillFromStart(to);
         return;
     }
     // Pull the live-flush watermark up to the tip first. SendSessionEventsTo
@@ -334,7 +336,7 @@ void SendSessionBackfillFromRecentAnchor(const sockaddr_in& to) {
 // anchored at `anchor_input_frame` would ship (the first INPUT at-or-after
 // the anchor, backed up over its preceding non-INPUT op group). Returns
 // session_events.size() when nothing is at-or-after the anchor. Shared by
-// SendSessionBackfillFromFrame and the OP_BASELINE computation in the bind
+// SendSessionBackfillFromFrame and the anchor computation in the bind
 // path so both always agree on where the connection's delivery starts.
 size_t BackfillFirstIdxForFrame(uint32_t anchor_input_frame) {
     const size_t total = g_state.session_events.size();

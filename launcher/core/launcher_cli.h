@@ -24,7 +24,6 @@ struct LauncherCliArgs {
     std::string offline_game_filter;      // --offline <name|path>: substring filter or direct .exe path
     std::string direct_game_filter;       // --host/--connect <name-or-path>: pick a specific game instead of "first discovered"
     std::string spectate_target_addr;     // "host_ip:host_port" for --spectate
-    std::string spectate_join_mode = "current";  // --spectate-mode {current,full}
     std::string spectate_session_kind = "battle";  // --spectate-session-kind {menu,css,battle}
     int spectate_player_index = 2;        // --player-index N: distinct FM2K_P{N+1}_Debug.log per concurrent spectator
     std::string replay_file_path;         // "--replay <path>" -- offline .fm2krep playback

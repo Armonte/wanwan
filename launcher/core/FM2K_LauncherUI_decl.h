@@ -78,7 +78,6 @@ public:
     // mapping before their first JOIN_REQ arrives at our NAT.
     std::function<void(const std::string& spec_udp_ip,
                        int                spec_udp_port,
-                       int                spec_tcp_port,
                        const std::string& spec_user_id)> on_spectator_punch_target;
     // Phase 3: hub forwarded spec data bytes (we're the spec). Launcher
     // writes the bytes into the inbound shared-mem ring of the running
@@ -221,11 +220,6 @@ public:
     // Update scanning progress (0-1). Only meaningful while scanning flag is true.
     void SetScanning(bool scanning);
     void SetGamesRootPaths(const std::vector<std::string>& paths);
-
-    // Forward an external TCP addr (learned by the spec hook via TCP-STUN
-    // against the hub) to the hub via a `tcp_addr` WS message. Called
-    // from FM2KLauncher::Update on tcp_stun_seq SharedMem bumps.
-    void SendHubTcpAddr(uint32_t ip_be, uint16_t port);
 
     // Phase 4: status-bar surface for spec hub-relay ring counters.
     // FM2KLauncher::Update calls every tick with the latest values

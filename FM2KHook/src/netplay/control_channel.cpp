@@ -4,7 +4,6 @@
 #include "globals.h"
 #include "gekkonet.h"
 #include "spectator_node.h"
-#include "spectator_tcp.h"
 #include "nat_traversal.h"
 #include "addr6_util.h"        // Sendto4or6 (dual-stack v4-mapped send)
 #include "netplay.h"           // Netplay_IsActive -- keepalive during live gekko session
@@ -489,20 +488,9 @@ static void PollImplLocked() {
     extern void ReliableChannel_NetUpdate();
     ReliableChannel_NetUpdate();
 
-    // TCP path for the spectator INPUT_BATCH stream. Host-side: drain
-    // the listener accept queue + read-discard from connected subs.
-    // Spectator-side: drive the upstream connect to completion + drain
-    // inbound bytes through the SpecDataHeader parser. Each call is
-    // non-blocking and cheap when nothing is pending; safe to run on
-    // both host and spectator processes (no-op when not applicable).
-    SpectatorTCP::PollAccepts();
-    SpectatorTCP::PollIncoming();
-    SpectatorTCP::PollUpstream();
-
-    // Pair freshly-accepted TCP clients to known subscriber slots and ship
-    // deferred INITIAL_MATCH/backfill. Runs on host (which doesn't go
-    // through SpectatorNode_TickHealth's spectator path); idempotent and
-    // cheap when there are no subscribers.
+    // Bind pending subscribers and ship their deferred opener + backfill.
+    // Runs on host (which doesn't go through SpectatorNode_TickHealth's
+    // spectator path); idempotent and cheap when there are no subscribers.
     SpectatorNode_TickHostMaintenance();
 
     // Check for timeout. Pump-stall ride-through: if the main thread
@@ -626,15 +614,6 @@ void ControlChannel_SendTo(const CtrlPacket& packet, const sockaddr_in& dest) {
                      sizeof(pkt), dest);
 }
 
-void ControlChannel_SendRawTo(const void* buf, size_t len, const sockaddr_in& dest) {
-    if (!g_socket_initialized) return;
-    if (g_socket == INVALID_SOCKET) return;
-    if (dest.sin_port == 0) return;
-    if (::fm2k::nat::SendToMaybeRelayWrapped((uintptr_t)g_socket, buf,
-                                             (int)len, dest)) return;
-    fm2k::Sendto4or6(g_socket, reinterpret_cast<const char*>(buf),
-                     (int)len, dest);
-}
 
 bool ControlChannel_IsConnected() {
     return g_connected;

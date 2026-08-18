@@ -98,18 +98,6 @@ std::atomic<bool> g_team_dupe_lock{false};
 // Spectator seam hold (Phase F) -- see header. Holds CSS unadvanceable
 // while the spectator waits for the next MATCH_START's pin targets.
 std::atomic<bool> g_seam_hold{false};
-// Colors carried from the just-finished match for the held portraits.
-// AssignPlayerColor only writes the per-slot color at confirm time, and
-// the hold suppresses confirms -- without these writes the held CSS
-// renders palette 0 for both players ("wrong colors" vs the battle they
-// just watched). Per-slot color lives at slot+0xE00B (g_charslot0_color
-// _pick @ 0x4DFD8B, byte stride 0xE03F; see AssignPlayerColor @ 0x406F20).
-// 1v1 mapping: P1 = slot 0, P2 = slot 1 (team CSS out of scope here).
-std::atomic<uint8_t> g_seam_hold_p1_color{0};
-std::atomic<uint8_t> g_seam_hold_p2_color{0};
-constexpr uintptr_t ADDR_CHARSLOT0_COLOR_PICK = 0x4DFD8B;
-constexpr size_t    CHARSLOT_STRIDE_BYTES     = 0xE03F;
-
 // ===================== ORPHANED-PREVIEW FIX (2026-08-17) ==================
 //
 // THE DEFECT. Phase A of the pin (below) forces `selected[i] = -1` with a bare
@@ -405,21 +393,14 @@ char __cdecl Hook_GameStateManager() {
             uint32_t* in_changes = (uint32_t*)ADDR_INPUT_CHANGES;
             in_changes[0] &= ~0x3F0u;
             in_changes[1] &= ~0x3F0u;
-            // OPTIONAL carry-color stamping (0xFF = don't touch). Only
-            // the legacy long-hold display path uses it. The lean
-            // 10-frame masks must NOT write these: AssignPlayerColor's
-            // collision scan reads the slot color fields, so stamped
-            // values diverge the bump logic from the host's and the
-            // mirrored confirms land on different palettes (rematch
-            // wrong-colors-on-both, 2026-06-11).
-            const uint8_t hc1 = g_seam_hold_p1_color.load(std::memory_order_relaxed);
-            const uint8_t hc2 = g_seam_hold_p2_color.load(std::memory_order_relaxed);
-            if (hc1 < 8) {
-                *(int32_t*)(ADDR_CHARSLOT0_COLOR_PICK + 0 * CHARSLOT_STRIDE_BYTES) = hc1;
-            }
-            if (hc2 < 8) {
-                *(int32_t*)(ADDR_CHARSLOT0_COLOR_PICK + 1 * CHARSLOT_STRIDE_BYTES) = hc2;
-            }
+            // The hold does NOT stamp the slot colour fields. The
+            // superseded long-hold display path carried the finished
+            // match's palettes into the held portraits; the lean masks
+            // that replaced it must not, because AssignPlayerColor's
+            // collision scan reads those fields and a stamped value
+            // diverges the bump logic from the host's -- the mirrored
+            // confirms then land on different palettes (rematch
+            // wrong-colours-on-both, 2026-06-11).
 
             // [SEAM-CSS] 1Hz: is the mirror actually moving this CSS?
             // Pairs with [HOST-CSS] below for a side-by-side diff.
@@ -746,15 +727,12 @@ void CssAutoConfirm_SetTeamDupeLock(bool enabled) {
         enabled ? "ENABLED" : "disabled");
 }
 
-void CssAutoConfirm_SetSeamHold(bool enabled,
-                                uint8_t p1_color, uint8_t p2_color) {
-    g_seam_hold_p1_color.store(p1_color, std::memory_order_relaxed);
-    g_seam_hold_p2_color.store(p2_color, std::memory_order_relaxed);
+void CssAutoConfirm_SetSeamHold(bool enabled) {
     const bool was = g_seam_hold.exchange(enabled, std::memory_order_acq_rel);
     if (was != enabled) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "CssAutoConfirm: seam hold %s (carry colors p1=c%u p2=c%u)",
-            enabled ? "ENGAGED" : "released", p1_color, p2_color);
+            "CssAutoConfirm: seam hold %s",
+            enabled ? "ENGAGED" : "released");
     }
 }
 
@@ -766,6 +744,6 @@ bool CssAutoConfirm_Install()                              { return true; }
 void CssAutoConfirm_OnReplayMatchStart(uint8_t, uint8_t, uint8_t, uint8_t, uint8_t) {}
 void CssAutoConfirm_Disengage()                            {}
 void CssAutoConfirm_SetTeamDupeLock(bool)                  {}
-void CssAutoConfirm_SetSeamHold(bool, uint8_t, uint8_t)    {}
+void CssAutoConfirm_SetSeamHold(bool)                      {}
 
 #endif

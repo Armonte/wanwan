@@ -297,7 +297,6 @@ def leg_stage_once(a, attempt: int = 1) -> tuple[bool, dict]:
         "FM2K_STAGE_RANDOM_MAX": "7",
         "FM2K_NET_DELAY_MS": "100", "FM2K_NET_JITTER_MS": "30",
         "FM2K_NET_LOSS": a.loss, "FM2K_NET_SEED": "141",
-        "FM2K_SPEC_RC": "1", "FM2K_SPEC_DEEP_JOIN": "1",
         # CSS-ANIM ARMING (2026-08-17, spec_faller_diagnosis.md 5.3). This leg
         # ran with the per-slot character-select census DARK ("CSS-WIN CSSANIM:
         # no [CSS-ANIM] lines on any plane -- NOT ARMED ... NOT COMPUTED"), so
@@ -516,8 +515,7 @@ def leg_settings_one(a, name: str) -> tuple[bool, dict]:
     env = {
         "FM2K_NET_DELAY_MS": "100", "FM2K_NET_JITTER_MS": "30",
         "FM2K_NET_LOSS": a.loss,
-        "FM2K_NET_SEED": "151", "FM2K_SPEC_RC": "1",
-        "FM2K_SPEC_DEEP_JOIN": "1",
+        "FM2K_NET_SEED": "151",
         # CSS-ANIM ARMING (2026-08-17, spec_faller_diagnosis.md 5.3). This leg
         # keeps the CSS-window fall term FATAL, and it was running it with the
         # per-slot census DARK -- so the stage that went red had exactly one

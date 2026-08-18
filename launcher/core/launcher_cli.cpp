@@ -59,7 +59,6 @@ SDL_AppResult LauncherCli_ParseArgs(int argc, char** argv, LauncherCliArgs& out)
     std::string& offline_game_filter  = out.offline_game_filter;
     std::string& direct_game_filter   = out.direct_game_filter;
     std::string& spectate_target_addr = out.spectate_target_addr;
-    std::string& spectate_join_mode   = out.spectate_join_mode;
     std::string& spectate_session_kind= out.spectate_session_kind;
     int& spectate_player_index        = out.spectate_player_index;
     std::string& replay_file_path     = out.replay_file_path;
@@ -94,22 +93,6 @@ SDL_AppResult LauncherCli_ParseArgs(int argc, char** argv, LauncherCliArgs& out)
                 }
             } else {
                 std::cerr << "Error: --connect requires an address\n";
-                return SDL_APP_FAILURE;
-            }
-        } else if (arg == "--spectate-mode") {
-            // --spectate-mode {current,full}
-            //   current = CURRENT_MATCH (default; CCCaster-style snapshot join)
-            //   full    = FULL_SESSION  (replay from frame 0)
-            if (i + 1 < argc) {
-                std::string m = argv[++i];
-                if (m == "current" || m == "full") {
-                    spectate_join_mode = m;
-                } else {
-                    std::cerr << "Error: --spectate-mode must be 'current' or 'full', got: " << m << "\n";
-                    return SDL_APP_FAILURE;
-                }
-            } else {
-                std::cerr << "Error: --spectate-mode requires {current,full}\n";
                 return SDL_APP_FAILURE;
             }
         } else if (arg == "--spectate-session-kind") {
@@ -283,7 +266,6 @@ SDL_AppResult LauncherCli_ApplyLaunchMode(FM2KLauncher* launcher, LauncherCliArg
     std::string& offline_game_filter  = args.offline_game_filter;
     std::string& direct_game_filter   = args.direct_game_filter;
     std::string& spectate_target_addr = args.spectate_target_addr;
-    std::string& spectate_join_mode   = args.spectate_join_mode;
     std::string& spectate_session_kind= args.spectate_session_kind;
     std::string& replay_file_path     = args.replay_file_path;
 
@@ -575,15 +557,13 @@ SDL_AppResult LauncherCli_ApplyLaunchMode(FM2KLauncher* launcher, LauncherCliArg
                                                     spectator_port,
                                                     host_ip, host_port,
                                                     spectate_session_kind,
-                                                    spectate_join_mode,
-                                                    "tcp",
+                                                    "direct",
                                                     args.spectate_player_index)) {
                 std::cerr << "Spectate: launch failed\n";
                 return SDL_APP_FAILURE;
             }
             std::cout << "Direct spectate mode: dialing " << host_ip << ":" << host_port
-                      << " on local port " << spectator_port
-                      << " (mode=" << spectate_join_mode << ")\n";
+                      << " on local port " << spectator_port << "\n";
         } else {
             // Start regular host/client network session
             NetworkConfig online_config = config;

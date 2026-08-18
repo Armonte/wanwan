@@ -482,26 +482,14 @@ TEST_CASE("EVENT_BATCH wire tag is stable on the wire (SpecDataType::EVENT_BATCH
 // Snapshot-join wire types (task #18 phase 1)
 // =============================================================================
 //
-// CCCaster-style "jump to current match" support. Spectator declares mode
-// preference in SPEC_JOIN_REQ; if the host has a SaveState snapshot for the
-// current match it ships SNAPSHOT_BEGIN/CHUNK/END packets instead of
-// replaying session_events from frame 0. Phase 1 reserves the wire types
-// and JOIN_REQ payload field so a future host/spectator pair can
-// interoperate without breaking older builds.
+// "Jump to the current match" support. When the host is in a battle it ships
+// SNAPSHOT_BEGIN/CHUNK/END framing its SaveState blob; the viewer applies it
+// and plays forward from the snapshot's frame. These tests pin the wire
+// layout of that group.
 
 namespace mirror_snapshot {
 
-enum class SpecJoinMode : uint8_t {
-    FULL_SESSION  = 0,
-    CURRENT_MATCH = 1,
-};
-
 enum class SpecDataType : uint8_t {
-    INITIAL_MATCH  = 1,
-    INPUT_BATCH    = 2,
-    MATCH_END      = 3,
-    INPUT_REQUEST  = 4,
-    EVENT_BATCH    = 5,
     SNAPSHOT_BEGIN = 6,
     SNAPSHOT_CHUNK = 7,
     SNAPSHOT_END   = 8,
@@ -521,13 +509,6 @@ struct SnapshotMetadata {
 #pragma pack(pop)
 
 }  // namespace mirror_snapshot
-
-TEST_CASE("SpecJoinMode enum values are stable") {
-    // Default is FULL_SESSION (legacy replay-from-frame-0 path) so a
-    // zero-init CtrlPacket payload = back-compat. Don't reorder.
-    CHECK((uint8_t)mirror_snapshot::SpecJoinMode::FULL_SESSION  == 0);
-    CHECK((uint8_t)mirror_snapshot::SpecJoinMode::CURRENT_MATCH == 1);
-}
 
 TEST_CASE("SpecDataType snapshot tags are stable") {
     CHECK((uint8_t)mirror_snapshot::SpecDataType::SNAPSHOT_BEGIN == 6);
@@ -559,27 +540,20 @@ TEST_CASE("Snapshot constants are sane") {
     CHECK(mirror_snapshot::SPECTATOR_SNAPSHOT_VERSION == 1);
 }
 
-TEST_CASE("SPEC_JOIN_REQ payload mode field layout (8-byte struct)") {
-    // CtrlPacket.data.spec_join_req struct: 1 byte mode + 7 bytes
-    // reserved padding. Receiver-side back-compat: an old spectator
-    // sending no payload zero-fills the bytes → mode reads as
-    // FULL_SESSION (0). New spectators write mode=1 explicitly for
-    // CURRENT_MATCH.
+TEST_CASE("SPEC_JOIN_REQ payload layout (8-byte struct)") {
+    // CtrlPacket.data.spec_join_req: byte 0 is a RESERVED zero (it used to
+    // carry a join-mode preference; there is one join flavour now and the
+    // host never reads it) + 7 bytes of capability/resume/version payload.
     #pragma pack(push, 1)
     struct SpecJoinReq {
-        uint8_t mode;
+        uint8_t _reserved0;
         uint8_t reserved[7];
     };
     #pragma pack(pop)
     CHECK(sizeof(SpecJoinReq) == 8);
-    CHECK(offsetof(SpecJoinReq, mode)     == 0);
-    CHECK(offsetof(SpecJoinReq, reserved) == 1);
+    CHECK(offsetof(SpecJoinReq, _reserved0) == 0);
+    CHECK(offsetof(SpecJoinReq, reserved)   == 1);
 
-    // Round-trip: zero-init resolves to FULL_SESSION.
     SpecJoinReq zero = {};
-    CHECK(zero.mode == (uint8_t)mirror_snapshot::SpecJoinMode::FULL_SESSION);
-
-    // Explicit current-match.
-    SpecJoinReq live = { (uint8_t)mirror_snapshot::SpecJoinMode::CURRENT_MATCH, {} };
-    CHECK(live.mode == 1);
+    CHECK(zero._reserved0 == 0);
 }

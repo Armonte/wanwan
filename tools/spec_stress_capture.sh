@@ -11,16 +11,16 @@
 #   TAG=myrun tools/spec_stress_capture.sh
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-RC="${RC:-1}"; LOSS="${LOSS:-0.20}"; SEED="${SEED:-42}"; DELAY="${DELAY:-80}"
+LOSS="${LOSS:-0.20}"; SEED="${SEED:-42}"; DELAY="${DELAY:-80}"
 FRAMES="${FRAMES:-1200}"; RUNS="${RUNS:-12}"
-TAG="${TAG:-spec_stress_rc${RC}_loss${LOSS}_seed${SEED}}"
+TAG="${TAG:-spec_stress_loss${LOSS}_seed${SEED}}"
 OUT="$ROOT/logs/gate_runs/$TAG"
 LIVE="$ROOT/tools/.spec_selftest"
 GAMEDIR="/mnt/c/games/2dfm/wanwan"
 rm -rf "$OUT"; mkdir -p "$OUT"
 SUMMARY="$OUT/summary.tsv"
 echo -e "run\treached\tstall_frame\tgap\tchecksum_frames\tverdict\tlogdir" > "$SUMMARY"
-echo "[capture] TAG=$TAG RC=$RC loss=$LOSS seed=$SEED delay=$DELAY frames=$FRAMES runs=$RUNS -> $OUT"
+echo "[capture] TAG=$TAG loss=$LOSS seed=$SEED delay=$DELAY frames=$FRAMES runs=$RUNS -> $OUT"
 
 fails=0
 for i in $(seq 1 "$RUNS"); do
@@ -37,7 +37,7 @@ for i in $(seq 1 "$RUNS"); do
         taskkill.exe /F /IM "${p}.exe" >/dev/null 2>&1
     done
     sleep 0.5
-    out="$(FM2K_SPEC_RC="$RC" FM2K_NET_LOSS="$LOSS" FM2K_NET_DELAY_MS="$DELAY" FM2K_NET_SEED="$SEED" \
+    out="$(FM2K_NET_LOSS="$LOSS" FM2K_NET_DELAY_MS="$DELAY" FM2K_NET_SEED="$SEED" \
         timeout 220 python3 "$ROOT/tools/spec_selftest.py" --frames "$FRAMES" \
         --assert-spectator-live --keep 2>&1)"
     echo "$out" > "$rd/harness.log"

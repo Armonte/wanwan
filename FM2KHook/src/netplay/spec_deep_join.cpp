@@ -39,13 +39,14 @@
 //     savestate_fm2k_load.cpp:447-457 names the layout explicitly and RESTORES
 //     offsets 0x00..0x20, i.e. exactly the 32-byte 0x4456B0..0x4456CF array.
 //
-// DEFAULT ON (bleeding), KILL-SWITCHED BY FM2K_SPEC_DEEP_JOIN=0: everything
-// here is downstream of DeepJoinEnabled() on the host, and of the
-// SPEC_ACK_DEEP_JOIN grant bit on the viewer. With the kill-switch thrown the
-// host never marks a sub eligible, so no push is ever armed and no viewer is
-// ever told to hold -- the legacy from-frame-0 path is restored whole, which is
-// what makes "does it still happen with FM2K_SPEC_DEEP_JOIN=0?" a real triage
-// question. See DeepJoinEnabled() for the parse and its fail-safe direction.
+// This IS the between-matches join. There is no switch and no alternative
+// path: everything here is downstream of HaveBoundedAnchor() on the host and
+// of the SPEC_ACK_DEEP_JOIN grant bit on the viewer. The FM2K_SPEC_DEEP_JOIN
+// kill-switch that used to restore a from-frame-0 backfill is DELETED along
+// with that backfill -- its own gate stage measured the "escape hatch"
+// desyncing while the default path stayed bit-exact, so it was not an escape.
+// A viewer with no prior match to skip still gets the session from its start,
+// because at that point the session start IS the current char select.
 //
 // ---------------------------------------------------------------------------
 // TELEMETRY CONTRACT -- the viewer-side ladder's outcomes, one line each.
@@ -133,70 +134,6 @@ bool g_held_battle_ended_reported = false;
 
 namespace specnode {
 
-// FM2K_SPEC_DEEP_JOIN -- DEFAULT ON since the bleeding flip (rollout plan
-// Phase 3). The variable is now a KILL-SWITCH, not an opt-in: its only
-// load-bearing direction is OFF, which restores the legacy from-frame-0
-// backfill for triage ("does this reproduce with deep join off?"). That
-// inversion is why the parse below is strict instead of the old
-// `e[0] == '1'`:
-//
-//   * A kill-switch that misses because the value carried a trailing space,
-//     or because the user wrote `false` instead of `0`, is worse than no
-//     kill-switch -- the reporter believes they tested the legacy path and
-//     the triage conclusion is wrong. So the value is trimmed, lower-cased,
-//     and both spelling families are accepted.
-//   * An UNRECOGNISED value fails SAFE, i.e. OFF, and says so at Error
-//     severity. Failing to the default would silently keep the experimental
-//     path on for exactly the user who was trying to turn it off; failing to
-//     the legacy path costs that user only join latency, and the loud line
-//     tells them why.
-//   * Unset or whitespace-only means "no opinion" -> the default (ON).
-//
-// Read once, logged EXACTLY once (one line, whichever branch). The
-// "bounded deep join ENABLED" / "bounded deep join disabled" substrings are a
-// harness contract -- run_all_tests stage 2d asserts the first and the
-// kill-switch check asserts the second. Do not reword them.
-bool DeepJoinEnabled() {
-    static int s_enabled = -1;
-    if (s_enabled >= 0) return s_enabled == 1;
-
-    const char* raw = std::getenv("FM2K_SPEC_DEEP_JOIN");
-    std::string v = raw ? raw : "";
-    const size_t b = v.find_first_not_of(" \t\r\n");
-    const size_t e = v.find_last_not_of(" \t\r\n");
-    v = (b == std::string::npos) ? std::string() : v.substr(b, e - b + 1);
-    for (char& c : v) c = (char)std::tolower((unsigned char)c);
-
-    const char* why = nullptr;
-    if (v.empty()) {
-        s_enabled = 1;
-        why = "default; FM2K_SPEC_DEEP_JOIN unset";
-    } else if (v == "0" || v == "false" || v == "off" || v == "no" ||
-               v == "disabled") {
-        s_enabled = 0;
-        why = "FM2K_SPEC_DEEP_JOIN kill-switch";
-    } else if (v == "1" || v == "true" || v == "on" || v == "yes" ||
-               v == "enabled") {
-        s_enabled = 1;
-        why = "FM2K_SPEC_DEEP_JOIN set explicitly";
-    } else {
-        s_enabled = 0;
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-            "[SPEC-DEEPJOIN] bounded deep join disabled -- "
-            "FM2K_SPEC_DEEP_JOIN=\"%s\" is not a recognised value (accepted: "
-            "1/true/on/yes/enabled, 0/false/off/no/disabled). Failing SAFE to "
-            "the legacy from-frame-0 backfill; UNSET the variable to get the "
-            "default (ON)", raw ? raw : "");
-        return false;
-    }
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "[SPEC-DEEPJOIN] bounded deep join %s (%s)",
-        s_enabled ? "ENABLED -- bounded backfill from the current "
-                    "char-select + mandatory battle-entry snapshot"
-                  : "disabled -- legacy from-frame-0 backfill",
-        why);
-    return s_enabled == 1;
-}
 
 uint32_t ConsumedInputPos() {
     size_t queued = 0;
@@ -271,7 +208,7 @@ void DeepJoinArmSubscribers() {
         // arm a CONTINUING viewer only while it is bound right now. An arm laid
         // on an unbound continuing viewer can only ever be drained on a later
         // rebind, i.e. mid-match, for an anchor it is already past.
-        if (!sub.deep_join_eligible && !sub.tcp_bound) continue;
+        if (!sub.deep_join_eligible && !sub.bound) continue;
         // RE-ARMS EVERY BATTLE ENTRY while the viewer is still uncorrected.
         // That is the rematch property: a joiner whose first battle ended
         // before its snapshot arrived is served the NEXT battle's blob with no
@@ -306,7 +243,7 @@ void DeepJoinPushTick(uint64_t now) {
         // Unbound subs keep the arm: the bind path ships their payload and
         // DeepJoinOnBind decides fresh. Pushing to an unbound sub drops the
         // bytes on the floor (no TCP socket / no RC endpoint paired yet).
-        if (!sub.tcp_bound) continue;
+        if (!sub.bound) continue;
         if (sub.deep_join_push_anchor == cache.input_frame) {
             // Already pushed THIS battle's blob. A repeat arm (e.g. a second
             // StashSnapshot for the same cache) must not re-ship it -- the
@@ -734,7 +671,7 @@ void DeepJoinHoldTick(uint64_t now) {
         g_state.pb_deep_join_anchor, reqs_this_round,
         (int)inbox.active, inbox.bytes_received,
         (unsigned)inbox.meta.total_bytes, g_state.pb_deep_join_escalations);
-    SpecForceFullReJoin(SpecJoinMode::CURRENT_MATCH, "deep-join hold budget");
+    SpecForceFullReJoin("deep-join hold budget");
 }
 
 void DeepJoinOnSnapshotApplied(uint32_t anchor) {

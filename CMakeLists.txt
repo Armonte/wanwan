@@ -116,20 +116,11 @@ FetchContent_Declare(
     SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendored/SDL_image
 )
 
-# Use vendored SDL_net sources
-FetchContent_Declare(
-    SDL3_net
-    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendored/SDL_net
-)
-
 # Make SDL3 available
 FetchContent_MakeAvailable(SDL3)
 
 # Make SDL_image available after SDL3
 FetchContent_MakeAvailable(SDL3_image)
-
-# Make SDL_net available after SDL3
-FetchContent_MakeAvailable(SDL3_net)
 
 # Include directories
 include_directories(
@@ -547,7 +538,6 @@ target_link_libraries(FM2K_RollbackLauncher PRIVATE
     iphlpapi
     SDL3::SDL3-static
     SDL3_image::SDL3_image-static
-    SDL3_net::SDL3_net-static
     MinHook
     imgui_sdl
     psapi

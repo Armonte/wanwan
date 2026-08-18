@@ -140,7 +140,6 @@ for row in "${ROT[@]}"; do
     # subsystem is how a 45-70 minute stage stops being run.
     FM2K_CSSWIN_FATAL=0 \
     FM2K_TEST_OUT_DIR="$ROOT/tools/.spec_rotate_$key" \
-    FM2K_SPEC_RC=1 FM2K_SPEC_DEEP_JOIN=1 \
     FM2K_NET_DELAY_MS=100 FM2K_NET_JITTER_MS=30 FM2K_NET_LOSS="${SPECROTATE_LOSS:-0.10}" \
     FM2K_NET_SEED=161 \
       timeout "$tmo" python3 -u "$ROOT/tools/spec_selftest.py" \

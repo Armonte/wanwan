@@ -274,10 +274,9 @@ extern "C" void Hook_RenderDiagnostics_Tick() {
                     const bool resyncing =
                         sub && SpectatorNode_ResyncStatus(resync, sizeof(resync));
                     const char* status =
-                        !sub                                   ? "Connecting..."
-                        : resyncing                            ? resync
-                        : SpectatorNode_IsTcpRejoinPending()   ? "Resyncing..."
-                                                               : "Subscribed";
+                        !sub        ? "Connecting..."
+                        : resyncing ? resync
+                                    : "Subscribed";
                     snprintf(title, sizeof(title),
                         "%s | %s %s | %ufps | q:%zu",
                         s_game_prefix, role, status,

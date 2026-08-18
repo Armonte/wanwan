@@ -165,12 +165,11 @@ void FM2KLauncher::Update(float delta_time SDL_UNUSED) {
         game_instance_->ProcessDLLEvents();
     }
 
-    // TCP-STUN poll: when the spec hook completes its outbound STUN
-    // probe (FM2KHook/src/netplay/spectator_tcp.cpp PerformTcpStun), it
-    // bumps tcp_stun_seq in SharedMem with the discovered external
-    // (ip, port). Forward to hub via WS so cross-NAT spectators can be
-    // told the right TCP punch target. Track per-pid last-seen seq so
-    // we only forward fresh values; resets when game_instance restarts.
+    // Session-kind poll: the hook bumps session_kind_seq in SharedMem on
+    // every menu/CSS/battle transition; forward to the hub so spectators
+    // joining us know whether to /F-boot into battle or walk title->CSS.
+    // Track per-pid last-seen seq so we only forward fresh values; resets
+    // when game_instance restarts.
     {
         DWORD target_pid = 0;
         if (game_instance_ && game_instance_->IsRunning()) {
@@ -179,11 +178,9 @@ void FM2KLauncher::Update(float delta_time SDL_UNUSED) {
             target_pid = client1_instance_->GetProcessId();
         }
         static DWORD    s_last_pid = 0;
-        static uint32_t s_last_seq = 0;
         static uint32_t s_last_sk_seq = 0;
         if (target_pid != 0 && target_pid != s_last_pid) {
             s_last_pid = target_pid;
-            s_last_seq = 0;
             s_last_sk_seq = 0;
         }
         if (target_pid != 0) {
@@ -195,18 +192,6 @@ void FM2KLauncher::Update(float delta_time SDL_UNUSED) {
                 FM2KSharedMemData* shm = static_cast<FM2KSharedMemData*>(
                     MapViewOfFile(h, FILE_MAP_READ, 0, 0,
                                   sizeof(FM2KSharedMemData)));
-                if (shm && shm->magic == FM2K_SHARED_MEM_MAGIC &&
-                    shm->tcp_stun_seq != 0 &&
-                    shm->tcp_stun_seq != s_last_seq) {
-                    s_last_seq = shm->tcp_stun_seq;
-                    if (ui_) {
-                        ui_->SendHubTcpAddr(shm->tcp_stun_ext_ip_be,
-                                            shm->tcp_stun_ext_port);
-                    }
-                }
-                // session_kind poll: forwards menu/CSS/battle phase
-                // transitions to the hub so spectators joining us know
-                // whether to /F-boot-to-battle or walk title→CSS.
                 if (shm && shm->magic == FM2K_SHARED_MEM_MAGIC &&
                     shm->session_kind_seq != 0 &&
                     shm->session_kind_seq != s_last_sk_seq) {

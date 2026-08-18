@@ -200,15 +200,6 @@ void LauncherUI::HubConnect(const std::string& outgoing_nick) {
             "current one is hub.2dfm.org.", hub_host.c_str());
     }
     ::SetEnvironmentVariableA("FM2K_HUB_HOST", hub_host.c_str());
-    // TCP-STUN endpoint -- same hub host, port 7713 (UDP-STUN at
-    // 7711, UDP-relay at 7712). Set process-wide here so every
-    // spawned game (player AND spectator) inherits and can run
-    // its outbound TCP-STUN probe at hook init. Without this,
-    // the spec hook logs "FM2K_HUB_TCP_STUN_ADDR unset -- skipping"
-    // and falls back to local listener port for cross-NAT punch
-    // -- which fails on non-port-preserving NATs.
-    ::SetEnvironmentVariableA("FM2K_HUB_TCP_STUN_ADDR",
-                              (hub_host + ":7713").c_str());
     // FM2K_HUB_UDP_ADDR -- set at connect time (hub_host known here).
     // FM2K_HUB_USER_ID is set on Connected (hello_ack) where my_id
     // first lands; both are required by the hook's STUN probe

@@ -991,14 +991,21 @@ def main() -> int:
         launched_relay = "transport=relay" in spec_launcher
         viewer_relay   = "FM2K_SPEC_TRANSPORT=relay" in p3_txt_l
         host_relay     = "FM2K_SPEC_TRANSPORT=relay" in p1_txt_l
-        skipped_direct = "JOIN_ACK accepted in relay mode" in p3_txt_l
+        # There used to be a fifth term here, viewer_skipped_direct_dial,
+        # grepping the JOIN_ACK handler's "accepted in relay mode -- skipping
+        # ConnectUpstream" line. That line went with the TCP transport on
+        # 2026-08-18: the JOIN_ACK handler no longer has a transport branch,
+        # because there is no dial to skip. The term went from meaningful to
+        # UNSATISFIABLE, i.e. a permanent false red, so it is deleted rather
+        # than loosened. What it protected -- "the viewer is in relay mode and
+        # is not also running a direct path" -- is now exactly viewer_relay,
+        # which is asserted below and is stamped strictly earlier (at hook
+        # init, where relay mode suppresses the direct reliable channel).
         check("R1 relay negotiated end to end (grant -> spawn -> both hooks)",
-              subscribed and launched_relay and viewer_relay and host_relay
-              and skipped_direct,
+              subscribed and launched_relay and viewer_relay and host_relay,
               f"hub_subscribed={subscribed} launch_line_transport_relay="
               f"{launched_relay} host_hook_relay={host_relay} "
-              f"viewer_hook_relay={viewer_relay} "
-              f"viewer_skipped_direct_dial={skipped_direct}")
+              f"viewer_hook_relay={viewer_relay}")
         # ADVISORY, and it is advisory for a STRUCTURAL reason, not a hopeful
         # one: relay SendTo addresses each frame by the subscriber's hub
         # user_id, and the host only ever learns that id from the hub's

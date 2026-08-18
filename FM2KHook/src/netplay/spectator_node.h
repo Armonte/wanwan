@@ -31,17 +31,11 @@ constexpr uint8_t SPEC_DATA_MAGIC = 0xCE;
 // INITIAL_MATCH carries metadata + a seed sanity-rewrite at each new match;
 // MATCH_END is informational only.
 enum class SpecDataType : uint8_t {
-    INITIAL_MATCH  = 1, // Legacy (retired in C12). Receivers ignore.
-    INPUT_BATCH    = 2, // Legacy (retired in C12). Receivers ignore.
-    MATCH_END      = 3, // Legacy (retired in C12). Receivers ignore.
-    INPUT_REQUEST  = 4, // Dead under TCP (in-order + exactly-once delivery
-                        // makes the gap-recovery handshake unnecessary).
-    EVENT_BATCH    = 5, // Primary wire type. Payload = packed SessionEvent[]
-                        // stream. SpecDataHeader.start_frame = session-
-                        // relative INPUT-frame index of first INPUT in
-                        // batch; frame_count = INPUT events in batch;
-                        // flags = total payload byte count (variable-length
-                        // since SessionEvents are 1-, 5-, or 97-byte each).
+    // 1..5 are RETIRED: INITIAL_MATCH, INPUT_BATCH, MATCH_END, INPUT_REQUEST
+    // and the original op-identity-less EVENT_BATCH. Nothing emits them and
+    // nothing decodes them; the numbering is frozen because the values are
+    // never reused, and the join-time version gate refuses any peer old
+    // enough to send one.
 
     // ----- Snapshot join (task #18) -- Phase 1 ABI -----
     //
@@ -80,46 +74,12 @@ enum class SpecDataType : uint8_t {
     SNAPSHOT_CHUNK = 7,
     SNAPSHOT_END   = 8,
 
-    // ----- UDP input accelerator (Phase F) -----
-    //
-    // UDP_INPUT_BATCH is a raw datagram on the shared control UDP socket
-    // (NEVER framed over TCP -- PayloadLenForType deliberately has no case
-    // for it, so a host bug that puts it on the stream fails loudly).
-    // TCP stays the single authority for ops, history, backfill and
-    // snapshots; this datagram is a pure positional INPUT accelerator so
-    // a TCP retransmit stall (multi-second at real loss rates) can't
-    // starve the playback queue mid-battle.
-    //
-    //   UDP_INPUT_BATCH:
-    //     start_frame = session-relative INPUT-frame index of first frame
-    //                   in the window
-    //     frame_count = frames in window (<= SPEC_UDP_WINDOW)
-    //     flags       = payload byte count (4 + frame_count*4)
-    //     payload     = u32 op_seq (host's total non-INPUT event count at
-    //                   send time, little-endian)
-    //                 + frame_count x { u16 p1, u16 p2 }
-    //
-    // Admission invariant (spectator side): a window is admitted only when
-    // ops_seen >= op_seq, i.e. every non-INPUT event the host appended
-    // before these inputs has already been TCP-decoded locally. Positional
-    // guarantee: an op always precedes the inputs appended after it, and a
-    // datagram only carries already-appended inputs -- so no input can
-    // ever be admitted past an unseen sim-critical op, on the playback
-    // queue, the hop-1 relay log, or recordings.
-    //
-    //   OP_BASELINE (TCP-borne, sent at bind BEFORE snapshot/backfill):
-    //     start_frame = unused (0)
-    //     frame_count = unused (0)
-    //     flags       = 4 (payload byte count)
-    //     payload     = u32 count of non-INPUT events in
-    //                   session_events[0 .. backfill start) -- the ops a
-    //                   mid-session joiner will never receive. Initializes
-    //                   ops_seen and (re-)arms the UDP admission epoch for
-    //                   the new connection; sent only to subscribers that
-    //                   advertised SPEC_JOIN_UDP_OK (old framers would
-    //                   drop the connection on an unknown type).
-    UDP_INPUT_BATCH = 9,
-    OP_BASELINE     = 10,
+    // 9 was UDP_INPUT_BATCH (the non-CRC-protected input accelerator) and
+    // 10 was OP_BASELINE (its per-bind op-count priming packet). Both are
+    // deleted: the reliable channel is the single input path and
+    // EVENT_BATCH2's absolute op base makes the priming redundant.
+    // Numbering below is frozen; the version gate refuses any peer that
+    // could still emit a 9 or a 10.
     EVENT_BATCH2    = 11, // EVENT_BATCH + absolute op identity: identical
                           // payload/flags framing, but frame_count (which
                           // EVENT_BATCH used only informationally) carries
@@ -132,25 +92,14 @@ enum class SpecDataType : uint8_t {
                           // EVENT_BATCH positional connection counter.
 };
 
-// UDP accelerator tuning. Window 64 + send-every-2-confirmed-frames means
-// a frame is re-shipped in ~32 consecutive datagrams: at 20% loss the
-// probability that ALL of them drop is ~0.2^32. ~270 B per datagram at
-// 50/s = ~13.5 KB/s per subscriber.
-// 256 confirmed frames = ~2.5s of input redundancy per datagram
-// (~1KB inputs + ops tail, still under MTU). TCP outages shorter than
-// this window are invisible; longer ones heal via the light resume
-// re-join (no snapshot, gap-only backfill).
-constexpr size_t   SPEC_UDP_WINDOW        = 256;
-constexpr uint32_t SPEC_UDP_SEND_INTERVAL = 2;   // confirmed frames per send
-constexpr size_t   SPEC_UDP_MAX_FANOUT    = 8;   // cap UDP sends per tick
-
 // SPEC_JOIN_REQ reserved[0] capability bits (old builds send zeros).
-constexpr uint8_t SPEC_JOIN_UDP_OK = 0x01;
+// bit 0 was SPEC_JOIN_UDP_OK (the deleted input accelerator); the value is
+// not reused -- the version gate refuses any peer old enough to set it.
 // reserved[0] bit 1: reserved[1..4] carry the viewer's resume position
 // (next_expected_frame, LE u32). The host backfills exactly the gap and
-// ships NO snapshot -- the light re-join that makes TCP death healing
-// one round trip instead of a 1MB snapshot ceremony.
-constexpr uint8_t SPEC_JOIN_RESUME = 0x02;  // viewer accepts UDP_INPUT_BATCH + OP_BASELINE
+// ships NO snapshot -- the light re-join that heals a stream break in one
+// round trip instead of a 1MB snapshot ceremony.
+constexpr uint8_t SPEC_JOIN_RESUME = 0x02;
 // reserved[0] bit 2: reserved[5]=version minor, reserved[6]=version patch
 // (kAppVersion "0.M.P"). Savestate blobs + the sim itself are
 // version-specific -- a cross-version spectator black-screens instead of
@@ -166,21 +115,6 @@ void SpectatorNode_HandleSnapshotReq(const sockaddr_in& from,
                                      uint32_t match_index,
                                      uint8_t  flags);
 
-// Spectator's preferred backfill mode, declared in SPEC_JOIN_REQ payload.
-// Default at the wire level (zero-init) is FULL_SESSION so an older host
-// or one that hasn't taken a snapshot yet falls through to the existing
-// replay-from-frame-0 path.
-enum class SpecJoinMode : uint8_t {
-    FULL_SESSION  = 0, // Replay session_events from frame 0 (existing
-                       // behaviour). Streamers / archivists who want to
-                       // watch the whole set from the very start.
-    CURRENT_MATCH = 1, // CCCaster-style snapshot join. Host ships its
-                       // current SaveState blob + tail events, spectator
-                       // does SaveState_Load and skips all previous
-                       // matches. Default for live "browsing matches in
-                       // progress" -- most spectators just want to watch
-                       // what's happening right now.
-};
 
 // Snapshot-wire constants.
 constexpr uint16_t SPECTATOR_SNAPSHOT_VERSION     = 2;
@@ -664,18 +598,13 @@ void SpectatorNode_ClearGekkoSpectatorTracking();
 //   - accept (below capacity) → enqueue INITIAL_MATCH + SPEC_JOIN_ACK
 //   - redirect (at capacity, have subscribers) → send SPEC_JOIN_REDIRECT
 //   - reject (at capacity, no subscribers) → send SPEC_JOIN_REDIRECT w/ null
-// Called from the control-channel message handler. `mode` is the
-// SpecJoinMode value the joining peer declared in its SPEC_JOIN_REQ
-// payload (zero / FULL_SESSION when sent by older builds that don't
-// know about the field -- the back-compat path).
-// `caps` is the JOIN_REQ's reserved[0] capability byte (SPEC_JOIN_* bits;
-// zeros from older builds).
+// Called from the control-channel message handler.
+// `caps` is the JOIN_REQ's reserved[0] capability byte (SPEC_JOIN_* bits).
 void SpectatorNode_HandleJoinReq(const sockaddr_in& from,
-                                 SpecJoinMode mode = SpecJoinMode::FULL_SESSION,
-                                 uint8_t caps = 0,
-                                 uint32_t resume_frame = 0,
-                                 uint8_t ver_minor = 0,
-                                 uint8_t ver_patch = 0);
+                                 uint8_t caps,
+                                 uint32_t resume_frame,
+                                 uint8_t ver_minor,
+                                 uint8_t ver_patch);
 
 // Handle SPEC_LEAVE -- remove subscriber from list.
 void SpectatorNode_HandleLeave(const sockaddr_in& from);
@@ -714,13 +643,12 @@ std::vector<sockaddr_in> SpectatorNode_GetSubscriberAddrs();
 // a match in the lobby (or enters a direct IP). upstream is the host/relay's
 // address; socket is the multiplexed UDP socket we already have.
 //
-// `mode` declares the spectator's preferred backfill: FULL_SESSION replays
-// from session frame 0 (existing default); CURRENT_MATCH asks the host to
-// send its most recent SaveState snapshot so the spectator skips earlier
-// matches. Older hosts ignore the field and always respond with full-
-// session data -- back-compat is automatic.
-bool SpectatorNode_RequestJoin(const sockaddr_in& upstream,
-                               SpecJoinMode mode = SpecJoinMode::FULL_SESSION);
+// There is ONE join flavour to ask for: "the match that is happening now".
+// The host decides how to serve it from its own state at the instant the
+// request lands -- a battle-entry snapshot when it is mid-battle, the
+// bounded backfill from the current character select when it is between
+// matches, or the whole (short) session when there is no prior match yet.
+bool SpectatorNode_RequestJoin(const sockaddr_in& upstream);
 
 // Surgical gap-fill pull. Sends a SPEC_JOIN_REQ carrying SPEC_JOIN_RESUME
 // with resume=next_expected_frame to the CURRENT upstream, WITHOUT clearing
@@ -744,7 +672,6 @@ void SpectatorNode_SetRootAddr(const sockaddr_in& root);
 // character files instead of the placeholder char 0.
 void SpectatorNode_HandleJoinAck(const sockaddr_in& from,
                                  uint8_t host_session_kind,
-                                 uint16_t host_tcp_port,
                                  uint8_t host_p1_char = 0xFF,
                                  uint8_t host_p2_char = 0xFF,
                                  uint8_t host_stage = 0xFF,
@@ -763,30 +690,14 @@ void SpectatorNode_HandleJoinRedirect(const sockaddr_in& from,
 // completion. Called by the UDP poll path in control_channel.cpp when
 // it sees SPEC_DATA_MAGIC.
 // Registers the ReliableChannel deliver dispatcher (routes RC_CHAN_SPEC ->
-// HandleSpecData) for the FM2K_SPEC_RC A/B path. Called from SpectatorNode_Init.
+// HandleSpecData). Called from SpectatorNode_Init.
 void SpectatorNode_RegisterRcDeliver();
 
-// `rc_channel`: 0 = single ordered stream (TCP / unified -- no cross-channel
+// `rc_channel`: 0 = single ordered stream (the hub relay -- no cross-channel
 // reorder). RC_CHAN_SPEC (live) / RC_CHAN_SPEC_SNAPSHOT (bulk) enable the
 // cross-channel EVENT_BATCH reorder + bulk-only baseline (see spec_recv.cpp).
 void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
                                   const sockaddr_in& from, uint8_t rc_channel = 0);
-
-// Narrow handler for raw 0xCE datagrams arriving on the shared control
-// UDP socket (Phase F accelerator). Accepts ONLY UDP_INPUT_BATCH, and only
-// from the current upstream while the admission epoch is armed -- never
-// runs the full HandleSpecData parser (TCP ordering assumptions don't
-// hold for raw datagrams). Called from control_channel.cpp's RawReceive
-// demux before the GekkoNet queue.
-void SpectatorNode_HandleUdpInputDatagram(const uint8_t* buf, size_t len,
-                                          const sockaddr_in& from);
-
-// Upstream TCP stream died (read error / corrupt stream / unknown type).
-// Drops the subscription + UDP admission epoch so TickHealth's reconnect
-// path re-JOINs immediately, instead of waiting on a silence failover that
-// the UDP accelerator suppresses forever (queue never idles while
-// datagrams flow, but ops are TCP-only -- the q:7 boundary zombie).
-void SpectatorNode_OnUpstreamTcpDead();
 
 // task #58: one-shot swap to the hub spec-relay upstream when the direct
 // join starves. Returns true the one time it engages (relay configured +
@@ -843,9 +754,6 @@ void SpectatorNode_StampInputAdmit();
 // clamp(measured host production period, 10, 20). Lets the spectator render at
 // the host's true rate (e.g. ~14ms/70fps on a heavy stage) with no duplicates.
 uint32_t SpectatorNode_RenderPeriodMs();
-// UDP-datagram INPUT admissions only (subset of the above). Feeds the
-// adaptive bank's TCP-only floor pre-arm.
-void SpectatorNode_StampUdpInputAdmit();
 
 // Broadcast delay-bank target in frames (Phase G adaptive): the larger
 // of the FM2K_SPEC_DELAY floor (default 300) and the rolling-30-60s max
@@ -866,10 +774,6 @@ void SpectatorNode_KickJoin();
 
 // Are we currently subscribed upstream (receiving a live match stream)?
 bool SpectatorNode_IsSubscribedUpstream();
-
-// Upstream TCP died but the subscription is riding on UDP with a
-// background re-JOIN in flight (window title shows "Resyncing...").
-bool SpectatorNode_IsTcpRejoinPending();
 
 // Viewer-visible state for the paths that deliberately stop (or fast-forward)
 // playback: the bounded deep-join battle-entry hold, the parked / downloading

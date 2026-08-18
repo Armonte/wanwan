@@ -243,15 +243,8 @@ NetplaySessionKind Netplay_GetSessionKind();
 struct GekkoSession;
 GekkoSession* Netplay_GetActiveSession();
 
-// Legacy API (delegates to StartBattle/EndBattle)
-bool Netplay_StartGekkoSession();
-void Netplay_StopGekkoSession();
-
 // Check if GekkoNet session is ready (synced with remote)
 bool Netplay_IsSessionReady();
-
-// Poll GekkoNet for events without advancing game
-void Netplay_PollGekkoNet();
 
 // =============================================================================
 // CHAT (peer-to-peer over control channel)

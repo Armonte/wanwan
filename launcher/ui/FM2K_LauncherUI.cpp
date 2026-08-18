@@ -556,15 +556,6 @@ void LauncherUI::SetGamesRootPaths(const std::vector<std::string>& paths) {
     games_root_paths_ = paths;
 }
 
-void LauncherUI::SendHubTcpAddr(uint32_t ip_be, uint16_t port) {
-    if (!hub_state_) return;
-    char ip_str[INET_ADDRSTRLEN] = {};
-    inet_ntop(AF_INET, &ip_be, ip_str, sizeof(ip_str));
-    hub_state_->client.SendTcpAddr(std::string(ip_str), (int)port);
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "Hub: forwarded TCP-STUN result %s:%u to hub", ip_str,
-                (unsigned)port);
-}
 
 void LauncherUI::SendHubSessionKind(uint8_t kind) {
     if (!hub_state_) return;

@@ -3,7 +3,7 @@
 // (no behavior change) so the spectator/replay logic can be split across sibling
 // TUs (spec_*.cpp) that all operate on the one shared g_state. Internal to the
 // spectator_node*.cpp set -- not a public API.
-#include "spectator_node.h"     // SessionEvent, SpecJoinMode, SnapshotMetadata, SPEC_UDP_WINDOW, SPECTATOR_DEFAULT_CAPACITY, SESSION_EVENT_MATCH_HDR_SIZE
+#include "spectator_node.h"     // SessionEvent, SnapshotMetadata, SPECTATOR_DEFAULT_CAPACITY, SESSION_EVENT_MATCH_HDR_SIZE
 #include "spec_relay_queue.h"   // fm2k::spec_relay::Ring
 #include "spec_snapshot_coverage.h"  // fm2k::specsnap::CoverageSet (snapshot inbox)
 #include "control_channel.h"    // CtrlPacket (BuildJoinAckPacket)
@@ -33,7 +33,7 @@
 //
 // GRANT (bit clear) -- "this is the shape of the stream I have pinned for YOU;
 // boot accordingly". Emitted only where the host pins or re-states a specific
-// subscriber's join_mode, and always from that subscriber's pinned_ack_kind.
+// subscriber's grant, and always from that subscriber's pinned_ack_kind.
 //
 // LIVE REFRESH (bit set) -- "here is where the host is right now". Emitted by
 // the battle-entry re-broadcast (one packet to every subscriber at once, so it
@@ -45,10 +45,10 @@
 //    broadcast reads live state and knows nothing about what any individual
 //    subscriber was pinned to, so if it is the first ACK a viewer manages to
 //    process (accept ACK lost, or the two datagrams reordered -- both plain
-//    unreliable UDP), a FULL_SESSION-granted viewer would read BATTLE, /F-boot
-//    into battle, and then replay the from-frame-0 CSS stream it was actually
-//    assigned as battle input from uninitialised state. Deterministic desync,
-//    observed at 2/16 under 20% loss.
+//    unreliable UDP), a CSS-granted viewer would read BATTLE, /F-boot into
+//    battle, and then replay the char-select stream it was actually assigned
+//    as battle input from uninitialised state. Deterministic desync, observed
+//    at 2/16 under 20% loss.
 //  * A grant must never drive a PHASE SWAP on an already-mirroring viewer. A
 //    CSS-era grant re-stated while the host is now in battle would otherwise
 //    swap a battle mirror back out to CSS.
@@ -90,7 +90,7 @@ constexpr uint64_t SPECTATOR_RECONNECT_BACKOFF_MS  = 2000;   // throttle JOIN_RE
 constexpr uint64_t SPECTATOR_RECONNECT_MAX_BACKOFF_MS = 4000;
 // RC full-transport handshake watchdog (task #70). Once JOIN_ACK lands,
 // subscribed_upstream latches true and the reconnect loop shuts off; if the
-// host's one-shot OP_BASELINE+snapshot+backfill burst is then lost beyond RC's
+// host's one-shot snapshot+backfill burst is then lost beyond RC's
 // 7s message retirement, nothing re-JOINs (silence-failover + op-gap need a TCP
 // recv stamp that's 0 in RC mode; gap-fill needs have_frame_baseline) and the
 // viewer sits subscribed-but-never-admitted until the 30s process-exit. Re-JOIN
@@ -259,25 +259,16 @@ struct Subscriber {
                                // backfill/pacing decision off this until a SPEC_ACK
                                // message actually populates it (would let the host see
                                // how far behind each subscriber is -- a real future win).
-    bool         tcp_bound;    // True once SpectatorTCP::RegisterAcceptedClient(addr)
-                               // has paired this sub with an accepted TCP socket.
-                               // Until then, INITIAL_MATCH + backfill are deferred --
-                               // any send before binding silently drops on the floor.
-    SpecJoinMode join_mode;    // Backfill preference declared in SPEC_JOIN_REQ.
-                               // Phase 1: stored only; phase 3 branches on it
-                               // (CURRENT_MATCH ships snapshot+tail instead of
-                               // SendSessionBackfillTo from frame 0).
+    bool         bound;        // True once the bind loop has admitted this sub
+                               // (RC subs bind at JOIN_REQ, relay subs when the
+                               // hub forwards their user_id). Until then, backfill
+                               // and live events are deferred -- any send before
+                               // binding silently drops on the floor.
     // spec_user_id -- hub's identifier for this spectator. Populated in
     // relay mode (Phase 2c) by parsing spec_incoming's spec_user_id
-    // field via shared-mem. In TCP mode this stays empty; addressing
-    // uses `addr` instead. Phase 2b just declares the field so the
-    // Subscriber shape is forward-compatible.
+    // field via shared-mem. On the direct RC path this stays empty;
+    // addressing uses `addr` instead.
     std::string  spec_user_id;
-    // Phase F: viewer advertised SPEC_JOIN_UDP_OK in its JOIN_REQ
-    // reserved bits. Gates BOTH UDP_INPUT_BATCH datagrams and the
-    // TCP-borne OP_BASELINE (an old build's framer drops the connection
-    // on an unknown SpecDataType).
-    bool         udp_ok = false;
     // Light re-join (SPEC_JOIN_RESUME): the viewer's next_expected_frame
     // from its JOIN_REQ. Non-zero = the viewer is mid-stream; the bind
     // path skips the snapshot and backfills exactly the gap from here.
@@ -311,21 +302,20 @@ struct Subscriber {
     uint64_t     last_snapshot_ship_ms   = 0;
     uint32_t     last_snapshot_match_idx = 0xFFFFFFFFu;
     uint8_t      snapshot_reship_skips   = 0;
-    // The host_session_kind advertised to THIS subscriber, pinned in the same
-    // block as join_mode from a single Netplay_GetSessionKind() read. Every
-    // ACK to this sub repeats it, so a host that crosses CSS -> battle between
-    // the accept and a later re-ACK can never tell a FULL_SESSION-granted
-    // viewer "BATTLE" -- which made it /F-boot and then replay the
-    // from-frame-0 CSS stream as battle input from uninitialised state
-    // (deterministic ~205-frame desync, 2/16 at 20% loss). Changes ONLY when
-    // the host deliberately re-pins join_mode. SPEC_ACK_KIND_* values.
+    // The host_session_kind advertised to THIS subscriber, pinned from a
+    // single Netplay_GetSessionKind() read. Every ACK to this sub repeats it,
+    // so a host that crosses CSS -> battle between the accept and a later
+    // re-ACK can never tell a CSS-granted viewer "BATTLE" -- which made it
+    // /F-boot and then replay the char-select stream as battle input from
+    // uninitialised state (deterministic ~205-frame desync, 2/16 at 20%
+    // loss). Changes ONLY when the host deliberately re-pins.
+    // SPEC_ACK_KIND_* values.
     uint8_t      pinned_ack_kind         = SPEC_ACK_KIND_NONE;
 
     // ─── Wave 4: bounded deep-join snapshot push ────────────────────────
     // deep_join_eligible -- this sub was granted the bounded deep-join path
-    // (CURRENT_MATCH, a NON-battle grant, DeepJoinEnabled() -- on unless the
-    // kill-switch is thrown -- and a CSS anchor). Decided ONCE at pin time in
-    // the same block as join_mode and pinned_ack_kind, so the grant the viewer
+    // (a NON-battle grant plus a CSS anchor). Decided ONCE at pin time in
+    // the same block as pinned_ack_kind, so the grant the viewer
     // boots on and the payload the bind ships can never disagree -- the bind
     // KEYS on this field instead of re-deriving it later against moved state.
     //
@@ -405,7 +395,7 @@ struct State {
     // Every confirmed event the host produces (INPUT pairs in C2; PIN_RNG
     // / RESET_INPUT_STATE / SOUND_INIT / MATCH_START / MATCH_END /
     // FINGERPRINT in C3+) is appended monotonically here. Late joiners get
-    // the whole vector replayed via SendSessionBackfillTo. Memory: 5 B/event
+    // the whole vector replayed via SendSessionBackfillFromStart. Memory: 5 B/event
     // → ~1.7 MB for an hour of 100 Hz INPUT events; non-INPUT events are
     // sparse (a few per match).
     std::vector<SessionEvent> session_events;
@@ -451,31 +441,10 @@ struct State {
     size_t                    last_flushed_event_idx = 0;
     uint32_t                  flushed_input_count    = 0;  // INPUT events flushed so far
 
-    // ─── HOST SIDE: UDP input accelerator (Phase F) ─────────────────────
-    // Ring of the most recent confirmed (p1,p2) pairs, indexed by
-    // session-relative INPUT-frame % SPEC_UDP_WINDOW. Maintained by
-    // OnFrameConfirmed; read by SendUdpInputBatches every
-    // SPEC_UDP_SEND_INTERVAL confirmed frames. total_op_count is the
-    // running count of non-INPUT events appended (AppendOpAndFlush is
-    // the single op choke point) -- shipped as op_seq in every datagram
-    // so the spectator's admission gate can order inputs after ops.
-    uint16_t                  udp_ring_p1[SPEC_UDP_WINDOW] = {};
-    uint16_t                  udp_ring_p2[SPEC_UDP_WINDOW] = {};
+    // Running count of non-INPUT events appended (AppendOpAndFlush is the
+    // single op choke point). Shipped as the EVENT_BATCH2 op base so a
+    // receiver can dedupe ops idempotently.
     uint32_t                  total_op_count         = 0;
-    // Redundant ops tail: the last few non-INPUT events, pre-encoded, so
-    // UDP datagrams can deliver boundary ops when the TCP stream is dead
-    // (this box's loopback kills established TCP connections at will --
-    // both ends see "forcibly closed"; inputs already survive via the
-    // accelerator, ops were the remaining hostage).
-    struct OpWire {
-        uint32_t op_index;
-        uint32_t input_pos;   // total_input_count at append = inputs before this op
-        uint8_t  len;
-        uint8_t  bytes[100];
-    };
-    static constexpr size_t   OPS_RING = 8;
-    OpWire                    udp_ops_ring[OPS_RING] = {};
-
     // Index of the most recent MATCH_START event in session_events. Used by
     // SpectatorNode_WriteCurrentBattleFile to slice the per-battle segment.
     // -1 sentinel = no MATCH_START emitted in this session yet.
@@ -496,7 +465,7 @@ struct State {
     // every Netplay_StartBattle. When a spectator joins with mode=
     // CURRENT_MATCH, the host's TickHostMaintenance bind path will (in
     // phase 3) send this blob via SNAPSHOT_BEGIN/CHUNK/END instead of
-    // calling SendSessionBackfillTo from frame 0. Spectator's
+    // calling SendSessionBackfillFromStart from frame 0. Spectator's
     // SaveState_Load on receipt skips every prior match.
     //
     // Empty / invalid before the first match starts. New session_events
@@ -610,7 +579,7 @@ struct State {
     // Pre-subscribe RC stash (task #55): the host binds + streams the
     // backfill the instant it accepts a JOIN_REQ, so RC-delivered spec
     // data can beat our own JOIN_ACK processing by up to ~1s. The
-    // EVENT_BATCH/OP_BASELINE handlers drop data while
+    // the EVENT_BATCH2 handler drops data while
     // !subscribed_upstream -- and RC has already acked it as delivered,
     // so a one-shot backfill was lost forever (viewer never admitted a
     // frame; 30s connect watchdog killed the process). Raw deliveries
@@ -636,18 +605,11 @@ struct State {
     // on is how a mismatched pairing turns into a silent desync.
     bool                      spec_boot_expects_snapshot = false;
     sockaddr_in               upstream_addr       = {};
-    // Sticky copy of the mode we declared on the FIRST RequestJoin from
-    // Netplay_StartSpectator. The reconnect path (silence failover) calls
-    // RequestJoin(root) without specifying a mode, which would otherwise
-    // fall through to the SpectatorNode_RequestJoin default (FULL_SESSION)
-    // and clobber the original CURRENT_MATCH preference -- host then ships
-    // no snapshot, spec sits with placeholder chars on a /F-booted battle.
-    SpecJoinMode              last_requested_mode = SpecJoinMode::FULL_SESSION;
     // Failover support. root_addr is the originally-configured upstream
     // (the actual match host). If our current upstream goes silent we
     // fall back to root, which always-on by design. Liveness is tracked
-    // via SpectatorTCP::LastUpstreamRecvMs() (TCP-side) -- this struct
-    // owns only handshake / heartbeat send-cadence state.
+    // via the last-admit clock -- this struct owns only handshake /
+    // heartbeat send-cadence state.
     sockaddr_in               root_addr           = {};
     uint64_t                  last_heartbeat_send_ms = 0;
     uint64_t                  last_reconnect_attempt_ms = 0;
@@ -657,6 +619,12 @@ struct State {
     // to 0 the moment new content is admitted again (a real blip recovers on
     // the first quick retry, before the interval grows).
     uint32_t                  reconnect_fail_count = 0;
+    // Last validated packet from the upstream -- stamped by the SPEC_HEARTBEAT
+    // echo, which is the gameplay-INDEPENDENT liveness proof (the data stream
+    // legitimately stops whenever the host is between sessions). This is what
+    // separates "the host vanished" from "the host is answering and the
+    // reliable stream is wedged" in the host-gone verdict.
+    uint64_t                  last_upstream_packet_ms = 0;
     // De-dup gate. Backfill from a reconnected upstream replays history
     // from frame 0; frames at or below this counter were already consumed
     // locally and would re-render the past. Updated by PopFrameInputs.
@@ -671,16 +639,11 @@ struct State {
     // loss the two channels' ARRIVAL order != host-append order, so we buffer
     // out-of-order EVENT_BATCH payloads keyed by start_frame and drain them in
     // frame order -- restoring host-append order for both inputs AND ops. Empty
-    // (no cost) on a single ordered stream (TCP). Bounded to avoid unbounded hold.
+    // (no cost) on a single ordered stream (the hub relay). Bounded to avoid
+    // unbounded hold.
     struct ReorderBatch {
-        int32_t op_base = -1;   // EVENT_BATCH2 absolute op base; -1 = legacy
+        uint32_t op_base = 0;   // EVENT_BATCH2 absolute op base
         std::vector<uint8_t> bytes;
-        // Did this batch arrive on an RC/UDP channel (rc_channel != 0)? Carried
-        // across the reorder buffer so a batch drained LATER still stamps the
-        // UDP-borne admit clock that the TCP-only delay-bank pre-arm reads --
-        // otherwise a viewer whose live stream is entirely reorder-buffered
-        // would look TCP-only and double its bank floor (spec_playback_state).
-        bool udp_borne = false;
     };
     std::map<uint32_t, ReorderBatch> pb_reorder;
     // Pull-based gap recovery: periodic + on-demand INPUT_REQUEST
@@ -740,7 +703,7 @@ struct State {
     bool                      pending_pin_rng_valid = false;
     // RESET_INPUT_STATE / SOUND_INIT deferred the same way, but only when
     // they arrive during a match-boundary seam (pb_boundary != NONE). In
-    // lockstep replay (FULL_SESSION from frame 0) the immediate apply is
+    // lockstep replay (from the session start) the immediate apply is
     // correct -- the spec consumes the same frames the host did. During a
     // seam the spec runs EXTRA local frames (results screens + CSS pin
     // walk) between the op's queue position and its own battle entry;
@@ -750,30 +713,10 @@ struct State {
     bool                      pending_reset_input   = false;
     bool                      pending_sound_init    = false;
 
-    // ─── VIEWER SIDE: UDP input accelerator (Phase F) ───────────────────
-    // ops_seen mirrors the host's total_op_count: incremented for EVERY
-    // non-INPUT event decoded from the current TCP connection (exactness
-    // is what matters -- the gate compares it against op_seq in incoming
-    // datagrams). udp_epoch_armed gates admission per-connection: cleared
-    // on every (re)join so a stale stream can't poison the count, re-armed
-    // when the host's OP_BASELINE for the new connection arrives.
+    // The op dedupe watermark: the global index one past the highest op this
+    // viewer has applied. Self-seeds from the ABSOLUTE op base EVENT_BATCH2
+    // carries, so a mid-session joiner needs no priming packet.
     uint32_t                  ops_seen              = 0;
-    // Per-TCP-connection op cursor: the stream delivers ops in global
-    // order starting at the OP_BASELINE, so conn_ops_baseline +
-    // conn_ops_decoded = the global index of the next op this connection
-    // will deliver. Ops the UDP tail already accepted (index < ops_seen)
-    // are skipped as duplicates.
-    uint32_t                  conn_ops_baseline     = 0;
-    uint32_t                  conn_ops_decoded      = 0;
-    // TCP died but the subscription lives on: UDP (inputs + ops tail)
-    // keeps feeding pb_queue while TickHealth re-JOINs in the background
-    // to restore the TCP side. Cleared when the new connection's
-    // OP_BASELINE lands.
-    bool                      tcp_rejoin_pending    = false;
-    // Last validated UDP datagram from the upstream -- the PRIMARY
-    // liveness signal. With inputs and ops riding UDP, a quiet TCP
-    // means nothing while datagrams flow.
-    uint64_t                  last_udp_recv_ms      = 0;
     // Viewer chose natural boot (pre-battle JOIN_ACK aborted /F): it
     // replays the session from frame 0 and can NEVER accept a snapshot
     // (battle-captured state into a title/CSS engine = phase-wait
@@ -803,7 +746,6 @@ struct State {
     // reaches mode 2000, and all 3616 battle INPUTs were discarded as a
     // "results tail" (2026-06-11 16:24, replay parity 0 rows).
     bool                      pb_local_battle_seen  = false;
-    bool                      udp_epoch_armed       = false;
     // Post-CSS-open confirm-mask countdown (lean seam): pops remaining
     // during which CssAutoConfirm's hold eats confirm bits, so the edge
     // echo of the last pre-CSS input can't lock the carried cursors.
@@ -826,7 +768,7 @@ struct State {
     // snapshot passed the old guard as a "first apply" and rewound the
     // live sim to the match anchor (battle restarted, 2026-06-11).
     bool                      pb_started               = false;
-    // Battle-entry alignment (live CSS-walk FULL_SESSION spectator). Set when
+    // Battle-entry alignment (live CSS-walk spectator). Set when
     // MATCH_START drains while the local engine is still in CSS (mode<3000) --
     // i.e. the host already entered battle but our (mask-delayed) CSS lock
     // hasn't fired. While set, PopFrameInputs HOLDS battle inputs at the queue
@@ -835,15 +777,6 @@ struct State {
     // anchors our battle-start to the host's MATCH_START session-frame instead
     // of our local lock timing, killing the CSS-overrun input offset.
     bool                      pb_battle_align_pending  = false;
-    // Highest op_seq announced by any received UDP datagram. Drives the
-    // silent-TCP-death detector in TickHealth: a persistent gap vs
-    // ops_seen while TCP is quiet means the op stream is wedged.
-    uint32_t                  udp_highest_op_seq    = 0;
-    // [SPEC-UDP] diagnostics (rate-limited 1Hz log).
-    uint32_t                  udp_admitted_total    = 0;
-    uint32_t                  udp_paused_on_gate    = 0;
-    uint32_t                  udp_dropped_on_gap    = 0;
-
     // C7 -- host's session_id for this peer connection. Generated lazily
     // (first AppendSessionId call) and stays stable until the SpectatorNode
     // is shut down or the next AppendSessionId overwrites it. The wire
@@ -976,7 +909,7 @@ extern State g_state;
 // battle-entry re-broadcast, plus the re-ACK paths that deliberately change
 // nothing. Says where the host IS; can never complete a first-time handshake.
 // GRANT (BuildJoinAckPacketFor, bit clear): what THIS subscriber was pinned
-// to. Every send that pins, re-pins, or re-states a subscriber's join_mode
+// to. Every send that pins, re-pins, or re-states a subscriber's grant
 // must use it, so the viewer's boot decision follows its own grant and not
 // whatever phase the host happened to reach in between.
 CtrlPacket BuildJoinAckPacket();
@@ -999,18 +932,8 @@ void     AppendEventToWire(std::vector<uint8_t>& out, const SessionEvent& ev,
                            const std::vector<MatchHeader>& headers);
 uint32_t CountInputs(const std::vector<SessionEvent>& events, size_t first, size_t last);
 void     FlushBatch();
-bool     SpecUdpEnabled();
-// Pure-UDP spectator stream gates (task #55). RC (reliable-ordered + FEC
-// over UDP) is DEFAULT ON -- the TCP data plane's hole-punch dependence
-// black-screened wild spectators whose UDP was fine. FM2K_SPEC_RC=0
-// restores the TCP-primary baseline; FM2K_SPEC_RC_SNAPSHOT=0 keeps the
-// snapshot leg on TCP while events ride RC.
-bool     SpecRcEnabled();
-bool     SpecRcSnapshotEnabled();
 void     SpecStashPreSubscribe(uint8_t chan, const uint8_t* data, int len);
 void     SpecReplayPreSubStash();
-void     SendUdpInputBatches();
-void     SendOpBaselineTo(const sockaddr_in& to, uint32_t baseline);
 
 // ---- playback apply (spec_playback.cpp) ----
 // ApplyResetInputState is also called by SpectatorNode_ApplyPendingPinRng
@@ -1025,11 +948,11 @@ size_t   BackfillFirstIdxForFrame(uint32_t anchor_input_frame);
 // gap-fill re-ship, whose caller pulls again for the next window.
 void     SendSessionEventsTo(const sockaddr_in& to, size_t first_event_idx,
                              uint32_t start_input_frame, size_t max_events = 0);
-void     SendSessionBackfillTo(const sockaddr_in& to);
+void     SendSessionBackfillFromStart(const sockaddr_in& to);
 void     SendSessionBackfillFromFrame(const sockaddr_in& to, uint32_t anchor_input_frame,
                                       size_t max_events = 0);
 // Design 2: bounded backfill from the most recent CSS_ENTERED (falls back to
-// SendSessionBackfillTo when the session has no char-select boundary yet).
+// SendSessionBackfillFromStart when the session has no char-select boundary yet).
 // HaveBoundedAnchor() reports whether that fallback would trigger, so callers
 // can log the path they will actually take rather than the one they intended.
 bool     HaveBoundedAnchor();
@@ -1037,9 +960,6 @@ void     SendSessionBackfillFromRecentAnchor(const sockaddr_in& to);
 void     SendSnapshotTo(const sockaddr_in& to);
 
 // ---- bounded deep join (spec_deep_join.cpp) ----
-// FM2K_SPEC_DEEP_JOIN gate, read once and logged once. DEFAULT ON: the var is
-// a KILL-SWITCH (=0 -> legacy path); an unrecognised value fails SAFE to OFF.
-bool     DeepJoinEnabled();
 // The viewer's CONSUMED INPUT position: next_expected_frame minus the INPUT
 // events still sitting in pb_queue. ONE definition, shared by the Wave 2.1
 // pre-anchor trim (which calls it "head_frame") and by the Wave 4 snapshot
@@ -1097,7 +1017,7 @@ bool     DeepJoinWalkingToAnchor();
 // Honours session_ended / no-root and stamps last_reconnect_attempt_ms so it
 // does not race TickHealth's own reconnect cadence. `reason` is a short tag
 // for the log line. Returns true if a re-JOIN was actually issued.
-bool     SpecForceFullReJoin(SpecJoinMode mode, const char* reason);
+bool     SpecForceFullReJoin(const char* reason);
 
 // The gap-fill ladder's decision point, called from TickHealth once the stall
 // timer + throttle have both elapsed: issue the surgical pull, or -- once the

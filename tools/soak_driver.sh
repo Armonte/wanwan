@@ -272,7 +272,7 @@ for (( N=START; N<START+CYCLES; N++ )); do
     CLOG="$CY/C_vanpri.log"
     if [ -f "$VANPRI_EXE" ]; then
         ( cd "$REPO" && FM2K_TEST_OUT_DIR="$CDIR" FM2K_CSS_ANIM=1 \
-            FM2K_SPEC_DEEP_JOIN=1 FM2K_NET_DELAY_MS=100 FM2K_NET_JITTER_MS=30 \
+            FM2K_NET_DELAY_MS=100 FM2K_NET_JITTER_MS=30 \
             FM2K_NET_LOSS=0.10 \
             timeout 900 python3 -u tools/spec_selftest.py --game vanpri \
             --game-exe "$VANPRI_EXE" --rounds 1 --total-frames 16000 \
@@ -285,7 +285,7 @@ for (( N=START; N<START+CYCLES; N++ )); do
             mkdir -p "$CY/C_logs_VOID_attempt1"; cp -f "$CDIR"/live_FM2K_*_Debug.log "$CY/C_logs_VOID_attempt1/" 2>/dev/null
             rm -rf "$CDIR"; mkdir -p "$CDIR"
             ( cd "$REPO" && FM2K_TEST_OUT_DIR="$CDIR" FM2K_CSS_ANIM=1 \
-                FM2K_SPEC_DEEP_JOIN=1 FM2K_NET_DELAY_MS=100 FM2K_NET_JITTER_MS=30 \
+                FM2K_NET_DELAY_MS=100 FM2K_NET_JITTER_MS=30 \
                 FM2K_NET_LOSS=0.10 \
                 timeout 900 python3 -u tools/spec_selftest.py --game vanpri \
                 --game-exe "$VANPRI_EXE" --rounds 1 --total-frames 16000 \

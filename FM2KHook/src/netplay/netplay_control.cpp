@@ -447,14 +447,6 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
             CheckFullyConnected();
             break;
 
-        case CtrlMsg::CSS_INPUT:
-            // CSS_INPUT is dead code post-redesign -- CSS lockstep now lives
-            // inside a GekkoGameSession with prediction_window=0, so inputs
-            // flow through GekkoNet's transport. The enum value + this case
-            // are kept as a no-op for backward compatibility with peers that
-            // still send the old packet (they'll be silently ignored).
-            break;
-
         case CtrlMsg::BATTLE_READY: {
             // After CSS GekkoSession is fully up (g_css_synced=true) the
             // BATTLE_READY rendezvous is over -- any leftover packets are
@@ -781,22 +773,14 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
         }
 
         case CtrlMsg::SPEC_JOIN_REQ:
-            // Older spectator builds send no payload (zero-init bytes), which
-            // resolves to mode=FULL_SESSION -- the existing replay-from-frame-0
-            // path. New builds set mode explicitly. Range-clamp anything
-            // beyond the highest known enum value back to FULL_SESSION so a
-            // future-versioned spectator pointed at this older host stays on
-            // the safe path.
+            // There is one join flavour, so the mode byte is not read: the
+            // host answers from its own session state at this instant. The
+            // byte itself stays reserved on the wire (see spec_join_req).
             {
-                const uint8_t mode_byte = packet->data.spec_join_req.mode;
-                const SpecJoinMode mode =
-                    (mode_byte == static_cast<uint8_t>(SpecJoinMode::CURRENT_MATCH))
-                        ? SpecJoinMode::CURRENT_MATCH
-                        : SpecJoinMode::FULL_SESSION;
                 uint32_t resume = 0;
                 std::memcpy(&resume,
                             &packet->data.spec_join_req.reserved[1], 4);
-                SpectatorNode_HandleJoinReq(from, mode,
+                SpectatorNode_HandleJoinReq(from,
                     packet->data.spec_join_req.reserved[0], resume,
                     packet->data.spec_join_req.reserved[5],
                     packet->data.spec_join_req.reserved[6]);
@@ -806,7 +790,6 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
         case CtrlMsg::SPEC_JOIN_ACK:
             SpectatorNode_HandleJoinAck(from,
                                         packet->data.spec_join_ack.host_session_kind,
-                                        packet->data.spec_join_ack.host_tcp_port,
                                         packet->data.spec_join_ack.host_p1_char,
                                         packet->data.spec_join_ack.host_p2_char,
                                         packet->data.spec_join_ack.host_stage,

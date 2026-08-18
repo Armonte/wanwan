@@ -58,29 +58,20 @@ static double   g_prod_period_ms     = 10.0;  // start at the 100fps assumption
 // 2000 frames (20s). Grow-only per session -- over-buffering after a
 // bad patch is the right bias (no-stall beats low-latency here), and
 // shrinking mid-stream would oscillate the glide. Gaps above 5s are
-// ignored: that's an outage (TCP death, host frozen) owned by the
-// failover/rejoin machinery, not jitter for the pacing layer to absorb.
+// ignored: that's an outage (stream dead, host frozen) owned by the
+// recovery ladders and the host-gone watchdog, not jitter for the pacing
+// layer to absorb.
 // FM2K_SPEC_ADAPTIVE=0 pins the bank to the static floor.
 static uint32_t g_admit_gap_bucket_cur   = 0;   // max gap (ms), current 30s bucket
 static uint32_t g_admit_gap_bucket_prev  = 0;
 static uint64_t g_admit_gap_bucket_start = 0;
 static size_t   g_adaptive_bank_frames   = 0;   // grow-only published target
 static uint64_t g_first_input_admit_ms   = 0;   // session's first admission
-// Last INPUT admitted via a UDP datagram specifically (heartbeats and
-// control traffic don't count). Drives the TCP-only floor pre-arm.
-// Atomic for the same 32-bit-tearing reason as g_last_input_admit_ms above:
-// written on the receive path, read by SpectatorNode_TargetDelayFrames on the
-// main thread.
-static std::atomic<uint64_t> g_last_udp_input_admit_ms{0};
-void SpectatorNode_StampUdpInputAdmit() {
-    g_last_udp_input_admit_ms.store(GetTickCount64(), std::memory_order_relaxed);
-}
-
 void SpectatorNode_StampInputAdmit() {
     const uint64_t now = GetTickCount64();
     if (g_first_input_admit_ms == 0) g_first_input_admit_ms = now;
     // Production-rate window (Layer-2 render pacing). Count admissions per 500ms
-    // -> fps -> smoothed period. A catch-up UDP flood spikes the rate, which only
+    // -> fps -> smoothed period. A catch-up flood spikes the rate, which only
     // drives the period BELOW 10ms -> clamped back to 10ms by the accessor, so
     // catch-up can't make the render crawl; no separate catchup gate needed.
     ++g_admit_window_count;
@@ -158,32 +149,13 @@ size_t SpectatorNode_TargetDelayFrames() {
         const char* v = std::getenv("FM2K_SPEC_ADAPTIVE");
         s_adaptive = (v && v[0] == '0' && v[1] == '\0') ? 0 : 1;
     }
-    size_t floor_eff = s_floor;
-    // TCP-only pre-arm: with the UDP accelerator dead (firewalled, or
-    // FM2K_SPEC_UDP=0), arrivals come in TCP retransmit bursts that
-    // routinely exceed the 3s default under loss -- don't wait for the
-    // first stall to teach the adaptive growth; start from a 6s floor.
-    // Engages only after 10s of admissions with no UDP-borne INPUT.
-    //
-    // g_last_udp_input_admit_ms is stamped by BOTH UDP-borne admit paths:
-    // the dedicated SPEC-UDP accelerator (spec_recv.cpp, HandleUdpInputDatagram)
-    // and the RC full-transport EVENT_BATCH decode (spec_recv.cpp, the
-    // `udp_borne` arm). Until 2026-08-18 only the first of those stamped it, so
-    // on the DEFAULT transport -- RC over UDP, where every INPUT is admitted by
-    // the second -- this pre-arm fired on a perfectly healthy UDP link and put
-    // every viewer 6s behind live instead of 3s. If a third admit path is ever
-    // added, it must stamp this clock or resurrect that bug.
-    if (s_adaptive == 1 && floor_eff < 600 &&
-        g_state.subscribed_upstream && g_first_input_admit_ms != 0) {
-        const uint64_t now = GetTickCount64();
-        const uint64_t last_udp =
-            g_last_udp_input_admit_ms.load(std::memory_order_relaxed);
-        const bool udp_quiet =
-            (last_udp == 0)
-                ? (now - g_first_input_admit_ms > 10000)
-                : (now - last_udp > 10000);
-        if (udp_quiet) floor_eff = 600;
-    }
+    // No pre-arm. The 600-frame TCP-only floor that used to sit here existed
+    // because a TCP viewer's arrivals came in retransmit bursts; with the TCP
+    // data plane deleted every direct viewer is RC-over-UDP, so the condition
+    // it fired on ("no UDP-borne INPUT for 10s") now means the stream is dead,
+    // which the host-gone watchdog already owns. What absorbs real link
+    // trouble is the plain 300-frame floor plus the adaptive growth below.
+    const size_t floor_eff = s_floor;
     if (s_adaptive == 1) {
         const uint32_t max_gap_ms =
             (g_admit_gap_bucket_cur > g_admit_gap_bucket_prev)
@@ -277,15 +249,15 @@ void SpectatorNode_CreditSelfStall(uint32_t ms) {
 // former -- see the watchdog in trampoline_spectator.cpp.
 bool SpectatorNode_HasEverAdmitted() { return g_first_input_admit_ms != 0; }
 
-// Age of the last validated packet from the upstream (heartbeat echo, JOIN_ACK,
-// UDP batch -- anything that proves the host is still answering us). This is
+// Age of the last validated packet from the upstream (the SPEC_HEARTBEAT echo
+// -- gameplay-independent proof the host is still answering us). This is
 // what separates "the host vanished" from "the host is reachable and the
 // reliable stream is wedged": in the 2026-08-07 starve the control channel kept
 // working in BOTH directions for the whole 5 s the viewer spent deciding the
 // host had crashed. 0 means nothing was ever heard.
 uint32_t SpectatorNode_MsSinceUpstreamPacket() {
-    if (g_state.last_udp_recv_ms == 0) return 0;
-    return (uint32_t)(GetTickCount64() - g_state.last_udp_recv_ms);
+    if (g_state.last_upstream_packet_ms == 0) return 0;
+    return (uint32_t)(GetTickCount64() - g_state.last_upstream_packet_ms);
 }
 uint32_t SpectatorNode_GapFillPullCount()      { return g_state.gap_fill_pull_total; }
 uint32_t SpectatorNode_StarveEscalationCount() { return g_state.starve_escalations; }
@@ -298,12 +270,6 @@ uint32_t SpectatorNode_StarveDeferralCount()   { return g_state.starve_escalatio
 bool SpectatorNode_SessionEnded() { return g_state.session_ended; }
 
 bool SpectatorNode_IsSubscribedUpstream() { return g_state.subscribed_upstream; }
-
-// True while the upstream TCP died but the subscription is riding on UDP
-// with a background re-JOIN in flight. Surfaced in the window title as
-// "Resyncing..." -- distinct from a cold "Connecting..." (no
-// subscription at all) and from a healthy "Subscribed".
-bool SpectatorNode_IsTcpRejoinPending() { return g_state.tcp_rejoin_pending; }
 
 // ---------------------------------------------------------------------------
 // RESYNC STATUS (window-title text for the states where the picture is FROZEN

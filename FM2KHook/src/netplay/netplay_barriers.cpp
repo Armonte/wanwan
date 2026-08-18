@@ -230,6 +230,29 @@ static bool EntryConfigGatePass() {
 //      later CSS load would put the stale value back. If you make the
 //      keepalive dispatch, move this re-derive after Netplay_EndCSSSession or
 //      re-prove this leg.
+//      RE-PROVEN 2026-08-17 against the pre-rendezvous CSS PARK
+//      (css_rendezvous_fix.md, netplay_css.cpp CssPreRendezvousTick). That
+//      change is a CSS-window change, so this leg was re-derived rather than
+//      assumed, and it holds A FORTIORI -- the park strictly SHRINKS the set of
+//      instants at which a CSS save/load can dispatch:
+//        (i)  the park is scoped to !g_css_synced, i.e. entirely BEFORE
+//             Netplay_StartCSSSession runs. During the parked window there is
+//             no CSS GekkoSession at all (g_session == nullptr for CSS), so no
+//             GekkoLoadEvent can exist, let alone be dispatched.
+//        (ii) the park makes Netplay_ProcessCSS RETURN EARLIER on those ticks,
+//             before the gekko_update_session drain at netplay_css.cpp -- it
+//             adds no new dispatch site and removes reachable ones.
+//        (iii) it does not touch Netplay_PollBattleSync: the barrier-window
+//             keepalive still polls, still feeds neutral padding, and still
+//             drain-discards its updates without ever calling
+//             Netplay_CssHandleSave/Load.
+//        (iv) the barrier window itself is unreachable while parked -- it needs
+//             g_battle_entry_signaled, which needs the CSS confirm, which needs
+//             g_css_synced, which is exactly the condition that ends the park.
+//      Direction matters: the hazard sentence above warns about a change that
+//      makes the keepalive DISPATCH CSS events. The park is the opposite kind
+//      of change (it adds a stall, it does not remove one), so the sentence
+//      still stands unweakened for the next reader.
 //
 // TRAP DISPOSITIONS (phantom_hunt.md 6.3):
 //   (a) TEAM MODE: in g_game_mode_flag == 2 the engine latches g_round_limit

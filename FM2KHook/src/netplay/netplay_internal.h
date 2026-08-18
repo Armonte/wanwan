@@ -34,6 +34,20 @@ inline constexpr uint32_t SWAP_FRAME_BUFFER = 8;  // barrier swap-frame lead
 // which peer led. 32 = window(16) + 16 margin.
 inline constexpr uint32_t FM95_END_SWAP_BUFFER = 32;
 
+// Pre-rendezvous character-select park (css_child_asymmetry.md fix). Kill
+// switch FM2K_CSS_PARK, default ON (FM2K only); A/B scaffolding scheduled for
+// deletion. All four live in netplay_css_park.cpp next to the park itself,
+// which is where the design comment, the FM95 engine-scope argument and the
+// deletion schedule are written down.
+bool CssRendezvousPark_Enabled();
+// One pre-rendezvous CSS tick: false = parked (skip sim AND render), true =
+// pre-fix free-run. leg 1 = pre-CONNECTED, leg 2 = !g_remote_css_ready.
+bool CssPreRendezvousTick(int leg);
+// Per-phase census reset (pass the live g_css_synced) + the one [CSS-RDV]
+// rendezvous: line per peer per CSS phase.
+void CssPark_OnPhaseEdge(bool css_synced);
+void CssPark_EmitRendezvousCensus();
+
 // ---- runtime shared state (were file-static) ----
 extern SimpleState g_simple_state;
 extern SessionKind g_session_kind;

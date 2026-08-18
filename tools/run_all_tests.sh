@@ -103,6 +103,12 @@
 #      SPECSETTINGS_SKIP(0) SPECSETTINGS_ROUNDS(fatal|advisory)  -- stage 6b
 #      SPECROTATE_SKIP(0) SPECROTATE_GAMES("")  -- stage 6c rotation subset
 #      CPW_EXE(/mnt/c/dev/fm95/CPW/ＣＰＷ.exe) FM95_NETPLAY(0)  — stage 5
+#      GATE_ID(timestamp_pid) SPEC_KEEP_GATES(3)  -- per-run spectator out-dirs
+#                    under tools/.spec_runs/<GATE_ID>/<stage-run>/. One dir per
+#                    RUN so nothing a gate writes can be overwritten by the next
+#                    run, the next stage or the next gate invocation; the newest
+#                    SPEC_KEEP_GATES invocations are kept and older ones pruned
+#                    at startup (~15-25 MB per run).
 #      FM2K_TEST_BACKGROUND(1)  -- every stage launches its launcher AND game
 #                    windows minimized-without-activation so a gate run does not
 #                    steal the foreground for its whole duration. This is a
@@ -116,6 +122,38 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FRAMES="${FRAMES:-1500}"; LOSS="${LOSS:-0.15}"; SPEC_RUNS="${SPEC_RUNS:-4}"
 CD="${FM2K_CHECK_DISTANCE:-10}"; FULL="${FULL:-0}"
 OUT="$ROOT/logs/run_all_tests"; rm -rf "$OUT"; mkdir -p "$OUT"
+
+# ---------------------------------------------------------------------------
+# PER-RUN SPECTATOR OUT-DIRS -- evidence hygiene (2026-08-17, soak lane).
+#
+# Every spec_selftest-backed stage used to default to ONE shared out-dir,
+# tools/.spec_selftest, and spec_selftest writes its preserved per-process logs
+# (live_FM2K_P1/P2/S*_Debug.log, ~4 MB each) there under --keep. So run 2 of
+# stage 2 destroyed run 1's, stage 2b destroyed stage 2's, and a second gate
+# invocation destroyed the first's. That is not hypothetical: the intermittent
+# player-plane `top=`/`bind=` divergence (phantom_hunt.md 1.3 errata) has now
+# been observed TWICE on this stage -- 1 base-gate netplay run in 4 comes back
+# `top=` and `bind=` red for every frame of the match with `nobj=`, `crc=` and
+# CINPUT all bit-identical -- and BOTH times the raw per-process logs were gone
+# before anyone could copy them, leaving a claim with no slot map, no
+# first-diverging slot, and no repro. The loud advisory that re-collects the
+# evidence is worthless if the evidence is overwritten 40 seconds later.
+#
+# Fix: every run of every stage gets its OWN FM2K_TEST_OUT_DIR under a
+# per-INVOCATION gate id, so no run inside a gate and no gate invocation can
+# overwrite another's logs. Retention is bounded (SPEC_KEEP_GATES gate dirs,
+# ~15 MB per run) and pruned at START, so the dirs a gate just wrote survive
+# until two more gates have run.
+#
+# Must live on the Windows filesystem (recorded harness trap: the game writes
+# these through the Win32 API), hence $ROOT/tools rather than /tmp.
+GATE_ID="${GATE_ID:-$(date +%Y%m%d_%H%M%S)_$$}"
+SPEC_RUNS_ROOT="$ROOT/tools/.spec_runs"
+SPEC_KEEP_GATES="${SPEC_KEEP_GATES:-3}"
+mkdir -p "$SPEC_RUNS_ROOT"
+ls -1dt "$SPEC_RUNS_ROOT"/*/ 2>/dev/null | tail -n +"$SPEC_KEEP_GATES" | xargs -r rm -rf
+GATE_SPEC_DIR="$SPEC_RUNS_ROOT/$GATE_ID"; mkdir -p "$GATE_SPEC_DIR"
+spec_out() { local d="$GATE_SPEC_DIR/$1"; mkdir -p "$d"; echo "$d"; }
 
 # Every process stem any stage can spawn. The Phase 6 rotation adds the library
 # games AND `_hrun` (the ASCII-staged copy a SPACE/kanji path runs as): a wedged
@@ -146,6 +184,8 @@ stage() {  # stage <name> <logfile> -- runs $CMD, verdict by EXIT CODE
 
 echo "[run_all] FRAMES=$FRAMES LOSS=$LOSS SPEC_RUNS=$SPEC_RUNS CHECK_DISTANCE=$CD FULL=$FULL"
 echo "[run_all] FM2K_TEST_BACKGROUND=${FM2K_TEST_BACKGROUND:-1 (default)} -- set 0 to watch the run"
+echo "[run_all] per-run spectator logs: $GATE_SPEC_DIR"
+echo "[run_all]   (one dir per stage-run; last $SPEC_KEEP_GATES gate invocations kept)"
 
 # Stage 0 — host-native unit tests (doctest suite + delay math + reliable
 # channel). Cheap and toolchain-free, so it runs FIRST: if the wire format or
@@ -173,10 +213,24 @@ stage "determinism" "$OUT/1_determinism.log"
 #
 # Stage 2 — netplay + spectator under loss (bit-exact + live). Runs SPEC_RUNS
 # times; ALL must be OVERALL PASS. spec_selftest owns the desync + liveness asserts.
+#
+# FM2K_POOLSET ARMING (2026-08-17, soak lane). This stage is where the
+# intermittent player-plane `top=`/`bind=` divergence has been caught twice
+# (phantom_hunt.md 1.3 errata + its RECURRENCE note), and both times the
+# harness log said only "1199/1199 red from f=0" -- which slot, which field and
+# which object were unrecoverable. FM2K_POOLSET=1 makes the two players emit
+# the [POOLSET] set fingerprint and the per-slot [POOLTOPO] detail dump
+# (slot:playerSlotId:entityKind:parentSlotToken:RAW+0x17A:createdFrame) at the
+# same cadence as the [CHECKSUM] line the terms are computed from, so the NEXT
+# recurrence lands with the slot map already in the preserved logs and the
+# ticket starts from a diff instead of from zero. Cost is two extra pool walks
+# and two log lines on a plane that already emits [CHECKSUM] per frame; the
+# spectators emit none of it by construction (SaveState_Save never runs there).
 s2_ok=1
 for i in $(seq 1 "$SPEC_RUNS"); do
     kill_games; sleep 0.6
-    FM2K_CSS_ANIM=1 FM2K_SPEC_RC=1 FM2K_NET_LOSS="$LOSS" FM2K_NET_DELAY_MS=80 FM2K_NET_SEED=$((40+i)) \
+    FM2K_TEST_OUT_DIR="$(spec_out "2_netplay_run${i}")" \
+      FM2K_POOLSET=1 FM2K_CSS_ANIM=1 FM2K_SPEC_RC=1 FM2K_NET_LOSS="$LOSS" FM2K_NET_DELAY_MS=80 FM2K_NET_SEED=$((40+i)) \
       timeout 220 python3 "$ROOT/tools/spec_selftest.py" --frames 1200 \
       --spectators css --assert-spectator-live --keep > "$OUT/2_netplay_run${i}.log" 2>&1
     if grep -qE "OVERALL PASS" "$OUT/2_netplay_run${i}.log"; then
@@ -184,6 +238,17 @@ for i in $(seq 1 "$SPEC_RUNS"); do
     else
         echo "[run_all]   netplay+spec run $i/$SPEC_RUNS: FAIL"; s2_ok=0
         grep -E "OVERALL FAIL|desync" "$OUT/2_netplay_run${i}.log" | tail -2 | sed 's/^/      /'
+        echo "      evidence: $GATE_SPEC_DIR/2_netplay_run${i}"
+    fi
+    # Loud pointer on the ADVISORY player-plane pool terms too -- they do not
+    # fail the run (deliberately: fatal `top=` reds the base gate ~1 run in 4)
+    # but they are the whole reason this stage now keeps per-run logs.
+    if grep -qE "PVP match[0-9]+: (top|bind)= [0-9]+/[0-9]+ mismatches" \
+            "$OUT/2_netplay_run${i}.log"; then
+        echo "[run_all]   NOTE run $i: player-plane top=/bind= ADVISORY RED --"
+        grep -aE "PVP match[0-9]+: (top|bind)= [0-9]+/[0-9]+ mismatches" \
+            "$OUT/2_netplay_run${i}.log" | sed 's/^/             /'
+        echo "             evidence PRESERVED at $GATE_SPEC_DIR/2_netplay_run${i}"
     fi
 done
 [ "$s2_ok" = 1 ] && { echo "[run_all] netplay+spectator: PASS ($SPEC_RUNS/$SPEC_RUNS)"; pass+=("netplay+spectator"); } \
@@ -197,10 +262,13 @@ done
 # coverage assert — the authoritative rng-trace GATE actually spanning >=2
 # matches (so a match-2 desync can't slip past a match-1-only "checked>0" pass).
 MM_RUNS="${MM_RUNS:-1}"; MM_TOTAL="${MM_TOTAL:-3200}"; MM_LOSS="${MM_LOSS:-0.06}"
+MM_LAST_OUT=""
 s2b_ok=1
 for i in $(seq 1 "$MM_RUNS"); do
     kill_games; sleep 0.6
-    FM2K_CSS_ANIM=1 FM2K_SPEC_RC=1 FM2K_NET_LOSS="$MM_LOSS" FM2K_NET_DELAY_MS=80 FM2K_NET_SEED=$((70+i)) \
+    MM_LAST_OUT="$(spec_out "2b_multimatch_run${i}")"
+    FM2K_TEST_OUT_DIR="$MM_LAST_OUT" \
+      FM2K_POOLSET=1 FM2K_CSS_ANIM=1 FM2K_SPEC_RC=1 FM2K_NET_LOSS="$MM_LOSS" FM2K_NET_DELAY_MS=80 FM2K_NET_SEED=$((70+i)) \
       timeout 300 python3 "$ROOT/tools/spec_selftest.py" \
       --rounds 1 --round-time 15 --total-frames "$MM_TOTAL" \
       --spectators css,battle1 --assert-spectator-live --keep \
@@ -211,6 +279,14 @@ for i in $(seq 1 "$MM_RUNS"); do
         echo "[run_all]   multi-match E2E run $i/$MM_RUNS: FAIL"; s2b_ok=0
         grep -E "OVERALL FAIL|FAIL:|desync|match 2|gate saw" "$OUT/2b_multimatch_run${i}.log" \
             | tail -3 | sed 's/^/      /'
+        echo "      evidence: $MM_LAST_OUT"
+    fi
+    if grep -qE "PVP match[0-9]+: (top|bind)= [0-9]+/[0-9]+ mismatches" \
+            "$OUT/2b_multimatch_run${i}.log"; then
+        echo "[run_all]   NOTE run $i: player-plane top=/bind= ADVISORY RED --"
+        grep -aE "PVP match[0-9]+: (top|bind)= [0-9]+/[0-9]+ mismatches" \
+            "$OUT/2b_multimatch_run${i}.log" | sed 's/^/             /'
+        echo "             evidence PRESERVED at $MM_LAST_OUT"
     fi
 done
 [ "$s2b_ok" = 1 ] && { echo "[run_all] multi-match E2E (rematch+midjoin): PASS"; pass+=("multi-match-e2e"); } \
@@ -222,7 +298,18 @@ done
 # fresh CSS logs stage 2b just left (--keep) plus three injected desyncs (wrong
 # locked char / diverged sel-path / host!=guest). A gate that can't catch a
 # break is worthless, and CSS is about to gain rollback. Offline, no launch.
-CMD="python3 '$ROOT/tools/test_css_gate.py'"
+#
+# --logs is now EXPLICIT and load-bearing. This stage used to rely on
+# test_css_gate.py's default (tools/.spec_selftest) agreeing by coincidence with
+# where stage 2b happened to write -- the same shared-out-dir arrangement that
+# destroyed two `top=` recurrences. With per-run dirs the coincidence is gone, so
+# 2b's actual dir is handed over; if 2b did not run, the stage is told so rather
+# than silently re-gating whatever logs it finds.
+if [ -z "$MM_LAST_OUT" ]; then
+    CMD="echo '[css-gate] FAIL -- stage 2b left no log dir to re-gate'; exit 2"
+else
+    CMD="python3 '$ROOT/tools/test_css_gate.py' --logs '$MM_LAST_OUT'"
+fi
 stage "css-gate-selftest" "$OUT/2c_css_gate.log"
 
 # Stage 2d -- BOUNDED DEEP JOIN. Every other spectator stage joins early enough
@@ -278,17 +365,20 @@ stage "css-gate-selftest" "$OUT/2c_css_gate.log"
 # gate's wall clock sane.
 DJ_TOTAL="${DJ_TOTAL:-3200}"; DJ_LOSS="${DJ_LOSS:-0.10}"
 DJ_TOL="${DJ_TOL:-250}"; DJ_TIMEOUT="${DJ_TIMEOUT:-400}"
-SPEC_LIVE="$ROOT/tools/.spec_selftest"
 
 deep_join_attempt() {   # $1 = attempt number; 0 = PASS
     local att="$1"
     local log="$OUT/2d_deepjoin_att${att}.log"
     local ev="$OUT/2d_deepjoin_att${att}_evidence.txt"
+    # Per-ATTEMPT out-dir. Attempt 2 used to overwrite attempt 1's live logs,
+    # which is precisely the case where attempt 1's are worth reading (the
+    # stage retries once and only reports the retry's evidence). A fresh dir
+    # also replaces the old `rm -f live_FM2K_*` guard by construction: a
+    # crashed or timed-out attempt can no longer be judged on stale logs.
+    local SPEC_LIVE; SPEC_LIVE="$(spec_out "2d_deepjoin_att${att}")"
     kill_games; sleep 0.6
-    # Clear the preserved live logs so a crashed/timed-out attempt cannot be
-    # judged on the PREVIOUS attempt's evidence.
-    rm -f "$SPEC_LIVE"/live_FM2K_*_Debug.log
-    FM2K_CSS_ANIM=1 FM2K_SPEC_DEEP_JOIN=1 FM2K_SPEC_RC=1 FM2K_NET_LOSS="$DJ_LOSS" \
+    FM2K_TEST_OUT_DIR="$SPEC_LIVE" \
+      FM2K_POOLSET=1 FM2K_CSS_ANIM=1 FM2K_SPEC_DEEP_JOIN=1 FM2K_SPEC_RC=1 FM2K_NET_LOSS="$DJ_LOSS" \
       FM2K_NET_DELAY_MS=100 FM2K_NET_JITTER_MS=30 FM2K_NET_SEED=$((90 + att)) \
       FM2K_LIVE_EDGE_TOLERANCE="$DJ_TOL" \
       timeout "$DJ_TIMEOUT" python3 "$ROOT/tools/spec_selftest.py" \
@@ -324,6 +414,7 @@ deep_join_attempt() {   # $1 = attempt number; 0 = PASS
         echo "[run_all]   deep-join attempt $att: FAIL --${why#;}"
         grep -aE "OVERALL FAIL|FULL-STATE DESYNC|CSS DESYNC|LIVE-EDGE S2" "$log" 2>/dev/null \
             | tail -3 | sed 's/^/      /'
+        echo "      evidence: $SPEC_LIVE"
         return 1
     fi
     echo "[run_all]   deep-join attempt $att: PASS"
@@ -412,15 +503,16 @@ else
     echo "[run_all] STAGE: deep-join-killswitch (FM2K_SPEC_DEEP_JOIN=0 -> legacy)"
     echo "======================================================================"
     kill_games; sleep 0.6
-    rm -f "$SPEC_LIVE"/live_FM2K_*_Debug.log
+    KS_LIVE="$(spec_out "2dks_killswitch")"
     ks_log="$OUT/2dks_killswitch.log"; ks_ev="$OUT/2dks_killswitch_evidence.txt"
-    FM2K_CSS_ANIM=1 FM2K_SPEC_DEEP_JOIN=0 FM2K_SPEC_RC=1 \
+    FM2K_TEST_OUT_DIR="$KS_LIVE" \
+      FM2K_CSS_ANIM=1 FM2K_SPEC_DEEP_JOIN=0 FM2K_SPEC_RC=1 \
       timeout "$KS_TIMEOUT" python3 "$ROOT/tools/spec_selftest.py" \
         --rounds 1 --round-time 15 --total-frames "$DJ_TOTAL" \
         --spectators css2 --keep \
         > "$ks_log" 2>&1
-    ks_host="$SPEC_LIVE/live_FM2K_P1_Debug.log"
-    ks_s1="$SPEC_LIVE/live_FM2K_S1_Debug.log"
+    ks_host="$KS_LIVE/live_FM2K_P1_Debug.log"
+    ks_s1="$KS_LIVE/live_FM2K_S1_Debug.log"
     {   echo "== host: gate verdict + backfill path =="
         grep -aE "\[SPEC-DEEPJOIN\]|bounded backfill from CSS anchor|from-frame-0" "$ks_host" 2>/dev/null | head -20
         echo "== viewer css2 (S1): any deep-join machinery at all =="
@@ -441,7 +533,7 @@ else
         && ks_why="$ks_why; the LEGACY path desynced (the escape hatch is not an escape)"
     if [ -n "$ks_why" ]; then
         echo "[run_all] deep-join-killswitch: FAIL --${ks_why#;}"
-        echo "[run_all]   evidence: $ks_ev"
+        echo "[run_all]   evidence: $ks_ev  (raw logs: $KS_LIVE)"
         fail+=("deep-join-killswitch")
     else
         echo "[run_all] deep-join-killswitch: PASS (legacy from-frame-0 path restored)"
@@ -466,7 +558,8 @@ else                              SEAM_SEED_LIST="130"; fi
 if [ "${SEAM_SKIP:-0}" = 1 ]; then
     echo "[run_all] seamdesync: SKIPPED (SEAM_SKIP=1)"
 else
-    CMD="SEAM_SEEDS='$SEAM_SEED_LIST' SEAM_OUT='$OUT/2e_seam' bash '$ROOT/tools/seam_desync_gate.sh'"
+    CMD="SEAM_SEEDS='$SEAM_SEED_LIST' SEAM_OUT='$OUT/2e_seam' \
+      SEAM_SPEC_LIVE='$(spec_out 2e_seam)' bash '$ROOT/tools/seam_desync_gate.sh'"
     stage "seamdesync" "$OUT/2e_seamdesync.log"
 fi
 
@@ -489,6 +582,7 @@ elif [ ! -f "$SEAM_VANPRI_EXE" ]; then
     echo "[run_all] seamdesync-vanpri: SKIPPED (vanguard-princess not installed at $SEAM_VANPRI_EXE)"
 else
     CMD="SEAM_SEEDS='${SEAM_VANPRI_SEEDS:-130}' SEAM_OUT='$OUT/2e_seam' \
+      SEAM_SPEC_LIVE='$(spec_out 2e_seam)' \
       SEAM_GAME=vanpri SEAM_GAME_EXE='$SEAM_VANPRI_EXE' \
       SEAM_GAMEDIR=/mnt/c/games/2dfm/vanguard-princess \
       bash '$ROOT/tools/seam_desync_gate.sh'"
@@ -523,12 +617,13 @@ if [ "${HUBSPEC_SKIP:-0}" = 1 ]; then
     echo "[run_all] hubspec: SKIPPED (HUBSPEC_SKIP=1)"
 else
     HUBSPEC_TIMEOUT="${HUBSPEC_TIMEOUT:-480}"
-    # Dedicated FM2K_TEST_OUT_DIR: tools/.spec_selftest is shared and re-gated
-    # across stages 2b/2c, and it must sit on the Windows filesystem.
-    CMD="FM2K_TEST_OUT_DIR='$ROOT/tools/.hub_spectate_e2e' timeout $HUBSPEC_TIMEOUT python3 -u '$ROOT/tools/hub_spectate_e2e.py'"
+    # Dedicated FM2K_TEST_OUT_DIR (per gate invocation, like every other
+    # spectator stage): tools/.spec_selftest is shared and re-gated across
+    # stages 2b/2c, and it must sit on the Windows filesystem.
+    CMD="FM2K_TEST_OUT_DIR='$(spec_out 2f_hubspec)' timeout $HUBSPEC_TIMEOUT python3 -u '$ROOT/tools/hub_spectate_e2e.py'"
     stage "hubspec" "$OUT/2f_hubspec.log"
     if [ "$FULL" = 1 ]; then
-        CMD="FM2K_TEST_OUT_DIR='$ROOT/tools/.hub_spectate_e2e_relay' timeout $HUBSPEC_TIMEOUT python3 -u '$ROOT/tools/hub_spectate_e2e.py' --relay"
+        CMD="FM2K_TEST_OUT_DIR='$(spec_out 2f_hubspec_relay)' timeout $HUBSPEC_TIMEOUT python3 -u '$ROOT/tools/hub_spectate_e2e.py' --relay"
         stage "hubspec-relay" "$OUT/2f_hubspec_relay.log"
     fi
 fi
@@ -575,7 +670,11 @@ else
     # is shared and re-gated across stages 2b/2c, and this stage runs with --keep,
     # so a later `python3 tools/test_css_gate.py` would read vanpri logs where it
     # expects wanwan's. Must sit on the Windows filesystem (recorded harness trap).
-    CMD="FM2K_TEST_OUT_DIR='$ROOT/tools/.spec_selftest_vanpri' \
+    # FM2K_POOLSET is deliberately NOT armed here, unlike stages 2/2b/2d: vanpri
+    # carries 80-150 active objects for 16000 frames, i.e. ~8 KB of [POOLTOPO]
+    # per frame per plane (~130 MB/log). The `top=` evidence trap targets the
+    # wanwan player plane, where the same arming costs ~2 MB/log.
+    CMD="FM2K_TEST_OUT_DIR='$(spec_out 2g_specgame_vanpri)' \
       FM2K_CSS_ANIM=1 FM2K_SPEC_DEEP_JOIN=1 FM2K_NET_DELAY_MS=100 FM2K_NET_JITTER_MS=30 FM2K_NET_LOSS=0.10 \
       timeout $SPECGAME_TIMEOUT python3 -u '$ROOT/tools/spec_selftest.py' --game vanpri \
       --game-exe '$VANPRI_EXE' \

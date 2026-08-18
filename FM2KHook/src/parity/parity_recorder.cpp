@@ -343,6 +343,33 @@ int FindPlayerObjectSlot(int player_idx) {
     return -1;
 }
 
+int FindCssPreviewSlot(int player_idx) {
+    if constexpr (!FM2K::kIsFM2K) {
+        return -1;
+    }
+    /* FindPlayerObjectSlot + the engine's own entity_kind filter. See the
+     * header for the whole argument; the short version is that in mode 2000 a
+     * type-4 object with +0x156 == 0 is NOT necessarily player 0 -- the
+     * create_game_object memset makes 0 the DEFAULT, and the character-select
+     * background-script children (entity_kind 3) carry it while allocating
+     * below the previews.
+     *
+     * kind >= 2 is the engine's line, not ours (Css_UnloadPlayerPreview uses
+     * < 2), and it deliberately also excludes kind 5: no kind-5 object exists
+     * in a mode-2000 pool in any kept corpus, and if one ever does it is a
+     * battle fighter surviving the CSS-entry demote -- which deserves a loud
+     * line, not a widened predicate. The reads match FindPlayerObjectSlot's
+     * (32-bit, stricter than a u16 compare) and CensusPreviewObjects's. */
+    for (int i = 0; i < static_cast<int>(kSlotCount); ++i) {
+        const uintptr_t a = kPoolBase + static_cast<uintptr_t>(i) * kSlotStride;
+        if (Read32(a + kOffType) != kTypePlayerChar) continue;
+        if (Read32S(a + kOffEntityKind) >= 2) continue;
+        if (Read32S(a + kOffPlayerSlot) != player_idx) continue;
+        return i;
+    }
+    return -1;
+}
+
 PlayerView ReadPlayer(int player_idx) {
     PlayerView v{-1, 0, 0, -1};
     if constexpr (!FM2K::kIsFM2K) {
@@ -442,22 +469,47 @@ Scan ScanPool(bool want_legacy_fp, char* active_list, size_t list_cap) {
     return out;
 }
 
+/* Observation-based per-slot creation frame (Lane C bind= probe, 2026-08-17).
+ *
+ * There is NO creation-frame field in KgtRuntimeObject (docs/editor/
+ * runtime_entity.md enumerates every mapped byte of the 382 and none of them is
+ * one), so this is SAMPLED, not read: the first scan on which a slot is seen
+ * occupied after being seen free records the engine's own frame counter
+ * (0x4456FC), which IS inside the save-state envelope and therefore rewinds
+ * with a rollback exactly like the pool does. Under resim a slot's recorded
+ * value converges on the frame the object was really created.
+ *
+ * DIAGNOSTIC ONLY -- never hashed into `top=`/`bind=`. It is sampled at
+ * [POOLTOPO] cadence, so it is a function of THIS process's rollback schedule
+ * in a way a digest member may never be. kCreatedUnknown marks a slot that was
+ * already occupied on the very first scan (nothing can be said about when it
+ * appeared).
+ *
+ * Single-threaded: DumpTopoDetail is only ever called from ParityRecorder::
+ * Capture() on the sim thread. */
+constexpr uint32_t kCreatedUnknown = 0xFFFFFFFFu;
+static uint32_t s_slot_created[kSlotCount] = {};
+static bool     s_slot_occupied[kSlotCount] = {};
+static bool     s_topo_scanned = false;
+
 size_t DumpTopoDetail(char* out, size_t cap) {
     if (!out || cap == 0) return 0;
     out[0] = '\0';
     if constexpr (!FM2K::kIsFM2K) {
         return 0;
     }
+    const uint32_t now = Read32(ADDR_FRAME_COUNTER);
     /* Reserve for ONE worst-case record plus the truncation marker.
-     * Worst case is "1023:65535:4294967295:4294967295 " = 33 chars, and the
+     * Worst case is now "1023:65535:4294967295:4294967295:FFFFFFFF:4294967295 "
+     * = 53 chars (it was 33 before the raw/created members were added), and the
      * parent sentinels kParentNone / kParentForeign print as 4294967295 /
      * 4294967294 routinely -- the old 24-byte reserve was arithmetically too
      * small, so the last record on a capped line could be cut MID-TOKEN into a
-     * valid-looking but wrong tuple. Measured before this fix: 1881 of 20738
+     * valid-looking but wrong tuple. Measured before that fix: 1881 of 20738
      * [POOLTOPO] lines on wanwan (9%) were pegged at the 1024-byte cap, with no
      * marker of any kind, while the report that cites [POOLTOPO] as the
      * authority for naming a bind= residual assumed whole lines. */
-    constexpr size_t kRecordReserve = 40u;
+    constexpr size_t kRecordReserve = 64u;
     /* ...and for the trailing marker, so it can NEVER be the thing that gets
      * dropped: "TRUNCATED (n=1023/1023)" is 23 chars. */
     constexpr size_t kMarkerReserve = 32u;
@@ -466,16 +518,37 @@ size_t DumpTopoDetail(char* out, size_t cap) {
     bool   truncated = false;
     for (size_t i = 0; i < kSlotCount; ++i) {
         const uintptr_t a = kPoolBase + static_cast<uintptr_t>(i) * kSlotStride;
-        if (Read32(a + kOffType) == 0u) continue;
+        if (Read32(a + kOffType) == 0u) {
+            s_slot_occupied[i] = false;
+            continue;
+        }
         ++active;
+        /* Occupancy bookkeeping runs for EVERY active slot, including the ones
+         * a truncated line drops -- otherwise a pool that overflows the buffer
+         * would poison the created= column of the slots that do fit. */
+        if (!s_slot_occupied[i]) {
+            s_slot_occupied[i] = true;
+            s_slot_created[i]  = s_topo_scanned ? now : kCreatedUnknown;
+        }
         if (lp + kRecordReserve + kMarkerReserve >= cap) { truncated = true; continue; }
         const uint32_t player = *reinterpret_cast<const uint16_t*>(a + kOffPlayerSlot);
         const uint32_t kind   = Read32(a + kOffEntityKind);
-        const uint32_t parent = ParentSlotToken(Read32(a + kOffParentPtr));
-        lp += static_cast<size_t>(std::snprintf(out + lp, cap - lp, "%u:%u:%u:%u ",
-                                                (unsigned)i, player, kind, parent));
+        const uint32_t raw    = Read32(a + kOffParentPtr);
+        const uint32_t parent = ParentSlotToken(raw);
+        /* raw= is the UNNORMALISED +0x17A dword. Lane C's triage asked for it
+         * by name: `bind=` is red from the first paired frame with `parent`
+         * normalising to different in-pool slots on the two planes, and the
+         * question that decides whether the IDA writer-pass is justified is
+         * whether both planes hold in-pool pointers (creator really differs) or
+         * one holds a heap value (different framing entirely). Printed as hex,
+         * never hashed -- see the process-independence contract in parity_pool.h. */
+        lp += static_cast<size_t>(std::snprintf(out + lp, cap - lp,
+                                                "%u:%u:%u:%u:%08X:%u ",
+                                                (unsigned)i, player, kind, parent,
+                                                raw, s_slot_created[i]));
         ++emitted;
     }
+    s_topo_scanned = true;
     /* LOUD, always: a consumer can tell a whole line from a partial one without
      * counting characters, and the counts say exactly how much was dropped. */
     lp += static_cast<size_t>(std::snprintf(out + lp, cap - lp,
@@ -635,13 +708,45 @@ void Capture() {
                 "[POOLSET] seq=%u cnt=%u fp=0x%08X top=0x%08X bind=0x%08X active=%s",
                 g_active_recorder->frames_written, sc.active_count,
                 sc.legacy_poolset, sc.topology, sc.binding, list);
-            // Phase 4b: the three members `fp=` cannot see. See
-            // ParityPool::DumpTopoDetail. Same gate, same cadence.
-            char topo_detail[1024];
-            ParityPool::DumpTopoDetail(topo_detail, sizeof(topo_detail));
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "[POOLTOPO] seq=%u d=%s",
-                g_active_recorder->frames_written, topo_detail);
+            // Phase 4b: the members `fp=` cannot see, plus the Lane C raw
+            // +0x17A / created-frame probe. See ParityPool::DumpTopoDetail.
+            // Same gate, same cadence.
+            //
+            // CHUNKED, and the buffer is static (2026-08-17 soak lane). Two
+            // reasons the old `char topo_detail[1024]` on the stack was the
+            // wrong shape for an evidence trap:
+            //   * the record grew from 33 to 53 worst-case chars, so 1024 now
+            //     holds ~18 slots -- wanwan already pegged that cap on 9% of
+            //     lines with the SHORT record, and vanpri carries 80-150 active
+            //     objects. A truncated line is exactly the evidence a `top=`/
+            //     `bind=` recurrence needs and cannot recover later.
+            //   * one 8 KB line is a long line to hand a formatter. Emitting in
+            //     <=900-char pieces keeps each [POOLTOPO] line the same order of
+            //     magnitude as every other log line here.
+            // p=N numbers the pieces from 0; the LAST piece carries
+            // DumpTopoDetail's own "(n=emitted/active)" marker, so a consumer
+            // can tell a complete reassembly from a partial one without
+            // counting. Single-threaded (sim thread only), same as the recorder.
+            static char topo_detail[8192];
+            const size_t td_len =
+                ParityPool::DumpTopoDetail(topo_detail, sizeof(topo_detail));
+            constexpr size_t kChunk = 900u;
+            size_t td_off = 0; unsigned td_part = 0;
+            do {
+                size_t n = td_len - td_off;
+                if (n > kChunk) {
+                    n = kChunk;
+                    // Split on a record boundary so no consumer ever has to
+                    // stitch a tuple across two lines.
+                    while (n > 0 && topo_detail[td_off + n - 1] != ' ') --n;
+                    if (n == 0) n = kChunk;   // one pathological record > kChunk
+                }
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "[POOLTOPO] seq=%u p=%u d=%.*s",
+                    g_active_recorder->frames_written, td_part,
+                    (int)n, topo_detail + td_off);
+                td_off += n; ++td_part;
+            } while (td_off < td_len);
         }
     }
 
@@ -782,9 +887,23 @@ void Capture() {
      * the fighters" convention is FALSE for P2 (its char object lives in
      * a different slot; pool slot 1 holds a system object). Not-found
      * (-1, pre-battle) produces the same zeroed/script=-1 block the old
-     * empty-slot path did, so parity_diff alignment is unchanged. */
-    const int p1_slot = ParityPool::FindPlayerObjectSlot(0);
-    const int p2_slot = ParityPool::FindPlayerObjectSlot(1);
+     * empty-slot path did, so parity_diff alignment is unchanged.
+     *
+     * CHARACTER-SELECT SCOPE ONLY (spec_faller_diagnosis.md). In mode 2000 the
+     * pool's low slots hold the CSS background-script children (entity_kind 3,
+     * +0x156 never written, so create_game_object's memset leaves it 0 ==
+     * "player 0"), and they can allocate BELOW the preview objects. Resolve
+     * previews the way the ENGINE does -- Css_UnloadPlayerPreview @0x406520:
+     * type == 4 && entity_kind < 2 && pslot == idx -- so the .pty (and
+     * CssWindow, which shares this resolution) cannot bind a UI object as a
+     * player. Battle frames keep FindPlayerObjectSlot unchanged, which is why
+     * the desync oracle (CHECKSUM / CINPUT / determinism, all battle-segment
+     * terms) is byte-identical across this change. */
+    const bool css_phase = (snap.match_phase == 2000);
+    const int p1_slot = css_phase ? ParityPool::FindCssPreviewSlot(0)
+                                  : ParityPool::FindPlayerObjectSlot(0);
+    const int p2_slot = css_phase ? ParityPool::FindCssPreviewSlot(1)
+                                  : ParityPool::FindPlayerObjectSlot(1);
     FillPlayerSnapshot(snap.players[0], p1_slot);
     FillPlayerSnapshot(snap.players[1], p2_slot);
 

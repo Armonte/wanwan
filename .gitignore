@@ -152,6 +152,11 @@ tools/.spec_selftest_pkmncc/
 tools/.spec_selftest_kensei/
 logs/spec_rotate/
 logs/spec_sweep/
+# run_all_tests per-RUN spectator out-dirs (tools/.spec_runs/<GATE_ID>/<stage>/).
+# One per run so no gate run can overwrite another's raw per-process logs; the
+# newest few invocations are kept and the rest pruned at gate startup. Same
+# transient class as everything above, ~15-25 MB per run.
+tools/.spec_runs/
 
 # Machine-local RE / recovery scratch. artifacts/ holds IDA pack backups, carved
 # probes and copied Windows binaries -- 5.1 MB of it defeated the *.i64 rule
@@ -160,3 +165,10 @@ logs/spec_sweep/
 # in history it needs its own commit and its own decision about binary blobs,
 # never a ride-along: force-add the single file.
 artifacts/
+# soak lane per-leg out-dirs (must be on the Windows filesystem; see soak_driver.sh)
+tools/.soak/
+tools/.cssasym/
+
+# Run scratch dirs for the CSS-rendezvous red/green campaign drivers.
+tools/.cssrdv/
+tools/.cssrdv_dj/

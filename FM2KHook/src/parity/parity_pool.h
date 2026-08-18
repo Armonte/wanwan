@@ -142,6 +142,30 @@ struct Scan {
  * predicate the engine's own player scans use. Returns -1 when absent. */
 int FindPlayerObjectSlot(int player_idx);
 
+/* CHARACTER-SELECT ONLY. FindPlayerObjectSlot with the ENGINE's own preview
+ * predicate added: type == kTypePlayerChar && entityKind < 2 && playerSlotId ==
+ * player_idx, lifted verbatim from Css_UnloadPlayerPreview @0x406520 (the same
+ * predicate css_autoconfirm.cpp's [CSSPIN] census already uses).
+ *
+ * WHY IT EXISTS (spec_faller_diagnosis.md). create_game_object @0x406570
+ * memsets 0x17C bytes, so +0x156 (playerSlotId) defaults to 0 on every object
+ * that never writes it -- and in mode 2000 the character-select background
+ * script children (entity_kind 3, spawned by sub_406790's scripts) can allocate
+ * BELOW the preview objects. FindPlayerObjectSlot then resolves a scrolling UI
+ * object as "player 0", which is what the CSS-WIN FALL term was measuring: a
+ * 15 px/frame two-way scroll pair, on BOTH planes, reported as a falling
+ * fighter. Its own comment already named the hazard ("BG-handler objects whose
+ * +0x156 accumulators could transiently equal 0/1") on a BATTLE premise that
+ * does not hold in character select.
+ *
+ * SCOPE: battle frames keep FindPlayerObjectSlot untouched -- it feeds the
+ * CHECKSUM / CINPUT / determinism oracle and five other consumers, and its
+ * battle behaviour has been validated since 2026-06-11. Returns -1 when this
+ * player has no preview object this frame (the ~43 engine teardown frames per
+ * window), which the .pty already encodes as script_idx == -1 and both harness
+ * terms already skip as "no character object this frame". */
+int FindCssPreviewSlot(int player_idx);
+
 /* FindPlayerObjectSlot + the three fields every FP line prints. */
 PlayerView ReadPlayer(int player_idx);
 
@@ -161,8 +185,28 @@ Scan ScanPool(bool want_legacy_fp, char* active_list, size_t list_cap);
  * slot token (+0x17A). The 4b runs showed `fp=` (slot,type,owner,posX,posY)
  * IDENTICAL host-vs-spectator on 3984/3984 frames while `top=` differed on
  * 3984/3984, so the divergent field is provably one of these three and nothing
- * else. Writes "i:player:kind:parent " pairs, NUL-terminated, truncated to cap.
- * Rides the [POOLSET] gate (FM2K_POOLSET=1); nothing calls it otherwise. */
+ * else.
+ *
+ * Record format (2026-08-17, Lane C bind= probe):
+ *     "slot:playerSlotId:entityKind:parentSlotToken:RAW17A:createdFrame "
+ * The last two are NEW and DIAGNOSTIC ONLY -- neither reaches any digest:
+ *   RAW17A       the UNNORMALISED +0x17A dword, hex. Lane C's triage: `bind=`
+ *                is red from the FIRST paired frame with parentSlotToken
+ *                normalising to different in-pool slots on the two planes, and
+ *                the cheapest question that decides whether an IDA writer-pass
+ *                is justified is whether BOTH planes hold in-pool pointers (the
+ *                creator genuinely differs) or one holds a heap value (the
+ *                framing changes entirely).
+ *   createdFrame the engine frame counter (0x4456FC) on the first scan that saw
+ *                this slot occupied after seeing it free; 0xFFFFFFFF when the
+ *                slot was already occupied on the very first scan. SAMPLED at
+ *                this function's cadence, not read from the object -- there is
+ *                no creation-frame field in KgtRuntimeObject.
+ *
+ * NUL-terminated, truncated to cap, and the trailing "(n=emitted/active)"
+ * marker (prefixed TRUNCATED when it applies) is always present. Returns the
+ * written length so the caller can chunk it. Rides the [POOLSET] gate
+ * (FM2K_POOLSET=1); nothing calls it otherwise. */
 size_t DumpTopoDetail(char* out, size_t cap);
 
 /* False under ENGINE_FM95 or when FM2K_CK_TOPOLOGY is set to 0. Callers do

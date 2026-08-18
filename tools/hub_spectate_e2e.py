@@ -585,6 +585,15 @@ def main() -> int:
         css_unload = os.environ.get("FM2K_SPEC_CSS_UNLOAD")
         if css_unload is not None:
             play_env["FM2K_SPEC_CSS_UNLOAD"] = css_unload
+        # Pre-rendezvous character-select park causality control
+        # (FM2K_CSS_PARK=0 restores the unsynchronised CSS free-run). Default
+        # ON in the hook, so this only ever needs forwarding to turn it OFF,
+        # and it must reach BOTH players -- a one-sided park IS the phase
+        # offset the fix removes, so a half-forwarded lever measures nothing.
+        # A/B SCAFFOLDING: delete with the switch.
+        css_park = os.environ.get("FM2K_CSS_PARK")
+        if css_park is not None:
+            play_env["FM2K_CSS_PARK"] = css_park
         p1_pty = OUT_DIR / "p1_parity.pty"
         sp_pty = OUT_DIR / "spec_parity.pty"
         for f in (p1_pty, sp_pty):
@@ -622,6 +631,11 @@ def main() -> int:
         # actually runs the pin, so it MUST be here.
         if css_unload is not None:
             spec_env["FM2K_SPEC_CSS_UNLOAD"] = css_unload
+        # Viewer half of the CSS-park control. INERT on this plane by
+        # construction (a spectator never calls Netplay_ProcessCSS), forwarded
+        # so an A/B arm is never split-brain.
+        if css_park is not None:
+            spec_env["FM2K_CSS_PARK"] = css_park
         if args.relay:
             # Host advertises the relay data plane in its hello; the hub stores
             # it and echoes it into spectate_grant, so LaunchRemoteSpectator

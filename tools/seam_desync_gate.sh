@@ -95,7 +95,13 @@ SEAM_GAME_EXE="${SEAM_GAME_EXE:-}"
 # SEAM_OUT cannot overwrite each other's logs/CSVs.
 SEAM_TAG="${SEAM_TAG:-${SEAM_GAME:-wanwan}}"
 OUT="${SEAM_OUT:-$ROOT/logs/seam_desync}"
-SPEC_LIVE="$ROOT/tools/.spec_selftest"
+# SEAM_SPEC_LIVE: where spec_selftest preserves its per-process logs. Defaults
+# to the historical shared dir when run standalone; run_all_tests hands over a
+# per-invocation one so a gate run can never overwrite another gate run's raw
+# evidence (2026-08-17 -- two `top=` recurrences were lost to exactly that).
+# Per-seed subdirs below, for the same reason within one invocation.
+SPEC_LIVE_BASE="${SEAM_SPEC_LIVE:-$ROOT/tools/.spec_selftest}"
+SPEC_LIVE="$SPEC_LIVE_BASE"
 mkdir -p "$OUT"
 
 # --game/--game-exe plumbing. Both or neither: --game without --game-exe is the
@@ -137,13 +143,20 @@ seam_run() {   # $1 = net seed; 0 = PASS
     local seed="$1"
     local log="$OUT/seam_${SEAM_TAG}_seed${seed}.log"
     local ev="$OUT/seam_${SEAM_TAG}_seed${seed}_evidence.txt"
+    # Per-seed, per-tag live dir. A multi-seed SEAM_SEEDS used to have seed 2
+    # overwrite seed 1's raw logs, and a wanwan leg + a vanpri leg sharing one
+    # invocation overwrote each other's (only the derived evidence files were
+    # named per game).
+    SPEC_LIVE="$SPEC_LIVE_BASE/seam_${SEAM_TAG}_seed${seed}"
+    mkdir -p "$SPEC_LIVE"
     kill_games; sleep 0.6
     # Evidence hygiene: both the preserved live logs AND the seam CSVs are
     # per-run files that the NEXT run overwrites. A stale CSV left by an
     # earlier run would otherwise be checked as if it belonged to this one.
     rm -f "$SPEC_LIVE"/live_FM2K_*_Debug.log
     rm -f "$SEAM_GAMEDIR"/FM2K_P1_seamring.csv "$SEAM_GAMEDIR"/FM2K_P2_seamring.csv
-    FM2K_SEAM_TRACE=1 FM2K_NET_DELAY_MS=230 FM2K_NET_JITTER_MS=50 \
+    FM2K_TEST_OUT_DIR="$SPEC_LIVE" \
+      FM2K_SEAM_TRACE=1 FM2K_NET_DELAY_MS=230 FM2K_NET_JITTER_MS=50 \
       FM2K_NET_LOSS=0.20 FM2K_NET_SEED="$seed" \
       timeout "$SEAM_TIMEOUT" python3 "$ROOT/tools/spec_selftest.py" \
         "${GAME_ARGS[@]+"${GAME_ARGS[@]}"}" \

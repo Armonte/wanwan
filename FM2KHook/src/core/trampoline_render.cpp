@@ -205,6 +205,22 @@ void RenderFrameWithSnapshot() {
         // "undone" -- sim-side timer keeps decrementing, but the persistent
         // color state needed across frames gets wiped. Both peers run the
         // same renders, so object pool drift stays symmetric.
+        //
+        // "Both peers run the same renders" is a PREMISE, and it was violated
+        // during character select until 2026-08-17: `protect` above is
+        // Netplay_IsActive() || SpectatorNode_IsPlayingBack(), and
+        // Netplay_IsActive() is BATTLE-only, so on the two player planes every
+        // CSS render ran with the afterimage pool and the 0x447EE0
+        // input-tracking block unprotected -- while the pre-rendezvous
+        // free-run gave one peer 19-34 more CSS renders than the other
+        // (css_child_asymmetry.md hazard 1). The pre-rendezvous CSS park
+        // (netplay_css.cpp) restores the premise for that window by
+        // construction: a parked tick returns before RenderFrameWithSnapshot,
+        // so both peers enter CSS lockstep having run the SAME number of CSS
+        // renders (zero), and inside the lockstep window RunCssTick is 1:1
+        // sim:render (a stalled tick skips both). The unprotected-render
+        // exposure itself is unchanged in code and still applies to the NATIVE
+        // (title/menu) phase, which no barrier makes frame-equal.
         (void)s_render_saved_object_pool; // (kept allocated for backward compat)
         // Afterimage save: three slices skipping both EFFECT_SYS1 (palette
         // flash 1) and SHAKE_EFFECTS so render-side state evolution for

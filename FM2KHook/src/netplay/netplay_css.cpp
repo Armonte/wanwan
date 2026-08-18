@@ -40,8 +40,24 @@ void Netplay_PollCSS() {
         gekko_network_poll(g_session);
     }
 }
-
 bool Netplay_CanAdvanceCSS() {
+    // WHO ACTUALLY READS THIS (comment corrected 2026-08-17, review G6 +
+    // css_rendezvous_fix.md limit 9 -- it used to read like the live free-run
+    // gate on both engines, and it is not):
+    //   FM2K: INERT. The only caller is Hook_ProcessGameInputs, and
+    //     TrampolineMainLoop calls original_process_game_inputs (the MinHook
+    //     trampoline) directly, so the detour is only reached from inside a sim
+    //     tick -- which the pre-rendezvous park has already skipped. Nothing
+    //     here can free-run a parked FM2K peer.
+    //   FM95 (default host-driven path): LIVE. CPW's own WinMain drives the
+    //     frame, so the PGI detour fires independently of Hook_UpdateGameState's
+    //     return value and this "run freely" branch really does let
+    //     g_input_buffer_index and edge detection advance. That is exactly why
+    //     the pre-rendezvous park is compiled out on FM95 (see the ENGINE SCOPE
+    //     block above CssRendezvousPark_Enabled): with the park off, this
+    //     branch is the pre-fix behaviour and the two are consistent. Enabling
+    //     the park on FM95 REQUIRES flipping this to false while parked, and
+    //     setting g_fm95_skip_next_render on the legacy CSS return.
     // Not synced yet -- let game run freely (pre-CSS or waiting for remote)
     if (!g_css_synced) {
         return true;
@@ -269,9 +285,17 @@ bool Netplay_ProcessCSS() {
     // BATTLE_ENTERING, etc.) -- independent of GekkoNet's transport.
     ControlChannel_Poll();
 
-    // Not connected yet -- let game run with local input
+    // New CSS phase (battle end / Netplay_Reset cleared g_css_synced): restart
+    // the park census so the rendezvous line describes THIS phase
+    // (netplay_css_park.cpp).
+    CssPark_OnPhaseEdge(g_css_synced);
+
+    // Not connected yet. PARK (see the block above Netplay_PollCSS): a peer
+    // that reaches character select before the handshake completes used to
+    // free-run the scene here exactly as it did at the !g_remote_css_ready leg
+    // below, so both legs have to hold or the phase offset just moves.
     if (g_simple_state < SimpleState::CONNECTED) {
-        return true;
+        return CssPreRendezvousTick(1);
     }
 
     uint32_t now = GetTickCount();
@@ -318,31 +342,78 @@ bool Netplay_ProcessCSS() {
     }
 
     // Wait for both clients to be in CSS before bringing up the GekkoNet
-    // CSS session. Pre-rendezvous frames run unsynchronized (identical to
-    // today's pre-g_css_synced behavior).
+    // CSS session. PARKED, not free-run: this is the leg that produced the
+    // 19-34 scene-frame guest lead in 4/4 corpora. Full rationale in the block
+    // above Netplay_PollCSS; the transport keeps running because
+    // ControlChannel_Poll and the BATTLE_READY respam both sit above this
+    // return.
     if (!g_remote_css_ready) {
-        return true;  // Let game run but don't drive the session yet
+        return CssPreRendezvousTick(2);
     }
 
     // First frame after rendezvous: reseed RNG and stand up the CSS session.
     if (!g_css_synced) {
-        // CRITICAL: Re-seed RNG now that both clients are synced. Pre-CSS
-        // frames ran unsynchronized and diverged the RNG. Stage selection
-        // uses RNG during CSS->battle transition, so it MUST be identical
-        // from this point forward.
+        // P2 acceptance term + permanent detector (netplay_css_park.cpp).
+        CssPark_EmitRendezvousCensus();
+
+        // Re-seed RNG now that both clients are synced. NOT redundant with the
+        // pre-rendezvous park: the park makes the CHARACTER-SELECT window equal
+        // by construction, while this covers the PRE-CSS (title/menu) window,
+        // which is still unsynchronised and where real player input draws a
+        // different number of game_rand() values on each peer. Stage selection
+        // uses RNG during the CSS->battle transition, so it MUST be identical
+        // from this point forward. Deleting it would re-open a different bug
+        // in a different window -- see css_rendezvous_fix.md "deletions".
         *(uint32_t*)FM2K::ADDR_RANDOM_SEED = Netplay_TestBattleSeed();
         SpectatorNode_AppendPinRng(Netplay_TestBattleSeed());
 
-        // Canonical CSS open (belt-and-braces for the swap-window input
-        // guard in Hook_GetPlayerInput): no confirm state and no rematch
-        // countdown may survive into the lockstep stream. The engine's
-        // own CSS init zeroes these, so in a healthy run this writes 0
-        // over 0 -- it only corrects state if some input leaked into the
-        // unsynchronized window between CSS init and the first advance.
-        *(uint32_t*)FM2K::ADDR_P1_ACTION_STATE = 0;
-        *(uint32_t*)FM2K::ADDR_P2_ACTION_STATE = 0;
-        if constexpr (FM2K::ADDR_ROUND_TIMER_COUNTER != 0) {
-            *(uint32_t*)FM2K::ADDR_ROUND_TIMER_COUNTER = 0;
+        // THE ACTION-STATE / ROUND-TIMER REALIGNMENT WRITE IS DELETED (2026-08-18).
+        //
+        // It used to zero P1/P2_ACTION_STATE and ROUND_TIMER_COUNTER here as
+        // "canonical CSS open". The adversarial review (css_rendezvous_review.md
+        // G4) called that the forbidden middle: the write was kept on a belief
+        // that could not be true both ways -- either the engine's own CSS init
+        // already zeroes them (so under the pre-rendezvous park, with a
+        // zero-length free-run, nothing can perturb them between that init and
+        // here, and the write is dead) or it is carrying state in from the
+        // pre-CSS window / the previous battle (so it is load-bearing). Nobody
+        // had measured which.
+        //
+        // MEASURED, then DELETED per the no-fallback rule. The write was made
+        // self-measuring for one validation round (it read the three values and
+        // warned when it actually changed one) and the answer was unambiguous:
+        // **0 NONZERO readings across every character-select phase of the whole
+        // battery** -- base gate ALL GREEN (10 stages), the six FULL-only stage
+        // chunks (specsettings V0/V1, specstage, specgame-vanpri,
+        // seamdesync-vanpri, hubspec-relay, multigame), three dedicated
+        // spectate arms including the FM2K_SPEC_CSS_UNLOAD=0 red arm, over 228
+        // [CSS-RDV] rendezvous lines covering first-CSS and rematch-CSS phases
+        // on wanwan and vanguard-princess. The values are ALWAYS already zero
+        // when the rendezvous runs. The stores are gone; nothing is left behind
+        // a flag or a comment.
+        //
+        // WHAT REMAINS IS A READ-ONLY TRIPWIRE, not a mechanism (the d2c512a
+        // precedent: delete the code, keep a detector so the deletion's own
+        // assumption stays under measurement). If any of the three is EVER
+        // nonzero at the rendezvous, this line fires -- and it now means the
+        // deletion's premise broke, which is a fact somebody must look at,
+        // rather than being silently papered over by a write.
+        {
+            const uint32_t a1 = *(const uint32_t*)FM2K::ADDR_P1_ACTION_STATE;
+            const uint32_t a2 = *(const uint32_t*)FM2K::ADDR_P2_ACTION_STATE;
+            uint32_t rt = 0;
+            if constexpr (FM2K::ADDR_ROUND_TIMER_COUNTER != 0) {
+                rt = *(const uint32_t*)FM2K::ADDR_ROUND_TIMER_COUNTER;
+            }
+            if (a1 != 0 || a2 != 0 || rt != 0) {
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "[CSS-RDV] realign: TRIPWIRE -- act1=%u act2=%u "
+                    "round_timer=%u are NOT all zero at the character-select "
+                    "rendezvous. The zeroing write was DELETED on 0/228 "
+                    "measured nonzero readings; this line means that premise "
+                    "broke. NOT repaired here -- diagnose it",
+                    a1, a2, rt);
+            }
         }
         // #66: also zero the auto-repeat input state at the sync frame. BATTLE
         // runs process_game_inputs (0x4146d0) and mutates g_input_repeat_state

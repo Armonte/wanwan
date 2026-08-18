@@ -2342,10 +2342,133 @@ def _parity_gates(out_dir, specs):
                         # scrolled past.
                         note = (" -- REAL player-plane pool divergence, sim-"
                                 "silent; advisory pending its own ticket")
+                    # The VALUES, not just the counts. The fatal branch above has
+                    # always printed `P1=.. P2=..` and the demoted advisory did
+                    # not, which cost real evidence: the FIRST recorded
+                    # occurrence of this class printed its digests (and a 2026-08
+                    # soak run reproduced them byte-for-byte, proving one stable
+                    # shape rather than a random race), while the SECOND, logged
+                    # after the demotion, is undiffable. Two advisories are worth
+                    # comparing on sight or they are worth nothing.
+                    _afmt = ((lambda v: str(v)) if name == "nobj"
+                             else (lambda v: f"0x{v:08X}"))
+                    try:
+                        _av = (f": P1={_afmt(hseg[tfb][idx])} "
+                               f"P2={_afmt(gseg[tfb][idx])}")
+                    except (KeyError, IndexError, TypeError):
+                        _av = ""
                     print(f"[harness] PVP match{i}: {name}= {tmm}/{tn} mismatches "
-                          f"(longest run {tmx}, first f={tfb}) [{lbl}{note}]")
+                          f"(longest run {tmx}, first f={tfb}{_av}) [{lbl}{note}]")
                 else:
                     print(f"[harness] PVP match{i}: {name}= {tn} frames IDENTICAL")
+
+    # ---- CSS RENDEZVOUS PARK census, surfaced (loud ADVISORY) ---------------
+    # netplay_css.cpp emits one [CSS-RDV] rendezvous: line per player per CSS
+    # phase carrying park_ticks= (sim ticks held waiting for the peer) and
+    # freerun_sim_ticks= (pre-rendezvous ticks that DID sim). The whole claim of
+    # the pre-rendezvous park is that freerun_sim_ticks is 0 on BOTH peers, so
+    # both enter character-select lockstep on the same scene frame and the
+    # object pool is identical by construction -- that is the acceptance term,
+    # and printing it here is what stops it being re-derived by hand from
+    # [POOLSET] every time. ADVISORY: it touches no verdict. It is a DETECTOR,
+    # not scaffolding -- it stays when the FM2K_CSS_PARK switch is deleted.
+    #
+    # PARKED-WHILE-WAITING (review amendment 1, css_rendezvous_review.md G1a).
+    # The rendezvous line only exists when the rendezvous COMPLETES, so a peer
+    # that parks and never un-parks -- the one new failure mode the park creates
+    # -- emitted nothing and was mislabelled here as "no character-select phase
+    # ran", i.e. a freeze reported as an absence. netplay_css_park.cpp now warns
+    # every 2 s while parked ([CSS-RDV] parked ... waiting for peer
+    # BATTLE_READY); those lines are counted below and, when a peer has them but
+    # no rendezvous, the label says NEVER UN-PARKED instead.
+    import re as _rdv_re
+    _rdv = {}
+    _rdv_parked = {}
+    _rdv_realign = {}
+    for _tag, _lp in (("P1", out_dir / "live_FM2K_P1_Debug.log"),
+                      ("P2", out_dir / "live_FM2K_P2_Debug.log")):
+        rows = []
+        parked = []
+        realign = []
+        try:
+            with open(_lp, errors="ignore") as fh:
+                for ln in fh:
+                    if "[CSS-RDV] realign:" in ln:
+                        realign.append(ln.strip()); continue
+                    if "[CSS-RDV] parked " in ln:
+                        mp = _rdv_re.search(
+                            r"parked (\d+) ms / (\d+) ticks .*?\(leg=(\d)\)", ln)
+                        if mp:
+                            parked.append((int(mp.group(1)), int(mp.group(2)),
+                                           int(mp.group(3))))
+                        continue
+                    if "[CSS-RDV] rendezvous:" not in ln: continue
+                    m = _rdv_re.search(
+                        r"park_ticks=(\d+)\s+freerun_sim_ticks=(\d+)"
+                        r"\s+park=(\d)", ln)
+                    if m:
+                        rows.append((int(m.group(1)), int(m.group(2)),
+                                     int(m.group(3))))
+        except OSError:
+            continue
+        _rdv[_tag] = rows
+        _rdv_parked[_tag] = parked
+        _rdv_realign[_tag] = realign
+    if _rdv.get("P1") or _rdv.get("P2") or any(_rdv_parked.values()):
+        for _tag in ("P1", "P2"):
+            rows = _rdv.get(_tag) or []
+            parked = _rdv_parked.get(_tag) or []
+            if not rows:
+                if parked:
+                    print(f"[harness] CSS-RDV {_tag}: NEVER UN-PARKED -- "
+                          f"{len(parked)} parked-while-waiting warn(s), longest "
+                          f"{max(p[0] for p in parked)} ms / "
+                          f"{max(p[1] for p in parked)} ticks (leg="
+                          f"{','.join(sorted({str(p[2]) for p in parked}))}), "
+                          f"and NO rendezvous line: this peer held the "
+                          f"character-select sim waiting for its peer's "
+                          f"BATTLE_READY and never got it [advisory]")
+                else:
+                    print(f"[harness] CSS-RDV {_tag}: NO rendezvous line and no "
+                          f"parked-while-waiting warn -- either no netplay "
+                          f"character-select phase ran, or the binary predates "
+                          f"the pre-rendezvous park [advisory]")
+                continue
+            if parked:
+                print(f"[harness] CSS-RDV {_tag}: {len(parked)} long-park "
+                      f"warn(s) before the rendezvous, longest "
+                      f"{max(p[0] for p in parked)} ms -- the peer arrived, but "
+                      f"the character-select screen was held that long "
+                      f"[advisory]")
+            print(f"[harness] CSS-RDV {_tag}: {len(rows)} phase(s) park="
+                  f"{rows[0][2]} park_ticks="
+                  f"{','.join(str(r[0]) for r in rows)} freerun_sim_ticks="
+                  f"{','.join(str(r[1]) for r in rows)}")
+        fr1 = [r[1] for r in (_rdv.get("P1") or [])]
+        fr2 = [r[1] for r in (_rdv.get("P2") or [])]
+        if any(fr1) or any(fr2):
+            print("[harness] CSS-RDV: NONZERO pre-rendezvous sim ticks "
+                  f"(P1={fr1} P2={fr2}) -- the character-select scene was "
+                  "free-run before lockstep, which is the pool-transposition "
+                  "shape. Expected ONLY in a FM2K_CSS_PARK=0 red arm "
+                  "[advisory]")
+        elif fr1 and fr2:
+            print(f"[harness] CSS-RDV: pre-rendezvous sim ticks 0 on BOTH "
+                  f"peers across {len(fr1)}/{len(fr2)} phases -- "
+                  f"character-select entered lockstep on the same scene frame")
+        # REALIGN TRIPWIRE. netplay_css.cpp used to ZERO P1/P2 action state and
+        # the round-timer counter at the rendezvous; that write was deleted on
+        # 0/228 measured nonzero readings and replaced by a read-only tripwire.
+        # A line here means the deletion's premise broke on this run -- nothing
+        # repairs it any more, so it has to be read. Surfaced loudly; advisory,
+        # because a nonzero value is evidence to diagnose, not proof of a
+        # divergence on its own.
+        _rl = [r for _t in ("P1", "P2") for r in (_rdv_realign.get(_t) or [])]
+        if _rl:
+            print(f"[harness] CSS-RDV REALIGN TRIPWIRE: {len(_rl)} line(s) -- "
+                  f"action-state / round-timer were NOT zero at a "
+                  f"character-select rendezvous, and the zeroing write is gone. "
+                  f"First: {_rl[0][-160:]} [advisory, DIAGNOSE]")
 
     # ---- BATTLE-ENTRY LATCH RE-DERIVE, surfaced (loud ADVISORY) --------------
     # netplay_barriers.cpp re-derives g_round_limit at the entry barrier and
@@ -2915,6 +3038,18 @@ def main():
     # list below -- it is no longer inert there.
     if os.environ.get("FM2K_ROUNDS_RELATCH") is not None:
         common_env["FM2K_ROUNDS_RELATCH"] = os.environ["FM2K_ROUNDS_RELATCH"]
+    # FM2K_CSS_PARK: pre-rendezvous character-select park (netplay_css.cpp).
+    # DEFAULT ON in the hook -- it is the fix for the sim-silent player-plane
+    # pool transposition (top=/bind= red from battle f=0 at ~1-in-3), so the
+    # value that matters is "0" and it is forwarded BY PRESENCE for exactly the
+    # reason the two switches above are: `if os.environ.get(k)` forwards "0"
+    # only by accident of Python truthiness, and one refactor to int()/== "1"
+    # silently turns every red arm into a second measurement of the default.
+    # BOTH peers get it -- a one-sided park is a phase offset by construction,
+    # i.e. the bug, so a half-forwarded lever would measure nothing.
+    # A/B SCAFFOLDING: delete this block when the switch is deleted.
+    if os.environ.get("FM2K_CSS_PARK") is not None:
+        common_env["FM2K_CSS_PARK"] = os.environ["FM2K_CSS_PARK"]
     # FM2K_SEAM_GUARD is RETIRED. It is still FORWARDED (so the hook's loud
     # "RETIRED and IGNORED" line lands in the Debug log) and warned about here,
     # because an old recipe that silently measures the default is exactly how a
@@ -3128,6 +3263,17 @@ def main():
         # second measurement of the default.
         if os.environ.get("FM2K_ROUNDS_RELATCH") is not None:
             env["FM2K_ROUNDS_RELATCH"] = os.environ["FM2K_ROUNDS_RELATCH"]
+        # FM2K_CSS_PARK, viewer half -- INERT BY CONSTRUCTION and forwarded
+        # anyway. A spectator is pinned to LoopPhase::SPECTATOR_PLAYBACK by
+        # ClassifyPhase, so it never calls Netplay_ProcessCSS and the park has
+        # no site to act on; its character-select walk is driven entirely by
+        # the host's recorded confirmed-input stream. Forwarded so a
+        # kill-switch A/B is never split-brain across planes and so the
+        # [CSS-RDV] contract line's absence on a viewer is a fact about the
+        # plane rather than about the env. Presence-forwarded, never
+        # truthiness. A/B SCAFFOLDING: delete with the switch.
+        if os.environ.get("FM2K_CSS_PARK") is not None:
+            env["FM2K_CSS_PARK"] = os.environ["FM2K_CSS_PARK"]
         # FM2K_TEST_ROUNDS_HOST_ONLY, viewer half. The per-frame force it
         # disables runs on the SPECTATOR too (hooks_update.cpp is reached before
         # the g_spectator_mode early return), and the spectator is the plane

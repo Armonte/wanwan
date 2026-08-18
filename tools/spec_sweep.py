@@ -298,6 +298,14 @@ def leg_stage_once(a, attempt: int = 1) -> tuple[bool, dict]:
         "FM2K_NET_DELAY_MS": "100", "FM2K_NET_JITTER_MS": "30",
         "FM2K_NET_LOSS": a.loss, "FM2K_NET_SEED": "141",
         "FM2K_SPEC_RC": "1", "FM2K_SPEC_DEEP_JOIN": "1",
+        # CSS-ANIM ARMING (2026-08-17, spec_faller_diagnosis.md 5.3). This leg
+        # ran with the per-slot character-select census DARK ("CSS-WIN CSSANIM:
+        # no [CSS-ANIM] lines on any plane -- NOT ARMED ... NOT COMPUTED"), so
+        # the only fall term running here was the one-object-per-player FALL
+        # term -- the one that was resolving a background-script UI object as
+        # player 0. CSSANIM is per-slot and kind-filtered by the engine's own
+        # predicate, so arming it is what makes a red in this leg readable.
+        "FM2K_CSS_ANIM": "1",
         # CSS-WINDOW GATE: ADVISORY IN THIS LEG ONLY, and re-surfaced loudly
         # below rather than silenced. Reason, measured 2026-08-16: this leg
         # NEEDS short matches (a stage-switching test that never reaches a
@@ -510,6 +518,13 @@ def leg_settings_one(a, name: str) -> tuple[bool, dict]:
         "FM2K_NET_LOSS": a.loss,
         "FM2K_NET_SEED": "151", "FM2K_SPEC_RC": "1",
         "FM2K_SPEC_DEEP_JOIN": "1",
+        # CSS-ANIM ARMING (2026-08-17, spec_faller_diagnosis.md 5.3). This leg
+        # keeps the CSS-window fall term FATAL, and it was running it with the
+        # per-slot census DARK -- so the stage that went red had exactly one
+        # character-select fall term computing, and it was the mis-resolving
+        # one. CSSANIM is the per-slot, kind-filtered term; arm it here so a
+        # red carries a second, independent read.
+        "FM2K_CSS_ANIM": "1",
         "FM2K_TEST_GAME_SPEED": str(v["speed"]),
         "FM2K_SOCD_MODE": str(v["socd"]),
     }

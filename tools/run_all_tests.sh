@@ -166,6 +166,36 @@ kill_games() { for p in WonderfulWorld_ver_0946 WonderfulRvl FM2K_RollbackLaunch
 # the gate still runs on FM2K-only machines.
 CPW_EXE="${CPW_EXE:-/mnt/c/dev/fm95/CPW/ＣＰＷ.exe}"
 
+# MACHINE-STALL VOID (H2, 2026-08-18). spec_selftest now refuses to score a run
+# in which every game process stopped being scheduled at the same instant -- it
+# prints an OVERALL VOID line and exits rc=4 instead of a PASS or a FAIL. That
+# is NOT the same thing as a product failure and must never be reported as one:
+# a 6.26s all-four-process freeze on a marginal machine was triaged as a
+# spectator starve on 2026-08-18 and cost a soak cycle. This gate does not
+# auto-retry (a pre-cut gate is run by a human who can); it makes the
+# distinction impossible to miss in the log. The soak driver owns the re-run.
+spec_void_note() {  # spec_void_note <spec_selftest logfile>
+    if grep -q "OVERALL VOID (rc=4)" "$1" 2>/dev/null; then
+        echo "[run_all]   ^^ NOT A PRODUCT FAILURE: that run VOIDED on a"
+        echo "[run_all]      MACHINE STALL (all game processes froze together)."
+        grep -aE "^\[harness\] +(MACHINE|OVERALL VOID|stall at|MACHINE-)" "$1" \
+            | sed 's/^/             /'
+        if grep -q "MACHINE-CONFIRMED" "$1" 2>/dev/null; then
+            echo "[run_all]      Re-run it. Two MACHINE-CONFIRMED VOIDs in a row ="
+            echo "[run_all]      the machine is unfit to measure with (memtest /"
+            echo "[run_all]      close the scanner)."
+        else
+            echo "[run_all]      UNCONFIRMED: the onsets coincided but no viewer"
+            echo "[run_all]      was holding content when it went quiet, so this"
+            echo "[run_all]      is 'unmeasured', NOT 'your hardware is broken'."
+            echo "[run_all]      Re-run it, and if it repeats READ THE LOGS: a"
+            echo "[run_all]      reproducible product hang looks exactly like this."
+        fi
+        return 0
+    fi
+    return 1
+}
+
 pass=(); fail=()
 stage() {  # stage <name> <logfile> -- runs $CMD, verdict by EXIT CODE
     local name="$1" log="$2"
@@ -237,6 +267,7 @@ for i in $(seq 1 "$SPEC_RUNS"); do
         echo "[run_all]   netplay+spec run $i/$SPEC_RUNS: PASS"
     else
         echo "[run_all]   netplay+spec run $i/$SPEC_RUNS: FAIL"; s2_ok=0
+        spec_void_note "$OUT/2_netplay_run${i}.log"
         grep -E "OVERALL FAIL|desync" "$OUT/2_netplay_run${i}.log" | tail -2 | sed 's/^/      /'
         echo "      evidence: $GATE_SPEC_DIR/2_netplay_run${i}"
     fi
@@ -277,6 +308,7 @@ for i in $(seq 1 "$MM_RUNS"); do
         echo "[run_all]   multi-match E2E run $i/$MM_RUNS: PASS"
     else
         echo "[run_all]   multi-match E2E run $i/$MM_RUNS: FAIL"; s2b_ok=0
+        spec_void_note "$OUT/2b_multimatch_run${i}.log"
         grep -E "OVERALL FAIL|FAIL:|desync|match 2|gate saw" "$OUT/2b_multimatch_run${i}.log" \
             | tail -3 | sed 's/^/      /'
         echo "      evidence: $MM_LAST_OUT"

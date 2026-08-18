@@ -172,3 +172,12 @@ tools/.cssasym/
 # Run scratch dirs for the CSS-rendezvous red/green campaign drivers.
 tools/.cssrdv/
 tools/.cssrdv_dj/
+# Ad-hoc lane out-dirs: preserved per-process game logs from one-off diagnosis
+# arms (tools/.catchup_r1 .. r7, .catchup_ks_*, and whatever the next lane
+# names its arms). Ten such dirs were one `git add -A` away from being
+# committed, review H7 2026-08-18. Same transient class as everything above.
+tools/.catchup_*/
+# soak_driver.sh's out-dir (it writes under the repo because the game is a
+# Windows process and cannot see /home -- see the header of that script).
+tools/.soak/
+tools/.amend_*/

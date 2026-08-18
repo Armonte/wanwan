@@ -6,6 +6,7 @@
 // reaches specnode helpers via using.
 #include "spectator_node.h"
 #include "spectator_node_internal.h"  // shared State model + g_state (split for sibling TUs)
+#include "globals.h"                  // FM2K::ADDR_GAME_MODE (post-stall rung battle gate)
 #include "spec_join_internal.h"       // shared with spec_join.cpp
 #include "spec_pool_sync.h"           // PoolSync_OnViewerRejoin (Phase 4e, A2.1)
 #include "spectator_tcp.h"        // TCP transport for INPUT_BATCH stream
@@ -316,6 +317,7 @@ void SpecGapFillPullOrEscalate(uint64_t now, bool gap_ahead) {
     SpectatorNode_RequestGapFill();
 }
 
+
 // See the contract in spectator_node_internal.h. The pre-committed trigger:
 // any gated run recording an episode longer than 3000ms justifies giving the
 // CSS window its own between-matches gap-fill rung.
@@ -350,6 +352,88 @@ void SpecCssWindowStarveTick(uint64_t now, bool starving, bool in_battle) {
 }
 
 }  // namespace specnode
+
+// POST-STALL RUNG CATCH-UP (P1b). Contract in spectator_node.h.
+//
+// THE DEFECT: every rung above is level-triggered on MsSinceLastAdmit and
+// evaluated only inside TickHealth. When the VIEWER PROCESS itself stops
+// running -- a whole-machine stall, a Defender scan, an alt-tab that swaps the
+// game out -- there are no ticks, so nothing is evaluated; the first tick
+// afterwards sees the entire elapsed silence and the only thing it is far
+// enough past is the LAST rung, give-up. Measured 2026-08-18: two viewers each
+// crossed 3500ms and 4000ms during a 6.26s freeze and reported
+// "0 re-JOIN escalation(s)" -- neither the RC stall repair nor escalation #1
+// ever had a tick to run in.
+//
+// `stalled_ms` is the POST-CREDIT clock (see trampoline_spec_watchdog.cpp): the
+// self-stall credit has already removed the silence this viewer merely slept
+// through, so whatever is left is real upstream silence and is exactly what the
+// ladder was written for. On a pure self-stall this function is called with a
+// near-zero stall time and correctly does nothing.
+//
+// THE HIGHEST RUNG HERE IS THE PULL, NEVER THE ESCALATION (adversarial review
+// R1, 2026-08-18 -- ruling ADOPTED, and the escalation branch this function
+// shipped for one day is DELETED rather than flagged, per the no-fallback rule).
+// The reason is that an escalation from HERE is not the rung the ordinary
+// ladder would have run:
+//
+//   * SpecGapFillPullOrEscalate escalates only when `pulls_exhausted` -- three
+//     consecutive gap-fill pulls moved the cursor ZERO frames. That predicate is
+//     the whole justification for a destructive repair (see the contract above:
+//     "THE BOUND EXISTS BECAUSE THE PULL CANNOT WIN SOME GAMES"). After a
+//     process freeze there is by construction ZERO pull evidence -- no ticks
+//     ran, so no pull was ever issued -- which is precisely the state in which
+//     the ordinary ladder is FORBIDDEN to escalate.
+//   * Escalation calls SpecForceFullReJoin, whose JOIN_ACK seeds the viewer's
+//     runtime selection from the host's CURRENT one. Measured on the 12s-freeze
+//     arm: a viewer a whole match behind came out of that re-JOIN with a
+//     COMPLETE character-select session locked 0/0 against the host's 2/7.
+//   * A spurious escalation also stamps last_starve_escalate_ms and zeroes
+//     gap_fill_pulls_no_progress, so it DELAYS the next legitimate escalation by
+//     the full 4000ms floor and wipes the evidence the ladder needs to rebuild.
+//
+// Nothing is lost by pulling instead: ticks have resumed by the time we are
+// here, so the ordinary ladder re-earns its escalation within 250ms-4s WITH its
+// evidence intact, and the give-up budget still sits two rungs above.
+//
+// SCOPE GATE: identical to the one TickHealth applies (spec_health.cpp) -- and
+// that now means BOTH halves of it, not just the battle-mode half.
+//   (a) battle-or-gap-ahead: a pull outside battle carries a JOIN_ACK with the
+//       host's between-matches kind and would abort the viewer's boot-to-battle
+//       walk, so the rungs do not exist outside battle there or here.
+//   (b) CONTENT: TickHealth only reaches the ladder on `gap_ahead ||
+//       PendingFrameCount() == 0`. A viewer that is merely BEHIND -- holding
+//       content and playing it out happily -- is a viewer the ordinary ladder
+//       never touches, and the first version of this function did touch it (the
+//       12s arm fired at q=82). Same predicate, same reason.
+bool SpecRunPostStallRung(uint64_t now_ms, uint32_t stalled_ms) {
+    if (!g_state.subscribed_upstream || g_state.session_ended) return false;
+    if (!SpectatorNode_HasEverAdmitted()) return false;
+    if (!g_state.have_frame_baseline) return false;
+    const bool gap_ahead = !g_state.pb_reorder.empty() &&
+        g_state.pb_reorder.begin()->first > g_state.next_expected_frame;
+    if (!gap_ahead) {
+        const uint32_t gm = *(const uint32_t*)FM2K::ADDR_GAME_MODE;
+        if (!(gm >= 3000u && gm < 4000u)) return false;
+        // (b) above: still holding content -> not starved, nothing to repair.
+        if (SpectatorNode_PendingFrameCount() != 0) return false;
+    }
+    if (stalled_ms >= SPECTATOR_GAP_FILL_STALL_MS) {
+        g_state.last_gap_fill_send_ms = now_ms;
+        ++g_state.gap_fill_pulls_no_progress;
+        ++g_state.gap_fill_pull_total;
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "[SPEC-SELFSTALL] POST-STALL RUNG: gap-fill pull #%u -- %ums of "
+            "upstream silence survived the self-stall credit at INPUT-frame=%u "
+            "(%s, %zu buffered); requesting reliable re-ship",
+            g_state.gap_fill_pulls_no_progress, stalled_ms,
+            g_state.next_expected_frame,
+            gap_ahead ? "gap ahead" : "live starved", g_state.pb_reorder.size());
+        SpectatorNode_RequestGapFill();
+        return true;
+    }
+    return false;
+}
 
 void SpectatorNode_HandleJoinAck(const sockaddr_in& from, uint8_t host_session_kind,
                                  uint16_t host_tcp_port,

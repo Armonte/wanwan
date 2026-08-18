@@ -31,6 +31,7 @@ void RunBattleTick();                                             // trampoline_
 void RunCssTick();                                                // trampoline_css.cpp
 void RunNativeTick();                                             // trampoline_native.cpp
 void RunSpectatorTick();                                          // trampoline_spectator.cpp
+void SpecWatchdogTick(bool offline_replay);                       // trampoline_spec_watchdog.cpp
 void SleepToTarget(uint64_t start_qpc, uint32_t target_ms, float frames_ahead = 0.0f);  // trampoline_pacing.cpp
 void MaybeLogFrametime(uint64_t tick_start);                      // trampoline_pacing.cpp
 void MaybeLogOfflineSections(uint64_t pgi, uint64_t ug, uint64_t render, uint32_t render_rand);  // trampoline_pacing.cpp

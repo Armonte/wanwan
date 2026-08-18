@@ -577,8 +577,22 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
             // Process one batch's events in host-append order. Runs for the
             // current batch and for reorder-buffered batches (drained in frame
             // order), so cross-channel arrival order is normalized to append order.
+            //
+            // `udp_borne` = this batch arrived on an RC channel, i.e. over UDP.
+            // It feeds SpectatorNode_StampUdpInputAdmit, which is the ONLY
+            // evidence the delay-bank's "TCP-only pre-arm" has that the UDP
+            // path is alive. Before 2026-08-18 the stamp existed on exactly one
+            // call site -- the dedicated SPEC-UDP accelerator in
+            // HandleUdpInputDatagram -- so on the DEFAULT spectate transport
+            // (RC full transport, every INPUT admitted right here) the pre-arm
+            // saw a permanently silent UDP clock, mislabelled every RC viewer
+            // TCP-only and doubled its bank floor 300 -> 600 frames: 6s behind
+            // live instead of 3s, on the best transport we ship. The TCP relay
+            // path (rc_channel == 0, spec_relay / spectator_tcp) must NOT stamp
+            // it or the pre-arm dies for the case it was written for.
             auto process_events = [](uint32_t start_frame, int32_t op_base,
-                                     const uint8_t* payload, size_t payload_len) {
+                                     const uint8_t* payload, size_t payload_len,
+                                     bool udp_borne) {
                 const uint32_t expected_at_entry = g_state.next_expected_frame;
                 uint32_t batch_ops_decoded = 0;
 
@@ -619,6 +633,7 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
                     } else {
                         g_state.pb_queue.push_back(ev);
                         SpectatorNode_StampInputAdmit();
+                        if (udp_borne) SpectatorNode_StampUdpInputAdmit();
                         g_state.next_expected_frame = cursor_input + 1;
                         ++pushed_inputs;
                         // Hop-1 relay.
@@ -756,11 +771,13 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
             // any batch ahead of next_expected_frame, is buffered by start_frame and
             // drained in frame order -- so ops+inputs resume host-append order.
             const bool can_base = (rc_channel == 0 || rc_channel == RC_CHAN_SPEC_SNAPSHOT);
+            const bool udp_borne = (rc_channel != 0);
             auto buffer_batch = [&]() {
                 if (g_state.pb_reorder.size() < 1024) {
                     auto& rb = g_state.pb_reorder[hdr.start_frame];
                     rb.op_base = batch_op_base;
                     rb.bytes.assign(payload, payload + payload_len);
+                    rb.udp_borne = udp_borne;
                 }
             };
             if (!g_state.have_frame_baseline) {
@@ -770,7 +787,8 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
             } else if (hdr.start_frame > g_state.next_expected_frame) {
                 buffer_batch(); break;                       // future -> reorder
             }
-            process_events(hdr.start_frame, batch_op_base, payload, payload_len);
+            process_events(hdr.start_frame, batch_op_base, payload, payload_len,
+                           udp_borne);
             // Drain buffered batches now consumable, strictly in frame order.
             while (!g_state.pb_reorder.empty()) {
                 auto it = g_state.pb_reorder.begin();
@@ -778,7 +796,8 @@ void SpectatorNode_HandleSpecData(const uint8_t* buf, size_t len,
                 uint32_t bf = it->first;
                 State::ReorderBatch b = std::move(it->second);
                 g_state.pb_reorder.erase(it);
-                process_events(bf, b.op_base, b.bytes.data(), b.bytes.size());
+                process_events(bf, b.op_base, b.bytes.data(), b.bytes.size(),
+                               b.udp_borne);
             }
             break;
         }

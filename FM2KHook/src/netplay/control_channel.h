@@ -56,6 +56,11 @@ void NetSocket_ClearGekkoActorPin();
 // Updates CSS state, handles connection keepalive
 void ControlChannel_Poll();
 
+// TEST-ONLY whole-process freeze emulation (FM2K_SPEC_TEST_SELFSTALL_MS). See
+// the body in control_channel.cpp for why it holds the poll mutex rather than
+// just sleeping. One caller, dark by default.
+void ControlChannel_TestFreezePoll(uint32_t ms);
+
 // Borrow the underlying UDP SOCKET for nat_traversal/STUN. Returns
 // INVALID_SOCKET if the channel hasn't been initialized. Caller must
 // not closesocket() -- the socket is owned by control_channel.

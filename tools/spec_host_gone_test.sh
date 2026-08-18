@@ -16,6 +16,13 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOSS="${LOSS:-0.20}"; RUNS="${RUNS:-3}"; FRAMES="${FRAMES:-700}"
+# THE ONE DELIBERATE PLACE THAT TRUNCATES THE LADDER, and it is justified:
+# this stage MEASURES the give-up itself, so it must fire before the harness's
+# ~6s post-host cleanup kills the process it is observing. Every OTHER spectator
+# harness stopped overriding this on 2026-08-18 (H1) -- 5000 sits below the
+# shipped 12000 budget and below RC stall repair (3500) + both starve
+# escalations (4000, +4000), so a run taken at 5000 is measuring a different
+# product. Do not copy this value anywhere else.
 GONE_MS="${GONE_MS:-5000}"      # spectator host-gone watchdog (< harness cleanup)
 LIVE="$ROOT/tools/.spec_selftest"
 OUT="$ROOT/logs/gate_runs/host_gone"

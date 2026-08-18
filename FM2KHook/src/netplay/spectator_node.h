@@ -803,6 +803,25 @@ bool SpectatorNode_QueueHasPendingOp();
 // (0 until the first admission). The jitter floor uses this to detect
 // genuine starvation and play out its held frames instead of freezing.
 uint32_t SpectatorNode_MsSinceLastAdmit();
+
+// SELF-STALL CREDIT. Move the last-admit clock FORWARD by `ms`, so silence the
+// viewer could not have observed (because its own process was not scheduled) is
+// not charged to the host. Bounded and driven entirely by the caller -- see the
+// kSelfStallCreditCapMs contract in core/trampoline_spec_watchdog.cpp; this
+// function deliberately holds no policy. Never moves the clock past now, and is
+// a no-op before the first admit.
+void SpectatorNode_CreditSelfStall(uint32_t ms);
+
+// POST-STALL RUNG CATCH-UP. The recovery ladder is level-triggered on the
+// last-admit clock and evaluated only on ticks, so a viewer that hitched past a
+// rung threshold fires nothing. Called on the first tick after a self-stall
+// with the POST-CREDIT stall time: issues ONE gap-fill pull when that time is
+// past the pull floor, or nothing at all when the credit absorbed the gap.
+// The pull is the HIGHEST rung reachable from here on purpose -- a post-freeze
+// viewer has zero pull evidence, which is exactly the state the ordinary
+// ladder is forbidden to escalate from (full argument on the definition in
+// spec_join_viewer.cpp). Returns true if the pull ran.
+bool SpecRunPostStallRung(uint64_t now_ms, uint32_t stalled_ms);
 bool     SpectatorNode_HasEverAdmitted();   // false while still connecting (never admitted)
 bool     SpectatorNode_SessionEnded();      // upstream sent SPEC_SESSION_END (host quit cleanly)
 // Recovery-ladder telemetry for the host-gone exit message. The point is to

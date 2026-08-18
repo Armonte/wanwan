@@ -574,6 +574,27 @@ void ControlChannel_Poll() {
     PollImplLocked();
 }
 
+// TEST-ONLY. Emulate a WHOLE-PROCESS freeze for `ms`, as seen by every
+// network-facing clock in the hook. Holding g_poll_mutex is what makes this
+// faithful rather than decorative: PollImplLocked is the single place inbound
+// datagrams are received, RC is pumped and spectator INPUTs are admitted, and
+// the MM-timer worker's parallel path enters it with a TRY_LOCK -- so while
+// this call holds the mutex the timer thread cannot admit either, exactly as if
+// the whole process had been descheduled. A plain Sleep() in the main loop does
+// NOT reproduce that (the MM timer keeps admitting and MsSinceLastAdmit never
+// climbs), which is also the honest scope statement for the self-stall credit:
+// it addresses whole-PROCESS freezes -- the machine stall measured on
+// 2026-08-18, a VM suspend, the process being swapped out -- not a main-thread-
+// only hitch, which the MM timer already covers.
+//
+// Reached from exactly one caller, behind FM2K_SPEC_TEST_SELFSTALL_MS
+// (trampoline_spec_watchdog.cpp), dark by default. Never call it from product
+// code: it deliberately stops the network for the duration.
+void ControlChannel_TestFreezePoll(uint32_t ms) {
+    std::lock_guard<std::mutex> lock(g_poll_mutex);
+    Sleep(ms);
+}
+
 void ControlChannel_Send(const CtrlPacket& packet) {
     if (!g_socket_initialized) return;
 

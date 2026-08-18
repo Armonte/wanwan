@@ -471,6 +471,298 @@ def spectator_catchup(spec_log):
                 source=source, applied_seconds=_delta(applied))
 
 
+# ---------------------------------------------------------------------------
+# MACHINE-STALL DETECTOR + the VOID verdict (H2, 2026-08-18).
+#
+# THE HONESTY RULE THIS EXISTS FOR. On 2026-08-18 a soak leg was scored as a
+# product FAIL ("the viewers starved") when what actually happened was that a
+# ~7.3 second whole-machine stall froze ALL FOUR game processes simultaneously:
+# P1 and P2 stopped logging at 03:02:21.149 and 03:02:21.150 -- one millisecond
+# apart, both for 6.26s, both at the same CSS frame -- while a viewer holding
+# 562 buffered events went 7.33s between consecutive [CHECKSUM] lines. Network
+# starvation cannot produce that; only "the process did not run" can. The soak
+# must be able to say "this run measured nothing" without lying in either
+# direction, so a run whose processes did not run is VOID: not a PASS, not a
+# FAIL.
+#
+# THE DETECTOR IS FAIL-CLOSED AT BOTH ENDS and it is deliberately NOT silent on
+# a clean run -- this campaign has learned to distrust a counter that only
+# speaks when it is angry, so the MACHINE line prints on every run, green or
+# red. The cycle-3 control (same recipe, same binaries, same machine, 27 minutes
+# earlier, PASS) prints `MACHINE: 0 stall(s)`.
+#
+# A gap is only a MACHINE stall if it overlaps a gap in AT LEAST 3 processes.
+# The four processes are independent OS processes with independent sockets and
+# independent sim loops; there is no product mechanism by which three of them
+# stop logging in the same 60ms window. One process going quiet is a product
+# question and is left to the product terms.
+MACHINE_GAP_MIN_S = 1.5      # per-process log-silence gap worth recording
+MACHINE_MIN_PROCS = 3        # gaps must coincide across >= this many processes
+MACHINE_VOID_PCT  = 3.0      # cumulative machine-stall time above this % -> VOID
+# Max spread between the ONSETS of the gaps in one cluster. A machine stall hits
+# every process at once (the 2026-08-18 capture: P1 and P2 one millisecond
+# apart); a causal chain through the product is staggered by the downstream
+# processes' buffers, which for a viewer is its whole delay bank -- seconds.
+# 0.25s is 250x the measured coincidence and 12x smaller than the smallest
+# bank-driven stagger a 300-frame bank can produce. See machine_stall_report.
+MACHINE_ONSET_MAX_S = 0.25
+
+
+def _log_ts_series(path):
+    """(first_ts, last_ts, [gaps]) for one process log, seconds-since-midnight.
+    gaps = [(start, dur)] for every log-silence gap > MACHINE_GAP_MIN_S."""
+    import re
+    pat = re.compile(r'^\[(\d\d):(\d\d):(\d\d)\.(\d\d\d)\]')
+    first = last = None
+    gaps = []
+    prev = None
+    try:
+        fh = open(path, errors="replace")
+    except OSError:
+        return None, None, gaps
+    for ln in fh:
+        m = pat.match(ln)
+        if not m:
+            continue
+        h, mi, s, ms = (int(x) for x in m.groups())
+        t = h * 3600 + mi * 60 + s + ms / 1000.0
+        if prev is not None:
+            if t < prev - 43200:      # midnight wrap
+                t += 86400.0
+            d = t - prev
+            if d > MACHINE_GAP_MIN_S:
+                gaps.append((prev, d))
+        if first is None:
+            first = t
+        prev = last = t
+    return first, last, gaps
+
+
+def _viewer_queue_before(path, t):
+    """Last `[SPEC-Q] ... q=N` depth logged at or before time `t` (seconds since
+    midnight). Returns None when the viewer never printed one before `t`."""
+    import re
+    ts = re.compile(r'^\[(\d\d):(\d\d):(\d\d)\.(\d\d\d)\]')
+    qp = re.compile(r'\[SPEC-Q\] mode=\d+ q=(\d+)')
+    q = None
+    try:
+        fh = open(path, errors="replace")
+    except OSError:
+        return None
+    for ln in fh:
+        m = ts.match(ln)
+        if not m:
+            continue
+        h, mi, s, ms = (int(x) for x in m.groups())
+        lt = h * 3600 + mi * 60 + s + ms / 1000.0
+        if lt > t:
+            break
+        mq = qp.search(ln)
+        if mq:
+            q = int(mq.group(1))
+    return q
+
+
+def machine_stall_report(out_dir, host_gone_ms=None):
+    """Detect whole-machine stalls across every preserved per-process log.
+
+    Returns a dict. `void` is the verdict: True means the run measured nothing
+    and must be scored neither PASS nor FAIL. Side-effect free (offline-usable
+    against any archived dir of live_FM2K_*_Debug.log).
+
+    WHAT SEPARATES A MACHINE STALL FROM A PRODUCT HANG (adversarial review H5,
+    2026-08-18). The first version of this detector justified itself with "four
+    independent OS processes with independent sockets and independent sim loops
+    cannot stop logging together for any product reason". THAT PREMISE IS FALSE
+    for this harness's topology: P2 is input-coupled to P1 (a host that stops
+    producing inputs stalls the guest by construction) and both viewers are FED
+    by P1, so a single host-side wedge -- a broken barrier, a CSS lockstep
+    rendezvous, a deadlock -- silences all four planes in a CAUSAL CHAIN. With
+    only an overlap test and a transitive interval merge, that chain looked
+    exactly like a machine stall: a real, reproducible product deadlock would
+    have VOIDed (hiding CINPUT, CHECKSUM, PVP, CSS-SPEC and every other term,
+    because the VOID check runs before any of them) and, on the second VOID,
+    ended a soak with the message "your hardware is broken".
+
+    Three rules implement the distinction, and each is keyed to a measured
+    property of the 2026-08-18 capture rather than to an assertion:
+
+      1. ONSET COINCIDENCE. A machine stall descends on every process at the
+         same instant -- the capture's P1/P2 onsets were ONE MILLISECOND apart.
+         A causal chain is staggered by however long each downstream process
+         can keep going on what it already holds, which for a viewer is its
+         delay bank: SECONDS. Cluster members must therefore start within
+         MACHINE_ONSET_MAX_S of each other.
+      2. NO TRANSITIVE MERGE. Chained overlap -- A overlaps B, B overlaps C,
+         A and C do not -- is the causal-chain signature itself, and the old
+         merge accumulated exactly that into one cluster with three tags.
+         Clusters are now built around a seed gap and accept only members whose
+         ONSET is inside the seed's onset window.
+      3. THE VIEWER-CONTENT DISCRIMINATOR. Network starvation cannot silence a
+         viewer that is holding buffered content, and neither can a host wedge
+         (such a viewer keeps playing out what it has and keeps logging). A
+         machine stall can, and did: the capture's S2 went quiet holding 563
+         buffered events. So for every viewer in a cluster we read the last
+         [SPEC-Q] queue depth before it went silent. q>0 CONFIRMS the machine;
+         q==0 on every viewer member says the viewers had simply drained, which
+         is what a starve or a wedge looks like, and the cluster is NOT a
+         machine stall. Missing [SPEC-Q] data leaves the discriminator
+         NOT COMPUTED: the cluster still counts (a run this ragged did not
+         measure anything either way) but `confirmed` is False, and the soak
+         driver must not call the machine unfit on that evidence.
+    """
+    from pathlib import Path as _P
+    d = _P(out_dir)
+    procs = {}
+    for p in sorted(d.glob("live_FM2K_*_Debug.log")):
+        tag = p.name[len("live_FM2K_"):-len("_Debug.log")]
+        first, last, gaps = _log_ts_series(p)
+        if first is None:
+            continue
+        procs[tag] = dict(first=first, last=last, gaps=gaps, path=p)
+    if len(procs) < MACHINE_MIN_PROCS:
+        # NOT-COMPUTED must never read as a clean bill of health.
+        return dict(computed=False, procs=procs, stalls=[], n=0, worst=0.0,
+                    total=0.0, wall=0.0, pct=0.0, void=False, confirmed=False,
+                    reason=(f"only {len(procs)} process log(s) present -- need "
+                            f"{MACHINE_MIN_PROCS} to tell a machine stall from a "
+                            f"process-local one"))
+    wall = max(p["last"] for p in procs.values()) - \
+           min(p["first"] for p in procs.values())
+    # Rules 1+2: ONSET-COINCIDENT clustering. Seeded, never transitive.
+    flat = sorted(((s, s + dur, tag, dur)
+                   for tag, p in procs.items() for (s, dur) in p["gaps"]),
+                  key=lambda g: g[0])
+    clusters, used = [], [False] * len(flat)
+    for i, seed in enumerate(flat):
+        if used[i]:
+            continue
+        members, tags = [seed], {seed[2]}
+        used[i] = True
+        for j in range(i + 1, len(flat)):
+            if used[j]:
+                continue
+            g = flat[j]
+            if g[0] - seed[0] > MACHINE_ONSET_MAX_S:
+                break                      # flat is onset-sorted
+            if g[2] in tags:
+                continue                   # one gap per process per cluster
+            members.append(g); tags.add(g[2]); used[j] = True
+        clusters.append(dict(start=seed[0], members=members))
+    stalls = []
+    for c in clusters:
+        tags = sorted({m[2] for m in c["members"]})
+        if len(tags) < MACHINE_MIN_PROCS:
+            continue
+        # Rule 3: the viewer-content discriminator.
+        held, drained, unknown = [], [], []
+        for m in c["members"]:
+            tag = m[2]
+            if not tag.startswith("S"):
+                continue                   # players have no playback queue
+            q = _viewer_queue_before(procs[tag]["path"], m[0])
+            (unknown if q is None else (held if q > 0 else drained)).append(
+                (tag, q))
+        if held:
+            disc = ("MACHINE-CONFIRMED: " +
+                    ", ".join(f"{t} still held {q} queued frames when it went "
+                              f"silent" for t, q in held))
+            confirmed = True
+        elif drained and not unknown:
+            # Every viewer in the cluster had already drained: a starve or a
+            # product wedge looks exactly like this, a machine stall does not.
+            continue
+        else:
+            disc = ("discriminator NOT COMPUTED: no [SPEC-Q] depth available "
+                    "for the viewer member(s) before the gap"
+                    if unknown or not drained else "")
+            confirmed = False
+        onsets = [m[0] for m in c["members"]]
+        stalls.append(dict(start=c["start"], tags=tags,
+                           dur=max(m[3] for m in c["members"]),
+                           onset_spread=max(onsets) - min(onsets),
+                           confirmed=confirmed, discriminator=disc,
+                           members=sorted(c["members"], key=lambda m: m[0])))
+    total = sum(s["dur"] for s in stalls)
+    worst = max((s["dur"] for s in stalls), default=0.0)
+    pct = (100.0 * total / wall) if wall > 0 else 0.0
+    reasons = []
+    # Fail-closed rule 1: a single stall long enough to have KILLED a viewer.
+    # Keyed to the give-up budget the run actually ran with, minus a 1s margin.
+    if host_gone_ms:
+        lethal = (host_gone_ms - 1000) / 1000.0
+        if worst > lethal:
+            reasons.append(f"worst stall {worst:.2f}s exceeds the run's "
+                           f"host-gone budget minus 1s ({lethal:.1f}s)")
+    # Fail-closed rule 2: the machine is not fit to measure with, even if no
+    # single stall was lethal.
+    if pct > MACHINE_VOID_PCT:
+        reasons.append(f"cumulative machine-stall time {total:.1f}s is "
+                       f"{pct:.1f}% of the {wall:.1f}s run (> {MACHINE_VOID_PCT}%)")
+    return dict(computed=True, procs=procs, stalls=stalls, n=len(stalls),
+                worst=worst, total=total, wall=wall, pct=pct,
+                confirmed=any(s["confirmed"] for s in stalls),
+                void=bool(reasons), reason="; ".join(reasons))
+
+
+def machine_stall_lines(rep):
+    """The ALWAYS-PRINTED [harness] MACHINE line(s) for a report."""
+    out = []
+    if not rep["computed"]:
+        out.append(f"[harness] MACHINE: NOT COMPUTED -- {rep['reason']}")
+        return out
+    # Per-process silence totals, so the reader sees the same numbers the
+    # diagnosis quotes ("P1 lost 16.1s of 264.7s") next to the cluster verdict.
+    per = []
+    for tag in sorted(rep["procs"]):
+        g = rep["procs"][tag]["gaps"]
+        if g:
+            per.append(f"{tag} {len(g)} gap(s)/{sum(d for _, d in g):.1f}s")
+    out.append(f"[harness] MACHINE: {rep['n']} stall(s) >{MACHINE_GAP_MIN_S}s "
+               f"across >={MACHINE_MIN_PROCS} of {len(rep['procs'])} processes, "
+               f"total {rep['total']:.1f}s ({rep['pct']:.1f}% of "
+               f"{rep['wall']:.1f}s run), worst {rep['worst']:.2f}s"
+               + (f"; per-process log silence: {', '.join(per)}" if per else ""))
+    for s in rep["stalls"]:
+        hh = int(s["start"] // 3600) % 24
+        mm = int(s["start"] // 60) % 60
+        ss = s["start"] % 60
+        out.append(f"[harness]   stall at {hh:02d}:{mm:02d}:{ss:06.3f} "
+                   f"{s['dur']:.2f}s across {'/'.join(s['tags'])} "
+                   f"(onset spread {s['onset_spread'] * 1000:.0f}ms)")
+        if s["discriminator"]:
+            out.append(f"[harness]     {s['discriminator']}")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# LIVE-EDGE AXIS (H3, 2026-08-18).
+#
+# The LIVE-EDGE term compared the viewer's max battle frame against the host's
+# FINAL battle frame. When the viewer exits FIRST that is a category error, and
+# it fabricated the number a whole triage was then reasoned from:
+# `host_final_frame=1263 spec_max_frame=4639 gap=-3376 -> FAIL`, where 1263 was
+# the host's FIFTH match and 4639 the viewer's last frame of the host's SECOND,
+# taken 136 seconds apart. The two numbers were never on a comparable axis.
+def viewer_exit_axis(host_log, spec_log, early_s=5.0):
+    """Was the viewer gone well before the host, and what was the host doing
+    when it left? Returns dict(early, viewer_last, host_last, host_ran_more_s)."""
+    _, s_last, _ = _log_ts_series(spec_log)
+    _, h_last, _ = _log_ts_series(host_log)
+    if s_last is None or h_last is None:
+        return dict(early=False, viewer_last=s_last, host_last=h_last,
+                    host_ran_more_s=None)
+    more = h_last - s_last
+    return dict(early=(more > early_s), viewer_last=s_last, host_last=h_last,
+                host_ran_more_s=more)
+
+
+def _hms(t):
+    if t is None:
+        return "?"
+    return f"{int(t//3600)%24:02d}:{int(t//60)%60:02d}:{int(t%60):02d}"
+
+
 def _css_parity_gate(out_dir, specs):
     """CSS-phase parity safety net (#66). Returns (fail: bool, lines: list[str]).
 
@@ -509,11 +801,35 @@ def _css_parity_gate(out_dir, specs):
                 out.append(m.group(1)); prev = m.group(1)
         return out
 
+    _ts = re.compile(r'^\[(\d\d):(\d\d):(\d\d)\.(\d\d\d)\]')
+
     def sessions(path):
-        # per CSS session: (sel-cell nav before both-confirm, locked sel). A
-        # session ends at the first act==(1,1) latch; the frozen post-confirm
-        # tail is dropped; a reset to (0,0) after a latch opens the next session.
+        # per CSS session: (sel-cell nav before both-confirm, locked sel,
+        # open-timestamp, LAST-[CSS-FP]-timestamp). A session ends at the first
+        # act==(1,1) latch; the frozen post-confirm tail is dropped; a reset to
+        # (0,0) after a latch opens the next session.
+        #
+        # `open_ts` and `last_ts` (seconds since midnight, None if the lines
+        # carried no stamp) exist for the TRUNCATED classification below: "this
+        # session opened and then the log ENDED" is a fact about the stream
+        # stopping, not about the sim, and it can only be told from a real
+        # desync by the clock.
+        #
+        # THE DISCRIMINATOR IS `last_ts`, NOT `open_ts` (adversarial review H4,
+        # 2026-08-18). Keyed on the OPEN, the test asks "how long did this
+        # window run?" and a viewer whose stream died 3 seconds INTO a
+        # character-select window classified DEGENERATE and failed fatally --
+        # a false red of exactly the class this classification exists to
+        # remove. The question that separates truncation from divergence is
+        # "did any more content arrive after this session's last frame?", which
+        # is the distance from the LAST [CSS-FP] line to the end of the log.
+        # (The archived cycle-4 corpus happens to satisfy both because its
+        # stream died 75ms after the open -- which is why the original self-test
+        # could not see the difference. See test_css_gate.py's late-truncation
+        # injection, added with this fix.)
         segs, cur, locked, in_tail, prev = [], [], None, False, None
+        open_ts = None
+        last_ts = None
         try: fh = open(path, errors="ignore")
         except OSError: return segs
         for ln in fh:
@@ -523,15 +839,25 @@ def _css_parity_gate(out_dir, specs):
             key = (sel, act)
             if key == prev: continue
             prev = key
+            mt = _ts.match(ln)
+            t = None
+            if mt:
+                h, mi, s, ms = (int(x) for x in mt.groups())
+                t = h * 3600 + mi * 60 + s + ms / 1000.0
+            if t is not None: last_ts = t
             if act == (1, 1):
                 if not in_tail:
                     locked = sel; in_tail = True
             elif act == (0, 0) and in_tail:
-                segs.append((cur, locked)); cur, locked, in_tail = [], None, False
+                segs.append((cur, locked, open_ts, last_ts))
+                cur, locked, in_tail, open_ts = [], None, False, None
+                last_ts = t
                 cur.append(sel)
+                if open_ts is None: open_ts = t
             elif not in_tail:
                 cur.append(sel)
-        segs.append((cur, locked))
+                if open_ts is None: open_ts = t
+        segs.append((cur, locked, open_ts, last_ts))
         return [s for s in segs if s[0]]
 
     def lcs_len(a, b):
@@ -563,13 +889,77 @@ def _css_parity_gate(out_dir, specs):
                          f"-> CSS NONDETERMINISM\n    host={hv}\n    guest={gv}")
 
     # CSS-SPEC: each spectator's sel-path + locked char vs the host's.
+    #
+    # G1 (2026-08-18) -- MADE DETERMINISTIC. What this block used to do could
+    # pass by luck and fail by luck, and did both inside one campaign:
+    #
+    #   * It scored a TRUNCATED viewer session -- one whose process exited 75ms
+    #     after the CSS window opened, so it never reached the both-confirm
+    #     latch -- against a COMPLETE host session, and printed
+    #     `CSS DESYNC (LOCKED CHAR host=10/5 spec=None)` about a viewer that was
+    #     bit-exact on every frame it actually held. `spec=None` is not a
+    #     character; it is the absence of a measurement.
+    #   * It re-shopped the host-session pairing with `min()` on EVERY viewer
+    #     session independently, so a viewer whose sessions had slipped by one
+    #     could re-pair each one to whatever embedded best and come back green.
+    #
+    # The four rules below: classify before pairing, score complete-vs-complete
+    # only, PIN the pairing offset once per viewer, and fail closed when nothing
+    # was scorable. Coverage is printed unconditionally.
+    #
+    # ONE FACT REDS IN ONE PLACE. "The viewer holds fewer sessions than the
+    # host" is LIVE-EDGE's verdict (H3 owns the axis and the early-exit
+    # outcome). This term reports its coverage and does NOT red a second time
+    # for the same fact -- a pile of correlated reds is not a diagnosis.
     Hs = sessions(out_dir / "live_FM2K_P1_Debug.log")
     for s in specs:
         Ss = sessions(s["live"])
         if not Ss:
+            # V == 0 is a DIFFERENT fact from "V sessions, none scorable": this
+            # viewer never entered a character-select window at all (a
+            # battle-phase joiner legitimately never does). That fact belongs to
+            # LIVE-EDGE / the segment counts, not here -- see the one-place rule
+            # above. Rule 4's fail-closed floor covers V >= 1.
             lines.append(f"[harness] CSS-SPEC {s['tag']}: no CSS sessions observed -- skipped")
             continue
-        for si, (snav, slk) in enumerate(Ss):
+        # --- rule 1: classify every viewer session BEFORE any pairing ---------
+        _, s_log_end, _ = _log_ts_series(s["live"])
+        kinds = []
+        for si, (snav, slk, sts, sle) in enumerate(Ss):
+            if slk is not None:
+                kinds.append("COMPLETE")
+            elif si == len(Ss) - 1 and sle is not None and s_log_end is not None \
+                    and (s_log_end - sle) <= 2.0:
+                # Keyed on the session's LAST [CSS-FP], i.e. "no more content
+                # arrived and then the log ended" -- see sessions() for why the
+                # open timestamp was the wrong end.
+                kinds.append("TRUNCATED")   # the stream stopped mid-session
+            else:
+                kinds.append("DEGENERATE")  # entered and LEFT without confirming
+        n_trunc = kinds.count("TRUNCATED")
+        n_degen = kinds.count("DEGENERATE")
+        # --- rules 2+3: score complete-vs-complete, offset PINNED once --------
+        pinned = None      # (viewer session ordinal, host session ordinal)
+        scored = 0
+        host_used = []
+        for si, (snav, slk, _sts, _sle) in enumerate(Ss):
+            if kinds[si] == "TRUNCATED":
+                lines.append(f"[harness] CSS-SPEC {s['tag']} sess{si}: TRUNCATED "
+                             f"(viewer stream ended "
+                             f"{(s_log_end - Ss[si][3]) * 1000:.0f}ms after this "
+                             f"window's LAST character-select frame, "
+                             f"{(s_log_end - Ss[si][2]) * 1000:.0f}ms after it "
+                             f"opened, before the both-confirm latch) -- "
+                             f"NO VERDICT")
+                continue
+            if kinds[si] == "DEGENERATE":
+                fail = True
+                lines.append(f"[harness] CSS-SPEC {s['tag']} sess{si}: DEGENERATE "
+                             f"-- the viewer entered this character-select window "
+                             f"and LEFT it without ever reaching the both-confirm "
+                             f"latch, mid-stream (session {si} of {len(Ss)}). That "
+                             f"is a stream defect, not a truncation.")
+                continue
             # WHICH host session is this spectator session? Ranked by, in order:
             # fewest non-embedded cells (the mismatch term), then longest LCS,
             # then longest common PREFIX -- all evidence terms. The old key was
@@ -586,7 +976,7 @@ def _css_parity_gate(out_dir, specs):
             # so sess19 belongs next to host-sess18, never host-sess0 -- and the
             # line says AMBIGUOUS out loud rather than implying a real pairing.
             cands = []
-            for hi, (hnav, hlk) in enumerate(Hs):
+            for hi, (hnav, hlk, _hts, _hle) in enumerate(Hs):
                 L = lcs_len(hnav, snav)
                 non_embed = min(len(hnav), len(snav)) - L
                 pfx = 0
@@ -596,13 +986,64 @@ def _css_parity_gate(out_dir, specs):
                 cands.append(((non_embed, -L, -pfx), hi, L, len(hnav), hlk))
             bkey = min(c[0] for c in cands)
             tied = [c for c in cands if c[0] == bkey]
-            _, hi, L, hlen, hlk = min(tied, key=lambda c: (abs(c[1] - si), c[1]))
-            non_embed = bkey[0]
+            best = min(tied, key=lambda c: (abs(c[1] - si), c[1]))
+            # RULE 3 -- PIN THE OFFSET ONCE PER VIEWER. The first COMPLETE
+            # session chooses the alignment; every later one is REQUIRED to sit
+            # at first_host + (si - si0). Re-shopping per session is exactly how
+            # a wrong alignment could launder itself into a pass, so a
+            # disagreement is now the finding, not an input to a search.
+            if pinned is None:
+                pinned = (si, best[1])
+                hi, L, hlen, hlk = best[1], best[2], best[3], best[4]
+                non_embed = bkey[0]
+            else:
+                want = pinned[1] + (si - pinned[0])
+                if not (0 <= want < len(Hs)):
+                    # The viewer holds MORE sessions past the pinned alignment
+                    # than the host does. Coverage, not a desync -- reported
+                    # here and owned by LIVE-EDGE. Checked BEFORE the drift test
+                    # so an out-of-range expectation cannot masquerade as one.
+                    lines.append(f"[harness] CSS-SPEC {s['tag']} sess{si}: host has "
+                                 f"no session {want} ({len(Hs)} total) -- NO VERDICT "
+                                 f"(coverage, see LIVE-EDGE)")
+                    continue
+                if best[1] != want:
+                    fail = True
+                    lines.append(f"[harness] CSS-SPEC {s['tag']}: PAIRING DRIFT: "
+                                 f"sess{si} expected host-sess{want} (offset pinned "
+                                 f"on sess{pinned[0]} -> host-sess{pinned[1]}) but "
+                                 f"best-match is host-sess{best[1]}. The two session "
+                                 f"lists are strictly time-ordered; a disagreement "
+                                 f"means one side gained or lost a window, which is "
+                                 f"a finding -- NOT something to re-pair around.")
+                    continue
+                hnav, hlk, _, _ = Hs[want]
+                hi, hlen = want, len(hnav)
+                L = lcs_len(hnav, snav)
+                non_embed = min(hlen, len(snav)) - L
+            # RULE 2 -- the host session must itself be COMPLETE. Scoring a
+            # locked char against a host that never locked one is the same
+            # not-a-measurement the `spec=None` branch used to print, mirrored.
+            if hlk is None:
+                lines.append(f"[harness] CSS-SPEC {s['tag']} sess{si}: paired "
+                             f"host-sess{hi} never reached the both-confirm latch "
+                             f"-- NO VERDICT (host side incomplete)")
+                continue
+            # RULE 5 -- a spec=None can no longer reach the DESYNC branch. The
+            # classification above is the only thing standing between "the
+            # viewer confirmed a different character" and "the viewer was not
+            # there"; if it ever lets a None through, that is a harness bug and
+            # it must raise, not print a verdict about the product.
+            assert slk is not None, (
+                f"CSS-SPEC {s['tag']} sess{si}: a session classified COMPLETE "
+                f"has no locked char -- harness bug")
             ambig = (f" [AMBIGUOUS: {len(tied)} host sessions tie on this "
                      f"{len(snav)}-cell segment]" if len(tied) > 1 else "")
             shorter = min(hlen, len(snav))
             tol = max(2, (shorter + 49) // 50)   # ~2% seam slack (snapshot join)
             lock_ok, nav_ok = (slk == hlk), (non_embed <= tol)
+            scored += 1
+            host_used.append(hi)
             if lock_ok and nav_ok:
                 lines.append(f"[harness] CSS-SPEC {s['tag']} sess{si}: sel-path matches "
                              f"host-sess{hi} (LCS {L}/{shorter}, lock {slk}) OK{ambig}")
@@ -614,6 +1055,18 @@ def _css_parity_gate(out_dir, specs):
                                            f"LCS {L}/{shorter})")
                 lines.append(f"[harness] CSS-SPEC {s['tag']} sess{si}: vs host-sess{hi} "
                              f"-> CSS DESYNC ({'; '.join(why)}){ambig}")
+        # --- rule 4: coverage, printed ALWAYS and fail-closed at zero ---------
+        if scored == 0:
+            fail = True
+            lines.append(f"[harness] CSS-SPEC {s['tag']}: 0 of {len(Ss)} viewer "
+                         f"session(s) scorable ({n_trunc} truncated, {n_degen} "
+                         f"degenerate) -- NO VERDICT COMPUTED. A term that measured "
+                         f"nothing must never report a pass.")
+        else:
+            lines.append(f"[harness] CSS-SPEC {s['tag']}: scored {scored}/{len(Ss)} "
+                         f"viewer session(s) against host sessions "
+                         f"[{min(host_used)}..{max(host_used)}] of {len(Hs)} "
+                         f"({n_trunc} truncated, {n_degen} degenerate)")
     return fail, lines
 
 
@@ -2002,7 +2455,15 @@ def _parity_gates(out_dir, specs):
     else:
         for s in specs:
             prev_hi = -1
-            for si, sseg in enumerate(_ck_spec(s["live"])):
+            # G1's rule, arriving in a SECOND term (2026-08-18). A segment with
+            # ZERO overlapping frames compared NOTHING, and "nothing was
+            # compared" is not a desync -- printing one is the same
+            # not-a-measurement error the CSS-SPEC `spec=None` branch used to
+            # make. Materialised so the LAST segment can be told from a
+            # mid-stream one, which is the whole discriminator (see below).
+            _ck_segs = list(_ck_spec(s["live"]))
+            ck_scored = 0
+            for si, sseg in enumerate(_ck_segs):
                 scrc = _ck_crc(sseg)
                 nz = sum(1 for c in scrc.values() if c)
                 if nz == 0:
@@ -2017,18 +2478,45 @@ def _parity_gates(out_dir, specs):
                 (_, hi, mm, O, n, mx, fb), nties = _pick_tied(cands, prev_hi)
                 prev_hi = hi
                 tie = f" [tie:{nties}]" if nties > 1 else ""
-                if n == 0:
+                if n == 0 and si == len(_ck_segs) - 1:
+                    # TRUNCATED TAIL -- NO VERDICT, and it is not a pass either
+                    # (the coverage floor below is what protects this).
+                    #
+                    # Measured 2026-08-18, and it was MY change that surfaced
+                    # it: raising FM2K_SPEC_HOST_GONE_MS to the shipped 12000
+                    # (H1) lets a legitimately-behind from-frame-0 viewer live
+                    # 7s longer, long enough to OPEN a second battle segment out
+                    # of its own buffer that it never gets host-comparable
+                    # content for. Same-tree A/B on the kill-switch recipe:
+                    #   HOST_GONE=5000  -> one segment, 2136 frames IDENTICAL
+                    #   HOST_GONE=12000 -> the same 2136 IDENTICAL, PLUS an
+                    #                      empty seg1 printed as FULL-STATE
+                    #                      DESYNC
+                    # Everything real was identical across the arms (same lag,
+                    # gap -1077 vs -1076; same bit-exact seg0). The viewer did
+                    # not desync; the term scored a segment that held nothing.
+                    print(f"[harness] CHECKSUM {s['tag']} seg{si}: TRUNCATED "
+                          f"(0 frames overlap any host match -- the viewer opened "
+                          f"this segment and the stream ended) -- NO VERDICT")
+                elif n == 0:
+                    # MID-STREAM zero overlap is still FATAL. A viewer that
+                    # entered a segment and left it with nothing comparable,
+                    # while continuing to produce later segments, is a real
+                    # finding (G1's DEGENERATE class, same reasoning).
                     ck_fail = True
                     print(f"[harness] CHECKSUM {s['tag']} seg{si}: NO OVERLAP with "
-                          f"any host match -> FULL-STATE DESYNC")
+                          f"any host match, MID-STREAM (segment {si} of "
+                          f"{len(_ck_segs)}) -> FULL-STATE DESYNC")
                 elif mx > 3:
                     ck_fail = True
+                    ck_scored += 1      # measured, and it FAILED -- not "unmeasured"
                     hcrc = _ck_crc(ck_H[hi])
                     print(f"[harness] CHECKSUM {s['tag']} seg{si}: vs host-match{hi} "
                           f"off{O} {mm}/{n} CRC mismatches (longest run {mx}) -> "
                           f"FULL-STATE DESYNC (first spec-bf={fb} host-f={fb + O}: "
                           f"spec=0x{scrc[fb]:08X} host=0x{hcrc[fb + O]:08X}){tie}")
                 else:
+                    ck_scored += 1
                     extra = f" ({mm} tail/predicted artifact)" if mm else ""
                     print(f"[harness] CHECKSUM {s['tag']} seg{si}: vs host-match{hi} "
                           f"off{O} {n} frames FULL-STATE IDENTICAL{extra}{tie}")
@@ -2126,6 +2614,20 @@ def _parity_gates(out_dir, specs):
                     else:
                         print(f"[harness] POOL {s['tag']} seg{si}: vs host-match{hi} "
                               f"off{O} {name}= {tn} frames IDENTICAL")
+            # COVERAGE FLOOR, fail-closed -- the other half of the TRUNCATED
+            # hatch above. Excusing an unmeasurable tail segment is only honest
+            # while SOMETHING was measured; a viewer whose every segment was
+            # unmeasurable has produced no full-state verdict at all, and that
+            # must never read as a pass.
+            if _ck_segs and ck_scored == 0:
+                ck_fail = True
+                print(f"[harness] CHECKSUM {s['tag']}: 0 of {len(_ck_segs)} "
+                      f"viewer segment(s) scorable -- NO VERDICT COMPUTED. A "
+                      f"term that measured nothing must never report a pass.")
+            elif _ck_segs:
+                print(f"[harness] CHECKSUM {s['tag']}: scored {ck_scored}/"
+                      f"{len(_ck_segs)} viewer segment(s) against {len(ck_H)} "
+                      f"host match(es)")
 
     # ---- PLAYER-vs-PLAYER FULL-STATE FENCEPOST (the gate hole) ---------------
     # Until 2026-08-16 the harness compared P1 against P2 on CINPUT ONLY --
@@ -3091,6 +3593,28 @@ def main():
     # and the extra per-frame pool walk is a one-sided timing perturbation in
     # exactly the phase that decides the open player-plane desync.
     _css_anim = os.environ.get("FM2K_CSS_ANIM")
+    # O1 A/B LEVER (2026-08-18) -- the VIEWER-ONLY instruments-off arm.
+    #
+    # The open measurement: a deep-joining viewer mirrored the host's
+    # character-select at 17.9 frames/s against the 65 frames/s the host had
+    # produced them at (931 INPUT frames in 51.9s vs 14.3s), which is why
+    # `boot -> deep-join APPLIED` reads 40-53s. Three candidate causes are not
+    # separated: CSS sim frames are genuinely expensive, the playout loop is
+    # hard-capped at 4 frames per outer tick, and THIS HARNESS ARMS
+    # FM2K_CSS_WIN + FM2K_CSS_ANIM ON THE VIEWERS -- a per-character-select-frame
+    # 1024-slot pool walk with synchronous logging, on the very plane whose
+    # throughput is being measured.
+    #
+    # FM2K_CSS_WIN=0 alone is NOT that experiment: it is symmetric, so it also
+    # un-arms the host and moves the thing being compared against. This lever
+    # drops both instruments from the SPECTATOR env ONLY, leaving the host's
+    # arming (and therefore the host's timing) exactly as the A arm has it. The
+    # decisive comparison is `boot -> deep-join APPLIED` between the two arms on
+    # the same seed; a material drop means the instrument owns the number and the
+    # harness must stop arming a per-frame pool walk on the plane it measures.
+    # Defaults ON (=1) so every existing run is unchanged.
+    _spec_css_instruments = os.environ.get("FM2K_SPEC_CSS_INSTRUMENTS", "1") \
+        not in ("0", "")
 
     p1_env = {**common_env,
               "FM2K_CSS_WIN": _css_win,
@@ -3160,23 +3684,52 @@ def main():
         # uniquely identifiable.
         env = {"FM2K_PARITY_RECORD_PATH": to_win(pty), "FM2K_LOG_TAG": f"S{k+1}",
                "FM2K_CINPUT": os.environ.get("FM2K_CINPUT", "1"),
-               # Exit ~5s after the host's feed stops (harness TerminateProcess =
-               # no graceful SESSION_END) instead of spinning at [SPEC-Q] q=0.
-               "FM2K_SPEC_HOST_GONE_MS": os.environ.get("FM2K_SPEC_HOST_GONE_MS", "5000"),
                # [CSS-WIN]/[CSS-OBJ] character-select window gate -- the OTHER
                # half of the HOST-side default above (the guest deliberately
                # does not carry it; see the FM2K_CSS_WIN comment there). The
                # whole point of the gate is the host-vs-spectator comparison, so
                # THIS default must stay symmetric with P1's or the run measures
                # one plane against nothing.
-               "FM2K_CSS_WIN": _css_win}
+               "FM2K_CSS_WIN": (_css_win if _spec_css_instruments else "0")}
         if _css_fall_delta:
             env["FM2K_CSS_FALL_DELTA"] = _css_fall_delta
         # [CSS-ANIM] viewer half. The whole instrument is a host-vs-spectator
-        # comparison, so this MUST stay symmetric with P1's above.
-        if _css_anim:
+        # comparison, so this MUST stay symmetric with P1's above -- unless the
+        # O1 viewer-only instruments-off arm is armed, which deliberately breaks
+        # that symmetry and therefore also gives up the CSSANIM term for the run
+        # (the term correctly refuses to score not-computed as a pass, so such a
+        # run is a MEASUREMENT arm, not a gate run).
+        if _css_anim and _spec_css_instruments:
             env["FM2K_CSS_ANIM"] = _css_anim
-        for kk in ("FM2K_SPEC_DROP", "FM2K_SPEC_DROP_SEED", "FM2K_CSS_TRACE",
+        # FM2K_SPEC_HOST_GONE_MS: NOT set here any more (H1, 2026-08-18).
+        #
+        # This harness used to hard-default it to 5000 "so the viewer exits ~5s
+        # after the host's feed stops instead of spinning at q=0". The shipped
+        # default is 12000 and it is the LAST rung of the spectator recovery
+        # ladder -- RC stall repair at 3500, escalation #1 at 4000 (up to 7500
+        # under active RC repair), escalation #2 4000ms behind that. At 5000 the
+        # viewer kills itself BEFORE any of its own repairs can run, which the
+        # hook warns about at boot in every single log this harness has ever
+        # produced. laneC_triage filed it as Fix 6 on 2026-08-15; on 2026-08-18
+        # its predicted consequence arrived and cost a soak cycle: a 6.26s
+        # whole-machine stall (all four processes frozen to the millisecond)
+        # sat inside the 12000 budget and outside the 5000 one, so both viewers
+        # exited 2m16s before the host and the run was triaged as a starve it
+        # was not. Truncating the thing under test is not a shorter teardown, it
+        # is a different product.
+        #
+        # Deliberately still OVERRIDABLE from the environment (below), and
+        # tools/spec_host_gone_test.sh keeps its own short value in-source with
+        # the reason -- that stage must beat harness cleanup and is measuring
+        # the give-up itself.
+        for kk in ("FM2K_SPEC_HOST_GONE_MS",
+                   # P1 red/green lever: one-shot whole-network freeze on the
+                   # viewer (dark by default). Spectator-only by construction.
+                   "FM2K_SPEC_TEST_SELFSTALL_MS",
+                   # P1 kill switch (A/B scaffolding, default armed): the red
+                   # arm of the self-stall credit. Presence-forwarded via the
+                   # explicit block below so "0" is never dropped.
+                   "FM2K_SPEC_DROP", "FM2K_SPEC_DROP_SEED", "FM2K_CSS_TRACE",
                    "FM2K_SPECTATOR_DEBUG", "FM2K_SPEC_CONNECT_TIMEOUT_MS",
                    "FM2K_NET_DELAY_MS", "FM2K_NET_JITTER_MS", "FM2K_NET_LOSS", "FM2K_NET_SEED",
                    "FM2K_NET_REORDER", "FM2K_NET_DUP",
@@ -3252,6 +3805,12 @@ def main():
         # a split-brain run.
         if os.environ.get("FM2K_SPEC_DEEP_JOIN") is not None:
             env["FM2K_SPEC_DEEP_JOIN"] = os.environ["FM2K_SPEC_DEEP_JOIN"]
+        # FM2K_SPEC_SELFSTALL, viewer-only by construction (the watchdog it
+        # gates runs on the spectator plane). Presence-forwarded, never
+        # truthiness: `if os.environ.get(k)` drops "0" and turns every red arm
+        # into a second measurement of the default.
+        if os.environ.get("FM2K_SPEC_SELFSTALL") is not None:
+            env["FM2K_SPEC_SELFSTALL"] = os.environ["FM2K_SPEC_SELFSTALL"]
         # FM2K_ROUNDS_RELATCH, viewer half -- NO LONGER INERT. It was, while the
         # only re-derive lived at the player battle-entry barrier (unreachable on
         # a spectator: hooks_update.cpp returns before the battle-sync block when
@@ -3509,6 +4068,89 @@ def main():
             except OSError as e:
                 print(f"[harness] (warn) could not preserve {lf}: {e}")
 
+    # ---- MACHINE STALL: VOID, not PASS and not FAIL (rc=4) -------------------
+    # See machine_stall_report's header for the rule and the capture that forced
+    # it. Printed ALWAYS (a `MACHINE: 0 stall(s)` line on every clean run), and
+    # checked HERE -- immediately after preservation, before a single product
+    # term is computed. That placement is the point: a run whose four processes
+    # each spent seconds not being scheduled did not measure the product, and
+    # printing its terms anyway is how the 2026-08-18 leg got triaged as a
+    # spectator starve. The stall table below IS the evidence; the raw logs are
+    # preserved either way.
+    try:
+        _gone_ms = int(os.environ.get("FM2K_SPEC_HOST_GONE_MS") or "12000")
+    except ValueError:
+        _gone_ms = 12000
+    _mach = machine_stall_report(OUT_DIR, host_gone_ms=_gone_ms)
+    for _l in machine_stall_lines(_mach):
+        print(_l)
+    if _mach["void"]:
+        # MACHINE-CONFIRMED vs UNCONFIRMED is the difference between "the box
+        # is sick" and "something went quiet and we cannot prove what". Only
+        # the confirmed form may be read as a hardware verdict -- soak_driver.sh
+        # keys its machine-unfit SOAK_STOP on this line (review H5).
+        _conf = "MACHINE-CONFIRMED" if _mach.get("confirmed") else \
+                "MACHINE-UNCONFIRMED"
+        print(f"[harness] OVERALL VOID (rc=4) [{_conf}]: MACHINE STALL -- "
+              f"{_mach['reason']}. {MACHINE_MIN_PROCS}+ of "
+              f"{len(_mach['procs'])} game processes stopped logging within "
+              f"{MACHINE_ONSET_MAX_S * 1000:.0f}ms of each other; this run is "
+              f"NOT a PASS and NOT a FAIL because it measured nothing. Re-run "
+              f"this leg.")
+        if _mach.get("confirmed"):
+            print(f"[harness]   MACHINE-CONFIRMED: a viewer went silent while "
+                  f"still HOLDING buffered content, which neither network "
+                  f"starvation nor a host-side wedge can cause. A leg that "
+                  f"VOIDs twice this way means the machine is unfit to measure "
+                  f"with (memtest / close the scanner / drop the process "
+                  f"count), not that the product regressed.")
+        else:
+            print(f"[harness]   MACHINE-UNCONFIRMED: the onsets coincided but "
+                  f"the viewer-content discriminator did not confirm it (no "
+                  f"[SPEC-Q] depth before the gap). Treat this as an "
+                  f"unmeasured run, NOT as evidence about the hardware -- a "
+                  f"reproducible PRODUCT hang must red, and if this VOID "
+                  f"repeats, read the preserved logs before blaming the box.")
+        return 4
+
+    # ---- VIEWER SELF-STALL: a fact about the run, never silent ---------------
+    # [SPEC-SELFSTALL] means a viewer process did not run for a while and
+    # credited that silence back to its host-gone budget (P1). That credit is
+    # the right behaviour, and it must never be a QUIET way for a bad run to
+    # look good -- a viewer that spent seconds descheduled did not measure the
+    # timings this harness reports. FATAL above the same 1.5s the machine-stall
+    # detector uses (below it, a sub-second scheduling hiccup on a machine
+    # running four games is noise and reporting it fatally would only make the
+    # gate flaky); advisory-with-a-count below. Suppressed when the run itself
+    # armed the freeze (FM2K_SPEC_TEST_SELFSTALL_MS -- the red/green arm).
+    import re as _ss_re
+    _selfstall_fatal = []
+    _ss_pat = _ss_re.compile(r"\[SPEC-SELFSTALL\] this viewer did not run for (\d+)ms")
+    # NOT bool(): the string "0" is TRUTHY in Python, so a DISARMED lever
+    # (FM2K_SPEC_TEST_SELFSTALL_MS=0, which the hook reads as "no freeze")
+    # would silently disarm this FATAL term. Same class of mistake this file
+    # calls out three times elsewhere; caught by review 2026-08-18.
+    _ss_armed = os.environ.get("FM2K_SPEC_TEST_SELFSTALL_MS") not in (None, "", "0")
+    for _s in specs:
+        _hits = []
+        try:
+            for _ln in open(_s["live"], errors="ignore"):
+                _m = _ss_pat.search(_ln)
+                if _m:
+                    _hits.append(int(_m.group(1)))
+        except OSError:
+            continue
+        if not _hits:
+            continue
+        _worst = max(_hits)
+        _tag = "TEST-ARMED" if _ss_armed else ("FATAL" if _worst >= 1500 else "advisory")
+        print(f"[harness] SELFSTALL {_s['tag']}: {len(_hits)} self-stall(s) "
+              f"credited, worst {_worst}ms [{_tag}] -- this viewer process was "
+              f"not scheduled; its latency numbers are not trustworthy for that "
+              f"window")
+        if _worst >= 1500 and not _ss_armed:
+            _selfstall_fatal.append(f"{_s['tag']} froze for {_worst}ms")
+
     # ---- STORY-ONLY CONTENT: NOT-APPLICABLE, not FAIL (rc=3) -----------------
     # Eight of the 98 engine-identical games in the library are story-only:
     # their .kgt enables 1P/STORY and nothing else, so g_game_mode_flag can
@@ -3552,6 +4194,22 @@ def main():
     # the engine-desync gates and from the match-completion (.fm2krep) check.
     host_p1_log = OUT_DIR / "live_FM2K_P1_Debug.log"
     live_edge_fail = False
+    # H4 (adversarial review, 2026-08-18): "the viewer left first" is a FACT
+    # about the run, not an optional assertion, and it is kept in its own list
+    # because it is fatal UNCONDITIONALLY -- exactly the treatment this batch
+    # already gave SELFSTALL ("a viewer that stopped running for over 1.5s is a
+    # fact about the run"). The same sentence applies verbatim to "the viewer
+    # left 136 seconds before the host".
+    #
+    # WHY IT HAD TO CHANGE: G1 removed the CSS-SPEC false red that used to be
+    # the ACCIDENTAL detector for this shape (a truncated viewer session scored
+    # as `spec=None` DESYNC), on the grounds that the fact is LIVE-EDGE's to
+    # report. But `live_edge_fail` only reached the verdict under
+    # --assert-spectator-live, and soak_driver.sh does not pass it -- so on the
+    # soak driver, the driver whose cycle-4 red this batch dispositions, an
+    # early-exiting viewer would have gone from rc=1 to rc=0 PASS. One fact,
+    # one place, but that place has to actually be armed.
+    early_exit_fatal = []
     for s in specs:
         lv = spectator_liveness(host_p1_log, s["live"],
                                 first_host_match=s.get("first_host_match", 0))
@@ -3581,6 +4239,30 @@ def main():
                       f"(spec_max={lv2['spec_max']}, gap={lv2['gap']}).")
                 lv = lv2
         s["live_edge"] = lv
+        # H3 (2026-08-18): the AXIS check comes first. `gap` is
+        # host_final_frame - spec_max_frame, and those two numbers are only
+        # comparable when the two processes ended at roughly the same moment.
+        # When the viewer left first they are not, and printing a gap anyway
+        # manufactures a "3376 frames behind" reading out of two frames taken
+        # 136 seconds apart on different matches. Print WHAT HAPPENED instead.
+        ax = viewer_exit_axis(host_p1_log, s["live"])
+        s["exit_axis"] = ax
+        if ax["early"]:
+            print(f"[harness] LIVE-EDGE {s['tag']} ({s['phase']}): VIEWER LEFT "
+                  f"FIRST at {_hms(ax['viewer_last'])}, host ran "
+                  f"{ax['host_ran_more_s']:.0f}s more -- spec_max_frame "
+                  f"({lv['spec_max']}) and the host's FINAL frame "
+                  f"({lv['host_final']}) are NOT on a comparable axis, so NO GAP "
+                  f"IS COMPUTED [FATAL: spectator_exited_early]")
+            print(f"    matches host={lv['host_matches']} spec={lv['spec_matches']}; "
+                  f"the viewer's last frame belongs to an EARLIER host match. "
+                  f"Check the [harness] MACHINE line above FIRST: an all-processes "
+                  f"stall makes this a VOID run, not a spectator failure.")
+            early_exit_fatal.append(
+                f"{s['tag']} left at {_hms(ax['viewer_last'])}, "
+                f"{ax['host_ran_more_s']:.0f}s before the host")
+            live_edge_fail = True
+            continue
         verdict = "PASS" if lv["reached"] else "FAIL"
         print(f"[harness] LIVE-EDGE {s['tag']} ({s['phase']}): "
               f"host_final_frame={lv['host_final']} spec_max_frame={lv['spec_max']} "
@@ -3962,6 +4644,21 @@ def main():
     # LIVENESS gates, folded in HERE rather than returning early: they are not
     # correctness verdicts and must never suppress one (see _parity_gates).
     liveness_fail = []
+    # Unconditional (not behind an --assert flag): a viewer that stopped running
+    # for over 1.5s is a fact about the run, not an optional assertion.
+    if _selfstall_fatal:
+        liveness_fail.append("viewer SELF-STALL (" + "; ".join(_selfstall_fatal)
+                             + ") -- the viewer process was descheduled "
+                             "mid-stream; see the SELFSTALL line above")
+    # Unconditional for the same reason (H4): a viewer that left the session
+    # long before the host did not watch the run this harness just scored.
+    if early_exit_fatal:
+        liveness_fail.append("spectator EXITED EARLY (" +
+                             "; ".join(early_exit_fatal) +
+                             ") -- the viewer stopped before the host, so no "
+                             "live-edge gap is computable and every per-viewer "
+                             "term below covers a shorter run than the host's; "
+                             "see the LIVE-EDGE line above")
     if args.assert_spectator_live and live_edge_fail:
         liveness_fail.append("--assert-spectator-live (a spectator did not "
                              "reach/hold the host's live edge)")

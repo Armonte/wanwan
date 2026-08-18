@@ -18,12 +18,26 @@
 #include <SDL3/SDL_log.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
 
 
-static uint64_t g_last_input_admit_ms = 0;
+// ATOMIC, and the reason is a real cross-thread hazard rather than tidiness
+// (adversarial review H7, 2026-08-18). Until the self-stall credit landed this
+// clock had ONE writer family -- SpectatorNode_StampInputAdmit, always inside
+// PollImplLocked -- so plain 64-bit access was serialised by g_poll_mutex. The
+// credit adds a SECOND writer, SpectatorNode_CreditSelfStall, called from the
+// spectator trampoline thread and deliberately NOT holding that mutex (the
+// freeze test lever holds it). On a 32-bit target a uint64_t store is two
+// 32-bit stores, so an unsynchronised read-modify-write there could publish a
+// torn value across a high-word carry and could swallow a concurrent admit
+// stamp. Relaxed ordering is sufficient: this is a standalone timestamp, no
+// other state is published through it. (Taking g_poll_mutex on the trampoline
+// thread instead would deadlock against the very freeze lever the credit was
+// red/greened with.)
+static std::atomic<uint64_t> g_last_input_admit_ms{0};
 
 // Layer-2 render pacing: the host's PRODUCTION RATE, measured as admissions per
 // rolling 500ms window (robust to the 8-frame EVENT_BATCH bursts, which make
@@ -54,9 +68,12 @@ static size_t   g_adaptive_bank_frames   = 0;   // grow-only published target
 static uint64_t g_first_input_admit_ms   = 0;   // session's first admission
 // Last INPUT admitted via a UDP datagram specifically (heartbeats and
 // control traffic don't count). Drives the TCP-only floor pre-arm.
-static uint64_t g_last_udp_input_admit_ms = 0;
+// Atomic for the same 32-bit-tearing reason as g_last_input_admit_ms above:
+// written on the receive path, read by SpectatorNode_TargetDelayFrames on the
+// main thread.
+static std::atomic<uint64_t> g_last_udp_input_admit_ms{0};
 void SpectatorNode_StampUdpInputAdmit() {
-    g_last_udp_input_admit_ms = GetTickCount64();
+    g_last_udp_input_admit_ms.store(GetTickCount64(), std::memory_order_relaxed);
 }
 
 void SpectatorNode_StampInputAdmit() {
@@ -79,8 +96,9 @@ void SpectatorNode_StampInputAdmit() {
         g_admit_window_count = 0;
         g_admit_window_start = now;
     }
-    if (g_last_input_admit_ms != 0) {
-        const uint64_t gap = now - g_last_input_admit_ms;
+    const uint64_t prev_admit = g_last_input_admit_ms.load(std::memory_order_relaxed);
+    if (prev_admit != 0) {
+        const uint64_t gap = now - prev_admit;
         // 10s ceiling: longer silences are outages (TCP death, frozen
         // host) owned by the failover machinery. Everything under it is
         // jitter the bank must absorb -- the first UDP-off control run
@@ -100,7 +118,7 @@ void SpectatorNode_StampInputAdmit() {
             }
         }
     }
-    g_last_input_admit_ms = now;
+    g_last_input_admit_ms.store(now, std::memory_order_relaxed);
 }
 
 uint32_t SpectatorNode_RenderPeriodMs() {
@@ -146,13 +164,24 @@ size_t SpectatorNode_TargetDelayFrames() {
     // routinely exceed the 3s default under loss -- don't wait for the
     // first stall to teach the adaptive growth; start from a 6s floor.
     // Engages only after 10s of admissions with no UDP-borne INPUT.
+    //
+    // g_last_udp_input_admit_ms is stamped by BOTH UDP-borne admit paths:
+    // the dedicated SPEC-UDP accelerator (spec_recv.cpp, HandleUdpInputDatagram)
+    // and the RC full-transport EVENT_BATCH decode (spec_recv.cpp, the
+    // `udp_borne` arm). Until 2026-08-18 only the first of those stamped it, so
+    // on the DEFAULT transport -- RC over UDP, where every INPUT is admitted by
+    // the second -- this pre-arm fired on a perfectly healthy UDP link and put
+    // every viewer 6s behind live instead of 3s. If a third admit path is ever
+    // added, it must stamp this clock or resurrect that bug.
     if (s_adaptive == 1 && floor_eff < 600 &&
         g_state.subscribed_upstream && g_first_input_admit_ms != 0) {
         const uint64_t now = GetTickCount64();
+        const uint64_t last_udp =
+            g_last_udp_input_admit_ms.load(std::memory_order_relaxed);
         const bool udp_quiet =
-            (g_last_udp_input_admit_ms == 0)
+            (last_udp == 0)
                 ? (now - g_first_input_admit_ms > 10000)
-                : (now - g_last_udp_input_admit_ms > 10000);
+                : (now - last_udp > 10000);
         if (udp_quiet) floor_eff = 600;
     }
     if (s_adaptive == 1) {
@@ -210,8 +239,35 @@ size_t SpecDelayBankFrames() {
     return SpectatorNode_TargetDelayFrames();
 }
 uint32_t SpectatorNode_MsSinceLastAdmit() {
-    if (g_last_input_admit_ms == 0) return 0;  // nothing admitted yet
-    return (uint32_t)(GetTickCount64() - g_last_input_admit_ms);
+    const uint64_t last = g_last_input_admit_ms.load(std::memory_order_relaxed);
+    if (last == 0) return 0;  // nothing admitted yet
+    return (uint32_t)(GetTickCount64() - last);
+}
+
+// See the contract in spectator_node.h. Policy-free by design: the bound, the
+// per-session cap and the decision that a gap WAS a self-stall all live in the
+// one caller (core/trampoline_spec_watchdog.cpp), so this cannot be misused
+// from a second site without that reasoning being copied with it.
+// LOCK-FREE CAS rather than a plain read-modify-write: the other writer
+// (SpectatorNode_StampInputAdmit, from PollImplLocked on the MM-timer worker)
+// can land between the load and the store, and a lost admit stamp is a viewer
+// charged for silence that did not happen. The loop re-reads and retries, and
+// it also ABANDONS the credit if a concurrent admit already moved the clock
+// past where we were going to move it -- a fresh admit is strictly better
+// evidence than a credit.
+void SpectatorNode_CreditSelfStall(uint32_t ms) {
+    if (ms == 0) return;
+    const uint64_t now = GetTickCount64();
+    uint64_t cur = g_last_input_admit_ms.load(std::memory_order_relaxed);
+    for (;;) {
+        if (cur == 0) return;              // nothing admitted yet
+        uint64_t moved = cur + ms;
+        if (moved > now) moved = now;      // never pretend we admitted in the future
+        if (moved <= cur) return;          // a concurrent admit already did better
+        if (g_last_input_admit_ms.compare_exchange_weak(
+                cur, moved, std::memory_order_relaxed, std::memory_order_relaxed))
+            return;
+    }
 }
 
 // True once the spectator has admitted at least one frame (i.e. the JOIN

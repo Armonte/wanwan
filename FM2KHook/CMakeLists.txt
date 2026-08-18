@@ -32,6 +32,7 @@ set(FM2KHOOK_SOURCES
     src/core/trampoline_css.cpp        # RunCssTick
     src/core/trampoline_native.cpp     # RunNativeTick
     src/core/trampoline_spectator.cpp  # RunSpectatorTick + SpectatorSimOneFrame
+    src/core/trampoline_spec_watchdog.cpp # spectator liveness watchdog (self-stall credit, rung catch-up, host-gone)
     # Hooks
     src/hooks/hooks.cpp
     src/hooks/hooks_rng.cpp        # RNG trace + Hook_GameRand (split from hooks.cpp)

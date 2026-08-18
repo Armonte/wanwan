@@ -675,6 +675,12 @@ struct State {
     struct ReorderBatch {
         int32_t op_base = -1;   // EVENT_BATCH2 absolute op base; -1 = legacy
         std::vector<uint8_t> bytes;
+        // Did this batch arrive on an RC/UDP channel (rc_channel != 0)? Carried
+        // across the reorder buffer so a batch drained LATER still stamps the
+        // UDP-borne admit clock that the TCP-only delay-bank pre-arm reads --
+        // otherwise a viewer whose live stream is entirely reorder-buffered
+        // would look TCP-only and double its bank floor (spec_playback_state).
+        bool udp_borne = false;
     };
     std::map<uint32_t, ReorderBatch> pb_reorder;
     // Pull-based gap recovery: periodic + on-demand INPUT_REQUEST

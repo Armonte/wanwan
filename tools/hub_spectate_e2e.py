@@ -623,7 +623,16 @@ def main() -> int:
                     "FM2K_SPECTATOR_DEBUG": "1",
                     "FM2K_CINPUT": "1",
                     "FM2K_TEST_ROUNDS": str(args.rounds),
-                    "FM2K_SPEC_HOST_GONE_MS": "5000",
+                    # FM2K_SPEC_HOST_GONE_MS deliberately NOT set (H1,
+                    # 2026-08-18): it used to be pinned to 5000, which is BELOW
+                    # the shipped 12000 give-up budget and therefore truncates
+                    # the recovery ladder this stage is supposed to exercise --
+                    # the viewer kills itself before RC stall repair (3500) and
+                    # both starve escalations (4000 / +4000) can run. The hook
+                    # warns about the override at boot in every log this harness
+                    # produced. Cost of the default: the viewer trails the host's
+                    # exit by ~12s instead of ~5s, which the completion wait
+                    # below already budgets for.
                     "FM2K_PARITY_RECORD_PATH": sst.to_win(sp_pty)}
         if rc_liveness is not None:
             spec_env["FM2K_RC_LIVENESS"] = rc_liveness

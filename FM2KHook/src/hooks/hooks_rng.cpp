@@ -131,6 +131,13 @@ uint32_t __cdecl Hook_GameRand() {
     // peers. Render rng is intentionally NOT traced (it's a separate stream).
     if (g_in_render_rng) {
         ++g_render_rand_calls;  // #63 diag: count render-side rng draws
+        // Seam-ring cumulative render-side tally. Pairs with g_seam_rand_total
+        // (gameplay side) to answer a specific question: when a resim draws 3
+        // FEWER gameplay values than the forward pass at the same frame with
+        // the same state, were those 3 draws not made at all, or were they
+        // DIVERTED here because g_in_render_rng was set across them? The two
+        // counters together distinguish those; either alone cannot.
+        { extern uint32_t g_seam_rand_render; ++g_seam_rand_render; }
         const uint32_t gameplay = *(uint32_t*)FM2K::ADDR_RANDOM_SEED;
         *(uint32_t*)FM2K::ADDR_RANDOM_SEED = g_render_rng_seed;
         const uint32_t r = original_game_rand ? original_game_rand() : 0;
@@ -141,18 +148,29 @@ uint32_t __cdecl Hook_GameRand() {
     // Gameplay-seed draw (render isolation NOT active). Count for the
     // per-frame [FULLFP] gp= tally used by the mid-join spectate desync hunt.
     ++g_gameplay_rand_calls;
+    // Seam-ring cumulative tally. Separate counter because the one above is
+    // reset per frame by parity_recorder; the ring needs a monotonic value it
+    // can difference between rows. See seam_trace.cpp.
+    { extern uint32_t g_seam_rand_total; ++g_seam_rand_total; }
     // Classify the caller (return addr) into the 7 known game_rand callers so
     // [FULLFP] fn= shows which function's per-frame draw count diverges.
+    // The bucket is computed ONCE and fed to both tallies: the per-frame one
+    // ([FULLFP], reset by parity_recorder) and the seam ring's cumulative one
+    // (differenced between rows). Keeping one classifier means the two views
+    // can never disagree about which function a draw belongs to.
     {
         const uint32_t ra = (uint32_t)(uintptr_t)__builtin_return_address(0);
-        if      (ra >= 0x40af30 && ra < 0x40b467) ++g_gp_rand_by_fn[0]; // camera_manager
-        else if (ra >= 0x40c9e0 && ra < 0x40ca7c) ++g_gp_rand_by_fn[1]; // ProcessShakeEffect
-        else if (ra >= 0x40ca90 && ra < 0x40cc30) ++g_gp_rand_by_fn[2]; // ProcessColorInterpolation
-        else if (ra >= 0x40cc30 && ra < 0x40e3e8) ++g_gp_rand_by_fn[3]; // sprite_rendering_engine
-        else if (ra >= 0x40f010 && ra < 0x40f90d) ++g_gp_rand_by_fn[4]; // hit_detection_system
-        else if (ra >= 0x411270 && ra < 0x4117f0) ++g_gp_rand_by_fn[5]; // ai_input_processor
-        else if (ra >= 0x411bf0 && ra < 0x413bd6) ++g_gp_rand_by_fn[6]; // character_state_machine
-        else                                      ++g_gp_rand_by_fn[7]; // other
+        int b;
+        if      (ra >= 0x40af30 && ra < 0x40b467) b = 0; // camera_manager
+        else if (ra >= 0x40c9e0 && ra < 0x40ca7c) b = 1; // ProcessShakeEffect
+        else if (ra >= 0x40ca90 && ra < 0x40cc30) b = 2; // ProcessColorInterpolation
+        else if (ra >= 0x40cc30 && ra < 0x40e3e8) b = 3; // sprite_rendering_engine
+        else if (ra >= 0x40f010 && ra < 0x40f90d) b = 4; // hit_detection_system
+        else if (ra >= 0x411270 && ra < 0x4117f0) b = 5; // ai_input_processor
+        else if (ra >= 0x411bf0 && ra < 0x413bd6) b = 6; // character_state_machine
+        else                                      b = 7; // other
+        ++g_gp_rand_by_fn[b];
+        { extern uint32_t g_seam_rand_by_fn[8]; ++g_seam_rand_by_fn[b]; }
     }
     RngTrace_ResolveOnce();
     if (!g_rng_trace_enabled) {

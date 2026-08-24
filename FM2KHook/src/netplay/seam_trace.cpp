@@ -29,6 +29,7 @@
 #include "seam_trace.h"
 #include "envelope_shadow.h"
 #include "savestate.h"
+#include "savestate_internal.h"   // EffectAddrs, ADDR_GAME_STATE, Fletcher32
 #include "../core/globals.h"
 #include "../hooks/seam_free_probe.h"
 
@@ -38,6 +39,23 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+
+// Cumulative gameplay-seed game_rand draws, bumped by Hook_GameRand's
+// gameplay branch. GLOBAL (not the anonymous namespace below) because
+// hooks_rng.cpp increments it. Never reset: the ring wants deltas between
+// rows, and the per-frame counter g_gameplay_rand_calls is already owned and
+// reset by parity_recorder, so reusing it would race that consumer.
+uint32_t g_seam_rand_total = 0;
+// Cumulative RENDER-stream draws (Hook_GameRand's g_in_render_rng branch).
+uint32_t g_seam_rand_render = 0;
+// Per-caller cumulative split, same 8 buckets as [FULLFP] fn=. KEPT but no
+// longer emitted: every gameplay draw classified into bucket 6 because
+// __builtin_return_address(0) is always the 0x4139A8 wrapper, which lives
+// inside the character_state_machine range -- the classifier needs the
+// caller-OF-caller to say anything, and the frame walk that gets it is only
+// safe on the (slow) rng-trace path. Left in place so the counter and the
+// [FULLFP] view keep sharing one classifier.
+uint32_t g_seam_rand_by_fn[8] = {0,0,0,0,0,0,0,0};
 
 namespace {
 
@@ -92,6 +110,39 @@ struct SaveEntry {
     int32_t  frame;
     uint32_t fingerprint;
     uint32_t rng;
+    // THE THREE DELIBERATE NON-ROLLBACK CARVE-OUTS (savestate_fm2k_save.cpp):
+    // shake_effects, effect_sys1 (palette flash 1) and effect_sys2's
+    // palette-flash-2 slice are zeroed in the saved copy and SKIPPED on load,
+    // so they free-run across rollback by design. That design is why they are
+    // recorded here and NOT compared: the open question for the intermittent
+    // seam violation is whether a resim whose ONLY differing recorded field is
+    // `rng` also differs in one of these -- i.e. whether free-running effect
+    // state is steering gameplay-seed draw counts. Diagnostic columns; a
+    // difference here is never itself a violation.
+    uint32_t shake;
+    uint32_t fx1;
+    uint32_t fx2;
+    // Cumulative gameplay-seed game_rand draws at save time. The per-frame
+    // draw count is the delta against the previous row of the same episode,
+    // which is what actually names "this resim drew a different number of
+    // times" instead of leaving it inferred from a changed seed.
+    uint32_t rand_total;
+    uint32_t rand_render;
+    // FRESH per-save region hashes. NOT SaveState_GetRegionChecksums(): those
+    // are throttled to once per second (savestate_fm2k_save.cpp's
+    // full_crcs_due), so reading them here returned a value up to a second
+    // stale and made every row in a rollback window look identical -- which
+    // is exactly the false "these regions match" reading that sent the first
+    // pass of this investigation down the wrong path. Recomputed here, per
+    // save, over the regions the savestate actually SAVES, so a mismatch
+    // names the region whose save is incomplete. ~280 KB of Fletcher32 per
+    // save (~120 us); diagnostic build only.
+    uint32_t h_gs;      // game_state        (544 B)
+    uint32_t h_it;      // input_tracking    (~4 KB)
+    uint32_t h_obj;     // object_pool, ACTIVE slots only (~4 KB)
+    uint32_t h_char;    // char_dynamic, loaded slots (~115 KB)
+    uint32_t h_ai;      // afterimage_pool   (~163 KB)
+    uint32_t h_lists;   // object list heads/tails + current_object_ptr
     uint32_t p1_hp;
     uint32_t p2_hp;
     uint32_t round_timer;
@@ -374,6 +425,120 @@ void SeamTrace_PushSave(int frame, bool is_replay_save, bool rolling_back) {
     e.frame        = (int32_t)frame;
     e.fingerprint  = rc.gameplay_fingerprint;
     e.rng          = rc.fp_inputs.rng;
+    e.shake        = rc.shake_effects;
+    e.fx1          = rc.effect_sys1;
+    e.fx2          = rc.effect_sys2;
+    e.rand_total   = g_seam_rand_total;
+    e.rand_render  = g_seam_rand_render;
+    e.shake = e.fx1 = e.fx2 = 0;
+    e.h_gs = e.h_it = e.h_obj = e.h_char = e.h_ai = e.h_lists = 0;
+#if !defined(ENGINE_FM95)
+    // FM2K_SEAM_HASH=1, DEFAULT OFF, and the default is load-bearing rather
+    // than merely tidy. These hashes cost ~6 us per save, and that is enough
+    // to SUPPRESS the intermittent seam_ring_check violation they exist to
+    // diagnose: 0 violations in 12 fully-covered runs against a 40 % base
+    // rate (p ~= 0.002). Leaving them on would turn the seamdesync gate
+    // false-green -- blind to exactly the bug it is there to catch. So the
+    // gate runs unperturbed and an investigator opts in per-run.
+    // See docs/dev/seam_ring_intermittent.md.
+    static int s_seam_hash = -1;
+    if (s_seam_hash < 0) {
+        const char* v = std::getenv("FM2K_SEAM_HASH");
+        s_seam_hash = (v && v[0] && v[0] != '0') ? 1 : 0;
+    }
+    if (s_seam_hash == 1) {
+        e.shake = Fletcher32((const uint8_t*)EffectAddrs::SHAKE_EFFECTS,
+                             EffectAddrs::SHAKE_EFFECTS_SZ);
+        e.fx1   = Fletcher32((const uint8_t*)EffectAddrs::EFFECT_SYS1,
+                             EffectAddrs::EFFECT_SYS1_SZ);
+        e.fx2   = Fletcher32((const uint8_t*)EffectAddrs::EFFECT_SYS2,
+                             EffectAddrs::EFFECT_SYS2_SZ);
+        e.h_gs  = Fletcher32((const uint8_t*)ADDR_GAME_STATE, SIZE_GAME_STATE);
+        uint32_t it = Fletcher32((const uint8_t*)0x447EE0, 0x20);
+        it ^= Fletcher32((const uint8_t*)0x447F00, 0x20);
+        it ^= Fletcher32((const uint8_t*)0x447F40, 0x40);
+        it ^= Fletcher32((const uint8_t*)0x4280E0, 0x800);
+        it ^= Fletcher32((const uint8_t*)0x4290E0, 0x800);
+        e.h_it = it;
+        // Active slots only -- mirrors what Save() actually copies, so a
+        // mismatch here means the SAVED bytes differ, not merely that some
+        // dead slot holds different residue.
+        uint32_t oh = 2166136261u;
+        const uint8_t* pool = (const uint8_t*)ADDR_OBJECT_POOL;
+        for (size_t i = 0; i < SaveStateData::SavedRegionCRCs::OBJ_SLOT_COUNT; ++i) {
+            const uint8_t* o = pool + i * OBJECT_POOL_STRIDE;
+            if (o[0] == 0) continue;
+            oh ^= Fletcher32(o, OBJECT_POOL_STRIDE) + (uint32_t)i;
+            oh *= 16777619u;
+        }
+        e.h_obj = oh;
+        // STRIDED for the two big regions (char_dynamic ~115 KB, afterimage
+        // ~163 KB). Full Fletcher32 over both cost ~120 us per save, and that
+        // SUPPRESSED THE BUG: the same recipe that failed 4/10 on the plain
+        // build passed 6/6 with the heavy hashes in (p ~= 0.047 by chance).
+        // This is a timing-sensitive rollback race -- uniform per-save cost
+        // shifts which frames gekko rolls back to, so a heavy instrument
+        // rolls different dice rather than measuring the same ones. Sampling
+        // every 16th dword keeps the screen at ~6 us. It can miss a
+        // difference narrower than 64 bytes, which is a real limit of this
+        // pass, not a claim of full coverage: a MISMATCH here is proof, a
+        // MATCH here is only "nothing big moved".
+        // Combine slots with INDEX MIXING, never a bare XOR. The bare XOR
+        // read 0x00000000 at frames 825 and 826 in every pass -- not "no
+        // difference" but two loaded slots whose slice bytes were identical
+        // cancelling each other out. Frame 826 is the LAST AGREEING FRAME,
+        // i.e. exactly the one that has to be trustworthy, and the check
+        // there was vacuous. A zero that means "blind" is worse than no
+        // column at all.
+        uint32_t ch = 2166136261u;
+        for (size_t i = 0; i < NUM_CHAR_SLOTS; ++i) {
+            uintptr_t base = CHAR_SLOT_BASE + i * CHAR_SLOT_SIZE;
+            if (*(const uint8_t*)base == 0) continue;
+            // ROTATING EXACT SLICE. Hashing all ~115 KB exactly cost ~50 us
+            // per save and SUPPRESSED the bug (5 valid runs, 0 violations,
+            // against a 40% base rate); the full-region build before it did
+            // the same at ~120 us. This is a Heisenbug -- any material
+            // per-save cost reshuffles which frames gekko rolls back to.
+            //
+            // So hash ONE SIXTEENTH exactly, chosen by FRAME NUMBER rather
+            // than a rolling counter. Keying on the frame is what makes the
+            // result comparable: the same frame always hashes the same slice,
+            // so frame 827 in a good pass and frame 827 in a bad pass are
+            // hashing identical byte ranges. Across the divergent window
+            // (827..832+, and the divergence persists) successive frames
+            // cover successive slices, so the region gets swept without any
+            // single save paying for it. ~2 us.
+            constexpr size_t kSlices = 16;
+            const size_t slice = (size_t)((uint32_t)frame % kSlices);
+            const size_t slice_sz = CHAR_SLOT_DYNAMIC_SIZE / kSlices;
+            ch ^= Fletcher32(
+                (const uint8_t*)(base + CHAR_SLOT_DYNAMIC_OFFSET + slice * slice_sz),
+                slice_sz) + (uint32_t)(i + 1);
+            ch *= 16777619u;
+        }
+        e.h_char = ch;
+        // Afterimage: the every-64-bytes stride read a CONSTANT 0x1952025A
+        // across every frame and every pass in the run6 violation -- it was
+        // sampling only bytes that never move, so it was reporting "match"
+        // without ever looking at anything live. Same frame-keyed rotating
+        // exact slice as char_dynamic: one sixteenth per save (~10 KB, ~4 us),
+        // identical byte range for a given frame across passes, and the whole
+        // region swept as the divergent window advances.
+        {
+            constexpr size_t kAiSlices = 16;
+            const size_t sl = (size_t)((uint32_t)frame % kAiSlices);
+            const size_t sz = WaveCAddrs::AFTERIMAGE_POOL_SZ / kAiSlices;
+            e.h_ai = Fletcher32(
+                (const uint8_t*)(WaveCAddrs::AFTERIMAGE_POOL + sl * sz), sz);
+        }
+        uint32_t lh = Fletcher32((const uint8_t*)WaveCAddrs::OBJECT_LIST_HEADS,
+                                 WaveCAddrs::OBJECT_LIST_HEADS_SZ);
+        lh ^= Fletcher32((const uint8_t*)WaveCAddrs::OBJECT_NODE_POOL,
+                         WaveCAddrs::OBJECT_NODE_POOL_SZ);
+        lh ^= *(const uint32_t*)WaveCAddrs::CURRENT_OBJECT_PTR;
+        e.h_lists = lh;
+    }
+#endif
     e.p1_hp        = rc.fp_inputs.p1_hp;
     e.p2_hp        = rc.fp_inputs.p2_hp;
     e.round_timer  = rc.fp_inputs.round_timer;
@@ -464,30 +629,37 @@ void SeamTrace_Dump(int player_index, const char* reason) {
                     "WN = seam window (survives the per-match reset)\n");
     std::fprintf(f, "kind,match,seg,frame,replay,rb,fingerprint,rng,p1_hp,"
                     "p2_hp,round_timer,game_timer,buf_idx,p1_input,p2_input,"
-                    "vm_hash,vm_total,vm_live,game_mode\n");
+                    "vm_hash,vm_total,vm_live,game_mode,shake,fx1,fx2,"
+                    "rand_total,rand_render,h_gs,h_it,h_obj,h_char,h_ai,h_lists\n");
     const size_t start = (g_ring_count < SEAM_RING_CAPACITY) ? 0 : g_ring_head;
     for (size_t i = 0; i < g_ring_count; ++i) {
         const SaveEntry& e = g_ring[(start + i) % SEAM_RING_CAPACITY];
         std::fprintf(f,
             "SV,%u,0,%d,%u,%u,0x%08X,0x%08X,%u,%u,%u,%u,%u,0x%04X,0x%04X,"
-            "0x%08X,%u,%u,%u\n",
+            "0x%08X,%u,%u,%u,0x%08X,0x%08X,0x%08X,%u,"
+            "%u,0x%08X,0x%08X,0x%08X,0x%08X,0x%08X,0x%08X\n",
             (unsigned)g_match_idx,
             e.frame, e.replay, e.rolling_back, e.fingerprint, e.rng,
             e.p1_hp, e.p2_hp, e.round_timer, e.game_timer, e.buf_idx,
             e.p1_input, e.p2_input, e.vm_hash, e.vm_total, e.vm_live,
-            e.game_mode);
+            e.game_mode, e.shake, e.fx1, e.fx2, e.rand_total,
+            e.rand_render, e.h_gs, e.h_it, e.h_obj, e.h_char, e.h_ai,
+            e.h_lists);
     }
     for (size_t i = 0; i < g_window_count; ++i) {
         const WindowEntry& w = g_window[i];
         const SaveEntry& e = w.e;
         std::fprintf(f,
             "WN,%u,%u,%d,%u,%u,0x%08X,0x%08X,%u,%u,%u,%u,%u,0x%04X,0x%04X,"
-            "0x%08X,%u,%u,%u\n",
+            "0x%08X,%u,%u,%u,0x%08X,0x%08X,0x%08X,%u,"
+            "%u,0x%08X,0x%08X,0x%08X,0x%08X,0x%08X,0x%08X\n",
             (unsigned)w.match, (unsigned)w.seg,
             e.frame, e.replay, e.rolling_back, e.fingerprint, e.rng,
             e.p1_hp, e.p2_hp, e.round_timer, e.game_timer, e.buf_idx,
             e.p1_input, e.p2_input, e.vm_hash, e.vm_total, e.vm_live,
-            e.game_mode);
+            e.game_mode, e.shake, e.fx1, e.fx2, e.rand_total,
+            e.rand_render, e.h_gs, e.h_it, e.h_obj, e.h_char, e.h_ai,
+            e.h_lists);
     }
     std::fclose(f);
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,

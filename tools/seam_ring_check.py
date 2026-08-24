@@ -45,7 +45,21 @@ from collections import OrderedDict
 FIELDS = ["kind", "match", "seg", "frame", "replay", "rb", "fingerprint",
           "rng", "p1_hp", "p2_hp", "round_timer", "game_timer", "buf_idx",
           "p1_input", "p2_input", "vm_hash", "vm_total", "vm_live",
-          "game_mode"]
+          "game_mode", "shake", "fx1", "fx2", "rand_total", "rand_render",
+          "h_gs", "h_it", "h_obj", "h_char", "h_ai", "h_lists"]
+
+# DIAGNOSTIC-ONLY columns. shake / fx1 / fx2 are the three regions
+# savestate_fm2k_save.cpp deliberately zeroes in the saved copy and skips on
+# load, so they free-run across rollback BY DESIGN and differing here is
+# expected, not a fault -- they must never enter COMPARE or every rollback
+# would red. rand_total is cumulative, so it differs between any two rows by
+# construction. They are printed in the violation table because the open
+# question for the intermittent violation is whether a group whose only
+# compared difference is `rng` ALSO differs in one of these: that is what
+# distinguishes "free-running effect state steered the gameplay draw count"
+# from "the sim itself diverged".
+DIAG = ["shake", "fx1", "fx2", "rand_total", "rand_render",
+        "h_gs", "h_it", "h_obj", "h_char", "h_ai", "h_lists"]
 
 # The state terms compared. `fingerprint` is what gekko actually hashes; the
 # rest are its inputs, carried so a failure names the field instead of just a
@@ -128,10 +142,21 @@ def parse(path):
             kind = parts[0]
             if kind not in ("SV", "WN"):
                 continue          # EP episode rows and both column headers
+            # Two accepted widths: the current one, and the pre-DIAG width
+            # from before shake/fx1/fx2/rand_total were added. Archived
+            # evidence from an older hook must stay readable -- the whole
+            # point of keeping failing runs is comparing them later. Any
+            # OTHER width is still a hard error: silent truncation would let
+            # a genuinely mismatched build score as a pass.
+            if len(parts) == len(FIELDS) - len(DIAG):
+                rows.append(dict(zip(FIELDS, parts)))   # legacy: DIAG absent
+                continue
             if len(parts) != len(FIELDS):
                 raise ValueError(
-                    "%s: %s row has %d fields, expected %d -- CSV produced by a "
-                    "different hook build?" % (path, kind, len(parts), len(FIELDS)))
+                    "%s: %s row has %d fields, expected %d (or the legacy %d) "
+                    "-- CSV produced by a different hook build?"
+                    % (path, kind, len(parts), len(FIELDS),
+                       len(FIELDS) - len(DIAG)))
             rows.append(dict(zip(FIELDS, parts)))
     return rows, header
 
@@ -203,12 +228,19 @@ def check_file(path, verbose=False):
         kind, match, seg, frame = key
         print("   VIOLATION %s match=%s seg=%s frame=%s: %s"
               % (kind, match, seg, frame, ",".join(diff)))
+        # DIAG columns ride along (separated by '|') so the table answers
+        # "did the free-running effect state differ too?" without a second
+        # pass over the CSV. Older CSVs predate them; fall back to "-".
+        cols = COMPARE + ["|"] + DIAG
+        def cell(r, f):
+            return "-" if f == "|" else r.get(f, "-")
         print("      %-4s %-6s %-4s %s"
-              % ("idx", "replay", "rb", " ".join("%-12s" % f for f in COMPARE)))
+              % ("idx", "replay", "rb",
+                 " ".join("%-12s" % (f if f != "|" else "|") for f in cols)))
         for idx, r in entries:
             print("      %-4d %-6s %-4s %s"
                   % (idx, r["replay"], r["rb"],
-                     " ".join("%-12s" % r[f] for f in COMPARE)))
+                     " ".join("%-12s" % cell(r, f) for f in cols)))
     if verbose and not violations and multi:
         print("   OK: %d multiply-recorded frames all reproduced (%d were "
               "input corrections)" % (len(multi), len(corrections)))

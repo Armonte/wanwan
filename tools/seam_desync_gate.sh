@@ -156,7 +156,8 @@ seam_run() {   # $1 = net seed; 0 = PASS
     rm -f "$SPEC_LIVE"/live_FM2K_*_Debug.log
     rm -f "$SEAM_GAMEDIR"/FM2K_P1_seamring.csv "$SEAM_GAMEDIR"/FM2K_P2_seamring.csv
     FM2K_TEST_OUT_DIR="$SPEC_LIVE" \
-      FM2K_SEAM_TRACE=1 FM2K_NET_DELAY_MS=230 FM2K_NET_JITTER_MS=50 \
+      FM2K_SEAM_TRACE=1 FM2K_SEAM_HASH="${FM2K_SEAM_HASH:-0}" \
+      FM2K_NET_DELAY_MS=230 FM2K_NET_JITTER_MS=50 \
       FM2K_NET_LOSS=0.20 FM2K_NET_SEED="$seed" \
       timeout "$SEAM_TIMEOUT" python3 "$ROOT/tools/spec_selftest.py" \
         "${GAME_ARGS[@]+"${GAME_ARGS[@]}"}" \

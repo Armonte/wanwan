@@ -32,6 +32,12 @@ bool IsRetiredHubHost(const std::string& host);
 
 }}  // namespace fm2k::hub_endpoint
 
+// Held by value in a unique_ptr member below (pending_match_start_), so a
+// forward declaration is enough here -- LauncherUI's destructor lives in
+// FM2K_LauncherUI.cpp, which includes FM2K_HubClient.h for the full type.
+// Same pattern as the HubState member.
+namespace fm2k { struct HubEvent; }
+
 // Modern ImGui launcher interface
 class LauncherUI {
 public:
@@ -219,6 +225,10 @@ public:
     void SetFramesAhead(float frames_ahead);
     // Update scanning progress (0-1). Only meaningful while scanning flag is true.
     void SetScanning(bool scanning);
+    // Re-run a match_start that arrived while game discovery was still
+    // scanning. Call from the discovery-complete path AFTER SetGames +
+    // SetScanning(false); no-op when nothing is pending.
+    void RetryPendingMatchStart();
     void SetGamesRootPaths(const std::vector<std::string>& paths);
 
     // Phase 4: status-bar surface for spec hub-relay ring counters.
@@ -528,6 +538,19 @@ private:
     // FM2K_LauncherUI.cpp.
     struct HubState;
     std::unique_ptr<HubState> hub_state_;
+
+    // A match_start the hub brokered BEFORE background discovery finished
+    // publishing games_. Without this the launcher aborted the match with
+    // "game not in your library" for a game it was in the middle of finding
+    // -- discovery logged the exe 1.07s before the abort and published it
+    // 0.60s after (hubspec evidence, 2026-08-23). The cache normally hides
+    // the race by populating games_ at startup; it bites on a first run, a
+    // cache miss, or any library slow enough to still be scanning when a
+    // challenge lands. Held until discovery publishes, then re-dispatched.
+    std::unique_ptr<fm2k::HubEvent> pending_match_start_;
+    // SDL_GetTicks() at the deferral. Bounds the wait so a very slow scan
+    // does not spawn a game for a match both peers have long abandoned.
+    uint64_t pending_match_start_ms_ = 0;
 
     // UPnP port mapper (Phase 1 NAT reachability). One instance per
     // launcher; StartAsync fires at the hub Connected event for ONLINE

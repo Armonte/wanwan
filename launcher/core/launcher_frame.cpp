@@ -87,6 +87,13 @@ void FM2KLauncher::HandleEvent(SDL_Event* event) {
         if (ui_) {
             ui_->SetGames(discovered_games_);
             ui_->SetScanning(false);
+            // Strictly after BOTH of the above: a match_start the hub
+            // brokered while this scan was running was parked instead of
+            // aborted ("game not in your library" for a game we were still
+            // finding). Now that games_ is populated and scanning_games_ is
+            // clear, re-run it -- and a genuine miss aborts normally rather
+            // than parking again. No-op when nothing is parked.
+            ui_->RetryPendingMatchStart();
         }
         Utils::SaveGameCache(discovered_games_);
     }

@@ -474,6 +474,35 @@ void LauncherUI::HandleMatchStartEvent(const fm2k::HubEvent& ev) {
                     }
 
                     on_online_session_start(cfg);
+                } else if (idx < 0 && scanning_games_ &&
+                           ev.match.peer_udp_port > 0 &&
+                           on_online_session_start != nullptr) {
+                    // NOT a missing game -- a race with our own scanner.
+                    // games_ is published in ONE shot when background
+                    // discovery finishes (launcher_frame.cpp's
+                    // g_event_discovery_complete -> SetGames), so while a
+                    // scan is in flight it is empty and EVERY room misses.
+                    // The games.cache normally hides this by filling games_
+                    // at startup; with no cache (first run after install, a
+                    // cache miss, a big or slow library) a challenge that
+                    // lands mid-scan was aborted as "not in your library"
+                    // for a game we were actively finding -- measured at
+                    // 1.07s after the exe was logged and 0.60s before it
+                    // was published.
+                    //
+                    // Hold the event and let discovery finish. Only this
+                    // one precondition is deferrable: a zero peer port or a
+                    // missing callback will not improve by waiting, so both
+                    // still abort immediately below.
+                    pending_match_start_ = std::make_unique<fm2k::HubEvent>(ev);
+                    pending_match_start_ms_ = SDL_GetTicks();
+                    hs.status_line = "match_start held: still scanning for "
+                                     "games...";
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "Hub: match_start HELD -- '%s' not in games_ yet but "
+                        "discovery is still scanning; retrying when it "
+                        "publishes (match stays live)",
+                        hs.current_room_id.c_str());
                 } else {
                     const char* reason =
                         (ev.match.peer_udp_port == 0) ? "peer never sent udp_addr" :
@@ -484,4 +513,38 @@ void LauncherUI::HandleMatchStartEvent(const fm2k::HubEvent& ev) {
                     hs.status_line = std::string("match aborted: ") + reason;
                     hs.client.MatchEnded();
                 }
+}
+
+// Discovery published games_; re-run the match_start we parked. Called from
+// the discovery-complete handler AFTER SetGames + SetScanning(false), so the
+// retry sees a populated list and a cleared scanning_games_ -- a genuine
+// miss then takes the normal abort path instead of parking again forever.
+void LauncherUI::RetryPendingMatchStart() {
+    if (!pending_match_start_) return;
+    // Move out FIRST: HandleMatchStartEvent may park a new event, and we
+    // must not clobber that or re-enter with our own.
+    std::unique_ptr<fm2k::HubEvent> ev = std::move(pending_match_start_);
+    pending_match_start_.reset();
+
+    const uint64_t waited = SDL_GetTicks() - pending_match_start_ms_;
+    // Staleness bound. A scan slow enough to blow this means both peers
+    // gave up long ago; spawning a game into a dead match is worse than a
+    // clean refusal, and the hub needs the match_ended either way or the
+    // lobby shows them "in_match" forever.
+    constexpr uint64_t kMaxHoldMs = 15000;
+    if (waited > kMaxHoldMs) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "Hub: held match_start EXPIRED after %llums (limit %llums) -- "
+            "sending match_ended", (unsigned long long)waited,
+            (unsigned long long)kMaxHoldMs);
+        if (hub_state_) {
+            hub_state_->status_line = "match aborted: discovery too slow";
+            hub_state_->client.MatchEnded();
+        }
+        return;
+    }
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "Hub: discovery published after %llums -- retrying held match_start",
+        (unsigned long long)waited);
+    HandleMatchStartEvent(*ev);
 }

@@ -108,6 +108,45 @@ bool ConfigureRelay();
 bool IsRelayMode();
 void ForceRelayMode();   // test/diagnostic only
 
+// The peer relays, so we relay too -- the one-way-path deadlock.
+//
+// Relay engagement used to be a purely LOCAL decision: each side ran its
+// own 2s gate and neither could see the other's verdict. On an ASYMMETRIC
+// path (peer -> us delivers, us -> peer does not) the two sides decide
+// OPPOSITELY and neither can correct it. We authenticate the peer's
+// inbound CTRL_PUNCH, conclude the direct path works, and commit to it;
+// the peer's gate expires with nothing latched and it moves to the relay.
+// We then answer forever into a dead mapping -- and never notice, because
+// RawReceive unwraps 0xCF regardless of our own mode, so the peer's
+// relayed HELLOs keep arriving and we even set g_connected while every
+// byte we send is lost. Observed in the field 2026-08-23: both clients sat
+// in the HELLO loop until the players gave up.
+//
+// An inbound relayed packet FROM THE PEER is the peer's verdict, so adopt
+// it. Two caller obligations:
+//   - Gate on peer-only traffic. A spectator on the #58 relay fallback
+//     wraps in the SAME session id, and must never push a healthy direct
+//     match onto the relay.
+//   - Nothing else needs to change; RawSend picks the relay up on its next
+//     call.
+// Sticky: once adopted, a late direct CTRL_PUNCH can no longer disengage
+// relay. That punch proves only the peer -> us leg, which was never the
+// broken one, and the peer is on the relay regardless of what we think.
+void AdoptRelayFromPeer();
+
+// Bidirectionality evidence. Call for an inbound message that PROVES the
+// peer received something WE sent: HELLO_ACK answers our HELLO, PONG
+// answers our PING.
+//
+// Unprompted peer traffic (HELLO, CTRL_PUNCH) must NOT be passed here --
+// the peer emits those on its own schedule, so they prove only the
+// peer -> us leg. Treating them as proof is precisely the bug above, and
+// it is why the post-latch gate below cannot use ControlChannel_
+// IsConnected(): g_connected is set by SENDING HELLO_ACK, which needs
+// nothing but an inbound HELLO.
+void NotePeerAckedUs();
+bool PeerAckedUs();
+
 // Borrowed pointers -- caller must not free or modify. Valid for the
 // lifetime of the process once ConfigureRelay() returned true.
 const sockaddr_in* GetRelayAddr();

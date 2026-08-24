@@ -96,6 +96,26 @@ sockaddr_in g_relay_addr{};
 uint8_t     g_relay_session[16] = {};
 std::atomic<bool> g_relay_mode{false};
 
+// Relay came from the PEER's verdict (AdoptRelayFromPeer) rather than our
+// own timeout. Blocks the late-punch disengage below: the peer is on the
+// relay and cannot hear a direct send, whatever our own inbound evidence
+// says about the other direction.
+std::atomic<bool> g_relay_peer_driven{false};
+
+// An inbound message proved the peer received something we sent. A latch
+// on an inbound CTRL_PUNCH proves the OPPOSITE direction and does not
+// count -- see NotePeerAckedUs in the header.
+std::atomic<bool> g_peer_acked_us{false};
+
+// Single engage point so every path logs identically. Idempotent. The
+// "relay mode ENGAGED" substring is load-bearing: tools/
+// replay_netplay_selftest.py --relay greps both peer logs for it.
+void EngageRelay(const char* reason) {
+    if (g_relay_mode.exchange(true)) return;
+    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+        "NAT: relay mode ENGAGED -- %s", reason);
+}
+
 bool ParseHostPort(const std::string& s, std::string& host, uint16_t& port) {
     auto colon = s.rfind(':');
     if (colon == std::string::npos) return false;
@@ -423,31 +443,63 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
         // want burst punch to fail" -- relay is the safety net but
         // direct should always get the chance to win first.
         if (g_relay_configured) {
+            // PHASE 1 -- has the direct path proved itself at all?
             for (int i = 0; i < 200 && !g_peer_authenticated.load(); ++i) {
                 Sleep(10);
-                // If the gameplay handshake already completed via direct
-                // UDP, drop the relay-engage idea entirely. CTRL_PUNCH
-                // (0xCD) didn't ack but 0xCC HELLO/HELLO_ACK did -- the
-                // path between peers is fine for our actual gameplay
-                // packets. Engaging relay anyway would route every
-                // subsequent packet through the hub for no reason and
-                // (worse) tear down a working session if relay quality
+                // If gameplay traffic is already flowing BOTH ways, drop
+                // the relay-engage idea entirely. CTRL_PUNCH (0xCD) didn't
+                // ack but 0xCC did -- the path between peers is fine for
+                // our actual packets. Engaging relay anyway would route
+                // every subsequent packet through the hub for no reason
+                // and (worse) tear down a working session if relay quality
                 // is worse than direct.
-                if (ControlChannel_IsConnected()) {
+                //
+                // The test is PeerAckedUs(), NOT ControlChannel_
+                // IsConnected(). g_connected goes true on SENDING
+                // HELLO_ACK, which needs only an inbound HELLO -- on a
+                // one-way path we are "connected" while nothing we send
+                // lands, and this skip would then be a lie that leaves us
+                // stranded on direct forever.
+                if (PeerAckedUs()) {
                     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "NAT: relay-engage skipped -- direct UDP already "
-                        "carrying gameplay traffic (handshake completed "
-                        "via 0xCC); CTRL_PUNCH ack lost but path works");
+                        "carrying gameplay traffic BOTH ways (peer acked "
+                        "our traffic); CTRL_PUNCH ack lost but path works");
                     return;
                 }
+                if (g_relay_mode.load()) return;   // adopted from the peer
             }
-            if (!g_peer_authenticated.load() && !ControlChannel_IsConnected()) {
-                g_relay_mode.store(true);
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "NAT: direct punch did not authenticate after 2s -- "
-                    "relay mode ENGAGED");
+
+            if (!g_peer_authenticated.load()) {
+                if (!PeerAckedUs()) {
+                    EngageRelay("direct punch did not authenticate after 2s");
+                }
+                return;
             }
-        } else if (!g_peer_authenticated.load() && !ControlChannel_IsConnected()) {
+
+            // PHASE 2 -- latched, which proves only PEER -> US.
+            //
+            // A CTRL_PUNCH we received says the peer can reach us. It says
+            // nothing about whether we can reach the peer, and the two are
+            // genuinely independent: a NAT that remaps our source port per
+            // destination, or a one-sided firewall drop, kills exactly one
+            // leg. Before this phase existed, that single inbound punch
+            // committed us to direct for the whole session and the match
+            // deadlocked (see AdoptRelayFromPeer's comment).
+            //
+            // So wait for the peer to answer something we sent. HELLO goes
+            // out every ~510ms and PING every PING_INTERVAL_MS/2 once
+            // connected, so 3s is several chances to be heard, and it caps
+            // the player's stare at ~3.3s including the burst.
+            for (int i = 0; i < 300 && !PeerAckedUs(); ++i) {
+                Sleep(10);
+                if (g_relay_mode.load()) return;   // adopted from the peer
+            }
+            if (!PeerAckedUs()) {
+                EngageRelay("peer latched but never answered anything we "
+                            "sent in 3s -- one-way path");
+            }
+        } else if (!g_peer_authenticated.load() && !PeerAckedUs()) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                 "NAT: direct punch failed and no relay configured -- peer "
                 "may stay unreachable");
@@ -518,7 +570,18 @@ void HandleDatagram(const uint8_t* data, size_t len, const sockaddr_storage& fro
                 // game's ControlChannel_Poll loop hadn't started yet),
                 // turn relay back off -- direct path now works and is
                 // strictly cheaper.
-                if (g_relay_mode.exchange(false)) {
+                //
+                // NOT when the peer put us on the relay. This punch shows
+                // the peer reaching US; the peer is relaying because IT
+                // could not reach US the other way, and dropping back to
+                // direct here would re-open the exact deadlock
+                // AdoptRelayFromPeer exists to close. Only the peer can
+                // undo the peer's verdict.
+                if (g_relay_peer_driven.load()) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "NAT: direct punch landed late but relay STAYS -- "
+                        "the peer is relaying and cannot hear a direct send");
+                } else if (g_relay_mode.exchange(false)) {
                     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "NAT: relay disengaged -- direct punch landed late");
                 }
@@ -592,6 +655,28 @@ bool ConfigureRelay() {
 
 bool IsRelayMode() {
     return g_relay_mode.load(std::memory_order_acquire);
+}
+
+void AdoptRelayFromPeer() {
+    if (!g_relay_configured) return;
+    // Order matters: set the sticky bit BEFORE relay mode. A CTRL_PUNCH
+    // racing us on the poll thread must never observe relay-on with
+    // peer-driven still clear, or it would disengage what we just adopted.
+    g_relay_peer_driven.store(true);
+    if (g_relay_mode.exchange(true)) return;
+    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+        "NAT: relay mode ENGAGED -- peer is relaying to us (adopted its "
+        "verdict); our direct sends were not reaching it");
+}
+
+void NotePeerAckedUs() {
+    if (g_peer_acked_us.exchange(true)) return;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "NAT: peer answered our traffic -- path confirmed BIDIRECTIONAL");
+}
+
+bool PeerAckedUs() {
+    return g_peer_acked_us.load(std::memory_order_acquire);
 }
 
 void ForceRelayMode() {

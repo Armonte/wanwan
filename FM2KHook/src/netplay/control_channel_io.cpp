@@ -207,6 +207,24 @@ void RawReceive() {
                 ctrl_type == CtrlMsg::BATTLE_READY || ctrl_type == CtrlMsg::BATTLE_ACK ||
                 ctrl_type == CtrlMsg::BATTLE_ENTERING || ctrl_type == CtrlMsg::BATTLE_START ||
                 ctrl_type == CtrlMsg::BATTLE_END;
+
+            // The peer relayed this to us, so it has decided the direct
+            // path is dead. Adopt that verdict -- we cannot see the leg it
+            // measured (our sends into a dead mapping look identical to
+            // working ones from here), and if we stay direct while it
+            // relays, the handshake deadlocks with both sides talking past
+            // each other. See fm2k::nat::AdoptRelayFromPeer.
+            //
+            // peer_only_type is the whole safety gate, and it is not
+            // optional: a SPECTATOR on the #58 relay fallback wraps its
+            // sends in the SAME session id, so UnwrapFromRelay accepts
+            // them too. Adopting on those would drag a perfectly healthy
+            // direct match onto the hub because someone tuned in. Only
+            // message types that ONLY the session peer ever sends count.
+            if (from_relay && peer_only_type) {
+                ::fm2k::nat::AdoptRelayFromPeer();
+            }
+
             if (!from_relay && !g_connected && peer_only_type &&
                 !fm2k::Addr_Equal(g_remote_sockaddr, from_addr)) {
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
@@ -269,6 +287,20 @@ void RawReceive() {
                     g_recv_seq = packet->header.seq;
                 }
                 g_recv_ack = packet->header.ack;
+
+                // Bidirectionality proof for the NAT layer. These two types
+                // are ANSWERS -- HELLO_ACK is only ever sent in reply to a
+                // HELLO we sent, PONG only in reply to our PING -- so either
+                // one is hard evidence the peer received something of ours.
+                // Inbound HELLO and CTRL_PUNCH are unprompted and prove only
+                // the peer -> us leg, which is why neither is counted here.
+                // Peer-only by construction: nothing sends HELLO_ACK except
+                // ControlChannel_SendHelloAck answering a peer HELLO, and
+                // nothing sends PONG except the PING handler below.
+                if (packet->header.type == CtrlMsg::HELLO_ACK ||
+                    packet->header.type == CtrlMsg::PONG) {
+                    ::fm2k::nat::NotePeerAckedUs();
+                }
 
                 // Handle PING/PONG internally before callback
                 if (packet->header.type == CtrlMsg::PING) {

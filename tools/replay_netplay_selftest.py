@@ -21,6 +21,10 @@ from pathlib import Path
 
 LAUNCHER = Path("/mnt/c/games/FM2K_RollbackLauncher.exe")
 RELAY_STUB = Path(__file__).parent / "relay_stub.py"
+ONEWAY_PROXY = Path(__file__).parent / "oneway_proxy.py"
+# Port the --oneway proxy binds. Both peers aim their remote here; it
+# forwards P2 -> P1 and drops P1 -> P2, so P1 latches a dead mapping.
+ONEWAY_PORT = 7005
 # TEST-NET-1 (RFC 5737). Globally routable as "documentation/example" only;
 # real networks blackhole it, so punch packets sent here vanish and the
 # direct hole-punch provably fails -> the hub relay engages. We give each
@@ -148,7 +152,22 @@ def main():
     ap.add_argument("--relay-port", type=int, default=7712,
                     help="UDP port for the local relay stub (default 7712, "
                          "matches the hub's relay listen port).")
+    ap.add_argument("--oneway", action="store_true",
+                    help="Asymmetric-path mode (implies --relay): insert "
+                         "tools/oneway_proxy.py between the peers so P2 -> P1 "
+                         "delivers and P1 -> P2 is dropped. Reproduces the "
+                         "2026-08-23 field deadlock, where P1 authenticates "
+                         "P2's punch and commits to a direct path that only "
+                         "works one way while P2 moves to the relay. PASS = "
+                         "P1's log shows relay ENGAGED for the ONE-WAY reason "
+                         "and both peers reach CONNECTED. Before the fix, P1 "
+                         "never engages and both sides spin in the HELLO loop.")
     args = ap.parse_args()
+    if args.oneway:
+        # The deadlock is only interesting if there is a path to recover
+        # ONTO. Without the relay both peers are simply unreachable and the
+        # run proves nothing about the fix.
+        args.relay = True
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     record_pty = OUT_DIR / "record.pty"
@@ -306,6 +325,39 @@ def main():
             time.sleep(0.1)
         print(f"[harness]   relay stub ready (log: {relay_log})")
 
+    # One-way proxy: sits between the peers and kills exactly one leg. Must
+    # be a Windows process for the same reason the relay stub is (WSL2 NAT
+    # puts a WSL-bound socket on a stack the game cannot reach at
+    # 127.0.0.1). Started AFTER the stub so both are up before either peer.
+    oneway_proc = None
+    oneway_log = OUT_DIR / "oneway_proxy.log"
+    if args.oneway:
+        if oneway_log.exists(): oneway_log.unlink()
+        win_py = find_windows_python()
+        if not win_py:
+            print("[harness] FAIL: --oneway needs a Windows python for the "
+                  "proxy (same constraint as the relay stub)")
+            return 1
+        oneway_proc = subprocess.Popen(
+            [win_py, to_win(ONEWAY_PROXY),
+             "--host", "127.0.0.1", "--port", str(ONEWAY_PORT),
+             "--forward-to", f"127.0.0.1:{P1_PORT}",
+             "--logfile", to_win(oneway_log)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        for _ in range(50):
+            if oneway_proc.poll() is not None:
+                print(f"[harness] FAIL: one-way proxy exited early "
+                      f"rc={oneway_proc.returncode} (see {oneway_log})")
+                return 1
+            try:
+                if "[oneway] READY" in oneway_log.read_text():
+                    break
+            except OSError:
+                pass
+            time.sleep(0.1)
+        print(f"[harness] ONEWAY: proxy on 127.0.0.1:{ONEWAY_PORT} "
+              f"forwards -> P1({P1_PORT}), drops P1 -> P2")
+
     # Launch P1 (host) and P2 (joiner) concurrently. Loopback 127.0.0.1.
     # P1 = --host with FM2K_LOCAL_PORT=7000, FM2K_REMOTE_ADDR=127.0.0.1:7001
     # P2 = --connect with FM2K_LOCAL_PORT=7001, FM2K_REMOTE_ADDR=127.0.0.1:7000
@@ -352,6 +404,15 @@ def main():
         p1_args = [str(LAUNCHER), "--host", game_arg, "--port", str(P1_PORT),
                    "--remote", f"{RELAY_BLACKHOLE_IP}:{P2_PORT}"]
         p2_args = [str(LAUNCHER), "--connect", f"{RELAY_BLACKHOLE_IP}:{P1_PORT}",
+                   game_arg, "--port", str(P2_PORT)]
+    if args.oneway:
+        # Both remotes aim at the proxy. P1's punches die there; P2's are
+        # forwarded to P1 FROM the proxy socket, so when P1 latches the
+        # source it latches the black hole -- the field failure exactly.
+        # This overrides the --relay blackhole args set just above.
+        p1_args = [str(LAUNCHER), "--host", game_arg, "--port", str(P1_PORT),
+                   "--remote", f"127.0.0.1:{ONEWAY_PORT}"]
+        p2_args = [str(LAUNCHER), "--connect", f"127.0.0.1:{ONEWAY_PORT}",
                    game_arg, "--port", str(P2_PORT)]
 
     # done_when: wait for the harness terminator inside the hook to flush
@@ -416,6 +477,52 @@ def main():
             print("[harness] RELAY: FAIL -- a peer did not engage relay or did "
                   "not complete the handshake through it (see "
                   "FM2K_P{1,2}_Debug.log)")
+
+        # ---- One-way verdict ----
+        # The relay check above is necessary but NOT sufficient here: P2
+        # engages relay in this scenario even on a broken build (its punch
+        # gate expires normally), so "both engaged" alone could pass for the
+        # wrong reason. What the fix owns is P1 -- the side that latched a
+        # working-looking inbound punch. Require the specific reason string,
+        # so a P1 that engaged via some other path does not score as a pass.
+        if args.oneway:
+            if oneway_proc is not None:
+                oneway_proc.terminate()
+                try: oneway_proc.wait(timeout=3)
+                except subprocess.TimeoutExpired: oneway_proc.kill()
+            p1_txt = _peer_log(0)
+            latched   = "authenticated -- peer latched" in p1_txt
+            oneway_hit = "one-way path" in p1_txt
+            # Prove the dead leg was actually dead. Without this a proxy that
+            # silently forwarded both ways would still "pass" -- the peers
+            # would just connect directly and nobody would notice the test
+            # stopped testing anything.
+            drops = 0
+            try:
+                for line in oneway_log.read_text(errors="ignore").splitlines():
+                    if line.startswith("[oneway] forwarded="):
+                        drops = max(drops, int(line.rsplit("dropped=", 1)[1]))
+            except (OSError, ValueError, IndexError):
+                pass
+            print(f"[harness] ONEWAY P1: LATCHED={latched} "
+                  f"ENGAGED_ONEWAY={oneway_hit} P1_SENDS_DROPPED={drops}")
+            if not latched:
+                print("[harness] ONEWAY: INVALID -- P1 never latched the "
+                      "proxy, so the asymmetric case was never entered "
+                      "(this is a rig failure, not a product pass)")
+                relay_ok = False
+            elif drops == 0:
+                print("[harness] ONEWAY: INVALID -- proxy dropped nothing, "
+                      "so the path was not one-way (rig failure)")
+                relay_ok = False
+            elif not oneway_hit:
+                print("[harness] ONEWAY: FAIL -- P1 latched a one-way path "
+                      "and never re-opened the relay decision. This is the "
+                      "field deadlock.")
+                relay_ok = False
+            else:
+                print("[harness] ONEWAY: P1 detected the one-way path and "
+                      "engaged relay -- PASS")
 
     # Find P1's .fm2krep (host is canonical recorder; the hook writes
     # per-player *_p<idx>_harness.fm2krep so P2's slice can't clobber it).

@@ -378,6 +378,62 @@ void HandleDropFile(studio::AppState& st, studio::RealModel& model,
 
 }  // namespace
 
+// Every name in an FM2K file is CP932, so a font that cannot draw kana and
+// kanji renders most real files as rows of '?'. kgt::DecodeName already
+// converts correctly -- the same strings print as proper kanji outside the
+// GUI -- so what was missing here was purely glyph coverage: ImGui's
+// built-in ProggyClean is ASCII-only and substitutes for everything else.
+//
+// MERGED, not replaced. The built-in font stays as the first source so the
+// sound table keeps its fixed-width alignment for ASCII filenames and
+// numbers; the Japanese face only supplies the codepoints ProggyClean does
+// not have. Loading a proportional face over everything would reflow every
+// column to no benefit.
+//
+// The font is loaded from the system rather than vendored: these faces ship
+// with Windows, and redistributing them is a licensing question we do not
+// need to answer. MS Gothic is last and matters most -- Meiryo and Yu
+// Gothic are the nicer UI faces but are comparatively recent, while
+// msgothic.ttc is present on essentially every Japanese-capable Windows
+// going back to XP, which is the install base that actually opens 2DFM
+// files.
+//
+// No glyph ranges: ImGui 1.92 loads glyphs on demand and marks all the
+// GetGlyphRangesXXXX() helpers obsolete, so asking for the Japanese range
+// up front would only build a larger atlas than the file needs.
+static void LoadJapaneseFont() {
+    ImGuiIO& io = ImGui::GetIO();
+    io.Fonts->AddFontDefault();  // ASCII, fixed-width -- keeps table columns aligned
+
+    const char* candidates[] = {
+        "C:\\Windows\\Fonts\\meiryo.ttc",
+        "C:\\Windows\\Fonts\\YuGothM.ttc",
+        "C:\\Windows\\Fonts\\YuGothR.ttc",
+        "C:\\Windows\\Fonts\\NotoSansJP-VF.ttf",
+        "C:\\Windows\\Fonts\\msgothic.ttc",
+    };
+
+    ImFontConfig cfg;
+    cfg.MergeMode = true;
+    // Nudged down a touch: at a shared pixel size these faces sit taller
+    // than ProggyClean and would otherwise grow every table row.
+    cfg.GlyphOffset = ImVec2(0.0f, 1.0f);
+
+    for (const char* path : candidates) {
+        if (io.Fonts->AddFontFromFileTTF(path, 15.0f, &cfg)) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "font: merged Japanese glyphs from %s", path);
+            return;
+        }
+    }
+    // Not fatal: ASCII names and every number still read correctly, and a
+    // tool that refuses to open because a font is missing is worse than one
+    // that shows '?' for kana.
+    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "font: no Japanese face found in C:\\Windows\\Fonts -- "
+                "CP932 names will render as '?'");
+}
+
 int main(int argc, char** argv) {
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "SDL_Init failed: %s", SDL_GetError());
@@ -404,6 +460,7 @@ int main(int argc, char** argv) {
     ImGui::CreateContext();
     ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     ImGui::StyleColorsDark();
+    LoadJapaneseFont();
     ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer3_Init(renderer);
 

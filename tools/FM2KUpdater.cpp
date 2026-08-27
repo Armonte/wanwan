@@ -154,10 +154,48 @@ int main(int argc, char* argv[]) {
     // hundred ms after the holder exits.
     Sleep(400);
 
+    // WRITABILITY PRE-FLIGHT -- must run BEFORE the pre-delete below.
+    //
+    // The pre-delete removes the launcher, the hook and this updater, and
+    // THEN tar extracts. If tar cannot write to app_dir the user is left with
+    // no launcher at all -- an unrecoverable state produced by an update that
+    // was never going to succeed. That is exactly what happens on a Program
+    // Files install: this updater carries app.manifest's requestedExecutionLevel
+    // so it does NOT get UAC file virtualization, and tar.exe is a manifested
+    // 64-bit Microsoft binary that does not virtualize either, so both hit a
+    // hard ACCESS_DENIED with no VirtualStore fallback.
+    //
+    // Probe first, refuse early, delete nothing. A failed update must leave the
+    // install exactly as it found it.
+    {
+        const std::string probe = app_dir + "\\.fm2k_update_probe";
+        HANDLE h = CreateFileA(probe.c_str(), GENERIC_WRITE, 0, nullptr,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
+        if (h == INVALID_HANDLE_VALUE) {
+            const DWORD err = GetLastError();
+            std::printf("FM2KUpdater: cannot write to \"%s\" (error %lu) -- "
+                        "update REFUSED, nothing was deleted.\n",
+                        app_dir.c_str(), (unsigned long)err);
+            if (err == ERROR_ACCESS_DENIED) {
+                std::printf("  This install directory is not writable by you.\n");
+                std::printf("  Most common cause: the app lives under "
+                            "C:\\Program Files. Move the install to a normal\n");
+                std::printf("  folder such as C:\\games\\ and update again.\n");
+                std::printf("  Do NOT run as administrator -- it breaks Discord "
+                            "sign-in and hides your existing replays.\n");
+            }
+            std::printf("FM2KUpdater: press Enter to close.\n");
+            (void)std::getchar();
+            return 1;
+        }
+        CloseHandle(h);
+        DeleteFileA(probe.c_str());
+    }
+
     // tar.exe refuses to overwrite a file the OS has marked busy. The
     // launcher already exited (above), but on slower systems the EXE
     // can stay locked for a beat. We can also pre-delete the targets
-    // — Windows allows deletion of a closed EXE faster than overwrite,
+    // -- Windows allows deletion of a closed EXE faster than overwrite,
     // and tar then writes fresh files. Best-effort; ignore failures.
     {
         const char* victims[] = {

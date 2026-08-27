@@ -184,10 +184,10 @@ bool FM2KLauncher::LaunchLocalSpectator(const std::string& game_path,
     spectator_instance_->SetEnvironmentVariable("FM2K_PRODUCTION_MODE", "0");
     spectator_instance_->SetEnvironmentVariable("FM2K_INPUT_RECORDING", "0");
     spectator_instance_->SetEnvironmentVariable("FM2K_FORCE_RNG_SEED",  "12345678");
-    if (!std::getenv("FM2K_PARITY_RECORD_PATH")) {
-        spectator_instance_->SetEnvironmentVariable("FM2K_PARITY_RECORD_PATH",
-            "c:/games/2dfm/wanwan/parity_p3.pty");
-    }
+    // Parity recorder is OPT-IN: an unset FM2K_PARITY_RECORD_PATH means no
+    // recording, not a default path. See the note in session_control.cpp --
+    // the old default named a developer's absolute drive path and failed
+    // silently everywhere else. An explicitly-set value is inherited as-is.
 
     if (!spectator_instance_->Launch(game_path)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to launch spectator: %s", game_path.c_str());
@@ -303,10 +303,10 @@ bool FM2KLauncher::LaunchRemoteSpectator(const std::string& game_path,
     // FM2K_PARITY_RECORD_PATH from the environment (the spec_selftest
     // harness routes the .pty into its own workspace; the unconditional
     // override silently sent it to parity_p3.pty instead).
-    if (!std::getenv("FM2K_PARITY_RECORD_PATH")) {
-        spectator_instance_->SetEnvironmentVariable("FM2K_PARITY_RECORD_PATH",
-            "c:/games/2dfm/wanwan/parity_p3.pty");
-    }
+    // Parity recorder is OPT-IN: an unset FM2K_PARITY_RECORD_PATH means no
+    // recording, not a default path. See the note in session_control.cpp --
+    // the old default named a developer's absolute drive path and failed
+    // silently everywhere else. An explicitly-set value is inherited as-is.
 
     if (!spectator_instance_->Launch(game_path)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to launch remote spectator: %s",

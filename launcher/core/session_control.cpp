@@ -172,18 +172,22 @@ void FM2KLauncher::StartOnlineSession(const NetworkConfig& config, bool is_host)
     game_instance_->SetEnvironmentVariable("FM2K_LOCAL_PORT", std::to_string(local_port));
     game_instance_->SetEnvironmentVariable("FM2K_REMOTE_ADDR", remote_addr);
 
-    // Auto-enable parity recorder for spectator-desync diagnosis. Each
-    // process writes per-frame state snapshots (RNG, game_timer, render_fc,
-    // etc.) to a .pty file. Diff host vs spectator post-run with
-    // tools/kgt_diff_pty to find the first divergent frame. Skip the env
-    // override if the user already set one (manual diagnostic flow).
-    if (!std::getenv("FM2K_PARITY_RECORD_PATH")) {
-        const std::string pty_path = "c:/games/2dfm/wanwan/parity_p"
-            + std::to_string(player_index + 1) + ".pty";
-        game_instance_->SetEnvironmentVariable("FM2K_PARITY_RECORD_PATH", pty_path);
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "Online session: parity recorder -> %s", pty_path.c_str());
-    }
+    // Parity recorder: OPT-IN ONLY. It writes per-frame state snapshots
+    // (RNG, game_timer, render_fc) to a .pty for host-vs-spectator diffing
+    // with tools/kgt_diff_pty.
+    //
+    // This used to DEFAULT the path to an absolute `c:/games/2dfm/wanwan/
+    // parity_p<N>.pty` whenever the env var was unset -- i.e. on every user's
+    // online session, pointing at one developer's drive. On any other machine
+    // the directory does not exist, the recorder's fopen fails, and nothing
+    // reports it: only the SUCCESS branch logs (main_loop_trampoline.cpp), so
+    // the failure is invisible by construction. A diagnostic that is on by
+    // default, writes somewhere the user never chose, and cannot report its
+    // own failure is worse than one that is simply off.
+    //
+    // Now: if the operator sets FM2K_PARITY_RECORD_PATH the child inherits it
+    // untouched; otherwise no recording happens. Same for the spectator
+    // instance in process_manager.cpp.
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
         "Online session: P%d port=%d remote=%s",

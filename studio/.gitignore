@@ -5,3 +5,5 @@ tests/model/model_test
 core/audio/test/audio_test
 tests/xref/xref_test
 tests/write/write_test
+tests/sprite_oracle
+tests/sprite/sprite_test

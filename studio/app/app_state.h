@@ -17,9 +17,11 @@
 #include "edit_session.h"  // ReplacePlan (UI-free)
 
 struct SDL_Window;
+struct SDL_Renderer;
 
 namespace kgt {
 struct PcmAudio;
+struct DecodedSprite;
 }
 
 namespace studio {
@@ -66,6 +68,15 @@ struct StudioModel {
     virtual double Seconds(int sound) const = 0;
     // Decoded PCM for playback; nullptr = nothing playable in that slot.
     virtual const kgt::PcmAudio* Pcm(int /*sound*/) const { return nullptr; }
+
+    // Sprite thumbnail source for the usage panel. Decoded lazily and
+    // cached by the implementation; nullptr = no such sprite, or a payload
+    // that would not decode. Returns RGBA8888 with alpha already keyed.
+    virtual const kgt::DecodedSprite* Sprite(int /*sprite*/) const { return nullptr; }
+    // Bumped on every successful Load. The panel's GPU texture cache keys
+    // on this: sprite INDICES are reused across files, so a cache keyed on
+    // index alone would show the previous file's artwork after an open.
+    virtual uint64_t Generation() const { return 0; }
 };
 
 // Cross-panel state, owned by main().
@@ -74,6 +85,7 @@ struct AppState {
     RealModel* real = nullptr;      // same object as model; write actions
     AudioPlayer* player = nullptr;  // owned by main(); null = audio unavailable
     SDL_Window* window = nullptr;   // dialog parent
+    SDL_Renderer* renderer = nullptr;  // usage-panel thumbnail textures
     int selected = 0;
     bool playing = false;
     std::string load_error;         // nonempty -> "Open failed" modal

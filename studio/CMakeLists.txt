@@ -53,6 +53,7 @@ add_executable(2dfm-studio WIN32
     app/audio_player.cpp
     core/kgt_file.cpp
     core/xref.cpp
+    core/sprite_decode.cpp
     core/audio/audio_convert.cpp
 )
 target_compile_definitions(2dfm-studio PRIVATE SDL_STATIC_LIB)

@@ -414,6 +414,7 @@ int main(int argc, char** argv) {
     st.real = &model;
     st.player = &player;
     st.window = window;
+    st.renderer = renderer;  // usage-panel sprite thumbnails
 
     // Quick-test path: `2dfm-studio.exe Bewear.player` loads on startup.
     if (argc > 1 && argv[1] && argv[1][0])

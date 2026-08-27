@@ -17,6 +17,7 @@
 
 #include "../core/audio/audio_convert.h"
 #include "../core/kgt_file.h"
+#include "../core/sprite_decode.h"
 #include "app_state.h"
 #include "edit_session.h"
 
@@ -42,6 +43,14 @@ public:
     const std::vector<float>& Waveform(int sound) const override;
     double Seconds(int sound) const override;
     const kgt::PcmAudio* Pcm(int sound) const override;
+    const kgt::DecodedSprite* Sprite(int sprite) const override;
+    uint64_t Generation() const override { return generation_; }
+
+    // Shared palette used for sprites that carry no private palette. FM2K
+    // files hold 8; 0 is the authoring default and the only one the engine
+    // uses outside per-character recolors.
+    int SharedPalette() const { return shared_palette_; }
+    void SetSharedPalette(int p);
 
     // ── write path (wraps EditSession, keeps caches in sync) ──
     bool Dirty() const { return session_.Dirty(); }
@@ -72,6 +81,15 @@ private:
     std::vector<std::vector<UseRow>> uses_;
     std::vector<kgt::PcmAudio> pcm_;  // decoded preview PCM (empty if none)
     std::vector<std::vector<float>> wave_;
+
+    // Sprite decode is LAZY and cached, unlike the sound caches above.
+    // A file carries 8192 sprite slots against a few dozen sounds, and the
+    // usage panel only ever asks for the handful a selected sound plays on,
+    // so decoding them all in Load() would cost far more than it saves.
+    mutable std::vector<kgt::DecodedSprite> sprite_cache_;
+    mutable std::vector<uint8_t> sprite_done_;  // 0 = not tried, 1 = decoded, 2 = failed
+    int shared_palette_ = 0;
+    uint64_t generation_ = 0;
 };
 
 }  // namespace studio

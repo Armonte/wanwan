@@ -6,6 +6,8 @@
 // EditSession (edit_session.cpp).
 #include "real_model.h"
 
+#include <algorithm>
+
 #include <cstdio>
 #include <cstring>
 #include <utility>
@@ -90,6 +92,12 @@ bool RealModel::Load(const std::string& path, std::string* err) {
     const kgt::KgtFile& f = session_.File();
     const size_t n = f.sounds.size();
     sounds_.assign(n, SoundRow{});
+    // Drop decoded sprites and bump the generation BEFORE anything can ask
+    // for one: sprite indices repeat across files, so a stale entry here
+    // would render the previous file's artwork under the new file's names.
+    sprite_cache_.assign(f.sprites.size(), kgt::DecodedSprite{});
+    sprite_done_.assign(f.sprites.size(), 0);
+    ++generation_;
     uses_.assign(n, {});
     pcm_.assign(n, {});
     wave_.assign(n, {});
@@ -254,6 +262,33 @@ double RealModel::Seconds(int i) const {
 const kgt::PcmAudio* RealModel::Pcm(int i) const {
     if (i < 0 || i >= int(pcm_.size()) || pcm_[i].pcm.empty()) return nullptr;
     return &pcm_[i];
+}
+
+const kgt::DecodedSprite* RealModel::Sprite(int sprite) const {
+    if (!session_.Loaded()) return nullptr;
+    if (sprite < 0 || sprite >= (int)sprite_done_.size()) return nullptr;
+    if (sprite_done_[(size_t)sprite] == 0) {
+        // Cache the FAILURE too (state 2). Malformed sprites are common in
+        // community files, and retrying the decode every frame for one that
+        // will never succeed is a per-frame cost paid forever.
+        const bool ok = kgt::DecodeSprite(session_.File(), sprite,
+                                          shared_palette_,
+                                          kgt::kDefaultTransparentIndex,
+                                          sprite_cache_[(size_t)sprite]);
+        sprite_done_[(size_t)sprite] = ok ? 1 : 2;
+    }
+    return sprite_done_[(size_t)sprite] == 1 ? &sprite_cache_[(size_t)sprite]
+                                             : nullptr;
+}
+
+void RealModel::SetSharedPalette(int p) {
+    if (p < 0 || p > 7 || p == shared_palette_) return;
+    shared_palette_ = p;
+    // Only sprites WITHOUT a private palette change appearance, but the
+    // cache does not record which those were, so it is dropped wholesale.
+    // Re-decoding is lazy, so the cost is limited to what is on screen.
+    std::fill(sprite_done_.begin(), sprite_done_.end(), (uint8_t)0);
+    ++generation_;
 }
 
 }  // namespace studio

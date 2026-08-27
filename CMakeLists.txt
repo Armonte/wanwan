@@ -472,6 +472,7 @@ add_executable(FM2K_RollbackLauncher
     launcher/game/FM2K_Locale.cpp
     launcher/net/FM2K_Updater.cpp
     launcher/game/FM2K_GameIni.cpp
+    launcher/game/FM2K_InstallHealth.cpp
     launcher/render/FM2K_DDrawRedirect.cpp
     launcher/render/FM2K_CncDDraw.cpp
     launcher/game/FM2K_KgtParser.cpp

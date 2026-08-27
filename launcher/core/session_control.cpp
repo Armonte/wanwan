@@ -10,6 +10,7 @@
 #include "FM2K_GameInstance.h"
 #include "FM2K_Integration.h"
 #include "FM2K_GameIni.h"
+#include "../game/FM2K_InstallHealth.h"  // Program Files / VirtualStore split detector
 #include "FM2K_Locale.h"                 // T() -- the online-refusal status line
 #include "../ui/launcher_ui_internal.h"  // lui::NeutralizeGamePatchEnvVars
 
@@ -20,11 +21,35 @@
 #include <iostream>
 #include <system_error>
 
+// Probe the game directory for the Program Files / UAC VirtualStore split and
+// log it, once per launch, BEFORE anything tries to write there.
+//
+// Placed ahead of the write rather than after it on purpose. The failure this
+// detects does not always produce a failed write: when a VirtualStore mirror
+// already exists, every write SUCCEEDS and the damage is that the game is
+// reading a different copy of the file than the launcher is. A check that only
+// ran on an error path would therefore miss the case that actually silently
+// diverges the two processes, which is the one field reports describe as
+// "settings don't apply".
+//
+// Never fatal on its own. StartOnlineSession separately refuses to start when
+// the ini could not be applied; this only makes the REASON visible, because
+// the reason is otherwise invisible by construction -- under this exact split
+// the launcher's log and the game's log are in two different folders.
+static void LogInstallHealth(const std::filesystem::path& exe_path) {
+    const auto report = fm2k::install_health::Probe(exe_path);
+    const std::string msg = fm2k::install_health::Describe(report);
+    if (msg.empty()) return;
+    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "%s", msg.c_str());
+}
+
 void FM2KLauncher::StartOfflineSession() {
     if (selected_game_.exe_path.empty()) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Cannot start offline session: no game selected.");
         return;
     }
+
+    LogInstallHealth(selected_game_.exe_path);
 
     // Terminate existing game if running
     if (game_instance_ && game_instance_->IsRunning()) {
@@ -224,6 +249,7 @@ void FM2KLauncher::StartOnlineSession(const NetworkConfig& config, bool is_host)
     // temp file in FM2K_GameIni.cpp -- so this retry is belt-and-braces against
     // any remaining transient sharing violation, not the fix for one. A genuine
     // permissions failure fails both attempts in a few hundred microseconds.
+    LogInstallHealth(selected_game_.exe_path);
     bool ini_ok = fm2k::game_ini::ApplyForLaunch(selected_game_.exe_path,
                                                  /*is_online=*/true);
     if (!ini_ok) {

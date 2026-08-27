@@ -113,16 +113,44 @@ INPUT_FIELDS = ["p1_input", "p2_input"]
 
 
 def classify(first, last, diff):
-    """'ok' | 'input' (mispredicted forward save) | 'violation'."""
+    """'ok' | 'input' (mispredicted forward save) | 'violation'.
+
+    ORDERING IS THE WHOLE POINT. The rollback contract is "a resim on the SAME
+    inputs reproduces the forward pass". Two saves that ran on DIFFERENT inputs
+    were never a test of that contract, so they cannot be a violation of it --
+    and every downstream field (rng, hp, timers, the fingerprint) may legitimately
+    differ, because the sim was fed different data.
+
+    This used to check DETERMINISM_CRITICAL first and return "violation" on any
+    rng/hp/timer difference, before ever looking at the inputs. Combined with a
+    stride bug that made the recorded inputs constant (see below), that produced
+    a REPRODUCIBLE FALSE POSITIVE: the seamdesync stage's long-standing
+    intermittent "violation" at the match-end seam.
+
+    Proven from archived memory snapshots of one such run -- at the divergent
+    frame, buf_idx=827, the TRUE input_history[827] across the four passes was
+    0x00A0 / 0x0020 / 0x0009 / 0x0014 (misprediction corrected on each rollback,
+    i.e. rollback working), while the buggy uint16 read reported 0x0000 for all
+    four. So the inputs looked identical, the exemption below could not fire,
+    and correct behaviour was reported as a determinism failure.
+
+    The stride bug is fixed in savestate_fm2k_diag.cpp (the ring is uint32[1024]
+    per player, proven by the engine's own writer at 0x41472E and the motion
+    check's read at 0x410AC5). This ordering fix is the other half: without it,
+    a truthful input difference still lands on DETERMINISM_CRITICAL first.
+
+    What this deliberately does NOT weaken: when both inputs AGREE, any
+    determinism-critical difference is still a violation -- which is exactly the
+    967f89f signature (frozen rng, vm_live collapsing, inputs agreeing).
+    """
     if not diff:
         return "ok"
+    # Inputs first: differing inputs mean these two saves are not comparable.
+    if any(f in diff for f in INPUT_FIELDS):
+        return "input"
     if any(f in diff for f in DETERMINISM_CRITICAL):
         return "violation"
-    if not any(f in diff for f in INPUT_FIELDS):
-        return "violation"          # fingerprint moved with inputs agreeing
-    if set(diff) - set(INPUT_FIELDS) - {"fingerprint"}:
-        return "violation"
-    return "input"
+    return "violation"          # fingerprint moved while both inputs agree
 
 
 def parse(path):

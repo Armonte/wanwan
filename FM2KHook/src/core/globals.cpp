@@ -43,6 +43,9 @@ volatile uint32_t g_sim_step_count = 0;
 int g_player_index = 0;
 uint32_t g_frame_counter = 0;
 bool g_is_rolling_back = false;
+// Monotonic GekkoNet advance counter -- see netplay_battle_events.cpp.
+// Used by csm_diag to tell a resim of frame N from the forward pass of N.
+uint32_t g_adv_seq = 0;
 bool g_css_rollback = false;   // #66: CSS rollback opt-in (FM2K_CSS_ROLLBACK=1)
 
 // Network config (parsed at startup, used when entering battle)

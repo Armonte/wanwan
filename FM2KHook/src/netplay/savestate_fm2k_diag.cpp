@@ -118,8 +118,24 @@ uint32_t SaveState_CalculateFingerprint() {
 
     uint32_t buf_idx = *(uint32_t*)0x447EE0;
     uint32_t idx     = buf_idx & 0x3FF;
-    uint16_t p1_in = ((const uint16_t*)0x4280E0)[idx];
-    uint16_t p2_in = ((const uint16_t*)0x4290E0)[idx];
+    // uint32 PER ENTRY, not uint16. Proven twice in the engine's own code:
+    // process_game_inputs writes `mov DWORD PTR [edx*4+0x4280e0],eax` (0x41472E)
+    // and the motion-command check reads `mov edi,[ebx+ebp*4]` (0x410AC5) --
+    // both a 4-byte stride. SIZE_INPUT_HISTORY (0x2008) agrees: 2 players x
+    // 1024 entries x 4 bytes + an 8-byte header.
+    //
+    // Reading it as uint16 indexed by `idx` did not read frame `idx` at all --
+    // it read the low half of entry idx/2. That made p1_input/p2_input in the
+    // seam ring garbage, and the consequence was NOT cosmetic:
+    // seam_ring_check exempts a group as an INPUT CORRECTION (forward pass ran
+    // on a PREDICTED input, resim on the corrected one -- normal rollback)
+    // only when an input field differs. With both fields reading the same
+    // wrong element, a genuine input correction looked input-identical and was
+    // reported as a determinism VIOLATION instead.
+    const uint32_t* p1_hist = (const uint32_t*)0x4280E0;
+    const uint32_t* p2_hist = (const uint32_t*)0x4290E0;
+    uint16_t p1_in = (uint16_t)(p1_hist[idx] & 0xFFFF);
+    uint16_t p2_in = (uint16_t)(p2_hist[idx] & 0xFFFF);
     struct __attribute__((packed)) Fingerprint {
         uint32_t rng;
         uint32_t p1_hp;
@@ -219,12 +235,24 @@ uint32_t SaveState_CalculateFullChecksum() {
     uint32_t it1 = Fletcher32((uint8_t*)0x447EE0, 0x447F00 - 0x447EE0);   // buf_idx region
     uint32_t it2 = Fletcher32((uint8_t*)0x447F00, 0x447F20 - 0x447F00);   // g_prev_input_state
     uint32_t it3 = Fletcher32((uint8_t*)0x447F40, 0x447F80 - 0x447F40);   // g_processed_input + g_input_changes
-    // History ring buffers: 1024 frames × 2 bytes per player. Must match across
+    // History ring buffers: 1024 frames x 4 BYTES per player (uint32, see the
+    // stride proof in SaveState_CalculateFingerprint), so a FULL hash would be
+    // 0x1000 each and the 0x800 below covers only the first 512 entries.
+    //
+    // DELIBERATELY LEFT AT 0x800 FOR NOW. Widening it to 0x1000 was tried and
+    // backed out: it is not needed for the seam false-positive fix (that is the
+    // uint32 stride in the fingerprint plus the classifier ordering), and it
+    // changes the combined checksum that the SPECTATOR comparison uses. A
+    // spectator that joined mid-battle can hold different residue in the
+    // upper half of its ring, which the widened hash would report as a
+    // full-state desync from frame 0 -- a new false-positive class in exchange
+    // for coverage nobody has shown to matter. Widen it only alongside proof
+    // that both sides' upper halves are meant to agree. Must match across
     // peers byte-for-byte -- if a facing/slot swap mutates the stored input on
     // one side and not the other, these CRCs diverge on frame 1 and give us
     // an early desync signal instead of waiting for the cascade into game_state.
-    uint32_t it4 = Fletcher32((uint8_t*)0x4280E0, 0x800);                 // g_p1_input_history (uint16[1024])
-    uint32_t it5 = Fletcher32((uint8_t*)0x4290E0, 0x800);                 // g_p2_input_history (uint16[1024])
+    uint32_t it4 = Fletcher32((uint8_t*)0x4280E0, 0x800);                 // g_p1_input_history: FIRST HALF ONLY -- see note
+    uint32_t it5 = Fletcher32((uint8_t*)0x4290E0, 0x800);                 // g_p2_input_history: FIRST HALF ONLY -- see note
     g_region_checksums.input_tracking = it1 ^ it2 ^ it3 ^ it4 ^ it5;
 
     // Effect/shake regions (now saved for rollback)

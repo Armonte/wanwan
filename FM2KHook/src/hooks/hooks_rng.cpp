@@ -11,6 +11,9 @@
 
 #include <cstdlib>
 #include <cstring>
+
+// Current netplay frame -- the rng call-site ring keys on it.
+extern uint32_t g_netplay_frame;
 #include <vector>
 #include <unordered_map>
 #include <memory>
@@ -57,6 +60,7 @@
 // We want: round-to-nearest-even, all exceptions masked, no FZ/DAZ, flags clear.
 // Value 0x1F80 is the x86 default but we pin it explicitly to ensure both
 #include "hooks_internal.h"
+#include "../netplay/seam_trace.h"
 
 // RNG-call trace -- gated on FM2K_RNG_TRACE=1 env var. Each call records
 // (call_index, caller_pc, rng_pre, rng_post) as 16-byte little-endian
@@ -137,7 +141,7 @@ uint32_t __cdecl Hook_GameRand() {
         // the same state, were those 3 draws not made at all, or were they
         // DIVERTED here because g_in_render_rng was set across them? The two
         // counters together distinguish those; either alone cannot.
-        { extern uint32_t g_seam_rand_render; ++g_seam_rand_render; }
+        if (SeamTrace_Enabled()) { extern uint32_t g_seam_rand_render; ++g_seam_rand_render; }
         const uint32_t gameplay = *(uint32_t*)FM2K::ADDR_RANDOM_SEED;
         *(uint32_t*)FM2K::ADDR_RANDOM_SEED = g_render_rng_seed;
         const uint32_t r = original_game_rand ? original_game_rand() : 0;
@@ -151,7 +155,7 @@ uint32_t __cdecl Hook_GameRand() {
     // Seam-ring cumulative tally. Separate counter because the one above is
     // reset per frame by parity_recorder; the ring needs a monotonic value it
     // can difference between rows. See seam_trace.cpp.
-    { extern uint32_t g_seam_rand_total; ++g_seam_rand_total; }
+    if (SeamTrace_Enabled()) { extern uint32_t g_seam_rand_total; ++g_seam_rand_total; }
     // Classify the caller (return addr) into the 7 known game_rand callers so
     // [FULLFP] fn= shows which function's per-frame draw count diverges.
     // The bucket is computed ONCE and fed to both tallies: the per-frame one
@@ -170,7 +174,43 @@ uint32_t __cdecl Hook_GameRand() {
         else if (ra >= 0x411bf0 && ra < 0x413bd6) b = 6; // character_state_machine
         else                                      b = 7; // other
         ++g_gp_rand_by_fn[b];
-        { extern uint32_t g_seam_rand_by_fn[8]; ++g_seam_rand_by_fn[b]; }
+        if (SeamTrace_Enabled()) { extern uint32_t g_seam_rand_by_fn[8]; ++g_seam_rand_by_fn[b]; }
+    }
+    // RNG CALL-SITE RING. Armed only by FM2K_SEAM_RNGSITE=1 and only inside a
+    // ~30-frame window, so an unarmed build pays one cached-bool test here.
+    // Inside the window we do the frame-pointer walk that the bucket
+    // classifier above cannot afford: `ra` is ALWAYS the 0x4139A8 wrapper
+    // (which is why that classifier reports 100% character_state_machine and
+    // tells us nothing), and only the caller-OF-caller names a real function.
+    // ~1000 entries for a whole run -- see docs/dev/seam_ring_intermittent.md.
+    if (SeamTrace_RngSiteWanted((int)g_netplay_frame)) {
+        const uint32_t ra1 = (uint32_t)(uintptr_t)__builtin_return_address(0);
+        uint32_t ra2 = 0, ra3 = 0;
+        // STACK SCAN, not a frame-pointer walk. The EBP walk returned 0 for
+        // all 64 recorded draws: this TU builds at -O2, which omits the frame
+        // pointer, so __builtin_frame_address(0) yields nothing walkable.
+        // ra1 is always 0x004139A8 (proven: 64/64) -- the engine funnels every
+        // game_rand through one wrapper, so the direct caller identifies
+        // nothing and the callers ABOVE it are the whole point.
+        //
+        // Scan the stack for values that look like return addresses into the
+        // game's .text and are not the wrapper itself. Heuristic by nature --
+        // a stale slot can alias a code address -- so we keep the first TWO
+        // candidates rather than trusting one, and the offline diff only cares
+        // which sites appear in the 10-draw pass and vanish in the 7-draw one.
+        {
+            constexpr uint32_t kTextLo = 0x00401000, kTextHi = 0x00420000;
+            volatile uint32_t probe = 0;
+            const uint32_t* sp = (const uint32_t*)((uintptr_t)&probe & ~3u);
+            for (int k = 0; k < 64 && !ra3; ++k) {
+                const uint32_t v = sp[k];
+                if (v >= kTextLo && v < kTextHi && v != ra1) {
+                    if (!ra2)      ra2 = v;
+                    else if (v != ra2) ra3 = v;
+                }
+            }
+        }
+        SeamTrace_NoteRngDraw(ra1, ra2, ra3);
     }
     RngTrace_ResolveOnce();
     if (!g_rng_trace_enabled) {

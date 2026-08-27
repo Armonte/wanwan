@@ -38,6 +38,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+
+// Current netplay frame -- the rng call-site ring keys on it.
+extern uint32_t g_netplay_frame;
 #include <string>
 
 // Cumulative gameplay-seed game_rand draws, bumped by Hook_GameRand's
@@ -100,6 +103,70 @@ VmDigest ComputeVmDigest() {
     return d;
 #endif
 }
+
+// ---- broad memory snapshot ----------------------------------------------
+// See seam_trace.h. Fixed range chosen to span every FM2K global the tree
+// references: round_end_flag 0x424718, input history 0x4280E0, afterimage
+// 0x447930, effect sys 0x4456B0, object pool 0x4701E0, char slots 0x4D1D90
+// (+8*0x0E03F), menu input state 0x541F80. 0x420000..0x580000 covers all of
+// them with headroom.
+constexpr uintptr_t MEMSNAP_LO   = 0x00420000;
+constexpr uintptr_t MEMSNAP_HI   = 0x00580000;
+constexpr size_t    MEMSNAP_SIZE = MEMSNAP_HI - MEMSNAP_LO;   // 1.375 MB
+// Only the frames straddling the divergence. Every violation ever observed
+// has been at frame 827, so 825..828 brackets it without paying for the match.
+constexpr int MEMSNAP_LO_FRAME = 826;   // last agreeing frame
+constexpr int MEMSNAP_HI_FRAME = 827;   // first diverging frame
+// MATCH GATE -- load-bearing. g_netplay_frame RESTARTS every battle, so
+// frames 826/827 exist in EVERY match. Without this the budget is spent
+// entirely inside match 1 and the run yields 12 snapshots of a match that
+// never violates (observed: every .bin from the first attempt was m1).
+constexpr uint16_t MEMSNAP_MATCH = 3;
+constexpr size_t MEMSNAP_MAX = 16;   // ~22 MB resident, dumped at teardown
+struct MemSnap { int32_t frame; uint8_t replay; uint16_t match; uint8_t* bytes; };
+MemSnap g_memsnap[MEMSNAP_MAX];
+size_t  g_memsnap_count = 0;
+
+// ---- script-VM opcode ring ----------------------------------------------
+// See seam_trace.h. `bytes` is the raw script blob AT THE VM CURSOR: if two
+// passes sit at the same (script_idx, item_idx) yet read different bytes, the
+// divergence is heap-resident script data -- the one place the full
+// data-segment diff structurally could not look.
+struct OpEntry {
+    uint32_t seq;
+    int32_t  frame;
+    uint32_t obj;
+    uint32_t item_idx;
+    uint32_t script_idx;
+    int32_t  f3c;
+    uint8_t  opcode;
+    uint8_t  bytes[8];
+};
+constexpr size_t OPRING_CAPACITY = 96000;   // ~2.2 MB; window is ~58k entries
+OpEntry  g_opring[OPRING_CAPACITY];
+size_t   g_opring_count = 0;
+bool     g_opring_overflow = false;
+
+// ---- rng call-site ring -------------------------------------------------
+// See seam_trace.h. Narrow window, memory-only, dumped with the save ring.
+struct RngSite {
+    uint16_t match;
+    int32_t  frame;
+    uint8_t  replay;      // 1 while gekko is resimulating
+    uint32_t ra1;         // always the 0x4139A8 wrapper -- kept for proof
+    uint32_t ra2;         // first plausible caller above the wrapper
+    uint32_t ra3;         // second candidate (the scan is heuristic)
+};
+constexpr size_t RNGSITE_CAPACITY = 4096;
+RngSite  g_rngsite[RNGSITE_CAPACITY];
+size_t   g_rngsite_count = 0;
+bool     g_rngsite_overflow = false;
+// The window. Chosen around the ONLY frame this has ever fired at (827,
+// every violation, every run) with room either side to see the run-up and
+// the tail. Deliberately not the whole match: ~10 draws/frame * 21 frames *
+// every pass that crosses it still fits the ring with headroom.
+constexpr int RNGSITE_FRAME_LO = 815;
+constexpr int RNGSITE_FRAME_HI = 845;
 
 // ---- per-save ring ------------------------------------------------------
 // APPEND ordering (not keyed by frame) on purpose: the whole point is to see
@@ -254,6 +321,66 @@ bool SeamTrace_Enabled() {
         s_cached = (v && v[0] && v[0] != '0') ? 1 : 0;
     }
     return s_cached == 1;
+}
+
+void SeamTrace_MemSnap(int frame, bool is_replay_save) {
+    static int s_on = -1;
+    if (s_on < 0) {
+        const char* v = std::getenv("FM2K_SEAM_MEMSNAP");
+        s_on = (v && v[0] && v[0] != '0') ? 1 : 0;
+    }
+    if (s_on != 1) return;
+    if (frame < MEMSNAP_LO_FRAME || frame > MEMSNAP_HI_FRAME) return;
+    if (g_match_idx != MEMSNAP_MATCH) return;
+    if (g_memsnap_count >= MEMSNAP_MAX) return;
+    MemSnap& m = g_memsnap[g_memsnap_count];
+    if (!m.bytes) {
+        m.bytes = (uint8_t*)std::malloc(MEMSNAP_SIZE);
+        if (!m.bytes) return;        // out of memory: record nothing, never crash
+    }
+    m.frame  = (int32_t)frame;
+    m.replay = is_replay_save ? 1 : 0;
+    m.match  = g_match_idx;
+    std::memcpy(m.bytes, (const void*)MEMSNAP_LO, MEMSNAP_SIZE);
+    ++g_memsnap_count;
+}
+
+uint16_t SeamTrace_MatchIdx() { return g_match_idx; }
+
+void SeamTrace_NoteOpcode(uint32_t seq, int32_t frame, uint32_t obj,
+                          uint32_t item_idx, uint32_t script_idx,
+                          int32_t f3c, uint8_t opcode,
+                          const uint8_t* script_bytes) {
+    if (g_opring_count >= OPRING_CAPACITY) { g_opring_overflow = true; return; }
+    OpEntry& e = g_opring[g_opring_count++];
+    e.seq = seq; e.frame = frame; e.obj = obj;
+    e.item_idx = item_idx; e.script_idx = script_idx;
+    e.f3c = f3c; e.opcode = opcode;
+    for (int i = 0; i < 8; ++i) e.bytes[i] = script_bytes ? script_bytes[i] : 0;
+}
+
+bool SeamTrace_RngSiteWanted(int frame) {
+    static int s_cached = -1;
+    if (s_cached < 0) {
+        const char* v = std::getenv("FM2K_SEAM_RNGSITE");
+        s_cached = (v && v[0] && v[0] != '0') ? 1 : 0;
+    }
+    if (s_cached != 1) return false;
+    return frame >= RNGSITE_FRAME_LO && frame <= RNGSITE_FRAME_HI;
+}
+
+void SeamTrace_NoteRngDraw(uint32_t ra1, uint32_t ra2, uint32_t ra3) {
+    if (g_rngsite_count >= RNGSITE_CAPACITY) { g_rngsite_overflow = true; return; }
+    RngSite& r = g_rngsite[g_rngsite_count++];
+    r.match  = g_match_idx;
+    r.frame  = (int32_t)g_netplay_frame;
+    // A draw made while gekko is resimulating belongs to a replay pass. The
+    // save ring's rows carry the same flag, so the two views join on
+    // (match, frame, replay) offline.
+    r.replay = g_is_rolling_back ? 1 : 0;
+    r.ra1    = ra1;
+    r.ra2    = ra2;
+    r.ra3    = ra3;
 }
 
 // FM2K_SEAM_LEGACY_PARK=1 -- DIAGNOSTIC A/B LEVER ONLY. Default OFF.
@@ -661,7 +788,49 @@ void SeamTrace_Dump(int player_index, const char* reason) {
             e.rand_render, e.h_gs, e.h_it, e.h_obj, e.h_char, e.h_ai,
             e.h_lists);
     }
+    // RNG call-site rows. Separate section, own header, so the offline tool
+    // reads them without disturbing the SV/WN width contract.
+    if (g_rngsite_count) {
+        std::fprintf(f, "# rng draw call sites (window %d..%d)%s\n",
+                     RNGSITE_FRAME_LO, RNGSITE_FRAME_HI,
+                     g_rngsite_overflow ? " -- RING OVERFLOWED, TRUNCATED" : "");
+        std::fprintf(f, "kind,match,frame,replay,ra1,ra2,ra3\n");
+        for (size_t i = 0; i < g_rngsite_count; ++i) {
+            const RngSite& r = g_rngsite[i];
+            std::fprintf(f, "RS,%u,%d,%u,0x%08X,0x%08X,0x%08X\n",
+                         (unsigned)r.match, r.frame, (unsigned)r.replay,
+                         r.ra1, r.ra2, r.ra3);
+        }
+    }
+    if (g_opring_count) {
+        std::fprintf(f, "# script-VM opcodes (match 3 seam window)%s\n",
+                     g_opring_overflow ? " -- RING OVERFLOWED, TRUNCATED" : "");
+        std::fprintf(f, "kind,seq,frame,obj,item,script,f3c,opcode,bytes\n");
+        for (size_t i = 0; i < g_opring_count; ++i) {
+            const OpEntry& e = g_opring[i];
+            std::fprintf(f,
+                "OP,%u,%d,0x%08X,%u,%u,%d,0x%02X,"
+                "%02X%02X%02X%02X%02X%02X%02X%02X\n",
+                e.seq, e.frame, e.obj, e.item_idx, e.script_idx, e.f3c,
+                e.opcode, e.bytes[0], e.bytes[1], e.bytes[2], e.bytes[3],
+                e.bytes[4], e.bytes[5], e.bytes[6], e.bytes[7]);
+        }
+    }
     std::fclose(f);
+    // Raw snapshots beside the CSV. Named so the offline differ can join them
+    // to the SV rows by (match, frame, replay) and to their pass by ordinal.
+    for (size_t i = 0; i < g_memsnap_count; ++i) {
+        const MemSnap& m = g_memsnap[i];
+        if (!m.bytes) continue;
+        char sp[512];
+        std::snprintf(sp, sizeof(sp), "%s.memsnap%02u_m%u_f%d_r%u.bin",
+                      filename, (unsigned)i, (unsigned)m.match, m.frame,
+                      (unsigned)m.replay);
+        if (FILE* sf = std::fopen(sp, "wb")) {
+            std::fwrite(m.bytes, 1, MEMSNAP_SIZE, sf);
+            std::fclose(sf);
+        }
+    }
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                  "[SEAM] wrote %zu episodes + %zu ring saves + %zu window "
                  "saves to %s",

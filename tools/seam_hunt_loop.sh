@@ -38,7 +38,20 @@ for i in $(seq 1 "$ITERS"); do
     rounds=$(grep -o 'rounds=[0-9]*' "$tmp/gate_stdout.log" 2>/dev/null | head -1 | cut -d= -f2)
     rounds="${rounds:-0}"
     p2csv=$(ls "$tmp"/*P2_seamring.csv 2>/dev/null | head -1)
-    if [ "$rounds" -ge 2 ] && [ -n "$p2csv" ]; then
+    # WINDOW COVERAGE -- the term that was missing, and it mattered more than
+    # everything else here. The violation only ever occurs at the match-end
+    # seam around frame 827, and whether a run REACHES that frame depends on
+    # how the last round plays out (observed: one run's match 3 ended at frame
+    # 730 and never went near it). Runs that stop short test nothing, but they
+    # were being scored PASS, so a 20-run batch could carry only 4 real trials.
+    # Re-scored with this term, every arm's rate jumped from ~15% to 50-75% and
+    # the apparent "reductions" vanished -- the arms were never working, the
+    # denominator was. A single COVERED run is now a strong test.
+    reached=0
+    if [ -n "$p2csv" ]; then
+        reached=$(awk -F, '$1=="SV" && ($4=="826"||$4=="827"){x++} END{print x+0}' "$p2csv" 2>/dev/null)
+    fi
+    if [ "$rounds" -ge 2 ] && [ -n "$p2csv" ] && [ "${reached:-0}" -gt 0 ]; then
         if [ "$rc" -eq 0 ]; then verdict=PASS; pass=$((pass+1))
         else verdict=VIOLATION; viol=$((viol+1)); fi
     else
@@ -50,7 +63,7 @@ for i in $(seq 1 "$ITERS"); do
     # slower but never leaves the run unarchived (run9 of the 2026-08-24 batch
     # vanished exactly this way and was silently scored twice).
     cp -r "$tmp" "$dest" 2>/dev/null && rm -rf "$tmp"
-    echo "[seam-hunt] run $i/$ITERS -> $verdict (rounds=$rounds p2ring=$([ -n "$p2csv" ] && echo y || echo n)) " \
+    echo "[seam-hunt] run $i/$ITERS -> $verdict (rounds=$rounds win827=${reached:-0}) " \
          "(pass=$pass violation=$viol nocov=$nocov)"
 done
 echo "[seam-hunt] DONE seed=$SEED pass=$pass violation=$viol nocov=$nocov  artifacts: $BASE"

@@ -3405,7 +3405,7 @@ def main():
               # NOT optional: without it the columns silently emit 0x00000000
               # for every row and a whole 24-run hunt reads as "all regions
               # match" when in fact nothing was ever hashed.
-              "FM2K_SEAM_HASH",
+              "FM2K_SEAM_HASH", "FM2K_SEAM_RNGSITE", "FM2K_SEAM_FULLPOOL", "FM2K_SEAM_NOCARVE", "FM2K_SEAM_MEMSNAP", "FM2K_SEAM_INPUTSAVE", "FM2K_SEAM_RAWZERO", "FM2K_SEAM_ITPOST", "FM2K_CSM_DIAG", "FM2K_CSM_SEAM",
               # Envelope inversion phase 1 (SHADOW MODE): full-image per-256B
               # block hashes diffed forward-vs-replay, so every remaining hole in
               # the save envelope names itself. Observe only -- it restores
@@ -3737,7 +3737,7 @@ def main():
                    # [HOST-FP] is gated on it and the pair is read together.
                    "FM2K_FACING_TRACE", "FM2K_FULL_CRCS", "FM2K_EB_DIAG",
                    "FM2K_SPEC_FINGERPRINT", "FM2K_HOST_TRACE",
-                   "FM2K_SEAM_TRACE", "FM2K_SEAM_HASH",
+                   "FM2K_SEAM_TRACE", "FM2K_SEAM_HASH", "FM2K_SEAM_RNGSITE", "FM2K_SEAM_FULLPOOL", "FM2K_SEAM_NOCARVE", "FM2K_SEAM_MEMSNAP", "FM2K_SEAM_INPUTSAVE", "FM2K_SEAM_RAWZERO", "FM2K_SEAM_ITPOST", "FM2K_CSM_DIAG", "FM2K_CSM_SEAM",
                    # Envelope inversion phase 1 shadow mode, viewer half. Kept
                    # symmetric with the player list on principle. Honest note,
                    # same shape as the [BATTLE-OBJ] entry below: the instrument

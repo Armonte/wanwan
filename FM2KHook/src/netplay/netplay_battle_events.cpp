@@ -318,6 +318,12 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
     // 11's input (000,006) absent from the file, two confirmed
     // advances both labeled f=10.
     g_netplay_frame = (uint32_t)update->data.adv.frame;
+    // Monotonic advance counter. gekko reports adv.rolling_back == 0 even for
+    // the re-simulations this bug lives in (verified: 512/512 seam-ring rows
+    // and every traced opcode read 0), so that flag cannot separate a forward
+    // pass from a resim. A sequence number can: the same frame appearing under
+    // two different seq values IS the second pass, with no interpretation.
+    { extern uint32_t g_adv_seq; ++g_adv_seq; }
 
     // [ENDSEAM-FREE] window sampling (telemetry only, counters, no logging).
     // This site rather than Hook_UpdateGameState: in netplay the trampoline
@@ -487,6 +493,20 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
     // The game loop must NOT run its own tick - we handle everything here.
     {
         PerfScope _pa(&g_perf_adv);  // profile game-tick cost (#62)
+        // FM2K_SEAM_INPUTSAVE=1 (diagnostic, default off) -- PER-FRAME restore
+        // of the raw-local-input globals.
+        //
+        // The earlier arm restored these at LOAD time and measurably did
+        // nothing: a byte diff taken with it active showed the same 12 bytes
+        // still differing, because process_game_inputs RECOMPUTES them every
+        // frame from wall-clock-sampled device state. Load-time is simply the
+        // wrong moment. Here they are re-imposed immediately before the tick
+        // that consumes them, for the frame being simulated -- which is the
+        // only placement that can hold across a resim.
+        //
+        // The netplay-confirmed inputs are identical in both passes; it is
+        // this raw local state that differs, and savestate_fm2k_save.cpp's
+        // claim that battle "never reads" it is what this tests.
         if (original_process_game_inputs) {
             original_process_game_inputs();
         }

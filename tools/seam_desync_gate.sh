@@ -155,8 +155,17 @@ seam_run() {   # $1 = net seed; 0 = PASS
     # earlier run would otherwise be checked as if it belonged to this one.
     rm -f "$SPEC_LIVE"/live_FM2K_*_Debug.log
     rm -f "$SEAM_GAMEDIR"/FM2K_P1_seamring.csv "$SEAM_GAMEDIR"/FM2K_P2_seamring.csv
+    rm -f "$SEAM_GAMEDIR"/FM2K_P*_seamring.csv.memsnap*.bin
     FM2K_TEST_OUT_DIR="$SPEC_LIVE" \
       FM2K_SEAM_TRACE=1 FM2K_SEAM_HASH="${FM2K_SEAM_HASH:-0}" \
+      FM2K_SEAM_RNGSITE="${FM2K_SEAM_RNGSITE:-0}" \
+      FM2K_SEAM_FULLPOOL="${FM2K_SEAM_FULLPOOL:-0}" \
+      FM2K_SEAM_NOCARVE="${FM2K_SEAM_NOCARVE:-0}" \
+      FM2K_SEAM_MEMSNAP="${FM2K_SEAM_MEMSNAP:-0}" \
+      FM2K_SEAM_INPUTSAVE="${FM2K_SEAM_INPUTSAVE:-0}" \
+      FM2K_SEAM_RAWZERO="${FM2K_SEAM_RAWZERO:-0}" \
+      FM2K_SEAM_ITPOST="${FM2K_SEAM_ITPOST:-0}" \
+      FM2K_CSM_DIAG="${FM2K_CSM_DIAG:-0}" FM2K_CSM_SEAM="${FM2K_CSM_SEAM:-0}" \
       FM2K_NET_DELAY_MS=230 FM2K_NET_JITTER_MS=50 \
       FM2K_NET_LOSS=0.20 FM2K_NET_SEED="$seed" \
       timeout "$SEAM_TIMEOUT" python3 "$ROOT/tools/spec_selftest.py" \
@@ -190,6 +199,13 @@ seam_run() {   # $1 = net seed; 0 = PASS
             rings+=("$SEAM_GAMEDIR/FM2K_${p}_seamring.csv")
             cp -f "$SEAM_GAMEDIR/FM2K_${p}_seamring.csv" \
                   "$OUT/seam_${SEAM_TAG}_seed${seed}_${p}_seamring.csv" 2>/dev/null; }
+        # Raw memory snapshots (FM2K_SEAM_MEMSNAP=1). Preserved beside the ring
+        # or they are wiped by the next run's cleanup before anyone can diff
+        # them -- the whole point is comparing two passes of ONE run.
+        for snap in "$SEAM_GAMEDIR/FM2K_${p}_seamring.csv".memsnap*.bin; do
+            [ -e "$snap" ] || continue
+            mv -f "$snap" "$OUT/seam_${SEAM_TAG}_seed${seed}_${p}_$(basename "$snap" | sed 's/.*\.memsnap/memsnap/')" 2>/dev/null
+        done
     done
     if [ ${#rings[@]} -gt 0 ]; then
         python3 "$ROOT/tools/seam_ring_check.py" "${rings[@]}" \
@@ -225,7 +241,47 @@ seam_run() {   # $1 = net seed; 0 = PASS
         echo "[seam]           harness/deployment failure, not a green run."
         return 1
     fi
-    echo "[seam] ${SEAM_TAG} seed $seed: PASS (0 DESYNC, $rounds matches started)"
+    # SEAM-WINDOW COVERAGE. Reaching 2+ matches is necessary but NOT sufficient:
+    # the violation this stage exists for lives at the match-end seam around
+    # frame 827, and whether the last match REACHES that frame depends on how
+    # its final round plays out. Observed 2026-08-25: a full gate run reported
+    # ALL GREEN with the last match's ring spanning frames 629..782 -- it ended
+    # 45 frames short of the hazard and never entered it. That is a run which
+    # tested nothing being counted as evidence of health, which is strictly
+    # worse than a red. Measured across archived batches, ~40% of runs stop
+    # short, so the stage was passing by not testing roughly that often.
+    local win_rows=0
+    if [ ${#rings[@]} -gt 0 ]; then
+        for r in "${rings[@]}"; do
+            local n
+            # What this stage guards is a ROLLBACK ACROSS A MATCH-END SEAM, and
+            # the seam sits wherever the last round actually ended -- not at a
+            # fixed frame. An earlier version hardcoded frames 825-832 (where it
+            # happened to land in the runs being studied) and therefore called
+            # every shorter match "no coverage", which drove the stage
+            # inconclusive ~80% of the time for no good reason.
+            #
+            # Correct test: rows in the post-round-end window (round_timer == 0,
+            # field 11) whose FRAME is recorded more than once -- i.e. a resim
+            # crossed the seam. Multiply-recorded is the part that matters; a
+            # seam nobody rolled back over exercises nothing.
+            n=$(awk -F, '$1=="SV" && $11==0 {c[$4]++} END{x=0; for(f in c) if(c[f]>1) x++; print x+0}' "$r" 2>/dev/null)
+            win_rows=$((win_rows + ${n:-0}))
+        done
+    fi
+    if [ "$win_rows" -eq 0 ]; then
+        # NOCOV is INCONCLUSIVE, not a product failure: the session simply
+        # ended its last match before the seam. Whether it gets there depends
+        # on how the final round plays out, and measured coverage is only
+        # ~20-60%, so failing outright would red the gate on luck. Signalled
+        # with rc=2 so the caller can RETRY; only a real violation returns 1.
+        echo "[seam] ${SEAM_TAG} seed $seed: NOCOV -- $rounds matches ran but no frame in the"
+        echo "[seam]           post-round-end window was re-simulated (no rollback crossed a seam),"
+        echo "[seam]           so the violation class this stage guards was never exercised."
+        echo "[seam]           INCONCLUSIVE (rc=2) -- caller retries; never scored as a pass."
+        return 2
+    fi
+    echo "[seam] ${SEAM_TAG} seed $seed: PASS (0 DESYNC, $rounds matches started, seam window covered: $win_rows saves)"
     return 0
 }
 
@@ -235,11 +291,37 @@ echo "[seam] game:    ${SEAM_TAG}  exe=${SEAM_GAME_EXE:-<harness default>}  dir=
 echo "[seam] verdict: GekkoNet 'DESYNC #' only (+ seam_ring_check when CSVs exist)."
 echo "[seam]          OVERALL FAIL / spectator stalls / rc=124 are NOT failures here."
 ok=1
+nocov_all=1
+# RETRY ON INCONCLUSIVE (rc=2). Reaching the match-end seam depends on how the
+# final round happens to play out -- measured coverage is only ~20-60% -- so a
+# single unlucky run must not red the gate, and must not green it either. Retry
+# until a seed actually exercises the window; give up after 3 attempts and say
+# so rather than silently scoring a pass on a run that tested nothing.
+SEAM_ATTEMPTS="${SEAM_ATTEMPTS:-3}"
 for sd in $SEAM_SEEDS; do
-    seam_run "$sd" || ok=0
+    a=1
+    while : ; do
+        seam_run "$sd"; rc=$?
+        if [ "$rc" -eq 0 ]; then nocov_all=0; break; fi
+        if [ "$rc" -eq 1 ]; then nocov_all=0; ok=0; break; fi
+        # rc=2 -> inconclusive
+        if [ "$a" -ge "$SEAM_ATTEMPTS" ]; then
+            echo "[seam] ${SEAM_TAG} seed $sd: still NOCOV after $a attempts --"
+            echo "[seam]           the seam window was never reached, so this stage"
+            echo "[seam]           proves nothing this run. NOT counted as a pass."
+            break
+        fi
+        a=$((a+1))
+        echo "[seam] ${SEAM_TAG} seed $sd: inconclusive, retry $a/$SEAM_ATTEMPTS"
+    done
 done
 kill_games
-if [ "$ok" = 1 ]; then
+if [ "$ok" = 1 ] && [ "$nocov_all" = 0 ]; then
     echo "[seam] seamdesync: PASS (evidence: $OUT)"; exit 0
+fi
+if [ "$ok" = 1 ]; then
+    echo "[seam] seamdesync: INCONCLUSIVE -- never reached the seam window in"
+    echo "[seam]           $SEAM_ATTEMPTS attempts; no violation seen, but nothing was tested."
+    echo "[seam]           (evidence: $OUT)"; exit 2
 fi
 echo "[seam] seamdesync: FAIL (evidence: $OUT/seam_${SEAM_TAG}_seed*_evidence.txt)"; exit 1

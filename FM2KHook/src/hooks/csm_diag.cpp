@@ -27,6 +27,13 @@
 // progression with everything-else-matching parity -- which is exactly
 // what we observed at frame 64 of the replay_selftest run.
 #include "../core/globals.h"
+#include "../netplay/seam_trace.h"   // SeamTrace_MatchIdx
+
+// Current netplay frame -- seam-window gate below keys on it. GLOBAL scope:
+// this file's hooks live in an anonymous namespace, and an extern declared
+// in there resolves to a namespace-local symbol that does not link.
+extern uint32_t g_netplay_frame;
+extern uint32_t g_adv_seq;
 
 #include <safetyhook.hpp>
 #include <SDL3/SDL_log.h>
@@ -44,6 +51,29 @@ constexpr uintptr_t CSM_PER_OPCODE_SITE     = 0x4125FC;
 SafetyHookMid g_csm_diag_hook{};
 SafetyHookMid g_csm_per_opcode_hook{};
 bool g_csm_diag_enabled = false;
+
+// FM2K_CSM_SEAM=1 restricts BOTH hooks in this file to the ~16 frames that
+// straddle the match-end seam. Gating only the per-opcode hook (the first
+// attempt) still let the dispatch-entry hook run every frame of every match
+// and produced a 462 MB log -- large enough to be useless and heavy enough to
+// perturb the timing the seam bug depends on.
+inline bool CsmSeamMode() {
+    static int s = -1;
+    if (s < 0) {
+        const char* v = std::getenv("FM2K_CSM_SEAM");
+        s = (v && v[0] && v[0] != '0') ? 1 : 0;
+    }
+    return s == 1;
+}
+inline bool CsmSeamWindow() {
+    // MATCH 3 ONLY. g_netplay_frame restarts every battle, so frames 820-835
+    // exist in all three matches and tracing all of them tripled the log for
+    // no gain -- every violation ever observed has been in match 3. Cutting
+    // the other two also cuts the I/O this hook adds, which matters because
+    // trace weight appears to suppress the very violation being chased.
+    return CsmSeamMode() && SeamTrace_MatchIdx() == 3 &&
+           g_netplay_frame >= 820 && g_netplay_frame <= 835;
+}
 FILE* g_csm_diag_fp = nullptr;
 uint32_t g_csm_diag_frame = 0;  // approximate, derived from buf_idx
 
@@ -57,11 +87,29 @@ void OnCsmPerOpcode(SafetyHookContext& ctx) {
     if (!g_csm_diag_fp) return;
     const uint32_t game_mode = *(uint32_t*)FM2K::ADDR_GAME_MODE;
     if (game_mode < 3000u || game_mode >= 4000u) return;
+    // SEAM-WINDOW MODE (FM2K_CSM_SEAM=1). The intermittent seam violation is
+    // 3 missing executions of the script-VM random-branch opcode at 0x4139A3
+    // (rand % operand, compared to a threshold) during frame 827. To see WHICH
+    // script diverges we need every object's opcode stream across the seam,
+    // not just p1's -- but only for the ~16 frames that straddle it, because
+    // this hook fires per opcode per object and tracing a whole match would
+    // both flood the disk and perturb the timing the bug depends on.
+    //
+    // `bytes=` below is the raw script blob at the VM cursor, which is the
+    // point: if two passes sit at the same (script_idx, item_idx) yet read
+    // DIFFERENT bytes, the divergence is in heap-resident script data rather
+    // than in any saved region -- the one place the full data-segment diff
+    // could not look.
+    const bool in_seam_window = CsmSeamWindow();
+    if (CsmSeamMode() && !in_seam_window) return;
+
     // ctx.esi is the object_data_ptr; only log if p1 (slot 0 + PLAYER).
     const uint8_t* obj = (const uint8_t*)ctx.esi;
     const uint32_t slot_id = *(uint32_t*)(obj + 0x156);
     const uint32_t f15A    = *(uint32_t*)(obj + 0x15A);
-    if (slot_id != 0 || f15A != 0) return;
+    // In seam mode take EVERY object: the diverging script is not known to be
+    // p1's, and the whole question is which one moves.
+    if (!in_seam_window && (slot_id != 0 || f15A != 0)) return;
 
     const uint32_t buf_idx = *(uint32_t*)0x447EE0;
     const uint32_t item_idx = *(uint32_t*)(obj + 0x2C);
@@ -91,11 +139,22 @@ void OnCsmPerOpcode(SafetyHookContext& ctx) {
     const uint32_t hist_prev1 = *(uint32_t*)(0x4280E0 + slot_id * 0x1000 + ((buf_masked - 1) & 0x3FF) * 4);
     const uint32_t hist_prev2 = *(uint32_t*)(0x4280E0 + slot_id * 0x1000 + ((buf_masked - 2) & 0x3FF) * 4);
 
+    // SEAM MODE: RAM ring, no I/O. The fprintf path below suppressed the very
+    // violation it was added to observe (7 covered runs, 0 violations, vs a
+    // 50-75% base rate), so in seam mode we record and dump at teardown.
+    if (CsmSeamMode()) {
+        SeamTrace_NoteOpcode(g_adv_seq, (int32_t)g_netplay_frame,
+                             (uint32_t)ctx.esi, item_idx, script_idx,
+                             (int32_t)f3C, edi[0], edi);
+        return;
+    }
     std::fprintf(g_csm_diag_fp,
-        "[CSM-OP] buf=%u item=%u script=%u f3C=%d "
+        "[CSM-OP] m=%u nf=%u seq=%u rb=%d slot=%u a=%u buf=%u item=%u script=%u f3C=%d "
         "opcode=0x%02X bytes=%02X %02X %02X %02X %02X %02X %02X %02X "
         "facing=%u facing_lock=0x%02X facing_cached=%u "
         "hist[buf]=0x%03X hist[buf-1]=0x%03X hist[buf-2]=0x%03X\n",
+        (unsigned)SeamTrace_MatchIdx(), g_netplay_frame, g_adv_seq,
+        (int)g_is_rolling_back, slot_id, f15A,
         buf_idx, item_idx, script_idx, (int32_t)f3C,
         edi[0], edi[1], edi[2], edi[3], edi[4], edi[5], edi[6], edi[7],
         obj_facing_raw, facing_lock, facing_cached,
@@ -127,6 +186,7 @@ void OnCsmDispatchEntry(SafetyHookContext& ctx) {
     // obj+0x156 selects which char_data slot this object belongs to
     // (multiplied by 0xE03F + g_character_data_base). 0 = p1 slot, 1 = p2.
     const uint32_t slot_id = *(uint32_t*)(obj + 0x156);
+    if (CsmSeamMode() && !CsmSeamWindow()) return;
     // Game-speed-derived multipliers (suspected divergence source).
     // 0x445704 = g_delay_frame_multiplier (op_PIC scalar) -- should be 100
     //            on both sides per FixGameSpeedDesync() patch.
@@ -136,12 +196,17 @@ void OnCsmDispatchEntry(SafetyHookContext& ctx) {
     const uint32_t uval       = *(uint32_t*)0x430104;
     const uint32_t vel_mult   = *(uint32_t*)0x445700;
 
+    // Seam mode records opcodes into the RAM ring above; the per-object
+    // dispatch-entry line adds nothing there and is pure I/O on the hot path.
+    if (CsmSeamMode()) return;
     std::fprintf(g_csm_diag_fp,
-        "[CSM] buf=%u obj=0x%08X slot=%u "
+        "[CSM] m=%u nf=%u seq=%u rb=%d buf=%u obj=0x%08X slot=%u "
         "f14=0x%08X f2C(item)=%u f30(script)=%u "
         "f38=0x%08X f3C=%d f40=%d "
         "f151=0x%02X f152=%u f15A=%u f15E=0x%08X "
         "delay_mult=%u uval=%u vel_mult=%u\n",
+        (unsigned)SeamTrace_MatchIdx(), g_netplay_frame, g_adv_seq,
+        (int)g_is_rolling_back,
         buf_idx, (unsigned)ctx.esi, slot_id,
         f14, f2C, f30, f38, (int32_t)f3C, (int32_t)f40,
         f151, f152, f15A, f15E,
@@ -243,8 +308,14 @@ void Hook_InstallCsmDiag() {
     // Open a side file (so it's separate from the main Debug.log). The
     // logs/ dir is the game's working dir.
     char path[MAX_PATH] = {};
-    if (Fm2k_BuildLogPath(path, sizeof(path), "FM2K_csm_diag.log") == 0) {
-        std::snprintf(path, sizeof(path), "FM2K_csm_diag.log");
+    // pid-suffixed: both peers run from the SAME game dir, so a fixed name
+    // meant P1 and P2 interleaved into one file and clobbered each other --
+    // the same reason CamDiag right below already does this.
+    char base[64];
+    std::snprintf(base, sizeof(base), "FM2K_csm_diag_pid%lu.log",
+                  (unsigned long)GetCurrentProcessId());
+    if (Fm2k_BuildLogPath(path, sizeof(path), base) == 0) {
+        std::snprintf(path, sizeof(path), "%s", base);
     }
     g_csm_diag_fp = std::fopen(path, "w");
     if (!g_csm_diag_fp) {

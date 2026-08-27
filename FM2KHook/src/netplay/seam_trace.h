@@ -55,6 +55,70 @@ void SeamTrace_OnAfterimageClear(int frame, int live_substate_pre,
 // One call per SaveState_Save, after the fingerprint is computed.
 void SeamTrace_PushSave(int frame, bool is_replay_save, bool rolling_back);
 
+// RNG CALL-SITE RING (FM2K_SEAM_RNGSITE=1, default off).
+//
+// The intermittent seam violation has one precise signature: at match 3
+// frame 827 the bad resim makes EXACTLY 3 fewer gameplay game_rand draws
+// than the good one, while every region the savestate saves is byte-
+// identical at the last agreeing frame. Eight cycles of "which saved region
+// differs" answered "none of them" -- so stop asking that and ask which 3
+// draws went missing instead.
+//
+// Records (match, frame, replay flag, caller, caller-of-caller) for every
+// gameplay-seed draw inside a narrow frame window. Memory-only, dumped with
+// the save ring, and bounded to ~1000 entries for a whole run -- so unlike
+// the per-save region hashes this adds no cost on the hot path and cannot
+// suppress the very bug it measures (see docs/dev/seam_ring_intermittent.md
+// for why that matters here).
+//
+// `ra2` is the one that identifies anything: ra1 is ALWAYS the 0x4139A8
+// wrapper, which is why the per-caller bucket classifier attributes 100 %
+// of draws to character_state_machine and says nothing.
+void SeamTrace_NoteRngDraw(uint32_t ra1, uint32_t ra2, uint32_t ra3);
+
+// BROAD MEMORY SNAPSHOT (FM2K_SEAM_MEMSNAP=1, default off).
+//
+// Last systematic approach. Everything the savestate TOUCHES is now excluded:
+// every saved region is byte-identical at the last agreeing frame, restoring
+// inactive object-pool residue changed nothing (6/20 violations), and
+// restoring the whole deliberate carve-out class changed nothing (3/20 vs
+// ~30% baseline, p ~= 0.45). So the differing state is memory NOBODY saves
+// and nobody carves out -- which no targeted hash can find, because the whole
+// problem is not knowing where to point it.
+//
+// So stop pointing. Snapshot the game's entire writable data range at the
+// frames around the divergence, dump raw, and diff offline between the pass
+// that went on to produce the correct frame 827 and the pass that did not.
+// A raw memcpy is also CHEAPER than hashing the same bytes (~150 us vs ~1 ms
+// for 1.4 MB), which matters given this bug's sensitivity to added cost.
+void SeamTrace_MemSnap(int frame, bool is_replay_save);
+
+// True when the call-site ring is armed AND the current frame is inside the
+// window. Checked before the (relatively costly) frame-pointer walk so an
+// unarmed build pays one cached-bool test per draw.
+bool SeamTrace_RngSiteWanted(int frame);
+
+// Current battle index within the session (1-based; bumped per battle).
+// Exposed because g_netplay_frame RESTARTS every battle, so a frame number
+// alone cannot say WHICH match a trace line belongs to -- frame 827 exists in
+// all three. Diagnostics that target the match-end seam need both.
+uint16_t SeamTrace_MatchIdx();
+
+// SCRIPT-VM OPCODE RING (armed by FM2K_CSM_SEAM=1 via csm_diag).
+//
+// The per-opcode fprintf tracer SUPPRESSES the violation it exists to
+// diagnose: 7 fully-covered runs with it on produced 0 violations against a
+// measured 50-75% base rate (p ~= 0.008 at the low end), and coverage itself
+// fell to 21%. Same lesson as the per-save region hashes -- weight on the hot
+// path reshuffles which frames gekko re-simulates.
+//
+// So record into RAM and write once at teardown, exactly like the save ring.
+// ~20 bytes per opcode, bounded; no I/O while the window is live.
+void SeamTrace_NoteOpcode(uint32_t seq, int32_t frame, uint32_t obj,
+                          uint32_t item_idx, uint32_t script_idx,
+                          int32_t f3c, uint8_t opcode,
+                          const uint8_t* script_bytes);
+
 // Flush both buffers + the episode list. Legal ONLY from paths that are about
 // to terminate the process (HandleDesyncDetected, harness auto-terminate) --
 // it is ~1000 fprintfs and hook logging is synchronous. Its two callers make it

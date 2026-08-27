@@ -56,6 +56,8 @@ static void SsMaybeReport() {
 }
 }  // namespace
 
+
+
 bool SaveState_Save(int frame) {
     const uint64_t _ss_t_entry = g_ss_perf_on ? SsNowNs() : 0;
     // [BATTLE-OBJ] battle-frame object census (css_window.h). Dark unless
@@ -435,6 +437,12 @@ bool SaveState_Save(int frame) {
     // render rng calls → drift. The "skip restore" pattern is the only one
     // that keeps host's many rollbacks aligned with replay's straight
     // forward-only sim. Same logic for shake_effects + pflash2 below.
+    // FM2K_SEAM_NOCARVE=1 (diagnostic, default off): keep the real bytes in
+    // the saved buffer so Load can actually restore these regions. The
+    // zeroing below is one half of the deliberate "let render-side state
+    // free-run across rollback" design; the exclusion test needs BOTH halves
+    // off or Load would faithfully restore a buffer full of zeros, which is
+    // destructive rather than a test. See savestate_fm2k_load.cpp.
     std::memset(state->effect_sys1, 0, EffectAddrs::EFFECT_SYS1_SZ);
     // EFFECT_SYS2 carve-outs (REVERTED back to original -- same reasoning
     // as effect_sys1 above):
@@ -532,7 +540,15 @@ bool SaveState_Save(int frame) {
     // forward-vs-replay per-region diff shows "0x00000000 MATCH" for
     // most regions (because they weren't computed on that save event)
     // and we can't attribute the divergence to a specific region.
-    // Cost: ~5ms per save. Don't ship enabled.
+    //
+    // COST, MEASURED 2026-08-25 via FM2K_PERF_PROFILE=1 (wanwan, 19000 saves):
+    // fullcrc = 194 us, against ~83 us for the rest of a save. An earlier
+    // comment here claimed ~5 ms; that predated Fletcher32 becoming an XXH3
+    // wrapper (savestate.cpp:174 -- the naive byte-at-a-time body is still
+    // below it, marked unused) and was stale by ~25x. At 194 us the once-per-
+    // second full CRC is ~277 us on its frame against a 10 ms budget, i.e.
+    // not a hitch. Forcing it on EVERY save is what costs real time, which is
+    // why the env override still says don't ship enabled.
     static int s_full_crcs_cached = -1;
     if (s_full_crcs_cached < 0) {
         const char* v = getenv("FM2K_FULL_CRCS");
@@ -620,6 +636,9 @@ bool SaveState_Save(int frame) {
     // save, which a dedupe-by-frame ring would erase. Written to a file only
     // from HandleDesyncDetected.
     SeamTrace_PushSave(frame, is_replay_save, g_is_rolling_back);
+    // Broad snapshot for the offline differ (FM2K_SEAM_MEMSNAP=1, default
+    // off). Taken AFTER PushSave so the CSV row and the .bin share a save.
+    SeamTrace_MemSnap(frame, is_replay_save);
 
     // Per-save logging.
     //   First 10 frames: verbose (combined + fingerprint + rng + buf_idx).

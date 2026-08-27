@@ -384,43 +384,73 @@ void HandleDropFile(studio::AppState& st, studio::RealModel& model,
 // GUI -- so what was missing here was purely glyph coverage: ImGui's
 // built-in ProggyClean is ASCII-only and substitutes for everything else.
 //
-// MERGED, not replaced. The built-in font stays as the first source so the
-// sound table keeps its fixed-width alignment for ASCII filenames and
-// numbers; the Japanese face only supplies the codepoints ProggyClean does
-// not have. Loading a proportional face over everything would reflow every
-// column to no benefit.
+// WHY PROGGYCLEAN IS NOT USED AT ALL, which is the non-obvious part. The
+// first attempt kept it for ASCII and merged a Japanese face for the rest.
+// ASCII stayed pin-sharp and the kanji came out soft, and the cause is not
+// fixable by tuning: ProggyClean is a hand-drawn BITMAP face locked to
+// 13px, so matching it pins the whole UI to 13px, and 13px is simply not
+// enough pixels to resolve a kanji. 絞 has 12 strokes; at 13px an
+// anti-aliased rasterizer has no choice but to render most of them as grey
+// mush. The glyphs were not blurry, they were CRAMPED.
 //
-// The font is loaded from the system rather than vendored: these faces ship
-// with Windows, and redistributing them is a licensing question we do not
-// need to answer. MS Gothic is last and matters most -- Meiryo and Yu
-// Gothic are the nicer UI faces but are comparatively recent, while
-// msgothic.ttc is present on essentially every Japanese-capable Windows
-// going back to XP, which is the install base that actually opens 2DFM
-// files.
+// So both roles move to hinted TrueType at a size that can hold a kanji.
+// Consolas carries ASCII: it is a real monospace face, so the sound table
+// keeps the column alignment that made ProggyClean attractive, and unlike a
+// bitmap font it stays crisp at any size. A Japanese face is merged on top
+// for the codepoints Consolas lacks. Both are rasterized at the SAME size --
+// a merged source is rasterized to the primary's size, so a mismatch there
+// resamples every glyph and produces exactly the blur this is avoiding.
+//
+// Loaded from the system rather than vendored: these faces ship with
+// Windows and redistributing them is a licensing question this tool does
+// not need to answer. MS Gothic is last in the Japanese list and matters
+// most -- Meiryo and Yu Gothic are the nicer UI faces and are tried first,
+// but msgothic.ttc is present on essentially every Japanese-capable Windows
+// back to XP, which is the install base that actually opens 2DFM files.
 //
 // No glyph ranges: ImGui 1.92 loads glyphs on demand and marks all the
-// GetGlyphRangesXXXX() helpers obsolete, so asking for the Japanese range
-// up front would only build a larger atlas than the file needs.
-static void LoadJapaneseFont() {
+// GetGlyphRangesXXXX() helpers obsolete, so requesting the Japanese range up
+// front would only build a larger atlas than the open file needs.
+static void LoadUiFonts() {
     ImGuiIO& io = ImGui::GetIO();
-    io.Fonts->AddFontDefault();  // ASCII, fixed-width -- keeps table columns aligned
 
-    const char* candidates[] = {
+    // 15px is the smallest size at which the denser kanji in these files
+    // (絞, 撃, 御, 魔) stay readable rather than merely present.
+    constexpr float kUiFontPx = 15.0f;
+
+    const char* mono[] = {
+        "C:\\Windows\\Fonts\\consola.ttf",
+        "C:\\Windows\\Fonts\\lucon.ttf",
+        "C:\\Windows\\Fonts\\cour.ttf",
+    };
+    bool have_ascii = false;
+    for (const char* path : mono) {
+        if (io.Fonts->AddFontFromFileTTF(path, kUiFontPx)) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "font: ASCII from %s", path);
+            have_ascii = true;
+            break;
+        }
+    }
+    if (!have_ascii) {
+        // Falls back to the 13px bitmap face. Japanese merged onto it will
+        // be cramped, for the reason above, but the tool still works.
+        io.Fonts->AddFontDefault();
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "font: no monospace TrueType found -- falling back to the "
+                    "built-in 13px face; Japanese will be cramped");
+    }
+
+    const char* jp[] = {
         "C:\\Windows\\Fonts\\meiryo.ttc",
         "C:\\Windows\\Fonts\\YuGothM.ttc",
         "C:\\Windows\\Fonts\\YuGothR.ttc",
         "C:\\Windows\\Fonts\\NotoSansJP-VF.ttf",
         "C:\\Windows\\Fonts\\msgothic.ttc",
     };
-
     ImFontConfig cfg;
     cfg.MergeMode = true;
-    // Nudged down a touch: at a shared pixel size these faces sit taller
-    // than ProggyClean and would otherwise grow every table row.
-    cfg.GlyphOffset = ImVec2(0.0f, 1.0f);
-
-    for (const char* path : candidates) {
-        if (io.Fonts->AddFontFromFileTTF(path, 15.0f, &cfg)) {
+    for (const char* path : jp) {
+        if (io.Fonts->AddFontFromFileTTF(path, have_ascii ? kUiFontPx : 13.0f, &cfg)) {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                         "font: merged Japanese glyphs from %s", path);
             return;
@@ -460,7 +490,7 @@ int main(int argc, char** argv) {
     ImGui::CreateContext();
     ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     ImGui::StyleColorsDark();
-    LoadJapaneseFont();
+    LoadUiFonts();
     ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer3_Init(renderer);
 

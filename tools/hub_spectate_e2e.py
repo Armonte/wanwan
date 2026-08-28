@@ -73,7 +73,10 @@ HUB_PORTS  = [HUB_PORT, HUB_PORT + 1, HUB_PORT + 2, HUB_PORT + 3]
 # and never run from hub/ itself -- load_env() would pull those secrets into
 # the process env and matches.json would be written into the nested repo.
 HUB_FILES  = ["hub.py", "auth.py", "match_records.py", "models.py",
-              "relay_udp.py", "state.py"]
+              "relay_udp.py", "replay_store.py", "state.py"]
+# Modules that deliberately do NOT get staged. Anything in hub/ that is in
+# neither list trips the guard in stage_hub() below.
+HUB_FILES_SKIP = {"__init__.py"}
 RELAY_SESSION_TOKEN = "aabbccddeeff00112233445566778899"
 
 NICK_HOST, NICK_GUEST, NICK_SPEC = "HOSTBOT", "GUESTBOT", "SPECBOT"
@@ -303,6 +306,26 @@ def hub_start(win_py: str, relay_session: str | None) -> tuple[subprocess.Popen,
     if HUB_SCRATCH.exists():
         shutil.rmtree(HUB_SCRATCH, ignore_errors=True)
     HUB_SCRATCH.mkdir(parents=True, exist_ok=True)
+    # GUARD: hub/ grew replay_store.py and this list did not, so auth.py
+    # imported a module that was never staged, hub.py died on startup, and
+    # the stage reported "connected=[]" -- three clients failing to reach a
+    # hub that was never listening. The symptom pointed at the clients and
+    # the cause was one missing filename, so make a new module a LOUD error
+    # here instead of a mystery three layers downstream.
+    present = {p.name for p in HUB_SRC.glob("*.py")}
+    unknown = present - set(HUB_FILES) - HUB_FILES_SKIP
+    if unknown:
+        raise SystemExit(
+            f"hub_spectate_e2e: hub/ has module(s) this harness does not "
+            f"stage: {sorted(unknown)}\n"
+            f"  Add them to HUB_FILES (or to HUB_FILES_SKIP if they are "
+            f"genuinely not needed by the hub at runtime).")
+    missing = [f for f in HUB_FILES if not (HUB_SRC / f).is_file()]
+    if missing:
+        raise SystemExit(
+            f"hub_spectate_e2e: HUB_FILES names file(s) that do not exist "
+            f"in {HUB_SRC}: {missing}")
+
     for f in HUB_FILES:
         shutil.copy2(HUB_SRC / f, HUB_SCRATCH / f)
     shutil.copytree(HUB_SRC / "handlers", HUB_SCRATCH / "handlers",

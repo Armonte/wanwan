@@ -118,41 +118,85 @@ void LauncherUI::RenderGameSelection() {
         // wraps onto the next line(s) below if it doesn't fit.
         const size_t n = games_root_paths_.size();
 
-        // ── FIRST RUN ──
+        // ── NOTHING TO PLAY ──
         //
         // Patrick, in the bugs channel: setting a games folder is "genuinely
         // the biggest hurdle for every person trying to set the launcher up".
-        // He is right, and the reason is visible from here. With no folder
-        // configured the ONLY actionable thing on screen was a SmallButton --
-        // the smallest widget ImGui has -- labelled "Edit...", which names an
-        // action on a thing the user does not have yet, sitting next to
-        // TextDisabled grey that reads as decoration rather than instruction.
-        // Pressing it opened a settings WINDOW containing a second button
-        // that opened the picker. Two clicks and a detour through a window
-        // the user has no reason to know exists, to do the one thing they
-        // must do before the launcher works at all.
         //
-        // So when there is nothing configured, the panel asks for the one
-        // thing it needs, at full width, in a sentence that says what will
-        // happen -- and goes straight to the native picker.
-        if (n == 0) {
+        // The first version of this keyed on "no games folder configured",
+        // which never happens: launcher_init.cpp:114 defaults the root to
+        // the launcher's OWN directory when launcher.cfg is absent. So a
+        // real first run has exactly one root, pointing at the install dir,
+        // containing no games -- and what the user saw was "No games found
+        // in the specified directories" over a SmallButton labelled
+        // "Edit...", the smallest widget ImGui has, naming an action on a
+        // thing they have not got yet. Pressing it opened a settings WINDOW
+        // holding a second button that opened the actual picker.
+        //
+        // So the trigger is NO GAMES, not no folders. That also covers the
+        // user who pointed at the wrong drive, which looks identical to
+        // them and had the same dead end.
+        if (games_.empty() && !scanning_games_) {
+            // THE WHOLE BLOCK IS THE SIGNPOST, not just the button.
+            //
+            // A highlighted button inside an otherwise flat panel still
+            // reads as one control among several. Framing the entire
+            // region -- the sentence, what we searched, the action -- is
+            // what makes a person register that THIS is the part of the
+            // window that wants them, before they have read a word of it.
+            //
+            // Exactly one thing animates: the panel border. The button had
+            // its own pulse and two competing rhythms just read as noise.
+            const double t     = ImGui::GetTime();
+            const float  pulse = 0.45f + 0.55f * (float)(0.5 * (1.0 - std::cos(t * 2.0)));
+
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.09f, 0.19f, 0.27f, 0.60f));
+            ImGui::PushStyleColor(ImGuiCol_Border,  ImVec4(0.35f, 0.85f, 0.95f, pulse));
+            ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 2.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding,   4.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,   ImVec2(10.0f, 10.0f));
+
+            // AutoResizeY: the panel is exactly as tall as what it holds,
+            // so it does not have to be re-measured whenever the copy or
+            // the folder list changes.
+            ImGui::BeginChild("##no_games_prompt", ImVec2(0.0f, 0.0f),
+                              ImGuiChildFlags_Borders
+                              | ImGuiChildFlags_AutoResizeY);
+
             ImGui::TextWrapped("%s", T("hint_first_run_games_folder"));
+            if (n > 0) {
+                ImGui::PushStyleColor(ImGuiCol_Text,
+                    ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+                for (const auto& p : games_root_paths_) {
+                    ImGui::TextWrapped(T("hint_searched_folder"), p.c_str());
+                }
+                ImGui::PopStyleColor();
+            }
             ImGui::Spacing();
+
+            ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.16f, 0.47f, 0.66f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.62f, 0.82f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.12f, 0.38f, 0.55f, 1.0f));
             const bool picking = GamesFolderPickerBusy();
             ImGui::BeginDisabled(picking);
+            const float h = ImGui::GetFrameHeight() * 1.6f;
             if (ImGui::Button(picking ? "Choosing folder..."
                                       : T("btn_choose_games_folder"),
-                              ImVec2(-FLT_MIN, 0.0f))) {
+                              ImVec2(-FLT_MIN, h))) {
                 OpenGamesFolderPicker();
             }
             ImGui::EndDisabled();
-            return;   // nothing below this means anything until they do
+            ImGui::PopStyleColor(3);
+
+            RenderGamesFoldersInline();
+
+            ImGui::EndChild();
+            ImGui::PopStyleVar(3);
+            ImGui::PopStyleColor(2);
+            return;   // nothing below this means anything yet
         }
 
-        if (ImGui::SmallButton(T("btn_edit_games_folders"))) {
-            show_games_folders_ = true;
-        }
-        ImGui::SameLine();
+        RenderGamesFoldersInline();
         if (n == 1) {
             // TextWrapped instead of TextDisabled so long absolute
             // paths wrap into a second line instead of clipping at

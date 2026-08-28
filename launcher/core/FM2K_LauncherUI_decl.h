@@ -353,6 +353,7 @@ private:
     void RenderHubServerBody();
     void RenderHostConfigBody();
     void RenderGamesFoldersBody();
+    void RenderGamesFoldersInline();
     // Shared with the game-selection panel's first-run prompt, which has to
     // be able to open the picker and collect its result WITHOUT the Games
     // Folders window ever being opened -- the whole point is that a new

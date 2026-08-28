@@ -246,6 +246,24 @@ bool LauncherUI::GamesFolderPickerBusy() const {
     return g_folder_dialog_open.load(std::memory_order_acquire);
 }
 
+// The folder editor, INLINE, in whatever pane called it.
+//
+// This used to be reached by a button that opened a second floating window
+// on top of the first -- for a list of folders, in a launcher whose whole
+// job at that moment is getting one folder out of the user. A collapsing
+// section costs nothing, keeps the context that sent you here, and cannot
+// be dragged behind the main window and lost.
+//
+// RenderGamesFoldersBody was already written body-only ("caller owns the
+// container") for exactly this; nothing ever needed the window.
+void LauncherUI::RenderGamesFoldersInline() {
+    if (ImGui::CollapsingHeader(T("panel_games_folders"))) {
+        ImGui::Indent();
+        RenderGamesFoldersBody();
+        ImGui::Unindent();
+    }
+}
+
 void LauncherUI::RenderGamesFoldersBody() {
     auto commit = [&](std::vector<std::string> paths) {
         games_root_paths_ = paths;

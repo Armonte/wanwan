@@ -207,29 +207,52 @@ void LauncherUI::RenderSettingsWindow() {
 // games-discovery roots. Lives behind a Settings menu entry so the main
 // panel stays focused on the games list itself; casual users with a
 // single folder almost never need this UI after first-run setup.
+// Drain a result from the async folder dialog (set on the worker thread).
+// Append each chosen folder, de-duped.
+//
+// Called from BOTH the Games Folders body and the game-selection panel's
+// first-run prompt. It used to live only in the former, which meant a pick
+// started anywhere else would sit in the buffer unread until the user
+// happened to open Settings.
+void LauncherUI::DrainPickedGamesFolders() {
+    if (!g_folder_pick_ready.exchange(false, std::memory_order_acq_rel)) return;
+    std::vector<std::string> picked;
+    {
+        std::lock_guard<std::mutex> lk(g_folder_pick_mtx);
+        picked.swap(g_folder_pick_result);
+    }
+    if (picked.empty()) return;
+    std::vector<std::string> paths = games_root_paths_;
+    for (auto& p : picked) {
+        if (std::find(paths.begin(), paths.end(), p) == paths.end())
+            paths.push_back(std::move(p));
+    }
+    games_root_paths_ = paths;
+    if (on_games_folders_set) on_games_folders_set(std::move(paths));
+}
+
+// Open the modern native picker async (non-blocking); the result is applied
+// by DrainPickedGamesFolders on a later frame. The HWND has to be extracted
+// on the render thread.
+void LauncherUI::OpenGamesFolderPicker() {
+    HWND hwnd = window_ ? static_cast<HWND>(SDL_GetPointerProperty(
+                    SDL_GetWindowProperties(window_),
+                    SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr))
+                        : nullptr;
+    OpenGamesFolderDialogAsync(hwnd);
+}
+
+bool LauncherUI::GamesFolderPickerBusy() const {
+    return g_folder_dialog_open.load(std::memory_order_acquire);
+}
+
 void LauncherUI::RenderGamesFoldersBody() {
     auto commit = [&](std::vector<std::string> paths) {
         games_root_paths_ = paths;
         if (on_games_folders_set) on_games_folders_set(std::move(paths));
     };
 
-    // Drain a result from the async folder dialog (set on the worker thread).
-    // Append each chosen folder, de-duped.
-    if (g_folder_pick_ready.exchange(false, std::memory_order_acq_rel)) {
-        std::vector<std::string> picked;
-        {
-            std::lock_guard<std::mutex> lk(g_folder_pick_mtx);
-            picked.swap(g_folder_pick_result);
-        }
-        if (!picked.empty()) {
-            std::vector<std::string> paths = games_root_paths_;
-            for (auto& p : picked) {
-                if (std::find(paths.begin(), paths.end(), p) == paths.end())
-                    paths.push_back(std::move(p));
-            }
-            commit(std::move(paths));
-        }
-    }
+    DrainPickedGamesFolders();
 
     ImGui::TextWrapped("%s", T("hint_games_folders_window"));
     ImGui::Separator();
@@ -258,14 +281,7 @@ void LauncherUI::RenderGamesFoldersBody() {
     const bool dialog_open = g_folder_dialog_open.load(std::memory_order_acquire);
     ImGui::BeginDisabled(dialog_open);
     if (ImGui::Button(dialog_open ? "Choosing folder..." : T("btn_browse_folder"))) {
-        // Open the modern native picker async (non-blocking); the result is
-        // applied at the top of this function on a later frame. Extract the
-        // HWND here on the render thread.
-        HWND hwnd = window_ ? static_cast<HWND>(SDL_GetPointerProperty(
-                        SDL_GetWindowProperties(window_),
-                        SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr))
-                            : nullptr;
-        OpenGamesFolderDialogAsync(hwnd);
+        OpenGamesFolderPicker();
     }
     ImGui::EndDisabled();
     ImGui::PopID();

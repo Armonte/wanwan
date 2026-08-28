@@ -105,6 +105,11 @@ void LauncherUI::RenderGameSelection() {
     // Games-folder list editor lives in Settings → Games Folders… The
     // main panel just shows the current root count + a button to open
     // the editor, so the games list itself dominates the panel.
+    // A pick can land on any frame, including one where the Games Folders
+    // window was never opened -- the first-run button below opens the picker
+    // directly.
+    DrainPickedGamesFolders();
+
     {
         // FlippySpatula's bug: when the column is narrow, the long
         // path string previously consumed the whole row and pushed
@@ -112,13 +117,43 @@ void LauncherUI::RenderGameSelection() {
         // the button FIRST so it's always reachable; the path text
         // wraps onto the next line(s) below if it doesn't fit.
         const size_t n = games_root_paths_.size();
+
+        // ── FIRST RUN ──
+        //
+        // Patrick, in the bugs channel: setting a games folder is "genuinely
+        // the biggest hurdle for every person trying to set the launcher up".
+        // He is right, and the reason is visible from here. With no folder
+        // configured the ONLY actionable thing on screen was a SmallButton --
+        // the smallest widget ImGui has -- labelled "Edit...", which names an
+        // action on a thing the user does not have yet, sitting next to
+        // TextDisabled grey that reads as decoration rather than instruction.
+        // Pressing it opened a settings WINDOW containing a second button
+        // that opened the picker. Two clicks and a detour through a window
+        // the user has no reason to know exists, to do the one thing they
+        // must do before the launcher works at all.
+        //
+        // So when there is nothing configured, the panel asks for the one
+        // thing it needs, at full width, in a sentence that says what will
+        // happen -- and goes straight to the native picker.
+        if (n == 0) {
+            ImGui::TextWrapped("%s", T("hint_first_run_games_folder"));
+            ImGui::Spacing();
+            const bool picking = GamesFolderPickerBusy();
+            ImGui::BeginDisabled(picking);
+            if (ImGui::Button(picking ? "Choosing folder..."
+                                      : T("btn_choose_games_folder"),
+                              ImVec2(-FLT_MIN, 0.0f))) {
+                OpenGamesFolderPicker();
+            }
+            ImGui::EndDisabled();
+            return;   // nothing below this means anything until they do
+        }
+
         if (ImGui::SmallButton(T("btn_edit_games_folders"))) {
             show_games_folders_ = true;
         }
         ImGui::SameLine();
-        if (n == 0) {
-            ImGui::TextDisabled("%s", T("status_invalid_games_folder"));
-        } else if (n == 1) {
+        if (n == 1) {
             // TextWrapped instead of TextDisabled so long absolute
             // paths wrap into a second line instead of clipping at
             // the column edge. Keeps the disabled-color styling via

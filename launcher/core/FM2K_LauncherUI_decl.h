@@ -353,6 +353,16 @@ private:
     void RenderHubServerBody();
     void RenderHostConfigBody();
     void RenderGamesFoldersBody();
+    // Shared with the game-selection panel's first-run prompt, which has to
+    // be able to open the picker and collect its result WITHOUT the Games
+    // Folders window ever being opened -- the whole point is that a new
+    // user never has to find it.
+    void DrainPickedGamesFolders();
+    void OpenGamesFolderPicker();
+    // True while the native picker is up. An accessor rather than a global
+    // because the dialog state stays in launcher_ui_settings.cpp's anonymous
+    // namespace, where it belongs.
+    bool GamesFolderPickerBusy() const;
     void RenderRecentMatchesBody();
     // Hub-panel "Live Matches" -- shows every InFlightMatch the hub knows
     // about. Char/stage names render via fm2k::FormatCharLabel /

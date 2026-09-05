@@ -31,6 +31,7 @@ extern sockaddr_storage g_remote_sockaddr;
 // with THIS address (so gekko keeps accepting + RTT-matching after the
 // peer's NAT remaps its port), and MultiplexAdapter_Send redirects sends
 // addressed to it onto the CURRENT learned g_remote_sockaddr.
+extern uint32_t         g_last_peer_recv_ms;
 extern sockaddr_storage g_gekko_actor_addr;
 extern bool             g_gekko_actor_pinned;
 extern bool g_socket_initialized;

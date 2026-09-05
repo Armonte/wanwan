@@ -177,6 +177,10 @@ void RawReceive() {
         fm2k::Addr_NormalizeRecv(from6, from_addr);
 
         g_last_recv_time = GetTimeMs();
+        // Liveness of the CURRENT path specifically, which is what tells a
+        // real remap apart from a second working route to the same peer.
+        if (fm2k::Addr_Equal(g_remote_sockaddr, from_addr))
+            g_last_peer_recv_ms = GetTickCount();
 
         // Relay-envelope unwrap. If this is a 0xCF packet for our
         // configured relay session, strip the 18-byte header and treat
@@ -299,7 +303,14 @@ void RawReceive() {
                     // address with an authenticated punch; only the real peer
                     // can answer, and the answer re-latches it through the
                     // path that authenticated it in the first place.
-                    ::fm2k::nat::ChallengeAddress(from_addr);
+                    //
+                    // ONLY WHEN THE CURRENT PATH HAS GONE QUIET. A peer that
+                    // is reachable two ways at once (v4 and v6) sends from
+                    // both, and challenging every alternate while the live
+                    // path works is pure noise -- it produced a re-latch
+                    // storm that flooded the log and stalled the match.
+                    if (ControlChannel_MsSincePeerRecv() > 1000)
+                        ::fm2k::nat::ChallengeAddress(from_addr);
                 }
             }
 

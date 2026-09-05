@@ -78,6 +78,12 @@ void ControlChannel_LatchPeerAddr(const sockaddr_storage& peer);
 // peer apart from one arriving after a mid-session address remap.
 bool ControlChannel_PeerAddrEquals(const sockaddr_storage& addr);
 
+// Milliseconds since a packet last arrived FROM the currently latched peer
+// address (0xFFFFFFFF if one never has). A live current path is the reason
+// NOT to chase an alternate candidate: see the re-latch guard in
+// nat_traversal.
+uint32_t ControlChannel_MsSincePeerRecv();
+
 // Send a control packet to remote peer
 void ControlChannel_Send(const CtrlPacket& packet);
 

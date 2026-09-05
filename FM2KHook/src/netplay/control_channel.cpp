@@ -37,6 +37,12 @@ uint16_t g_recv_ack = 0;
 // Connection state
 bool g_connected = false;
 uint32_t g_last_recv_time = 0;
+// When we last heard from the address we are CURRENTLY latched to, as
+// opposed to any traffic at all. Re-latching decisions need this: a peer
+// legitimately reachable on two candidate paths (v4 and v6, say) sends
+// authentic punches from BOTH, and treating each one as a remap makes the
+// two paths fight for the latch forever.
+uint32_t g_last_peer_recv_ms = 0;
 // When did g_connected go true? Used by ControlChannel_Poll's timeout
 // check to apply a startup grace window -- the first ~15s after
 // connect we use a much wider timeout so cnc-ddraw / other slow boot
@@ -482,6 +488,12 @@ void NetSocket_ClearGekkoActorPin() {
 
 SOCKET ControlChannel_GetSocket() {
     return g_socket;
+}
+
+uint32_t ControlChannel_MsSincePeerRecv() {
+    if (!g_last_peer_recv_ms) return 0xFFFFFFFFu;   // never heard: treat as dead
+    const uint32_t now = GetTickCount();
+    return now - g_last_peer_recv_ms;
 }
 
 bool ControlChannel_PeerAddrEquals(const sockaddr_storage& addr) {

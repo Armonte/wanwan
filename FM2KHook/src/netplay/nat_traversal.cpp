@@ -644,20 +644,35 @@ void HandleDatagram(const uint8_t* data, size_t len, const sockaddr_storage& fro
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "NAT: CTRL_PUNCH from %s authenticated -- peer latched",
                     from_s.c_str());
-            } else if (!ControlChannel_PeerAddrEquals(from)) {
+            } else if (!ControlChannel_PeerAddrEquals(from) &&
+                       ControlChannel_MsSincePeerRecv() > 1000) {
                 // ALREADY authenticated, but this authentic punch comes from
-                // somewhere else: the peer has been remapped mid-session onto
-                // an address we would otherwise refuse (a different IP is not
-                // adoptable on faith). It holds the match token, so it is the
-                // peer -- re-latch, and challenge back so the peer re-latches
-                // us too. Without this the link stays one-way and the match
-                // hangs at character select forever, which is the failure two
-                // players hit repeatedly before 2026-09-04.
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "NAT: peer RE-AUTHENTICATED from %s -- mid-session remap, "
-                    "re-latching", from_s.c_str());
-                ControlChannel_LatchPeerAddr(from);
-                ChallengeAddress(from);
+                // somewhere else AND the address we are latched to has gone
+                // quiet for a second. That combination is a remap: the peer
+                // holds the match token, so it is the peer, and the path we
+                // were using is dead. Re-latch, and challenge back so the
+                // peer re-latches us too. Without this the link stays one-way
+                // and the match hangs at character select forever, which is
+                // the failure two players hit repeatedly before 2026-09-04.
+                //
+                // THE QUIET TEST IS LOAD-BEARING, not a nicety. A peer that
+                // is reachable both over v4 and over v6 authenticates from
+                // BOTH, and re-latching on address difference alone made the
+                // two candidates trade the latch back and forth forever --
+                // 368k log lines, a filled disk, and a match that never
+                // started. An alternate route is only worth taking when the
+                // one we are on has stopped delivering.
+                static uint32_t s_last_relatch_ms = 0;
+                const uint32_t now_ms = GetTickCount();
+                if (!s_last_relatch_ms || (now_ms - s_last_relatch_ms) >= 2000) {
+                    s_last_relatch_ms = now_ms;
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "NAT: peer RE-AUTHENTICATED from %s after %u ms of "
+                        "silence on the old path -- remap, re-latching",
+                        from_s.c_str(), ControlChannel_MsSincePeerRecv());
+                    ControlChannel_LatchPeerAddr(from);
+                    ChallengeAddress(from);
+                }
             }
             return;
         }

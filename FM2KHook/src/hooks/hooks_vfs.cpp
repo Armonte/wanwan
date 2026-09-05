@@ -171,6 +171,23 @@ static int __cdecl Hook_LoadStageFile(int stage_idx) {
         return 0;
     }
 
+    // TEST-ONLY: stand in for a slow disk. A South American player's log on
+    // 2026-09-05 shows this exact call taking ~4 s ("CreateFileA
+    // 'Levelup Cave.stage'" at 22.378, next line at 26.352, with
+    // "main pump stalled 3165ms" alongside). The frame thread is blocked for
+    // the whole of it, so nothing is pumped, the peer sees dead air, and
+    // GekkoNet's 5 s disconnect timeout ends a match that was perfectly
+    // healthy. Reproducing that needed a stall we can place on demand,
+    // because the real one only happens on hardware we do not have.
+    if (const char* stall = std::getenv("FM2K_TEST_STAGE_LOAD_STALL_MS")) {
+        const int ms = std::atoi(stall);
+        if (ms > 0) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "TEST: stalling the frame thread %d ms inside the stage load",
+                ms);
+            Sleep((DWORD)ms);
+        }
+    }
     const int rc = original_LoadStageFile ? original_LoadStageFile(stage_idx) : 0;
     if (rc == 0) {
         s_cached_idx     = stage_idx;

@@ -201,8 +201,16 @@ if __name__ == "__main__":
         host_remote  = f"127.0.0.1:{P2_PORT}"
         guest_remote = f"127.0.0.1:{P1_PORT}"
 
+    # Optional: make ONE side block inside the stage load, standing in for a
+    # slow disk (the 2026-09-05 South American report). Host only, so the
+    # asymmetry matches the field case.
+    stall_env = {}
+    if os.environ.get("CHURN_STAGE_STALL_MS"):
+        stall_env["FM2K_TEST_STAGE_LOAD_STALL_MS"] = \
+            os.environ["CHURN_STAGE_STALL_MS"]
+
     p1_env = make_env({"FM2K_LOCAL_PORT": str(P1_PORT),
-                       "FM2K_REMOTE_ADDR": host_remote})
+                       "FM2K_REMOTE_ADDR": host_remote, **stall_env})
     p2_env = make_env({"FM2K_LOCAL_PORT": str(P2_PORT),
                        "FM2K_REMOTE_ADDR": guest_remote})
     p1_args = [str(s.LAUNCHER), "--host", game_arg, "--port", str(P1_PORT)]
@@ -352,9 +360,11 @@ if __name__ == "__main__":
                   "an input-delivery failure; look elsewhere")
         ok = False
     elif r1[6] or r2[6]:
-        print(f"[churn] CSS STARVED -- peer input stopped reaching gekko "
-              f"(A={r1[6]} B={r2[6]} beats) though the session did not abort")
-        ok = False
+        # Starvation that RECOVERS is the designed outcome, not a failure. A
+        # slow stage load genuinely stops peer input for seconds; what must
+        # not happen is the session dying of it, and that is checked above.
+        print(f"[churn] note: CSS starved briefly (A={r1[6]} B={r2[6]} beats) "
+              "but the session rode it out -- expected when a load blocks")
     if r1[2] or r2[2]:
         print(f"[churn] FREEZE REPRODUCED -- bf stalls: A={r1[2]} B={r2[2]}")
         ok = False

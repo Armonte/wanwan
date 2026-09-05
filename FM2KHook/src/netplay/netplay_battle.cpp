@@ -337,6 +337,8 @@ bool Netplay_StartBattle() {
 
     gekko_create(&g_session, GekkoGameSession);
     gekko_start(g_session, &config);
+    // A slow stage load must not look like a dead peer -- see the constant.
+    gekko_set_disconnect_timeout(g_session, kGekkoDisconnectTimeoutMs);
     g_session_kind = SessionKind::BATTLE;
     SpectatorNode_ClearGekkoSpectatorTracking();
 

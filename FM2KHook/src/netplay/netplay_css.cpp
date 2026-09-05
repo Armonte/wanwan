@@ -893,6 +893,8 @@ bool Netplay_StartCSSSession() {
 
     gekko_create(&g_session, GekkoGameSession);
     gekko_start(g_session, &config);
+    // A slow stage load must not look like a dead peer -- see the constant.
+    gekko_set_disconnect_timeout(g_session, kGekkoDisconnectTimeoutMs);
     // Fresh session = no GekkoSpectator actors yet. Reset the dedup
     // tracking so any post-boundary spec rejoins re-add cleanly.
     SpectatorNode_ClearGekkoSpectatorTracking();

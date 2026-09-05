@@ -119,6 +119,8 @@ bool Netplay_StartSpectateSession(NetplaySessionKind host_kind, const char* host
 
     gekko_create(&g_session, GekkoSpectateSession);
     gekko_start(g_session, &config);
+    // A slow stage load must not look like a dead peer -- see the constant.
+    gekko_set_disconnect_timeout(g_session, kGekkoDisconnectTimeoutMs);
     g_session_kind = SessionKind::SPECTATE;
     SpectatorNode_ClearGekkoSpectatorTracking();
 

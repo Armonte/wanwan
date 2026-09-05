@@ -1,5 +1,24 @@
 #pragma once
 
+// How long GekkoNet may hear nothing from a peer before declaring it gone.
+//
+// GekkoNet's own default is 5000 ms, and we never set it -- which made a
+// SLOW DISK look exactly like a dead opponent. A South American player's log
+// on 2026-09-05 shows one stage load ("Levelup Cave.stage") blocking the
+// frame thread for ~4 s. Nothing is pumped while that runs, so the peer sees
+// dead air, gekko's 5 s timer expires, and a perfectly healthy match is
+// killed at the character-select-to-battle swap. Both sides published
+// CSS_ABORT and neither player did anything wrong.
+//
+// 15 s buys room for a load several times slower than the one we measured.
+// The cost is honest and worth stating: a peer that genuinely vanishes now
+// takes that long to be called gone, instead of 5 s. That is the right
+// trade -- ending a live match by mistake is far worse than a slower exit
+// from one that is already over, and a hard disconnect still has the
+// control channel's own liveness path.
+constexpr unsigned kGekkoDisconnectTimeoutMs = 15000;
+
+
 // Battle RNG seed (default 0x12345678; FM2K_TEST_BATTLE_SEED overrides) --
 // defined in netplay_battle.cpp, used by netplay_css.cpp's CSS->battle pin.
 uint32_t Netplay_TestBattleSeed();

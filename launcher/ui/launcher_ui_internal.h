@@ -26,6 +26,16 @@ std::string GamePatchesIniPath(const std::string& game_id);
 std::vector<std::pair<std::string, std::string>> ReadGamePatchesKv(const std::string& path);
 void WriteGamePatchesKv(const std::string& path,
                         const std::vector<std::pair<std::string, std::string>>& kv);
+// Shipped-distribution default layer, read from
+// <exedir>\game_patch_defaults\<game_id>.ini (same flat key=value format as
+// the %APPDATA% per-game file, never written back to). Lets a bundled client
+// ship a patch ON for its own game without changing the built-in default for
+// every other FM2K title. Pass the conservative built-in as `builtin_default`;
+// feed the result in as the `dflt` of LoadGamePatchBool so the user's own
+// %APPDATA% setting still wins.
+std::string GamePatchDistDefaultsPath(const std::string& game_id);
+bool GamePatchDistDefaultBool(const std::string& game_id, const char* key,
+                              bool builtin_default);
 bool LoadGamePatchBool(const std::string& game_id, const char* key, bool dflt);
 int  LoadGamePatchInt(const std::string& game_id, const char* key, int dflt);
 void SaveGamePatchString(const std::string& game_id, const char* key, const std::string& value);
@@ -39,6 +49,11 @@ void ApplyGamePatchEnvVars(const std::string& game_id);
 // prior offline launch's per-game patches (team size, damage multiplier,
 // training...) would otherwise leak into a netplay match one-sided.
 void NeutralizeGamePatchEnvVars();
+// Same contract for the offline-only developer launch flags (boot
+// strategy, auto title skip, bypass trampoline, T4 patch/probe, skip
+// VS-mode patch): call beside NeutralizeGamePatchEnvVars on every
+// non-offline path.
+void NeutralizeDevLaunchEnvVars();
 
 // settings.ini primitives (notifications, SOCD, random-stage all share it).
 std::string NotifySettingsPath();

@@ -117,10 +117,6 @@ void HubClient::SendNatType(const std::string& nat_type) {
 }
 
 
-void HubClient::ListRooms() {
-    EnqueueOut("{\"type\":\"list_rooms\"}");
-}
-
 void HubClient::JoinRoom(const std::string& game_id, const std::string& display_name) {
     std::string m = "{\"type\":\"join_room\",\"game_id\":\"" + EscapeJsonString(game_id) + "\"";
     if (!display_name.empty()) {
@@ -130,8 +126,37 @@ void HubClient::JoinRoom(const std::string& game_id, const std::string& display_
     EnqueueOut(std::move(m));
 }
 
-void HubClient::LeaveRoom() {
-    EnqueueOut("{\"type\":\"leave_room\"}");
+void HubClient::LeaveRoom(const std::string& game_id) {
+    if (game_id.empty()) {
+        EnqueueOut("{\"type\":\"leave_room\"}");
+        return;
+    }
+    EnqueueOut("{\"type\":\"leave_room\",\"room_id\":\"" +
+               EscapeJsonString(game_id) + "\"}");
+}
+
+void HubClient::SetRooms(const std::vector<std::string>& game_ids) {
+    std::string m = "{\"type\":\"subscribe_rooms\",\"rooms\":[";
+    for (size_t i = 0; i < game_ids.size(); ++i) {
+        if (i) m += ',';
+        m += '"' + EscapeJsonString(game_ids[i]) + '"';
+    }
+    m += "]}";
+    EnqueueOut(std::move(m));
+}
+
+void HubClient::SendChat(const std::string& room_id, const std::string& text) {
+    // Nothing is echoed into the local backlog here ON PURPOSE: the hub
+    // broadcasts every accepted line back to the whole room, sender
+    // included, so a local echo would double every message the user
+    // types. The line appears once, when `chat` comes back off the wire.
+    //
+    // No local length check either -- the hub TRUNCATES at CHAT_TEXT_MAX
+    // (500) instead of rejecting, and it strips control chars + trims,
+    // so whatever it accepts is what everyone (including us) will see.
+    if (room_id.empty() || text.empty()) return;
+    EnqueueOut("{\"type\":\"chat_send\",\"room_id\":\"" + EscapeJsonString(room_id)
+               + "\",\"text\":\"" + EscapeJsonString(text) + "\"}");
 }
 
 void HubClient::Challenge(const std::string& target_id) {

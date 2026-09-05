@@ -40,8 +40,13 @@
 //
 // WHY THERE IS A DIGEST AT ALL
 // ----------------------------
-// HOST_CONFIG carries the five settings that decide how the SIM runs (round
-// time, round count, game speed, selected stage, SOCD mode). It used to be a
+// HOST_CONFIG carries the four settings that decide how the SIM runs (round
+// time, round count, game speed, selected stage). It also carries the host's
+// SOCD mode, but that is NOT a sim-deciding setting any more: SOCD is
+// per-player, per-device, applied at capture on each peer (hooks_input.cpp,
+// Hook_ApplySOCDSlot), so the guest keeps its own and the digest below does
+// not hash it. It stays on the wire for replay provenance and spectators.
+// It used to be a
 // fire-and-forget broadcast with no ack and no retry: when both datagrams were
 // lost the guest silently kept its own game.ini values, RSS_BATTLE_INIT stamped
 // g_score_value = 100 * round_time - 1 with a DIFFERENT round time on each peer,
@@ -177,15 +182,13 @@ uint32_t Netplay_MatchSettingsDigest() {
             uint32_t round_count;
             uint32_t round_time_sec;
             uint32_t game_speed_pct;
-            uint32_t socd_mode;
         } s = {
             *(uint32_t*)FM2K::ADDR_SELECTED_STAGE,
             *(uint32_t*)0x430124,
             *(uint32_t*)0x430114,
             *(uint32_t*)0x430104,
-            (uint32_t)Hook_GetSOCDModePublic(),
         };
-        // FNV-1a over 20 bytes -- cheap, and this runs at most a few times per
+        // FNV-1a over 16 bytes -- cheap, and this runs at most a few times per
         // frame during a barrier wait (never inside the sim loop).
         uint32_t h = 0x811C9DC5u;
         const uint8_t* p = (const uint8_t*)&s;
@@ -700,10 +703,19 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
                 *(uint32_t*)FM2K::ADDR_SELECTED_STAGE = hc.selected_stage;
             }
 
-            // SOCD mode -- wire through the runtime setter. Persists for
-            // the rest of the session unless host changes it again.
+            // SOCD mode: RECEIVED BUT NOT APPLIED. Each player's inputs are
+            // cleaned at capture with that player's own device mode
+            // (Hook_ApplySOCDSlot), so the host's mode has no business on
+            // this machine. Logged once so a log reader can see both sides.
             if (hc.socd_mode != 0xFF) {
-                Hook_SetSOCDMode((int)hc.socd_mode);
+                static bool s_logged = false;
+                if (!s_logged) {
+                    s_logged = true;
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Netplay: HOST_CONFIG socd=%u noted, not applied -- SOCD is "
+                        "per player per device (local mode %d stays)",
+                        (unsigned)hc.socd_mode, Hook_GetSOCDModePublic());
+                }
             }
 
             // Game-ini-derived settings. Engine's hit_judge_set_function

@@ -158,6 +158,11 @@ logs/spec_sweep/
 # transient class as everything above, ~15-25 MB per run.
 tools/.spec_runs/
 
+# Cross-peer cursor-trace repro run dirs (preserved game logs + launch bats,
+# same transient class as .spec_runs above). The datasets worth keeping are
+# force-added under artifacts/, gzipped.
+tools/.cursorrepro/
+
 # Machine-local RE / recovery scratch. artifacts/ holds IDA pack backups, carved
 # probes and copied Windows binaries -- 5.1 MB of it defeated the *.i64 rule
 # above via a rename (.i64.bak_1046pack) and would have ridden into a netcode
@@ -181,3 +186,31 @@ tools/.catchup_*/
 # Windows process and cannot see /home -- see the header of that script).
 tools/.soak/
 tools/.amend_*/
+
+# Per-frame timing instrument harness out-dirs (same transient class as
+# .spec_runs above -- preserved per-process logs and parity files from a
+# FM2K_FRAME_TIMING run). The CSVs worth keeping are force-added under
+# artifacts/frame_timing/, gzipped.
+tools/.ft_run/
+tools/.ft_run2/
+
+# 0x40DD62 crash-diagnosis scratch: private launcher deploy (artifacts/
+# title_boot_probe.sh + run_40dd62.sh point at it) and the two A/B out-dirs.
+deploy/
+tools/.spec_selftest_vanilla/
+tools/.spec_selftest_fixed/
+tools/.spec_selftest_noskip/
+tools/.spec_selftest_forceidx/
+tools/.title_probe_vanilla/
+tools/.title_probe_fixed/
+tools/.title_probe_noskip/
+
+# Ad-hoc A/B scratch dirs from harness investigations. The reports and any
+# dataset worth keeping go under artifacts/ or docs/dev/, not here.
+tools/.brake_ab/
+tools/.vanpri_ab/
+tools/.title_probe_*/
+tools/.cursorrepro/
+tools/.cssbeat/
+tools/.cssrepro*/
+tools/.cssrebind/

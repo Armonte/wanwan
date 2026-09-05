@@ -185,17 +185,16 @@ namespace FM2K {
 
     // No global CSS_ACTIVE_PLAYER on FM95; phase classification walks the pool.
     constexpr uintptr_t ADDR_CSS_ACTIVE_PLAYER = 0;
-    constexpr uintptr_t ADDR_PLAYER_STAGE_POSITIONS = 0;
 
     // g_frame_time_ms -- ms per sim step, read by the engine's frame-skip
     // math. FM95_Integration.h ADDR_FRAME_TIME_MS.
     constexpr uintptr_t ADDR_FRAME_TIME_MS = 0x422F7C;
 
-    // Character data -- FM95 has 5 slots × 229844 bytes at 0x509100.
-    // Static (don't save during rollback).
-    constexpr uintptr_t ADDR_CHAR_SLOTS       = 0x509100;
-    constexpr size_t    CHAR_SLOT_TOTAL_SIZE  = 229844;
-    constexpr size_t    CHAR_SLOT_COUNT       = 5;
+    // FM95 has no equivalent of FM2K's g_last_frame_elapsed_ms: its loop and
+    // debug display were not transcribed, and nothing here divides by it. 0
+    // means "not applicable on this engine" and the trampoline skips the
+    // write, the same convention ADDR_ROUND_TIMER_COUNTER uses.
+    constexpr uintptr_t ADDR_LAST_FRAME_ELAPSED_MS = 0;
 
     // Object pool -- 256 × 0xA4 layout, base 0x426A40.
     constexpr uintptr_t ADDR_OBJECT_POOL      = 0x426A40;
@@ -208,7 +207,6 @@ namespace FM2K {
     constexpr uintptr_t ADDR_P1_INPUT_HISTORY   = 0x431720;
     constexpr uintptr_t ADDR_P2_INPUT_HISTORY   = 0x431B20;
     constexpr size_t    INPUT_HISTORY_LEN       = 256;
-    constexpr uint32_t  INPUT_HISTORY_MASK      = INPUT_HISTORY_LEN - 1;  // 0xFF
 
     // CSS -- selected character IDs (cursor index at confirm time on FM95).
     constexpr uintptr_t ADDR_P1_SELECTED_CHAR     = 0x432720;
@@ -303,29 +301,39 @@ namespace FM2K {
     // it predates the IDA pass and never actually drove the CSS->battle transition.
     constexpr uintptr_t ADDR_ROUND_TIMER_COUNTER = 0x424F00;  // g_round_timer_counter
 
-    // Internal game timer - equivalent to CCCaster's CC_WORLD_TIMER_ADDR
-    constexpr uintptr_t ADDR_GAME_TIMER = 0x470044;  // g_game_timer (increments every game frame)
+    // 0x470044 IS THE ROUND NUMBER, not a per-frame timer. The old comment
+    // ("increments every game frame", equated with CCCaster's world timer)
+    // was a guess and it was wrong. IDA, 2026-09-03: incremented once per
+    // ROUND at 0x408986 and zeroed at battle init (0x40877F/0x4087D4/
+    // 0x40887B); the simulation reads it in character_state_machine at
+    // 0x411D39 and 0x411F2D and through script get-var opcode 7 at
+    // 0x4138C5. The 0x40E1A9/0x40E209 pair that looked like timer reads is
+    // HUD digit rendering, /10 and %10.
+    //
+    // Neighbours in the same family, resolved at the same time: 0x470048 is
+    // g_round_limit, the value the round counter is actually compared
+    // against (0x4088C0), and 0x470050 is the per-round countdown,
+    // decremented at 0x408E5F. Config sources are 0x430120 (VSMode),
+    // 0x430124 (VSSinglePlay) and 0x430128 (VSTeamPlay).
+    constexpr uintptr_t ADDR_GAME_TIMER = 0x470044;  // g_round_number
 
     // CSS active player (for stage select mode)
     constexpr uintptr_t ADDR_CSS_ACTIVE_PLAYER = 0x424F24;  // g_css_active_player
 
-    // CSS-selected character index pair (uint32 [2]). The IDA name on
-    // this address used to be g_player_stage_positions, which was a
-    // misnomer -- neither field carries stage data; both are just the
-    // currently-selected character grid index for each player. Renamed
-    // 2026-05-05 to g_p1_selected_char_idx / g_p2_selected_char_idx
-    // after verifying via ProcessCharacterSelectHandler (0x407D70).
-    // Kept as a legacy alias here so any older code that still names
-    // it the old way keeps building until they migrate to
+    // The g_player_stage_positions legacy alias for 0x470020 is gone: the
+    // IDA name was a misnomer (neither field carries stage data; both are a
+    // per-player selected-character grid index, verified via
+    // ProcessCharacterSelectHandler @ 0x407D70), it was kept only until
+    // callers migrated, and they have -- everything names
     // ADDR_P1_SELECTED_CHAR / ADDR_P2_SELECTED_CHAR below.
-    constexpr uintptr_t ADDR_PLAYER_STAGE_POSITIONS = 0x470020;
 
-    // Character slots - OPTIMIZED: only save dynamic portion for rollback
-    // Static data (sprites, animations, hitboxes) loaded from .player files doesn't change
-    // See savestate.h for CHAR_SLOT_* constants
-    constexpr uintptr_t ADDR_CHAR_SLOTS       = 0x4D1D90;  // g_character_data_base (Wave C audit corrected from 0x4D1D80)
-    constexpr size_t    CHAR_SLOT_TOTAL_SIZE  = 57407;     // Per-slot size from IDA
-    constexpr size_t    CHAR_SLOT_COUNT       = 8;
+    // Character-slot geometry is NOT declared here. savestate.h owns the one
+    // copy every live consumer uses (CHAR_SLOT_BASE / CHAR_SLOT_SIZE /
+    // NUM_CHAR_SLOTS, 14 call sites). The ADDR_CHAR_SLOTS /
+    // CHAR_SLOT_TOTAL_SIZE / CHAR_SLOT_COUNT triple that used to sit here had
+    // no consumers on either engine and made a third copy of the FM95 stride;
+    // the +16 base landmine at round_events.cpp:215 is what a drifting second
+    // copy costs.
 
     // Object pool -- 1024 × 382 layout, base 0x4701E0.
     constexpr uintptr_t ADDR_OBJECT_POOL      = 0x4701E0;
@@ -341,10 +349,14 @@ namespace FM2K {
     // (fm95 parity workplan 0d) so FM95's 0x437700 twin pairs with the real
     // FM2K global.
     constexpr uintptr_t ADDR_INPUT_BUFFER_INDEX = 0x447EE0;
-    constexpr uintptr_t ADDR_P1_INPUT_HISTORY   = 0x470200;
-    constexpr uintptr_t ADDR_P2_INPUT_HISTORY   = 0x470400;
+    // ADDR_P1/P2_INPUT_HISTORY DELETED (2026-09-03). 0x470200 and 0x470400
+    // were dead: zero xrefs in the binary, and no instruction loads either
+    // immediate. They are interior addresses of the OBJECT POOL (base
+    // 0x4701E0, stride 0x17E) -- 0x470200 is slot 0 +0x20 and 0x470400 is
+    // slot 1 +0xA2. Same shape as the 0x470180/0x470184 character-index bug
+    // recorded below. The real rings are 0x4280E0 and 0x4290E0, which is
+    // what every live reader already uses.
     constexpr size_t    INPUT_HISTORY_LEN       = 1024;
-    constexpr uint32_t  INPUT_HISTORY_MASK      = INPUT_HISTORY_LEN - 1;  // 0x3FF
 
     // CSS -- selected character indexes. Point to g_player_stage_positions,
     // a uint32 pair at 0x470020/0x470024. ProcessCharacterSelectHandler
@@ -438,6 +450,17 @@ namespace FM2K {
     // g_frame_time_ms -- ms per sim step; main_game_loop @ 0x405AD3 sets it
     // to 10 and the CSS frame-skip math / BATTLE STATUS debug log read it.
     constexpr uintptr_t ADDR_FRAME_TIME_MS = 0x41E2F0;
+
+    // g_last_frame_elapsed_ms. The original main_game_loop measures the
+    // milliseconds since the previous frame and stores them here (0x405B71,
+    // guarded by the once-per-frame latch at 0x424700); render_game then
+    // computes 1000 / this for its on-screen debug counter (the `div` at
+    // 0x405487). We replace main_game_loop wholesale, so if nothing writes
+    // this it stays at its load-time zero and that div is a DIVIDE BY ZERO
+    // -- exception 0xC0000094, which is in the field crash corpus. Same
+    // class as ADDR_FRAME_TIME_MS above, which is already restored here for
+    // exactly this reason.
+    constexpr uintptr_t ADDR_LAST_FRAME_ELAPSED_MS = 0x425960;
 
     // Engine tag -- runtime check for code that needs to branch on engine.
     constexpr bool kIsFM95 = false;

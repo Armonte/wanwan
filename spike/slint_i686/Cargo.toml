@@ -1,0 +1,74 @@
+# Toolchain spike, not the shipping crate. The single question it answers:
+# does Slint build for i686-pc-windows-gnu at all, with NO winit and NO GPU
+# backend? Our launcher is 32-bit (the shipped exe is PE32 Intel 80386) and
+# stays that way for now, because injection goes through CreateRemoteThread
+# + GetProcAddress(kernel32, "LoadLibraryA") -- a 64-bit launcher hands a
+# 64-bit LoadLibraryA address to a WOW64 target and the remote thread runs
+# at an address that is not mapped there. So "Slint on i686" is a
+# precondition for the UI port, not a preference.
+[package]
+name = "slint_i686_spike"
+version = "0.1.0"
+edition = "2021"
+
+# staticlib is the realistic shape: the C++ launcher owns main() and the
+# SDL3 window, and links this in. A cdylib would add a second binary to
+# ship and a load path to get wrong.
+# staticlib for the real link; rlib so the UI can be TESTED. Slint ships a
+# headless testing backend that can instantiate the window, query elements
+# and click them for real -- which is the only reliable way to verify this
+# UI. Driving the running app with synthetic mouse events was tried at
+# length and roughly half of them never landed, so screens went unverified.
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# default-features = false is doing the real work here: it drops the winit
+# backend and the GPU renderers. Slint's default femtovg/skia paths pull a
+# window stack and graphics drivers we specifically do not want, since SDL3
+# already owns the window and we composite ourselves.
+slint = { version = "1.8", default-features = false, features = [
+    "compat-1-2",
+    "renderer-software",
+    # The launcher window renders on the GPU through FemtoVG over the
+    # OpenGL context SDL3 creates (lib.rs GlWindow). The software renderer
+    # stays for the headless tests and the screenshot tool.
+    "renderer-femtovg",
+    "std",
+    "unsafe-single-threaded",
+] }
+
+# WEBP DECODE, enabled via feature unification rather than a fork.
+#
+# Slint loads images through the `image` crate but does not enable its webp
+# feature, so Image::load_from_path silently fails on .webp and every tile
+# fell back to NO PREVIEW. Proven by swapping one file: the identical image
+# as PNG rendered (30k colours in the tile), as WebP it did not -- so the
+# index, the key matching and the tile were all correct and only the codec
+# was missing. Declaring `image` here with the feature on makes cargo unify
+# it into the copy Slint already depends on; nothing else changes.
+image = { version = "0.25", default-features = false, features = ["webp"] }
+
+# Pinned to the slint version (Slint's rule for its internal crates). Used
+# for ONE thing: delivering a mouse-wheel event with a phase, which the
+# public platform API cannot express (lib.rs slint_ui_scroll).
+i-slint-core = "=1.17.1"
+
+[build-dependencies]
+slint-build = "1.8"
+
+# Headless UI tests. Host-target only -- the widget tree and its logic are
+# platform-independent, so these run on Linux in a second rather than
+# needing a Windows box and a screenshot.
+[dev-dependencies]
+i-slint-backend-testing = "1.17"
+
+# panic = "abort" is release-only on purpose: the test harness needs
+# unwinding to report a failed assertion.
+[profile.release]
+opt-level = "z"
+lto = true
+panic = "abort"
+# One codegen unit: with LTO already on, this is the last size knob that
+# costs nothing but build time (measured below in the size note).
+codegen-units = 1

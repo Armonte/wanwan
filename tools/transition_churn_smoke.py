@@ -13,12 +13,26 @@ create/destroy cycle. Verdict gates:
   (c) desync count == 0
   (d) CYCLES: enough battle sessions actually got created to call it a churn
 
-Usage: python3 tools/transition_churn_smoke.py [seconds] [loss] [delay_ms] [seed] [rebind_s]
-  rebind_s > 0: a harness-side UDP proxy sits between guest and host and, at
+Usage: python3 tools/transition_churn_smoke.py [seconds] [loss] [delay_ms] [seed] [rebind]
+  6th arg: a local IP to move the remap ONTO (default: port-only). An IP move
+    is the fatal shape -- control_channel_io re-stamps SAME-IP packets with
+    the pinned gekko actor, so a port-only remap is absorbed.
+  rebind = "css+N": fire the remap below N MILLISECONDS after the log shows
+  "Creating CSS GekkoSession" rather than N seconds after launch. Added
+  2026-09-04 for the character-select peer-drop, which lands 0.3-0.5s into
+  CSS -- a window a wall-clock sweep hits mostly by luck.
+  rebind > 0: a harness-side UDP proxy sits between guest and host and, at
   that many seconds in, CLOSES its host-facing socket and rebinds a fresh
   port -- the host sees the guest's source port change AND the host's sends
   to the old port die, i.e. a faithful one-sided CGNAT mid-session remap
   (task #52, the Patrick/Melancholy freeze; Melancholy is on ETECSA CGNAT).
+
+REQUIRES WSL MIRRORED NETWORKING whenever a proxy is used: the proxy is a
+Linux process and the games are Windows processes, so the two must share a
+loopback. The rig probes that at startup and REFUSES TO RUN rather than
+black-hole every packet and still print a verdict -- which is what happened
+on 2026-09-04, twice, before anyone noticed. It equally refuses to report
+anything if the peers never reach "Full handshake complete".
 """
 import sys, os, time, glob, subprocess, re, socket, threading
 sys.path.insert(0, "tools")
@@ -68,16 +82,23 @@ class RebindProxy:
                 try: self.a.sendto(data, self.guest_addr)
                 except OSError: pass
 
-    def rebind(self):
+    def rebind(self, new_ip=None, new_host=None):
+        """Port-only by default. Pass new_ip/new_host to move the remap to a
+        DIFFERENT SOURCE IP, which is a materially different failure: the
+        receive path in control_channel_io re-stamps same-IP packets with the
+        pinned gekko actor, so a port move is absorbed, while an IP move is
+        not and gekko drops every peer packet."""
         with self.b_lock:
             try: self.b.close()
             except OSError: pass
             self.b = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.b.bind(("0.0.0.0", 0))   # fresh ephemeral port
+            self.b.bind((new_ip or "0.0.0.0", 0))   # fresh ephemeral port
             self.b.settimeout(0.2)
+            if new_host: self.host_addr = new_host
             self.rebound = True
-        print(f"[churn] PROXY REBOUND -- host-facing port now "
-              f"{self.b.getsockname()[1]} (old mapping dead)")
+        print(f"[churn] PROXY REBOUND -- host-facing addr now "
+              f"{self.b.getsockname()} (old mapping dead)"
+              + (f", host reached at {self.host_addr}" if new_host else ""))
 
     def stop(self):
         self.alive = False
@@ -88,6 +109,8 @@ if __name__ == "__main__":
     delay  = sys.argv[3]        if len(sys.argv) > 3 else "100"
     seed   = sys.argv[4]        if len(sys.argv) > 4 else "42"
     rebind = sys.argv[5]        if len(sys.argv) > 5 else "0"
+    # 6th arg: a local IP to move the remap ONTO. Empty = port-only remap.
+    alt_ip = sys.argv[6]        if len(sys.argv) > 6 else ""
     P1_PORT, P2_PORT = 7000, 7001
 
     game = s.GAMES["wanwan"]
@@ -109,6 +132,11 @@ if __name__ == "__main__":
         "FM2K_NET_LOSS":                loss,
         "FM2K_NET_DELAY_MS":            delay,
         "FM2K_NET_SEED":                seed,
+        # Both peers share a match token, exactly as a hub-brokered match
+        # does. Without it the NAT layer never arms, and the address-remap
+        # recovery path (an authenticated punch challenge) silently no-ops --
+        # so a rig without a token cannot test the very thing it remaps.
+        "FM2K_HUB_MATCH_TOKEN": "00112233445566778899aabbccddeeff",
     }
 
     def make_env(extra):
@@ -120,29 +148,55 @@ if __name__ == "__main__":
 
     PROXY_A, PROXY_B = 7050, 7100
 
-    def wsl_ip():
-        return subprocess.check_output(["hostname", "-I"], text=True).split()[0]
+    def loopback_reaches_wsl(port=7049, timeout=6.0):
+        """Can a WINDOWS process deliver UDP to a socket this LINUX process
+        bound, at 127.0.0.1? Under WSL mirrored networking yes -- the two
+        share one network namespace. Under NAT-mode WSL no.
 
-    def win_host_ip():
-        out = subprocess.check_output(["ip", "route"], text=True)
-        for ln in out.splitlines():
-            if ln.startswith("default"):
-                return ln.split()[2]
-        raise RuntimeError("no default route")
+        PROBE IT, NEVER ASSUME IT. Two runs of this rig on 2026-09-04
+        measured absolutely nothing because the addressing was wrong and
+        nothing said so: the proxy forwarded every game packet to the
+        default-route gateway, which under mirrored networking is the LAN
+        ROUTER and not Windows at all. Both peers sat emitting HELLO for the
+        whole run and the rig still printed a verdict."""
+        rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            rx.bind(("0.0.0.0", port))
+            rx.settimeout(timeout)
+            subprocess.Popen(
+                ["powershell.exe", "-NoProfile", "-Command",
+                 "$u=New-Object System.Net.Sockets.UdpClient;"
+                 "$b=[Text.Encoding]::ASCII.GetBytes('churn-probe');"
+                 f"$u.Send($b,$b.Length,'127.0.0.1',{port})|Out-Null"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            rx.recvfrom(64)
+            return True
+        except Exception:
+            return False
+        finally:
+            rx.close()
 
     proxy = None
     if rebind != "0":
-        # Interpose the rebind proxy. The proxy is a LINUX process: Windows
-        # game -> WSL only delivers UDP via the WSL VM IP (never 127.0.0.1),
-        # and WSL -> Windows game targets the Windows host at the default-gw
-        # address. Games' Windows-sourced packets arrive NAT'd from that same
-        # gw address; replies route back through the NAT.
-        WSL_IP, WIN_IP = wsl_ip(), win_host_ip()
-        print(f"[churn] proxy on WSL {WSL_IP} (A={PROXY_A} B={PROXY_B}), "
-              f"games via Windows host {WIN_IP}")
-        proxy = RebindProxy(PROXY_A, PROXY_B, (WIN_IP, P1_PORT))
-        host_remote  = f"{WSL_IP}:{PROXY_B}"
-        guest_remote = f"{WSL_IP}:{PROXY_A}"
+        # Interpose the rebind proxy. The proxy is a LINUX process and the
+        # games are WINDOWS processes, so the two must share a loopback --
+        # which is what mirrored networking gives us, and what the probe
+        # above confirms before a single game is launched.
+        if not loopback_reaches_wsl():
+            print("[churn] RIG BROKEN -- a Windows process cannot reach this "
+                  "WSL socket at 127.0.0.1, so the proxy would black-hole "
+                  "every game packet.\n"
+                  "        This rig needs WSL mirrored networking: put "
+                  "networkingMode=mirrored under [wsl2] in %USERPROFILE%\\"
+                  ".wslconfig and `wsl --shutdown`.\n"
+                  "        Refusing to run: a proxy that drops everything "
+                  "produces a confident verdict about nothing.")
+            sys.exit(5)
+        print(f"[churn] proxy on loopback (A={PROXY_A} B={PROXY_B}), "
+              f"mirrored networking verified")
+        proxy = RebindProxy(PROXY_A, PROXY_B, ("127.0.0.1", P1_PORT))
+        host_remote  = f"127.0.0.1:{PROXY_B}"
+        guest_remote = f"127.0.0.1:{PROXY_A}"
     else:
         host_remote  = f"127.0.0.1:{P2_PORT}"
         guest_remote = f"127.0.0.1:{P1_PORT}"
@@ -159,11 +213,80 @@ if __name__ == "__main__":
           f"matches, loss={loss} delay={delay}ms seed={seed} guest_rebind_s={rebind}")
     l1 = open(s.OUT_DIR / "churn_p1.log", "w")
     l2 = open(s.OUT_DIR / "churn_p2.log", "w")
+
+    # Only text APPENDED from here on counts. The log directory keeps every
+    # previous run's file, and a marker search that reads them whole finds
+    # last week's handshake and calls the rig healthy.
+    def log_baseline():
+        return {f: os.path.getsize(f)
+                for f in glob.glob(str(log_dir / "FM2K_P*_Debug.log"))}
+
+    def wait_for_marker(marker, baseline, timeout):
+        """Seconds until `marker` first appears in any game log past the
+        baseline offsets, or None on timeout. Hook logging is synchronous,
+        so a line that has been emitted is already on disk."""
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            for f in glob.glob(str(log_dir / "FM2K_P*_Debug.log")):
+                try:
+                    start = baseline.get(f, 0)
+                    # The game REUSES these filenames and truncates them at
+                    # launch, so a stale offset from the previous run seeks
+                    # clean past the whole log. Shrunk file means new file.
+                    if os.path.getsize(f) < start:
+                        start = 0
+                    with open(f, encoding="utf-8", errors="replace") as fh:
+                        fh.seek(start)
+                        if marker in fh.read():
+                            return time.time() - t0
+                except OSError:
+                    pass
+            time.sleep(0.05)
+        return None
+
+    base = log_baseline()
     p1 = subprocess.Popen(p1_args, env=p1_env, stdout=l1, stderr=subprocess.STDOUT)
     time.sleep(1.5)
     p2 = subprocess.Popen(p2_args, env=p2_env, stdout=l2, stderr=subprocess.STDOUT)
 
-    if proxy and int(rebind) > 0:
+    def abort_rig(why):
+        for q in (p1, p2):
+            try: q.terminate()
+            except Exception: pass
+        if proxy: proxy.stop()
+        s.kill_strays()
+        print(f"[churn] RIG BROKEN -- {why}\n"
+              "        This is an environment failure, NOT a finding. Do not "
+              "record it as a pass or a repro.")
+        sys.exit(5)
+
+    # PRECONDITION. Everything this rig measures happens downstream of the
+    # handshake, so if the peers never connect the verdict is meaningless --
+    # and it is not a hypothetical: two runs died exactly here, silently.
+    if wait_for_marker("Full handshake complete", base, 60) is None:
+        abort_rig("the peers never completed the handshake in 60s "
+                  "(both sides still sending HELLO)")
+
+    if proxy and rebind.startswith("css+"):
+        # Aim the remap at CHARACTER SELECT, not at the wall clock. The field
+        # failure lands 0.3-0.5s after the CSS session is created, and which
+        # wall-clock second that falls on varies per run, so a blind sweep
+        # mostly tests the parts of the timeline we already know are healthy.
+        ms = int(rebind[4:])
+        took = wait_for_marker("Creating CSS GekkoSession", base, 90)
+        if took is None:
+            abort_rig("no CSS GekkoSession was ever created in 90s")
+        print(f"[churn] CSS session created at t+{took:.1f}s; "
+              f"rebinding {ms}ms into character select")
+        time.sleep(ms / 1000.0)
+        # Source IP only. The host stays reachable where it already is, so
+        # traffic KEEPS FLOWING and only gekko's actor match breaks -- which
+        # is the field shape. Redirecting the host address too just
+        # black-holes the link and proves nothing (tried 2026-09-04 with the
+        # LAN IP, which WSL cannot deliver to Windows at all).
+        proxy.rebind(alt_ip) if alt_ip else proxy.rebind()
+        time.sleep(max(0, secs - took - ms / 1000.0))
+    elif proxy and int(rebind) > 0:
         time.sleep(int(rebind))
         proxy.rebind()
         time.sleep(max(0, secs - int(rebind)))
@@ -192,9 +315,20 @@ if __name__ == "__main__":
                 freezes.append(int(beats[i]))
         desync  = len(re.findall(r"DESYNC DETECTED|desync detected", text))
         crash   = ("=== CRASH" in text or "[TERMINATE]" in text)
+        # The character-select peer-drop this rig was re-aimed at on
+        # 2026-09-04: the peer stops feeding gekko during CSS and the session
+        # aborts. [CSS-BEAT] addr_match=NO says gekko is discarding the
+        # peer's packets because they arrive from an address that is not the
+        # actor it was registered with -- which names the cause outright.
+        css_abort = len(re.findall(r"publishing CSS_ABORT", text))
+        # Starvation, not address shape. A remapped address is normal and
+        # recoverable; what is fatal is peer input no longer reaching gekko,
+        # which [CSS-BEAT] reports directly.
+        addr_no   = len(re.findall(r"STARVED", text))
         print(f"[churn] {tag}: battle_sessions={created} barriers={len(epochs)} "
-              f"beats={len(beats)} freezes={freezes} desync={desync} crash={crash}")
-        return created, epochs, freezes, desync, crash
+              f"beats={len(beats)} freezes={freezes} desync={desync} "
+              f"css_abort={css_abort} addr_mismatch={addr_no} crash={crash}")
+        return created, epochs, freezes, desync, crash, css_abort, addr_no
 
     dbg = sorted(glob.glob(str(log_dir / "FM2K_P*_Debug.log")), key=os.path.getmtime)
     if len(dbg) < 2:
@@ -203,6 +337,24 @@ if __name__ == "__main__":
     r2 = analyze(dbg[-1], "B")
 
     ok = True
+    # Checked FIRST, and before the cycle-count gate: a CSS abort legitimately
+    # starves the battle pipeline, and exiting "INCOMPLETE" there would bury
+    # the exact repro this run exists to catch.
+    if r1[5] or r2[5]:
+        print(f"[churn] CSS PEER-DROP REPRODUCED -- CSS_ABORT on "
+              f"A={r1[5]} B={r2[5]}")
+        if r1[6] or r2[6]:
+            print(f"[churn] preceded by CSS starvation (A={r1[6]} B={r2[6]} "
+                  "beats with no peer input reaching gekko) -- check the "
+                  "addr= field on those beats for a remap that did not recover")
+        else:
+            print("[churn] with NO starvation beforehand -- the abort is not "
+                  "an input-delivery failure; look elsewhere")
+        ok = False
+    elif r1[6] or r2[6]:
+        print(f"[churn] CSS STARVED -- peer input stopped reaching gekko "
+              f"(A={r1[6]} B={r2[6]} beats) though the session did not abort")
+        ok = False
     if r1[2] or r2[2]:
         print(f"[churn] FREEZE REPRODUCED -- bf stalls: A={r1[2]} B={r2[2]}")
         ok = False

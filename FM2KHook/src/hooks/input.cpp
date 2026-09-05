@@ -14,6 +14,7 @@
 // this local input into the correct remote character slot via
 // Hook_GetPlayerInput.
 #include "input.h"
+#include "hooks.h"   // Hook_ApplySOCDSlot -- per-player SOCD at capture
 #include "../core/globals.h"           // original_get_player_input, g_player_index
 #include "../netplay/savestate.h"      // CHAR_SLOT_BASE, CHAR_SLOT_SIZE
 #include "../ui/input_binder.h"        // FM2KInputBinder::Sample_Win32 + Init/Load
@@ -164,7 +165,10 @@ uint16_t Input_CaptureLocal() {
             // mask is gated to mode 2000.
             const uint32_t game_mode = *(uint32_t*)FM2K::ADDR_GAME_MODE;
             if (game_mode == 2000) bound &= (uint16_t)~0x400u;
-            return bound;
+            // Per-player SOCD, applied here at capture with THIS device's
+            // mode -- before the value reaches gekko, the replay or the
+            // spectator stream. See Hook_ApplySOCDSlot.
+            return Hook_ApplySOCDSlot(bound, 0);
         }
     }
 
@@ -211,7 +215,8 @@ uint16_t Input_CaptureLocal() {
         }
     }
 
-    return input;
+    // Vanilla-binding path is P1's device by definition: slot 0's mode.
+    return Hook_ApplySOCDSlot(input, 0);
 }
 
 uint16_t Input_CaptureLocalPlayer(int player) {
@@ -240,5 +245,5 @@ uint16_t Input_CaptureLocalPlayer(int player) {
     // character-select bails to title and wedges the session).
     const uint32_t game_mode = *(uint32_t*)FM2K::ADDR_GAME_MODE;
     if (game_mode == 2000) bound &= (uint16_t)~0x400u;
-    return bound;
+    return Hook_ApplySOCDSlot(bound, player);
 }

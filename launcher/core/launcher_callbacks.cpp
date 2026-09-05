@@ -592,7 +592,8 @@ void FM2KLauncher::WireUICallbacks() {
         return n;
     };
 
-    // Network simulation callbacks removed - not connected to LocalNetworkAdapter
+    // Network simulation callbacks removed -- there is no in-launcher network
+// simulator to connect them to
     
     ui_->on_get_rollback_stats = [this](RollbackStats& stats) -> bool {
         // Read real rollback statistics from hook DLL shared memory

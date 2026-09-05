@@ -48,7 +48,14 @@ DEFAULT_GAME_NAME    = "wanwan"      # substring match for --stress filter
 # scan and just launches that file. Saves 30+ seconds on installs with a
 # big D:\Games\fm2k\ tree.
 DEFAULT_GAME_EXE     = Path("/mnt/c/games/2dfm/wanwan/WonderfulWorld_ver_0946.exe")
-DEFAULT_OUT          = Path("/mnt/c/dev/wanwan/tools/.selftest")
+# ABSOLUTE PATH INTO THE MAIN CHECKOUT, which is wrong for anyone running
+# from a git worktree: two runs then contend for the same scratch directory
+# and the loser gets a PermissionError from the winner's file lock (seen
+# 2026-09-04). Default to THIS script's own tools/ directory so a worktree
+# writes inside itself, and let the env override it explicitly.
+DEFAULT_OUT          = Path(os.environ.get(
+    "FM2K_TEST_SELFTEST_DIR",
+    str(Path(__file__).resolve().parent / ".selftest")))
 DEFAULT_FRAMES       = 600
 PARITY_DIFF          = Path(__file__).parent / "parity_diff.py"
 
@@ -135,7 +142,31 @@ def run_phase(label: str, args: list[str], env: dict[str, str],
               # usable. Under a lossy netplay profile the opposite holds -- the
               # rollbacks exist BECAUSE an input was corrected, and the control
               # discards >99% of comparisons. Dark by default in the hook.
-              "FM2K_ENVELOPE_SHADOW", "FM2K_ENVELOPE_SHADOW_WITNESS"):
+              "FM2K_ENVELOPE_SHADOW", "FM2K_ENVELOPE_SHADOW_WITNESS",
+              # Cross-peer save trace. This harness is SINGLE-PROCESS, so
+              # the CSV it produces cannot answer the cross-peer question --
+              # it is forwarded because the same file is the intra-process
+              # control: forced rollback with both inputs local means a
+              # resim consumes IDENTICAL inputs, so every generation of a
+              # frame must agree here. A mismatch in THIS regime would be a
+              # determinism bug, not the false positive under study.
+              "FM2K_CURSOR_TRACE",
+              # Asset-load levers. The per-frame timing ring proved the worst
+              # single frames of a session are synchronous .player loads inside
+              # process_game_inputs (see docs/dev/frame_timing_instrument.md and
+              # artifacts/load_hitch_2026-09-04.md), so the harness has to be
+              # able to arm the loader profiler and the load-side experiments
+              # from the calling shell the same way it arms the frame ring.
+              "FM2K_FPK_CSS_PROFILE", "FM2K_FPK_CSS_FASTSOUND",
+              "FM2K_FAST_PLAYER_LOAD", "FM2K_ASSET_PREFETCH",
+              "FM2K_ASSET_PREFETCH_MB",
+              # Per-frame timing ring. This harness is SINGLE-PROCESS and
+              # offline, which makes it the cleanest read of the BOX half of
+              # the question: no peer, no stalls possible, no brake, so `work`
+              # is the machine and nothing else. Use it to establish where a
+              # frame's 10 ms goes on a given box before attributing anything
+              # to the network.
+              "FM2K_FRAME_TIMING"):
         if k not in env and os.environ.get(k):
             env[k] = os.environ[k]
 

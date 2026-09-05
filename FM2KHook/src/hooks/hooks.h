@@ -28,10 +28,6 @@ int __cdecl Hook_ProcessGameInputs();
 bool IsCSSMode(uint32_t mode);
 bool IsBattleMode(uint32_t mode);
 
-// Live FM95 phase ordinal (2=battle,1=CSS,0=other). Recorded per confirmed
-// frame in the gekko advance handler for deterministic cross-peer battle-end.
-int Fm95CurrentPhaseByte();
-
 // Match-DECISION ordinal for the battle-END ring: 1=active round play,
 // 2=match decided (win-counter >= cap, a monotonic deterministic sim scalar),
 // 0=neither. The 1->2 edge fires once at the true match end, never at a round
@@ -47,6 +43,14 @@ int Fm95MatchPhaseByte();
 // sim divergence. The spec re-applies on top (idempotent for the
 // resolved input).
 uint16_t Hook_ApplySOCD_Public(uint16_t input);
+
+// Per-player SOCD: the mode from binder slot `slot`'s profile (-1 there =
+// inherit the process-wide mode above). Applied at CAPTURE, so each player's
+// inputs are cleaned by their own device's rule before anything else sees
+// them; peers on different modes cannot desync because a cleaned input has
+// nothing left for a second pass to strip.
+int      Hook_GetSOCDModeForSlot(int slot);
+uint16_t Hook_ApplySOCDSlot(uint16_t input, int slot);
 
 // Compute the deterministic-pseudo-random battle-autoplay input value
 // for player_id (0=P1, 1=P2). Seeded from g_input_buffer_index (saved

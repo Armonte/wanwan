@@ -53,7 +53,13 @@ ENVELOPE = [
     (0x4280D8, 8200, "input history ring"),
     (0x430240, 1024, "object list heads/tails"),
     (0x4456B0, 88, "effect_sys2"),
-    (0x447930, 0x46F6C0 - 0x447930, "afterimage pool"),
+    # The afterimage slice is two things: a dense 1,616 B head of unrelated
+    # globals, then a 100-entry trail array that is covered SPARSELY (the
+    # 16-byte entry header only). See SPARSE below and the structure note in
+    # FM2KHook/src/netplay/savestate.h (WaveCAddrs).
+    (0x447930, 0x447F80 - 0x447930, "afterimage head (globals before the array)"),
+    (0x447F80, 0x46F6C0 - 0x447F80,
+     "afterimage entry array (SPARSE: 16-byte entry header only)"),
     (0x470020, 0x220, "game state"),
     (0x4701E0, 0x5F800, "object pool (SPARSE: active slots only)"),
     (0x4CFA20, 0x2000, "object node pool"),
@@ -163,6 +169,11 @@ NAMED = [
 SPARSE = [
     (0x4701E0, 0x5F800, "object pool (inactive-slot residue)"),
     (0x4D1D90, 8 * 57407, "char slots (unloaded-slot residue)"),
+    # Third sparse member since 2026-09-04: only the 16-byte header of each
+    # 1,616-byte afterimage entry is in the envelope. The 1,600-byte sample
+    # payload is written by the sim and read only by sprite_rendering_engine
+    # @0x40CC30 (render-only), so it is deliberately uncovered.
+    (0x447F80, 0x46F6C0 - 0x447F80, "afterimage trail samples (render-only)"),
 ]
 
 

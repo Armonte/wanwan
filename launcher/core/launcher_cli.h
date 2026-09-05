@@ -1,9 +1,7 @@
 // launcher_cli.h -- command-line handling for the launcher, split out of
 // FM2K_RollbackClient.cpp's SDL_AppInit. Three stages:
 //   1. LauncherCli_ParseArgs       -- argv -> LauncherCliArgs
-//   2. LauncherCli_RunHeadlessProbe-- --upnp-test / --nat-test (run before the
-//      launcher/SDL exists, then exit the process)
-//   3. LauncherCli_ApplyLaunchMode -- after Initialize(), drive replay / stress
+//   2. LauncherCli_ApplyLaunchMode -- after Initialize(), drive replay / stress
 //      / offline / direct(host,connect,spectate) launch modes
 #pragma once
 
@@ -37,11 +35,6 @@ struct LauncherCliArgs {
 // Parse argv. Returns SDL_APP_CONTINUE on success, SDL_APP_FAILURE on a bad arg
 // (after printing the error to stderr).
 SDL_AppResult LauncherCli_ParseArgs(int argc, char** argv, LauncherCliArgs& out);
-
-// Self-contained headless probes (--upnp-test / --nat-test) that run before the
-// launcher/SDL is created and exit the process. Returns true if one ran (caller
-// returns *result); false to continue normal startup.
-bool LauncherCli_RunHeadlessProbe(const LauncherCliArgs& args, SDL_AppResult* result);
 
 // After launcher Initialize(), apply replay / stress / offline / direct launch
 // mode. Returns SDL_APP_CONTINUE normally (modes fall through to the headless

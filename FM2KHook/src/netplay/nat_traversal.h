@@ -50,10 +50,6 @@ bool DiscoverGlobalV6(sockaddr_in6& out);
 // beyond logging on v4-only hosts. Call after NetSocket_Init (needs the port).
 void DiscoverAndPublishLocalV6();
 
-// The cached global v6 endpoint from the last DiscoverAndPublishLocalV6, or
-// nullptr if the host has no global v6.
-const sockaddr_in6* GetLocalGlobalV6();
-
 // Burst-punch toward (peer_ip, peer_port). Sends ~30 packets over
 // ~300 ms with priority boost. Idempotent -- if Punch_Tick has
 // already latched the peer for this match_token, returns immediately.
@@ -82,6 +78,33 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
 // peer address when the packet authenticates via match_token.
 void HandleDatagram(const uint8_t* data, size_t len, const sockaddr_storage& from);
 
+// Send ONE authenticated CTRL_PUNCH to `to`, outside the burst thread.
+//
+// This is the recovery half of a mid-session address change. When a carrier
+// remaps a peer onto a DIFFERENT IP, that peer's traffic starts arriving from
+// an address we refuse to adopt on faith -- correctly, since an IP we have
+// never authenticated could be anyone. Refusing used to be the end of it: we
+// went on sending to the dead mapping forever, the link stayed one-way, and
+// the match hung at character select with no timeout and nothing in the log
+// but a repeating "foreign source" warning. Reproduced 2026-09-04.
+//
+// So instead of only refusing, challenge the address: the punch carries the
+// match token, which only the real peer has, and the reply re-authenticates
+// the new address through the SAME path that authenticated the original one.
+// A spoofer cannot answer it. Rate-limited internally; safe to call per
+// datagram. No-op if no token is set (offline, or pre-match).
+void ChallengeAddress(const sockaddr_storage& to);
+
+// Latch the 16-byte match token WITHOUT starting a punch burst.
+//
+// The token is what authenticates a peer, in both directions, so a side that
+// never bursts still needs it: without a token every inbound CTRL_PUNCH is
+// dropped as "no local token set", and that side can neither be punched
+// through a NAT nor answer an address challenge. StartPunch latches it as a
+// side effect, but only runs when a peer address is already known -- so a
+// host that is waiting to be connected to had no token at all.
+void SetMatchToken(const uint8_t token[16]);
+
 // Hex-encode the 16-byte match_token (32 chars) into `out` if it has
 // been latched (StartPunch was called). Returns true on success, false
 // if the token isn't set yet -- in which case `out` is left as an empty
@@ -102,11 +125,10 @@ bool ConfigureRelay();
 
 // True once we've decided to fall back to relaying -- set after
 // StartPunch's burst completes without a peer-latch, OR explicitly
-// via ForceRelayMode() (test hook). Once true, RawSend wraps every
+// Once true, RawSend wraps every
 // gameplay packet in a 0xCF envelope and sends to the relay; RawReceive
 // unwraps inbound 0xCF packets and re-dispatches the inner payload.
 bool IsRelayMode();
-void ForceRelayMode();   // test/diagnostic only
 
 // The peer relays, so we relay too -- the one-way-path deadlock.
 //
@@ -150,8 +172,6 @@ bool PeerAckedUs();
 // Borrowed pointers -- caller must not free or modify. Valid for the
 // lifetime of the process once ConfigureRelay() returned true.
 const sockaddr_in* GetRelayAddr();
-const uint8_t*     GetRelaySessionId();   // 16 bytes
-
 // Wrap raw outbound payload bytes in the 0xCF envelope. `out` must
 // have room for `len + 18` bytes. Returns the total wrapped length.
 size_t WrapForRelay(const uint8_t* in, size_t len, uint8_t* out, size_t out_cap);

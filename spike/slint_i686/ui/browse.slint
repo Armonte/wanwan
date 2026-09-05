@@ -1,0 +1,359 @@
+// browse.slint -- the game picker.
+//
+// BROWSE IS TRANSIENT. In app.jsx the wiring is
+//   view === "browse" && <BrowseView onPickGame={id => { setCurrentGame(id); setView("lobby"); }} />
+// -- one click on a tile picks the game AND drops you into its lobby. It is
+// a doorway, not a destination, which is why there is no detail panel and
+// no separate "launch" button here: the thing you came to do is enter a
+// room. An earlier version of this file had a 280px SELECTED column with
+// LAUNCH OFFLINE / CREATE LOBBY, which turned a doorway into a room of its
+// own and left the top bar showing a game you had not chosen yet.
+//
+// Tiles are art-first: the online count sits in a badge on the image and
+// the name rides a gradient along the bottom, so a wall of them scans by
+// picture and by population rather than by reading titles.
+import { Nerv, Type, Radius } from "theme.slint";
+import { ScrollView } from "std-widgets.slint";
+import { NervInput, EdgeButton } from "widgets.slint";
+
+// A row of the browse body: a heading when `head` is set, otherwise up to
+// five tiles by library index (-1 for an empty cell in the last row).
+export struct BrowseRow {
+    head: string,
+    // Right-hand sub-caption on a heading -- "live, 6 of 100". It says
+    // where the section's contents came from, which is the difference
+    // between a curated list and an arbitrary one.
+    extra: string,
+    // Hidden gems are shown dimmed, per the blueprint: they are a
+    // suggestion, not a recommendation, and should not compete with the
+    // sections above them.
+    dim: bool,
+    i0: int, i1: int, i2: int, i3: int, i4: int,
+}
+
+export struct LibRow {
+    title: string,
+    code: string,
+    // Empty when the game has no captured thumbnail yet, which the tile
+    // renders as the NO PREVIEW plate rather than a blank hole.
+    thumb: image,
+    subtitle: string,
+    engine: string,
+    peers: int,
+    rail_thumb: image,   // pre-scaled to the rail chip, see images.rs
+    // The reviewed slideshow (GAME tab, OK shots), prefiltered like the
+    // tile. Empty images when nothing is approved.
+    shot1: image,
+    shot2: image,
+    shot3: image,
+}
+
+export component Browse inherits Rectangle {
+    in property <[LibRow]> games;
+    // The games root folders (launcher.cfg). They belong to the library,
+    // not to Config: adding one is how the wall gets more games.
+    in property <[string]> folders;
+    callback browse_folder();
+    property <bool> show_folders: false;
+    // FIVE columns that FILL the width. A fixed pixel tile left a dead
+    // column on the right of a 1280-wide window, and eight columns made
+    // every tile postage-stamp sized. Deriving the width from the actual
+    // content area keeps the row flush to both edges at any window size,
+    // and five columns is what makes the tiles large enough to read.
+    // FM2K renders at 640x480, so a tile is 4:3 and never narrower than
+    // half a frame (320x240). The host decides how many 320-wide tiles fit
+    // a row (cols); the tiles then GROW to share the row exactly, so a row
+    // never ends in dead space on the right.
+    in property <int> cols: 3;
+    in property <length> tile_w: 320px;
+    // 4:3, the artboard's 80x60 proportion.
+    // Whole pixels: the host lays the GPU art over these tiles from the
+    // same arithmetic, and a 0.75px drift per row would walk it off.
+    property <length> tile_h: floor(root.tile_w * 3 / 4 / 1px) * 1px;
+    property <length> row_h: root.tile_h + 10px;
+    // One entry per GRID ROW, host-computed. A row is either a section
+    // heading or up to five tiles -- flattened rather than nested,
+    // because a grid cannot be built from a list of lists here and the
+    // replay list already proved this shape works.
+    in property <[BrowseRow]> rows;
+    // How many of `rows` are section headings (26px) rather than tile
+    // rows (tile_h). Counted by the host side of the model, because the
+    // scroll extent below has to be exact: counting every row as a tile
+    // row left a screen of dead space to scroll into after the last game.
+    in property <int> heads: 0;
+    // The grid's exact height: padding 10 top and bottom, 8 between rows.
+    property <length> content_h: 20px + root.heads * 26px
+        + max(0, root.rows.length - root.heads) * root.tile_h
+        + max(0, root.rows.length - 1) * 8px;
+    in-out property <string> filter;
+    // Fires with the index of the game the user picked. The shell is
+    // expected to switch to the lobby -- see the header.
+    callback picked(int);
+    // The tile grid is laid out from host-computed row indices, so the
+    // list it walks has to arrive already filtered. Filtering in the UI
+    // would mean the rows and the tiles disagreeing about how many there
+    // are, which is a blank final row or a clipped one.
+    callback filter_changed(string);
+
+    background: transparent;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // ── search ──
+        Rectangle {
+            height: 34px;
+            background: transparent;
+            HorizontalLayout {
+                // Equal top and bottom padding is what centres a 22px
+                // input in a 34px row. `alignment: center` does NOT do
+                // this -- it centres children HORIZONTALLY as a group,
+                // which collapsed the row into a huddle in the middle.
+                padding-left: 10px; padding-right: 10px;
+                padding-top: 6px; padding-bottom: 6px;
+                spacing: 10px;
+                NervInput {
+                    // Without this the row's free space lands BETWEEN the
+                    // label and the box, parking the search field against
+                    // the far edge with a hole in the middle.
+                    horizontal-stretch: 1;
+                    placeholder: "search...";
+                    text <=> root.filter;
+                    edited(t) => { root.filter_changed(t); }
+                }
+                Text {
+                    text: root.games.length + " INSTALLED";
+                    letter-spacing: Type.track;
+                    font-size: Type.body_sm; color: Nerv.dim;
+                    vertical-alignment: center;
+                }
+                EdgeButton {
+                    label: root.show_folders ? "HIDE FOLDERS" : "FOLDERS";
+                    clicked => { root.show_folders = !root.show_folders; }
+                }
+            }
+        }
+        Rectangle { height: 1px; background: Nerv.line; }
+        if root.show_folders: Rectangle {
+            background: Nerv.bg2;
+            VerticalLayout {
+                padding-left: 10px; padding-right: 10px; padding-top: 8px; padding-bottom: 8px;
+                spacing: 6px;
+                Text {
+                    text: root.folders.length == 0 ? "No games folders yet. Add the folder your FM2K games live in; every game inside it appears here."
+                                                   : "Games are found inside these folders:";
+                    font-size: Type.body_sm; color: Nerv.dim; wrap: word-wrap;
+                }
+                for f in root.folders: Text { text: f; font-size: Type.body; color: Nerv.ink2; overflow: elide; }
+                HorizontalLayout {
+                    alignment: start;
+                    EdgeButton { label: "ADD FOLDER"; min-w: 200px; clicked => { root.browse_folder(); } }
+                }
+            }
+        }
+        if root.show_folders: Rectangle { height: 1px; background: Nerv.line; }
+
+        ScrollView {
+            vertical-stretch: 1;
+            // viewport-height is what actually makes a ScrollView scroll.
+            // Setting an explicit height on the CHILD does not give the
+            // ScrollView a viewport bigger than itself -- it sizes the
+            // viewport from the child's PREFERRED size, which a plain
+            // Rectangle does not report. That is why the bar never appeared
+            // and the wheel had nothing to move.
+            // AlwaysOn: the default policy only reveals the bar when the
+            // pointer is near the right edge, so the view looks unscrollable
+            // until you happen to graze it. On a wall of 108 tiles the bar is
+            // the only cue that there is more below.
+            vertical-scrollbar-policy: ScrollBarPolicy.always-on;
+            viewport-height: root.content_h;
+            grid := Rectangle {
+                background: transparent;
+                height: root.content_h;
+                VerticalLayout {
+                    padding: 10px; spacing: 8px; alignment: start;
+
+                    // The blueprint sections by POPULAR / FAVORITES / genre.
+                    // Those are hub-side facts -- popularity needs player
+                    for r[c] in root.rows: VerticalLayout {
+                        spacing: 0px;
+
+                        // ── section heading ──
+                        if r.head != "": Rectangle {
+                            height: 26px;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: r.head;
+                                    font-size: Type.label;
+                                    letter-spacing: Type.track;
+                                    color: Nerv.ink3;
+                                    vertical-alignment: bottom;
+                                }
+                                Text {
+                                    // Where the section came from. "live"
+                                    // and a count is the difference between
+                                    // a list you can trust and one you
+                                    // cannot.
+                                    text: r.extra;
+                                    font-size: Type.label;
+                                    color: Nerv.faint;
+                                    vertical-alignment: bottom;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                        }
+
+                        if r.head == "": HorizontalLayout {
+                        spacing: 8px;
+                        for col[k] in [0, 1, 2, 3, 4]: Rectangle {
+                            property <int> idx: k == 0 ? r.i0 : k == 1 ? r.i1
+                                              : k == 2 ? r.i2 : k == 3 ? r.i3 : r.i4;
+                            width: root.tile_w;
+                            height: idx >= 0 ? root.tile_h : 0px;
+                            visible: idx >= 0;
+                            // No dimming: a half-transparent capture read as a
+                            // broken tile, not as a suggestion.
+                            background: Nerv.bg2;
+                            // Square corners: the art IS the tile. A rounded
+                            // frame around a rectangular screenshot read as a
+                            // rectangle inside a rounded rectangle.
+                            border-radius: 0px;
+                            border-width: 1px;
+                            border-color: ta.has-hover ? Nerv.acc : Nerv.line;
+                            clip: true;
+
+                            // The art, and on hover a slideshow of the shots the
+                            // owner approved on the GAME tab. Two layers crossfade:
+                            // the visible one shows `slide`, the hidden one keeps
+                            // `prev`, and each tick swaps which is on top so both
+                            // opacities animate.
+                            property <int> slide: 0;   // 0 = the lead, 1..3 = shots
+                            property <int> prev: 0;
+                            property <bool> top_a: true;
+                            function shot_count() -> int {
+                                return idx < 0 ? 0
+                                    : 1 + (root.games[idx].shot1.width > 0 ? 1 : 0)
+                                        + (root.games[idx].shot2.width > 0 ? 1 : 0)
+                                        + (root.games[idx].shot3.width > 0 ? 1 : 0);
+                            }
+                            function img(i: int) -> image {
+                                return i == 1 ? root.games[idx].shot1
+                                     : i == 2 ? root.games[idx].shot2
+                                     : i == 3 ? root.games[idx].shot3
+                                     : root.games[idx].thumb;
+                            }
+                            if idx >= 0 && root.games[idx].thumb.width > 0: Image {
+                                x: 1px; y: 1px;
+                                width: parent.width - 2px;
+                                height: parent.height - 2px;
+                                source: img(top_a ? slide : prev);
+                                opacity: top_a ? 1.0 : 0.0;
+                                animate opacity { duration: 350ms; easing: ease-in-out; }
+                                image-fit: fill;
+                                image-rendering: smooth;
+                            }
+                            if idx >= 0 && root.games[idx].thumb.width > 0: Image {
+                                x: 1px; y: 1px;
+                                width: parent.width - 2px;
+                                height: parent.height - 2px;
+                                source: img(top_a ? prev : slide);
+                                opacity: top_a ? 0.0 : 1.0;
+                                animate opacity { duration: 350ms; easing: ease-in-out; }
+                                image-fit: fill;
+                                image-rendering: smooth;
+                            }
+                            Timer {
+                                interval: 1500ms;
+                                running: ta.has-hover && shot_count() > 1;
+                                triggered => {
+                                    prev = slide;
+                                    slide = (slide + 1) >= shot_count() ? 0 : slide + 1;
+                                    top_a = !top_a;
+                                }
+                            }
+                            if idx >= 0 && root.games[idx].thumb.width == 0: Text {
+                                text: "NO PREVIEW";
+                                font-size: Type.body_sm;
+                                color: Nerv.faint;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                                width: 100%; height: 100%;
+                            }
+
+                            // online badge, top-left over the art
+                            Rectangle {
+                                x: 5px; y: 5px;
+                                width: 52px; height: 18px;
+                                background: #000000cc;
+                                border-radius: Radius.sm;
+                                border-width: 1px;
+                                border-color: Nerv.line;
+                                Text {
+                                    text: idx < root.games.length ? "◉ " + root.games[idx].peers : "";
+                                    font-size: Type.body_sm;
+                                    color: idx < root.games.length && root.games[idx].peers > 0
+                                           ? Nerv.phos : Nerv.dim;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    width: 100%; height: 100%;
+                                }
+                            }
+
+                            // name plate along the bottom
+                            Rectangle {
+                                // 40, not 34: the plate carries two lines now
+                                // that the folder sits beside the engine, and
+                                // at 34 the descenders of the second line were
+                                // cut in half.
+                                y: parent.height - 40px;
+                                height: 40px;
+                                background: #000000d9;
+                                VerticalLayout {
+                                    padding-left: 4px; padding-right: 4px; spacing: 0px;
+                                    alignment: center;
+                                    Text {
+                                        text: idx < root.games.length ? root.games[idx].title : "";
+                                        font-size: Type.body_sm;
+                                        color: Nerv.ink;
+                                        overflow: elide;
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 5px;
+                                        Text {
+                                            text: idx < root.games.length ? root.games[idx].engine : "";
+                                            font-size: Type.body_sm;
+                                            color: Nerv.ink3;
+                                            overflow: elide;
+                                        }
+                                        // The install folder, and ONLY when it
+                                        // differs from the title. Discovery
+                                        // already does that comparison; it was
+                                        // computing the answer and throwing it
+                                        // away, which left two copies of a game
+                                        // looking identical -- the one case a
+                                        // tile most needs to disambiguate.
+                                        Text {
+                                            text: idx < root.games.length ? root.games[idx].subtitle : "";
+                                            font-size: Type.body_sm;
+                                            color: Nerv.dim;
+                                            horizontal-stretch: 1;
+                                            overflow: elide;
+                                        }
+                                    }
+                                }
+                            }
+
+                            ta := TouchArea {
+                                clicked => {
+                                    if (idx >= 0) { root.picked(idx); }
+                                }
+                            }
+                        }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

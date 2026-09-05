@@ -27,13 +27,17 @@
 // snapshot itself.
 //
 // Coverage was VERIFIED before this was written, not assumed:
-//   * afterimage pool -- SaveStateData::afterimage_pool, savestate.h:115, over
-//     WaveCAddrs::AFTERIMAGE_POOL 0x447930 .. 0x46F6C0 (savestate.h:202-203);
-//     saved whole at savestate_fm2k_save.cpp:463, restored at
-//     savestate_fm2k_load.cpp:524-535 with three documented render-side
-//     carve-outs (palette-flash-1 42 B, shake 40 B, g_last_frame_time 4 B, all
-//     inside the first 0x4A8 bytes of preamble) plus the spec-only forced
-//     stage-sound carve-out at 0x44795C.
+//   * afterimage pool -- SaveStateData::afterimage_pool, over
+//     WaveCAddrs::AFTERIMAGE_POOL 0x447930 .. 0x46F6C0; since 2026-09-04 the
+//     SIM-OWNED part of that slice is saved and restored (the 1,616 B head plus
+//     the 16-byte header of each of the 100 trail entries) and the 160,000 B of
+//     trail SAMPLES are not, because they are read only by
+//     sprite_rendering_engine -- see the structure note in savestate.h. The
+//     restore keeps the three documented render-side carve-outs (palette-flash-1
+//     42 B, shake 40 B, g_last_frame_time 4 B, all inside the first 0x4A8 bytes
+//     of the head) plus the spec-only forced stage-sound carve-out at 0x44795C.
+//     A joining viewer therefore reconstructs trail bookkeeping but not the
+//     historical trail pixels, which is render state and self-heals in ~1 s.
 //   * system variables A-P -- SaveStateData::effect_sys2, savestate.h:95, over
 //     EffectAddrs::EFFECT_SYS2 0x4456B0 + 88 (savestate_internal.h:33-34);
 //     savestate_fm2k_load.cpp:447-457 names the layout explicitly and RESTORES

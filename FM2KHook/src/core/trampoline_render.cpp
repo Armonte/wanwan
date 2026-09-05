@@ -18,6 +18,7 @@
 #include <cstring>
 #include <windows.h>
 #include "trampoline_internal.h"
+#include "frame_timing.h"        // DIAGNOSTIC per-frame timing ring (dark by default)
 
 // ============================================================================
 // RENDER SNAPSHOT/RESTORE
@@ -161,6 +162,15 @@ void EbDiag_Dump(const char* tag) {
 void RenderFrameWithSnapshot() {
     if (!original_render_game) return;
 
+    // Per-frame timing ring: the WHOLE render cost, taken here rather than at
+    // the dozen call sites (offline, netplay, css, native and six spectator
+    // paths all reach render through this one function). Includes the
+    // snapshot/restore either side of original_render_game, because that is
+    // what the frame actually pays. Dark by default; unarmed this is one
+    // cached bool test and the two QPC reads never happen.
+    const bool ft = FrameTiming_Enabled();
+    const uint64_t ft_t0 = ft ? SDL_GetPerformanceCounter() : 0;
+
     // FPS counter + title-bar stats (hotkey probe too). Hook_RenderGame used
     // to do this; in trampoline mode render goes through here instead.
     Hook_RenderDiagnostics_Tick();
@@ -236,9 +246,16 @@ void RenderFrameWithSnapshot() {
         memcpy(s_render_saved_afterimage + PFLASH1_END_IN_AI,
                (void*)(WaveCAddrs::AFTERIMAGE_POOL + PFLASH1_END_IN_AI),
                SHAKE_OFFSET_IN_AI - PFLASH1_END_IN_AI);
+        // Tail of the HEAD slice only, plus the sim-owned entry headers. The
+        // 160,000 B of trail samples are read by sprite_rendering_engine and
+        // written by nothing in the render path, so snapshotting them protects
+        // nothing (structure note in WaveCAddrs, savestate.h). The 16-byte entry
+        // headers ARE still protected, so everything the sim can observe keeps
+        // exactly the coverage it had before.
         memcpy(s_render_saved_afterimage + SHAKE_END_IN_AI,
                (void*)(WaveCAddrs::AFTERIMAGE_POOL + SHAKE_END_IN_AI),
-               WaveCAddrs::AFTERIMAGE_POOL_SZ - SHAKE_END_IN_AI);
+               WaveCAddrs::AFTERIMAGE_HEAD_SZ - SHAKE_END_IN_AI);
+        WaveCAddrs::AfterimageCaptureEntryHdrs(s_render_saved_afterimage);
         memcpy(s_render_saved_input_tracking, (void*)0x447EE0,                     0xA0);
     } }
 
@@ -359,7 +376,8 @@ void RenderFrameWithSnapshot() {
                SHAKE_OFFSET_IN_AI - PFLASH1_END_IN_AI);
         memcpy((void*)(WaveCAddrs::AFTERIMAGE_POOL + SHAKE_END_IN_AI),
                s_render_saved_afterimage + SHAKE_END_IN_AI,
-               WaveCAddrs::AFTERIMAGE_POOL_SZ - SHAKE_END_IN_AI);
+               WaveCAddrs::AFTERIMAGE_HEAD_SZ - SHAKE_END_IN_AI);
+        WaveCAddrs::AfterimageRestoreEntryHdrs(s_render_saved_afterimage);
         memcpy((void*)0x447EE0,                    s_render_saved_input_tracking, 0xA0);
     } }
     EbDiag_Dump("POST-RESTORE");
@@ -373,5 +391,6 @@ void RenderFrameWithSnapshot() {
     // patch was what made cross-peer rng diverge under real rollback.
 
     SharedMem_Update();
+    if (ft) FrameTiming_NoteRender(SDL_GetPerformanceCounter() - ft_t0);
 }
 

@@ -44,11 +44,6 @@
 // BATTLE FRAME PROCESSING
 // =============================================================================
 
-// Frame pacing state (matches GekkoNet examples' handle_frame_time)
-LARGE_INTEGER g_perf_freq = {};
-LARGE_INTEGER g_frame_start = {};
-bool g_frame_timer_initialized = false;
-
 // Called at the END of each frame to apply frame advantage throttle (our
 // "frame lengthening", NetherRealm GDC doc 11). The game already has its OWN
 // 10ms frame limiter (timeGetTime in WinMain). We only add EXTRA delay when
@@ -57,34 +52,16 @@ bool g_frame_timer_initialized = false;
 // hard gekko stall when we reach the prediction-window edge) or the rare
 // confirm-at-edge desync under heavy loss.
 //
-// PROGRESSIVE escalation toward the window edge (g_pred_window): the old brake
-// flat-lined at +2ms past 4 frames ahead, so a bad connection raced the last
-// ~12 frames to the hard stall at near-full speed. NetherRealm's lesson is to
-// stretch MORE the closer you get to the pause. Thresholds scale with the actual
-// prediction window so an FM2K_PREDICTION_WINDOW override stays proportionate.
-// A healthy connection holds < 2 frames ahead and is untouched (0-4 range is
-// byte-identical to the prior behavior -- no good-connection regression). The
-// max (+5ms -> ~67fps at 100fps) only bites a connection already at the edge,
-// where a playable slowdown beats a hard freeze.
-void HandleFrameTime(float frames_ahead) {
-    // Only throttle when ahead -- the game handles base frame timing
-    if (frames_ahead <= 0.5f) {
-        return;  // Not ahead, let game's own limiter handle timing
-    }
-    const float W = (g_pred_window > 4) ? (float)g_pred_window : 16.0f;
-    DWORD extra_ms;
-    if      (frames_ahead > 0.875f * W) extra_ms = 5;   // near the edge (~14/16)
-    else if (frames_ahead > 0.69f  * W) extra_ms = 4;   //              (~11/16)
-    else if (frames_ahead > 0.50f  * W) extra_ms = 3;   //              (~8/16)
-    else if (frames_ahead > 4.0f)       extra_ms = 2;   // unchanged from prior
-    else if (frames_ahead > 2.0f)       extra_ms = 1;   // unchanged from prior
-    else {
-        // 0.5-2.0: minimal throttle, just yield a timeslice (~0.5ms effective)
-        Sleep(0);
-        return;
-    }
-    Sleep(extra_ms);
-}
+// THE OLD DRIFT BRAKE IS DELETED (2026-09-03). It slept the local game by
+// 1 to 5 ms on a 10 ms frame -- up to a 50% slowdown -- in five escalating
+// buckets, added on top of the engine's own limiter rather than absorbed
+// into it, through Sleep() whose granularity it could not express. It had
+// been dead for some time: nothing called Netplay_HandleFrameTime, and the
+// live pacing moved to SleepToTarget in trampoline_pacing.cpp, which
+// absorbs into a QPC deadline. Removed rather than left lying around,
+// because a plausible-looking brake nobody calls is worse than no brake --
+// it cost an evening of chasing a stutter through code that never ran.
+// The real one, and its telemetry, live in trampoline_pacing.cpp.
 
 // Collect this peer's local input and feed gekko's slot(s). ENGINE-AGNOSTIC:
 // routes through Input_Capture* + gekko_add_local_input only, so FM95 reuses
@@ -352,129 +329,3 @@ uint16_t Netplay_GetInput(int player_id) {
     return (player_id == 0) ? g_p1_input : g_p2_input;
 }
 
-// Spectator-side per-tick driver. Mirrors Netplay_ProcessBattleInputPhase
-// minus the gekko_add_local_input call (spectators have no local input).
-// Save/Load events fire only when host's session is in BATTLE config
-// (rollback-capable); CSS spectate sessions are pure forward AdvanceEvent.
-//
-// Returns true if the sim advanced this tick (caller renders); false on
-// stall (waiting for confirmed inputs from host).
-
-bool Netplay_ProcessSpectatorPhase() {
-    if (!g_session || g_session_kind != SessionKind::SPECTATE) return false;
-
-    gekko_network_poll(g_session);
-
-    // No local input add -- spectator is passive.
-
-    // Drain session events.
-    int event_count = 0;
-    auto events = gekko_session_events(g_session, &event_count);
-    for (int i = 0; i < event_count; i++) {
-        auto event = events[i];
-        switch (event->type) {
-            case GekkoSessionStarted:
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "Spectator: GekkoSpectateSession started");
-                g_session_ready = true;
-                break;
-            case GekkoPlayerConnected:
-                g_session_ready = true;
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "Spectator: handle %d connected",
-                    event->data.connected.handle);
-                break;
-            case GekkoPlayerSyncing:
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "Spectator: syncing %u/%u",
-                    event->data.syncing.current, event->data.syncing.max);
-                break;
-            case GekkoPlayerDisconnected:
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "Spectator: host disconnected (handle=%d)",
-                    event->data.disconnected.handle);
-                break;
-            case GekkoSpectatorPaused:
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "Spectator: paused -- buffering");
-                break;
-            case GekkoSpectatorUnpaused:
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "Spectator: unpaused -- playback resumed");
-                break;
-            case GekkoDesyncDetected:
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                    "Spectator: DESYNC f=%d local=0x%08X remote=0x%08X",
-                    event->data.desynced.frame,
-                    event->data.desynced.local_checksum,
-                    event->data.desynced.remote_checksum);
-                break;
-            default:
-                break;
-        }
-    }
-
-    // Drain Save/Load/Advance events -- same handlers as the host's battle
-    // path, ensuring the spectator's render-side mutations and virtual
-    // clock stay locked to the host's confirmed state.
-    int update_count = 0;
-    auto updates = gekko_update_session(g_session, &update_count);
-
-    bool advanced = false;
-    for (int i = 0; i < update_count; i++) {
-        auto update = updates[i];
-        switch (update->type) {
-            case GekkoSaveEvent: {
-                int frame = update->data.save.frame;
-                SaveState_Save(frame);
-                (void)SaveState_GetLastChecksum(frame);
-                // f=0 pre-init constant -- same rationale as the
-                // netplay_battle_events.cpp save site (false desync-kill
-                // from the frame-0 capture race, 2026-07-18).
-                uint32_t checksum = (frame < 1)
-                    ? 0x464D3230u
-                    : SaveState_GetRegionChecksums().gameplay_fingerprint;
-                *update->data.save.state_len = sizeof(uint32_t);
-                *update->data.save.checksum  = checksum;
-                memcpy(update->data.save.state, &frame, sizeof(uint32_t));
-                break;
-            }
-            case GekkoLoadEvent: {
-                int frame = update->data.load.frame;
-                SaveState_Load(frame);
-                break;
-            }
-            case GekkoAdvanceEvent: {
-                const uint16_t* in = (const uint16_t*)update->data.adv.inputs;
-                g_p1_input = in[0];
-                g_p2_input = in[1];
-                g_netplay_frame = (uint32_t)update->data.adv.frame;
-                // Lock virtual clock to host's frame schedule -- same contract
-                // as the host's GekkoAdvance handler. This is what closes H3
-                // (g_virtual_time_ms skew vs host's rollback-rewinds).
-                extern uint32_t g_virtual_time_ms;
-                g_virtual_time_ms = g_netplay_frame * 10;
-
-                if (original_process_game_inputs) original_process_game_inputs();
-                if (original_update_game)         original_update_game();
-                // ParityRecorder::Capture() runs from the trampoline post-tick
-                // (mirrors the offline + battle paths) -- keeps the parity
-                // header dependency out of netplay.cpp.
-                advanced = true;
-
-                // Pending CSS<->battle phase swap: now that the local sim
-                // has caught up to the host's announced swap_frame, tear
-                // down this session and bring up the next-kind one. Stop
-                // draining further events from the now-destroyed session.
-                if (MaybeSwapPendingSpectator(g_netplay_frame)) {
-                    return advanced;
-                }
-                break;
-            }
-            default:
-                break;
-        }
-    }
-
-    return advanced;
-}

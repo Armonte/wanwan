@@ -28,6 +28,7 @@
 // engine-gated, and nothing arms the ring on FM95.
 #include "seam_trace.h"
 #include "envelope_shadow.h"
+#include "cursor_trace.h"
 #include "savestate.h"
 #include "savestate_internal.h"   // EffectAddrs, ADDR_GAME_STATE, Fletcher32
 #include "../core/globals.h"
@@ -208,7 +209,11 @@ struct SaveEntry {
     uint32_t h_it;      // input_tracking    (~4 KB)
     uint32_t h_obj;     // object_pool, ACTIVE slots only (~4 KB)
     uint32_t h_char;    // char_dynamic, loaded slots (~115 KB)
-    uint32_t h_ai;      // afterimage_pool   (~163 KB)
+    // Hashed over LIVE memory, and since 2026-09-04 the save covers only the
+    // head + the 16-byte entry headers of that slice -- so an h_ai mismatch is a
+    // sim-determinism signal (forward vs resim wrote different trail samples),
+    // NOT evidence that the save is incomplete.
+    uint32_t h_ai;      // afterimage slice  (~163 KB, sliced 1/16 per save)
     uint32_t h_lists;   // object list heads/tails + current_object_ptr
     uint32_t p1_hp;
     uint32_t p2_hp;
@@ -714,6 +719,11 @@ void SeamTrace_Dump(int player_index, const char* reason) {
     // SeamFreeProbe_LogSummary above. Dark by default: on an unarmed run this is
     // one all-zero summary line and no file.
     EnvelopeShadow_Dump(player_index, reason);
+    // Cross-peer save trace rides the same fan-out, for the same two reasons:
+    // this function's only callers ARE the two paths a dump is legal from,
+    // and netplay_battle_events.cpp is at the 1000-line ceiling. Dark by
+    // default: an unarmed run emits one all-zero summary line and no file.
+    CursorTrace_Dump(player_index, reason);
 
     if (g_episode_seen == 0 && g_ring_count == 0 && g_window_count == 0) return;
 

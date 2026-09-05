@@ -13,6 +13,7 @@
 #include "MinHook.h"
 #include "FM2K_GameInstance.h"
 #include "FM2K_Integration.h"
+#include "FM2K_ReleaseVerify.h"
 #include "game_discovery.h"  // game scan/cache/sniff + async discovery (moved out of this file)
 #include "FM2K_GameIni.h"
 #include "FM2K_Utf8Path.h"
@@ -28,6 +29,7 @@
 #include <chrono>
 #include <string>
 #include <cstring>
+#include <cstdio>   // std::printf for the --verify-update probe
 #include <cstdlib>  // std::getenv for FM2K_FULL_CRCS perf-run override
 #include <optional>
 #include <vector>
@@ -71,6 +73,35 @@ SDL_AppResult LauncherCli_ParseArgs(int argc, char** argv, LauncherCliArgs& out)
     // Parse command line arguments
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
+        // ── diagnostic probe, exits the process (same shape as
+        //    --upnp-test / --nat-test) ──
+        //
+        // Runs a release zip through the EXACT code path the updater uses.
+        // This exists because that path cannot be tested on the build host:
+        // verification is CNG, CNG is Windows-only, and the failure mode of
+        // getting the BCRYPT_RSAPUBLIC_BLOB layout wrong is silent at every
+        // stage that a Linux box can see -- it builds, it signs, it uploads,
+        // and then every installed client refuses every update forever, with
+        // manual reinstall as the only way out.
+        //
+        //   FM2K_RollbackLauncher.exe --verify-update <zip> <zip>.sig
+        //
+        // Exit 0 = verified. Run it against a real signed zip before any
+        // release that ships the verifier.
+        if (arg == "--verify-update") {
+            if (i + 2 >= argc) {
+                std::fprintf(stderr,
+                    "usage: --verify-update <zip> <sig>\n");
+                std::exit(2);
+            }
+            const fm2k::release::Verdict v =
+                fm2k::release::VerifyZip(argv[i + 1], argv[i + 2]);
+            const bool ok = (v == fm2k::release::Verdict::Ok);
+            std::printf("%s -- %s\n", ok ? "VERIFIED" : "REFUSED",
+                        fm2k::release::Explain(v));
+            std::fflush(stdout);
+            std::exit(ok ? 0 : 1);
+        }
         if (arg == "--host" || arg == "-h") {
             config.is_host = true;
             direct_mode = true;
@@ -374,7 +405,15 @@ SDL_AppResult LauncherCli_ApplyLaunchMode(FM2KLauncher* launcher, LauncherCliArg
         // these vars the game sits at title screen waiting for input
         // and the determinism check never fires.
         ::SetEnvironmentVariableA("FM2K_BOOT_TO_BATTLE", "1");
-        ::SetEnvironmentVariableA("FM2K_AUTO_TITLE_SKIP", "1");
+        // RESPECT an explicit FM2K_AUTO_TITLE_SKIP, same opt-out pattern as
+        // FM2K_BOOT_TO_BATTLE above. A capture run sets =0 so the game SITS
+        // on its title long enough for the surface to be presented: with the
+        // skip forced on, mode 1000 is mashed through before the first
+        // present, so every title grab came back a flat fill and the
+        // screenshot pipeline could never photograph a title screen at all.
+        if (::GetEnvironmentVariableA("FM2K_AUTO_TITLE_SKIP", nullptr, 0) == 0) {
+            ::SetEnvironmentVariableA("FM2K_AUTO_TITLE_SKIP", "1");
+        }
         ::SetEnvironmentVariableA("FM2K_PARITY_AUTOPLAY", "1");
         // Phase F autonomous stress: keep mashing buttons during battle
         // so RNG-consuming actions (hits, scripts, projectiles) fire

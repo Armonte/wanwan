@@ -29,27 +29,6 @@ bool Netplay_InitAsSpectator(uint16_t local_port, const char* host_addr);
 void Netplay_Shutdown();
 
 // =============================================================================
-// STATE MACHINE
-// =============================================================================
-
-// Get current netplay state
-NetplayState Netplay_GetState();
-
-// Set netplay state (for internal use, triggers logging)
-void Netplay_SetState(NetplayState state);
-
-// Get CSS state (cursor positions, character locks, etc.)
-const CSSState& Netplay_GetCSSState();
-
-// Reset CSS state (call when returning from battle for rematch)
-void Netplay_ResetCSSState();
-
-// CSS sync functions - for coordinating CSS entry
-bool Netplay_IsRemoteCSSReady();
-void Netplay_SetLocalCSSReady(bool ready);
-bool Netplay_IsCSSFullySynced();
-
-// =============================================================================
 // PER-FRAME PROCESSING (called from hooks)
 // =============================================================================
 
@@ -130,10 +109,6 @@ void Netplay_ArmBattleEntryBarrier();
 // Callers should perform gekko_destroy(css) -> gekko_create(battle) once
 // this returns true.
 bool Netplay_IsBattleSynced();
-
-// Returns the agreed swap_frame for the CSS->battle direction (max of local
-// and remote proposals). Valid once g_local_battle_entered is true.
-uint32_t Netplay_GetBattleEntrySwapFrame();
 
 // Poll for battle entry sync messages (call while waiting for sync).
 // Resends BATTLE_ENTERING with the latest agreed swap_frame until remote
@@ -219,17 +194,6 @@ void Netplay_EndSpectateSession();
 void Netplay_OnHostBattleEntering(uint32_t swap_frame);
 void Netplay_OnHostBattleEnd(uint32_t swap_frame);
 
-// Returns true if this peer is currently running a GekkoSpectateSession.
-bool Netplay_IsSpectatorSession();
-
-// Drive the spectator's GekkoSpectateSession for one tick: poll network,
-// drain session events, drain Save/Load/Advance events. On AdvanceEvent
-// the input cache (g_p1_input / g_p2_input) is updated and the game's
-// process_game_inputs + update_game functions run -- same as the host's
-// path. Returns true if the sim advanced this tick (caller renders);
-// false if the session is stalled waiting for confirmed inputs.
-bool Netplay_ProcessSpectatorPhase();
-
 // (SpectatorSaveLoadMirror was tried + removed -- GekkoNet's SpectatorSession
 // emits only AdvanceEvent, never Save/Load. See spectator_session.cpp
 // UpdateSession. The desync fix moved to INPUT_BATCH redundancy +
@@ -313,7 +277,6 @@ int Netplay_GetLocalDelay();
 GekkoNetworkStats Netplay_GetNetworkStats();
 
 // Precise frame pacing - call after render (matches GekkoNet examples' handle_frame_time)
-void Netplay_HandleFrameTime();
 
 // =============================================================================
 // RUNAHEAD MID-MATCH TOGGLE + HEARTBEAT

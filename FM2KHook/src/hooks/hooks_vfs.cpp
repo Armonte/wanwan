@@ -31,7 +31,7 @@
 #include "../audio/sound_rollback.h"        // Mike Z desired/actual sound layer
 #include "../netplay/spectator_node.h"      // spectator playback queue accessors
 #include "../ui/input_binder.h"             // FM2KInputBinder::Sample_Win32 + Bindings
-#include "../ui/screenshot.h"               // FM2KCapture::SaveScreenshot for the auto-banner pipeline
+#include "../ui/screenshot.h"               // FM2KCapture::RememberFrame for the auto-banner pipeline
 #include "../ui/fc_hud.h"                   // IsChatInputActive -- gate local input during typing
 #include "../vfs/fpk_reader.h"              // FM2K_FPK_VFS: inflate a slim .fpk -> original asset bytes
 #include <MinHook.h>
@@ -133,7 +133,54 @@ static int __cdecl Hook_LoadStageFile(int stage_idx) {
             }
         }
     }
-    return original_LoadStageFile ? original_LoadStageFile(stage_idx) : 0;
+    // THE RELOAD GUARD. stage_file_loader has no equivalent of the early
+    // return player_data_file_loader does: it unconditionally frees the
+    // stage slot and then re-reads and re-parses the whole file at EVERY
+    // battle init, same stage or not. Measured 2026-09-04, this is the
+    // single worst frame of a session -- 226 to 461 ms of synchronous work
+    // on the frame thread, every match. Only ~95 ms of that is the file
+    // read; the rest is the per-record GlobalAlloc plus ReadFile parse
+    // loop inside character_data_loader.
+    //
+    // WHY SKIPPING IS SAFE, traced rather than assumed, because the danger
+    // is keeping buffers alive that something else frees:
+    //   - ClearStageSlot (0x4041C0) has exactly TWO callers: this loader,
+    //     and ShutdownAndFreeAllResources (0x4059F0).
+    //   - ShutdownAndFreeAllResources has exactly ONE caller, WinMain at
+    //     0x405EEE, i.e. process exit.
+    //   So between matches nothing frees the stage slot, and a resident
+    //   stage stays valid.
+    //   - The slot lives at 0x445740 and is NOT inside any savestate
+    //     region (game state 0x470020, input tracking 0x447EE0, object
+    //     pool 0x4701E0, char slots 0x4D1D90). If the simulation mutated
+    //     it, rollback would already be corrupting it, so it is read-only
+    //     asset data and re-parsing produces the same bytes.
+    //
+    // The cache key includes 0x424744 because it selects ".stage.t" over
+    // ".stage" -- the same index with that flag flipped is a DIFFERENT
+    // file, and that flag is written from the window proc and the settings
+    // dialog among others, so it can change under us.
+    static int      s_cached_idx     = -1;
+    static uint32_t s_cached_variant = 0xFFFFFFFFu;
+    const uint32_t  variant = *(const uint32_t*)0x424744;
+
+    if (stage_idx == s_cached_idx && variant == s_cached_variant) {
+        // Already resident. The loader's own success state (its status
+        // words at slot+8736 and slot+8740) is exactly what a previous
+        // successful load left behind, so there is nothing to restamp.
+        return 0;
+    }
+
+    const int rc = original_LoadStageFile ? original_LoadStageFile(stage_idx) : 0;
+    if (rc == 0) {
+        s_cached_idx     = stage_idx;
+        s_cached_variant = variant;
+    } else {
+        // A failed load leaves the slot cleared. Never cache that.
+        s_cached_idx     = -1;
+        s_cached_variant = 0xFFFFFFFFu;
+    }
+    return rc;
 }
 
 // VC runtimes route through CreateFileA but newer code paths may use W.
@@ -219,9 +266,33 @@ static HANDLE WINAPI Hook_CreateFileA(LPCSTR name, DWORD access, DWORD share,
         if (wlen > 1) {
             std::vector<wchar_t> wide(static_cast<size_t>(wlen));
             if (MultiByteToWideChar(932, 0, name, -1, wide.data(), wlen) > 0) {
-                HANDLE h = CreateFileW(wide.data(), access,
-                                       share | kRelaxedShareMode,
-                                       sa, disp, flags, tmpl);
+                // original_CreateFileW, NOT CreateFileW: the latter is OUR OWN
+                // detour, so going through it made every asset open register a
+                // VFile TWICE -- once in Hook_CreateFileW on the way down and
+                // again here on the way back. Under FM2K_FAST_PLAYER_LOAD each
+                // registration SLURPS THE WHOLE FILE, so every .player/.stage/
+                // .demo was read from disk twice and the first buffer was then
+                // dropped on the floor when the second map insert replaced it.
+                // Measured 2026-09-04 on wanwan_b: 'stageselect.stage' 176 MB
+                // read twice (94.7 ms + 63.4 ms) and 'ryu.player' four times,
+                // which is why arming the fast path made the CSS-to-battle
+                // hitch WORSE (351 ms -> 448 ms) instead of better.
+                // It is also an address-space hazard: two full-size buffers are
+                // live at once, i.e. 352 MB for that one stage inside a 32-bit,
+                // non-large-address-aware game with a 2 GB user space.
+                // See artifacts/load_hitch_2026-09-04.md.
+                // MH_CreateHook on CreateFileW is allowed to fail on its own
+                // (it logs a warning and init continues), so the A hook can be
+                // live with no W trampoline. Fall back to the real export --
+                // never to the detour, which is the double-register we are
+                // fixing.
+                HANDLE h = original_CreateFileW
+                    ? original_CreateFileW(wide.data(), access,
+                                           share | kRelaxedShareMode,
+                                           sa, disp, flags, tmpl)
+                    : ::CreateFileW(wide.data(), access,
+                                    share | kRelaxedShareMode,
+                                    sa, disp, flags, tmpl);
                 if (h != INVALID_HANDLE_VALUE) {
                     extern void MaybeRegisterPlayerVFile(HANDLE, LPCWSTR);
                     MaybeRegisterPlayerVFile(h, wide.data());
@@ -266,9 +337,16 @@ static HANDLE WINAPI Hook_CreateFileA(LPCSTR name, DWORD access, DWORD share,
                     if (find != INVALID_HANDLE_VALUE) {
                         std::wstring alt = dir + fd.cFileName;
                         FindClose(find);
-                        HANDLE h2 = CreateFileW(alt.c_str(), access,
-                                                share | kRelaxedShareMode,
-                                                sa, disp, flags, tmpl);
+                        // original_CreateFileW for the same reason as the SJIS
+                        // path above -- going through our own detour would
+                        // register the handle twice.
+                        HANDLE h2 = original_CreateFileW
+                            ? original_CreateFileW(alt.c_str(), access,
+                                                   share | kRelaxedShareMode,
+                                                   sa, disp, flags, tmpl)
+                            : ::CreateFileW(alt.c_str(), access,
+                                            share | kRelaxedShareMode,
+                                            sa, disp, flags, tmpl);
                         if (h2 != INVALID_HANDLE_VALUE) {
                             char utf8[1024] = {0};
                             WideCharToMultiByte(CP_UTF8, 0, alt.c_str(), -1,
@@ -363,25 +441,15 @@ std::unordered_map<HANDLE, std::unique_ptr<VFile>> g_vfiles;
 
 namespace {
 
-// Path-keyed LRU cache of inflated .fpk results. player_data_file_loader
-// (@0x4039F0) re-opens each asset per load event, and CSS auto-browse re-opens
-// the same .player as the cursor cycles -- a fresh inflate is ~0.3-4.4s, so the
-// observed 2-4x consecutive re-inflations were pure waste. Caching by .fpk path
-// turns a re-open into a shared-pointer copy. Bounded by total bytes to stay
-// safe in the game's 32-bit address space; entries share ownership with any
-// live VFile, so eviction never frees a buffer still in use. Guarded by
-// g_vfile_mtx.
-struct FpkCacheEntry {
-    std::string                            path;
-    std::shared_ptr<std::vector<uint8_t>>  bytes;
-};
-std::list<FpkCacheEntry>  g_fpk_cache;          // front = most-recently used
-size_t                    g_fpk_cache_bytes = 0;
-// Soft byte cap, tunable via FM2K_FPK_CACHE_MB. The game is often a 32-bit, NON
-// large-address-aware process (RoHe = 2GB user space) with ~100MB characters, so
-// this must stay well under that or prefetch starves the game and it OOM-crashes.
-// 384MB holds ~4 of RoHe's big characters with safe headroom.
-size_t                    g_fpk_cache_cap = 384u * 1024 * 1024;
+// There is deliberately NO in-memory cache of inflated .fpk results. One was
+// written (path-keyed LRU, byte-capped) and then superseded: the game is often
+// a 32-bit, NON large-address-aware process (RoHe = 2GB user space) with ~100MB
+// characters, so holding several decoded rosters in RAM starved the game and
+// OOM-crashed it. The replacement is EnsureInflatedTemp() below, which builds
+// the inflated result as a temp file on DISK -- disk has no 2GB wall, so the
+// whole roster can be pre-built and a re-open is just an open of an existing
+// file. Do not reintroduce the memory cache without solving the address-space
+// problem first.
 
 // Set while a SYNCHRONOUS (hover) inflate is running, so the background prefetch
 // worker yields instead of allocating a second ~100MB buffer concurrently --
@@ -391,13 +459,12 @@ std::atomic<bool>         g_foreground_inflating{false};
 // Background prefetch. The engine loads each character fully on every CSS cursor
 // move (player_data_file_loader @0x4039F0), so a cold hover pays the 0.3-0.9s
 // inflate synchronously. We enqueue the whole sibling ".player.fpk" roster the
-// first time one is opened and inflate them into the cache on a low-priority
-// worker, so by the time the cursor reaches a character it is already a cache
-// hit. See InflateFpkCached / PrefetchWorker / EnqueueRosterPrefetch.
+// first time one is opened and inflate each into its temp file on a
+// low-priority worker, so by the time the cursor reaches a character the
+// decode is already done. See EnsureInflatedTemp / PrefetchWorker / EnqueueRosterPrefetch.
 std::list<std::string>    g_prefetch_queue;
 std::mutex                g_prefetch_mtx;
 std::condition_variable   g_prefetch_cv;
-bool                      g_prefetch_stop = false;
 bool                      g_prefetch_roster_enqueued = false;
 bool                      g_prefetch_started = false;
 
@@ -538,16 +605,17 @@ std::string EnsureInflatedTemp(const std::string& fpk_path, bool* was_built) {
 // Background worker: drains g_prefetch_queue, building each .fpk's inflated temp
 // file on DISK at below-normal priority. Disk has no 2GB wall, so the whole
 // roster can be pre-built; each hover then just opens an existing temp.
+// Detached and process-lifetime, like the CSS async loader: DLL_PROCESS_DETACH
+// is the only place that could ask it to stop, and by then the loader has
+// already terminated it, so a stop flag there would be a shutdown that never
+// runs rather than one that works.
 void PrefetchWorker() {
     ::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
     for (;;) {
         std::string path;
         {
             std::unique_lock<std::mutex> lk(g_prefetch_mtx);
-            g_prefetch_cv.wait(lk, [] {
-                return g_prefetch_stop || !g_prefetch_queue.empty();
-            });
-            if (g_prefetch_stop) return;
+            g_prefetch_cv.wait(lk, [] { return !g_prefetch_queue.empty(); });
             path = std::move(g_prefetch_queue.front());
             g_prefetch_queue.pop_front();
         }
@@ -555,7 +623,6 @@ void PrefetchWorker() {
         // once (g_inflate_mtx also serializes, but yielding avoids the stall).
         while (g_foreground_inflating.load(std::memory_order_relaxed)) {
             ::Sleep(15);
-            if (g_prefetch_stop) return;
         }
         EnsureInflatedTemp(path, nullptr);  // build temp on disk (idempotent)
         ::Sleep(5);  // gentle pacing -- prefetch is a nicety, never a priority

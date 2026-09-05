@@ -68,13 +68,6 @@ void LauncherUI::LoadSocdState() {
     ::SetEnvironmentVariableA("FM2K_SOCD_MODE", buf);
 }
 
-void LauncherUI::SaveSocdState() {
-    const std::string path = NotifySettingsPath();
-    if (path.empty()) return;
-    WriteIntSetting(path, "socd_mode_p1", socd_mode_[0]);
-    WriteIntSetting(path, "socd_mode_p2", socd_mode_[1]);
-}
-
 void LauncherUI::LoadRandomStageState() {
     // Per-game (Patrick, 2026-06-11: "stage range isn't game specific").
     // A range tuned for one game's stage list followed the user into
@@ -184,54 +177,12 @@ void LauncherUI::RenderInputBindingsTab(int player_slot) {
         LoadSocdState();
     }
 
-    // SOCD picker -- purely local. Each P1/P2 slot keeps its own mode
-    // because dual-local dev mode runs both slots from one launcher
-    // and wants each child process configured independently. Online
-    // mode applies socd_mode_[g_player_index] to the spawned game's
-    // FM2K_SOCD_MODE env var at launch.
-    static const char* kSocdLabels[6] = {
-        "0 -- Default        (R wins L+R, U wins U+D)",
-        "1 -- Hitbox SOCD    (L+R neutral, U wins U+D)  [tournament default]",
-        "2 -- U/D Cancel     (R wins L+R, U+D neutral)",
-        "3 -- Both Cancel    (L+R neutral, U+D neutral)",
-        "4 -- Up Bias        (R wins L+R, U wins U+D)",
-        "5 -- Hitbox + UpBias",
-    };
-    ImGui::TextDisabled(
-        "SOCD is local -- applied before inputs hit the wire, so peers "
-        "running different modes do NOT desync.");
-    ImGui::SetNextItemWidth(380);
-    char combo_id[32];
-    std::snprintf(combo_id, sizeof(combo_id), "##socd_p%d", player_slot + 1);
-    if (ImGui::Combo(combo_id, &socd_mode_[player_slot], kSocdLabels, 6)) {
-        SaveSocdState();
-        // Live-update the env so a freshly-spawned game picks up the
-        // new mode; running games don't reload (hook caches on first
-        // GetSOCDMode call) -- they get the new value next launch.
-        //
-        // Bug Froglet reported: the previous code wrote
-        // FM2K_SOCD_MODE_P1 / _P2 via _putenv_s, but
-        //   (a) the hook reads FM2K_SOCD_MODE (no suffix), and
-        //   (b) _putenv_s writes CRT env which is a DIFFERENT table
-        //       from Win32 env, and CreateProcess only inherits Win32
-        //       env into child processes.
-        // So the setting silently never reached the spawned game and
-        // every launch ran at the compiled-in default (mode 1).
-        //
-        // For player_slot==0 (local game) we publish to FM2K_SOCD_MODE
-        // so the next offline / online launch inherits it. Online
-        // play's K::MatchStart handler still re-applies the
-        // role-resolved slot value on top, so host/guest each pick
-        // their own setting -- slot 1's value only matters there (kept
-        // on disk via SaveSocdState).
-        if (player_slot == 0) {
-            char buf[8];
-            std::snprintf(buf, sizeof(buf), "%d", socd_mode_[0]);
-            ::SetEnvironmentVariableA("FM2K_SOCD_MODE", buf);
-        }
-    }
-    ImGui::Separator();
-
+    // SOCD lives INSIDE the binder body now (FM2KInputBinder::RenderBody),
+    // next to the device it applies to, saved into the same profile as the
+    // bindings: per player, per device, never pushed by the host. The
+    // settings.ini socd_mode_p1/p2 keys are kept only as the process-wide
+    // FALLBACK a profile without its own mode inherits (published as
+    // FM2K_SOCD_MODE by LoadSocdState, which is also the harness lever).
     // Bindings body -- inherits the existing per-player binding UI.
     if (FM2KInputBinder::RenderBody(player_slot)) FM2KInputBinder::Save();
 }

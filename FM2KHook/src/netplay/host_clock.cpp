@@ -91,7 +91,6 @@ uint64_t HostClockMicros() {
     return IsHost() ? LocalMicros() : (uint64_t)((int64_t)LocalMicros() + g_offset_us);
 }
 
-bool HasAccurateOffset() { return IsHost() || g_have_offset; }
 
 uint64_t StampOutbound() { return HostClockMicros(); }
 
@@ -178,21 +177,6 @@ float HostClockOneWayFramesDiag() {
     if (fresh && g_last_oneway_us < VALIDITY_US)
         return (float)g_last_oneway_us / (float)US_PER_FRAME;
     return -1.0f;
-}
-
-float RiftFrames(uint32_t remote_confirmed_frame, uint32_t local_sim_frame,
-                 uint32_t rtt_ms) {
-    float one_way = OneWayLatencyFrames(rtt_ms);
-    if (one_way > 30.0f) one_way = 30.0f;   // >300ms one-way is beyond useful pacing
-    // Frame-advantage term, clamped: during a catch-up wait the confirmed horizon
-    // can transiently lead the sim frame (and a cold session may report bogus
-    // frames), which must not blow up the rift.
-    int64_t adv = (int64_t)remote_confirmed_frame - (int64_t)local_sim_frame;
-    if (adv >  64) adv =  64;
-    if (adv < -64) adv = -64;
-    // rift > 0 => local sim is BEHIND where the remote already is (speed up);
-    // rift < 0 => local ahead (slow down).
-    return (float)adv + one_way + 1.0f;
 }
 
 float PacingFramesAhead(uint32_t local_sim_frame, uint32_t rtt_ms,

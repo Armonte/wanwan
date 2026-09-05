@@ -259,10 +259,6 @@ void DiscoverAndPublishLocalV6() {
     SharedMem_PublishLocalV6(v6.sin6_addr.s6_addr, port_be);
 }
 
-const sockaddr_in6* GetLocalGlobalV6() {
-    return g_have_local_v6 ? &g_local_v6 : nullptr;
-}
-
 void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
                 const uint8_t match_token[16],
                 uint32_t lan_ip_be, uint16_t lan_port,
@@ -507,6 +503,48 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
     });
 }
 
+// One authenticated punch to `to`. want_reply asks the receiver to punch
+// straight back, which is what makes a remap recoverable: the side that lost
+// the peer's address cannot learn the new one until the peer sends FROM it.
+//
+// The flag is a byte APPENDED after the token, so a build that predates it
+// simply reads an 18-byte punch and ignores the tail -- the length check is
+// `< 2 + MATCH_TOKEN_LEN`. Old peers therefore stay compatible; they just
+// will not answer a challenge.
+void SetMatchToken(const uint8_t token[16]) {
+    if (!token) return;
+    std::memcpy(g_match_token, token, MATCH_TOKEN_LEN);
+    g_match_token_set = true;
+}
+
+static void SendPunchTo(const sockaddr_storage& to, bool want_reply) {
+    SOCKET sock = ControlChannel_GetSocket();
+    if (sock == INVALID_SOCKET) return;
+    uint8_t pkt[2 + MATCH_TOKEN_LEN + 1] = {MAGIC, TAG_CTRL_PUNCH};
+    std::memcpy(pkt + 2, g_match_token, MATCH_TOKEN_LEN);
+    pkt[2 + MATCH_TOKEN_LEN] = want_reply ? 1 : 0;
+    fm2k::SendtoStorage(sock, reinterpret_cast<const char*>(pkt), sizeof(pkt), to);
+}
+
+void ChallengeAddress(const sockaddr_storage& to) {
+    if (!g_match_token_set) return;
+
+    // One challenge per address per second. The caller sits on a per-datagram
+    // path and a remapped peer can be sending 100 packets a second.
+    static uint32_t         s_last_ms = 0;
+    static sockaddr_storage s_last_to = {};
+    const uint32_t now = GetTickCount();
+    if (s_last_ms && (now - s_last_ms) < 1000 && fm2k::Addr_Equal(s_last_to, to))
+        return;
+    s_last_ms = now;
+    s_last_to = to;
+
+    SendPunchTo(to, /*want_reply=*/true);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "NAT: challenging %s with an authenticated punch -- peer may have been "
+        "remapped onto a new IP", fm2k::Addr_ActorString(to).c_str());
+}
+
 void HandleDatagram(const uint8_t* data, size_t len, const sockaddr_storage& from) {
     if (len < 2 || data[0] != MAGIC) return;
     const uint8_t tag = data[1];
@@ -551,6 +589,24 @@ void HandleDatagram(const uint8_t* data, size_t len, const sockaddr_storage& fro
                     from_s.c_str());
                 return;
             }
+            // A challenge asks us to punch straight back. Answer BEFORE the
+            // latch bookkeeping below: the challenger is waiting on a packet
+            // FROM us to learn where we now are, and it cannot recover until
+            // it gets one. Rate-limited so two peers cannot ping-pong.
+            const bool want_reply =
+                (len >= 2 + MATCH_TOKEN_LEN + 1) && data[2 + MATCH_TOKEN_LEN] == 1;
+            if (want_reply) {
+                static uint32_t s_last_reply_ms = 0;
+                const uint32_t now_ms = GetTickCount();
+                if (!s_last_reply_ms || (now_ms - s_last_reply_ms) >= 250) {
+                    s_last_reply_ms = now_ms;
+                    SendPunchTo(from, /*want_reply=*/false);
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "NAT: answered an address challenge from %s",
+                        from_s.c_str());
+                }
+            }
+
             // First authentic peer punch: latch the address into
             // control_channel's gameplay peer slot and signal the
             // burst thread to stop early. The 0xCC HELLO loop will
@@ -588,6 +644,20 @@ void HandleDatagram(const uint8_t* data, size_t len, const sockaddr_storage& fro
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "NAT: CTRL_PUNCH from %s authenticated -- peer latched",
                     from_s.c_str());
+            } else if (!ControlChannel_PeerAddrEquals(from)) {
+                // ALREADY authenticated, but this authentic punch comes from
+                // somewhere else: the peer has been remapped mid-session onto
+                // an address we would otherwise refuse (a different IP is not
+                // adoptable on faith). It holds the match token, so it is the
+                // peer -- re-latch, and challenge back so the peer re-latches
+                // us too. Without this the link stays one-way and the match
+                // hangs at character select forever, which is the failure two
+                // players hit repeatedly before 2026-09-04.
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "NAT: peer RE-AUTHENTICATED from %s -- mid-session remap, "
+                    "re-latching", from_s.c_str());
+                ControlChannel_LatchPeerAddr(from);
+                ChallengeAddress(from);
             }
             return;
         }
@@ -679,23 +749,8 @@ bool PeerAckedUs() {
     return g_peer_acked_us.load(std::memory_order_acquire);
 }
 
-void ForceRelayMode() {
-    if (!g_relay_configured) {
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "NAT: ForceRelayMode ignored -- relay not configured");
-        return;
-    }
-    g_relay_mode.store(true);
-    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-        "NAT: relay mode FORCED via diagnostic");
-}
-
 const sockaddr_in* GetRelayAddr() {
     return g_relay_configured ? &g_relay_addr : nullptr;
-}
-
-const uint8_t* GetRelaySessionId() {
-    return g_relay_configured ? g_relay_session : nullptr;
 }
 
 bool SendToMaybeRelayWrapped(uintptr_t s, const void* buf, int len,

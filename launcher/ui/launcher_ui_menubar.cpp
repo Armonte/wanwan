@@ -115,6 +115,28 @@ void LauncherUI::RenderMenuBar() {
                 LoadNotifyState();
                 notify_state_loaded_ = true;
             }
+            // Crash/desync diagnostics upload -- a user setting, next to the
+            // other "what leaves this machine" choices. Same dev_flags.ini
+            // key the launcher has always read (auto_upload_logs); the
+            // control just stopped hiding behind developer mode (audit S7).
+            {
+                static bool s_loaded = false;
+                if (!s_loaded) {
+                    s_loaded = true;
+                    g_auto_upload_logs = LoadDevFlag("auto_upload_logs", true);
+                }
+                const bool secret_baked =
+                    fm2k::kLogUploadSecret && fm2k::kLogUploadSecret[0] != '\0';
+                ImGui::BeginDisabled(!secret_baked);
+                if (ImGui::MenuItem(T("menu_send_diagnostics"), nullptr, g_auto_upload_logs)) {
+                    g_auto_upload_logs = !g_auto_upload_logs;
+                    SaveDevFlag("auto_upload_logs", g_auto_upload_logs);
+                }
+                ImGui::EndDisabled();
+                ImGui::SetItemTooltip("%s", T(secret_baked
+                    ? "menu_send_diagnostics_tip"
+                    : "menu_send_diagnostics_unavailable"));
+            }
             if (ImGui::BeginMenu(T("menu_notifications"))) {
                 if (ImGui::MenuItem(T("notify_taskbar_flash"), nullptr, notify_flash_)) {
                     notify_flash_ = !notify_flash_;

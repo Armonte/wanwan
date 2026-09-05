@@ -75,10 +75,6 @@ static GekkoConfig MakeSpectateConfig(SessionKind host_kind) {
     return config;
 }
 
-bool Netplay_IsSpectatorSession() {
-    return g_session_kind == SessionKind::SPECTATE;
-}
-
 NetplaySessionKind Netplay_GetSessionKind() {
     return g_session_kind;
 }
@@ -154,66 +150,31 @@ void Netplay_EndSpectateSession() {
     }
 }
 
-// Spectator-side phase-flip handlers. Called from the BATTLE_ENTERING /
+// Spectator-side phase-flip handlers, called from the BATTLE_ENTERING /
 // BATTLE_END control-channel handlers when g_session_kind == SPECTATE.
-// The spectator is passive: it observes the host's announced swap_frame
-// and executes destroy/create at that frame.
 //
-// NOTE: For now we don't gate on swap_frame on the spectator side -- the host's
-// session destroy at swap_frame causes magic-mismatch silence to land at the
-// same logical point on the wire, and the spectator's session sync re-handshake
-// with the new session naturally aligns. swap_frame gating on the spectator
-// side is a refinement; keep simple for first cut.
-// Spectator-side pending swap: when the host announces a phase change,
-// the spectator may still be FFing through backfilled inputs to catch up
-// to live. Recording the target swap_frame lets ProcessSpectatorPhase
-// finish draining AdvanceEvents up to that frame BEFORE tearing the
-// session down -- otherwise we'd lose the tail of CSS / battle inputs.
-// Drained per-tick from Netplay_ProcessSpectatorPhase.
-//
-// pending_kind == NONE means no swap pending. Set by On* handlers, cleared
-// when the swap actually fires (or on EndSpectateSession reset).
-NetplaySessionKind g_pending_swap_kind  = NetplaySessionKind::NONE;
-uint32_t           g_pending_swap_frame = 0;
-
+// Host phase-change announcements, received by a legacy GekkoSpectateSession
+// viewer. These are TRACE ONLY: the actual CSS<->battle transition for a
+// spectator is driven by the stream's own MATCH_START / MATCH_END ops, not by
+// these control messages. The pending-swap arm that used to live here (and the
+// MaybeSwapPendingSpectator drain it fed) is gone -- its only consumer was
+// Netplay_ProcessSpectatorPhase, which never had a caller, so the arm could
+// never fire. See the HandleJoinAck comment in spec_join_viewer.cpp for the
+// full three-fact retirement. The log lines stay: they are the only record
+// that the host announced a swap at all.
 void Netplay_OnHostBattleEntering(uint32_t swap_frame) {
     if (g_session_kind != SessionKind::SPECTATE) return;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "Spectator: host entering battle (swap_frame=%u) -- pending CSS->battle swap",
+        "Spectator: host entering battle (swap_frame=%u) -- announcement only, "
+        "the stream's MATCH_START op drives the transition",
         swap_frame);
-    g_pending_swap_kind  = SessionKind::BATTLE;
-    g_pending_swap_frame = swap_frame;
 }
 
 void Netplay_OnHostBattleEnd(uint32_t swap_frame) {
     if (g_session_kind != SessionKind::SPECTATE) return;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "Spectator: host ending battle (swap_frame=%u) -- pending battle->CSS swap",
+        "Spectator: host ending battle (swap_frame=%u) -- announcement only, "
+        "the stream's MATCH_END op drives the transition",
         swap_frame);
-    g_pending_swap_kind  = SessionKind::CSS;
-    g_pending_swap_frame = swap_frame;
 }
 
-// Called from Netplay_ProcessSpectatorPhase after each AdvanceEvent.
-// Returns true if a swap fired this tick (caller should stop draining
-// further events from the now-destroyed session).
-bool MaybeSwapPendingSpectator(uint32_t advanced_frame) {
-    if (g_pending_swap_kind == SessionKind::NONE)        return false;
-    if (g_session_kind     != SessionKind::SPECTATE)     return false;
-    if (advanced_frame      < g_pending_swap_frame)      return false;
-
-    const NetplaySessionKind next_kind = g_pending_swap_kind;
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "Spectator: caught up to swap_frame=%u -- swapping to %s SpectateSession",
-        g_pending_swap_frame,
-        next_kind == SessionKind::BATTLE ? "battle" : "CSS");
-
-    char host_addr[64];
-    snprintf(host_addr, sizeof(host_addr), "%s", g_remote_addr);
-    Netplay_EndSpectateSession();
-    Netplay_StartSpectateSession(next_kind, host_addr);
-
-    g_pending_swap_kind  = SessionKind::NONE;
-    g_pending_swap_frame = 0;
-    return true;
-}

@@ -15,8 +15,6 @@ public:
     void Render();
     void HandleEvent(SDL_Event* event);
     
-    bool LaunchGame(const FM2K::FM2KGameInfo& game);
-    void TerminateGame();
 
     void StartOfflineSession();
     void StartOnlineSession(const NetworkConfig& config, bool is_host);
@@ -36,7 +34,6 @@ public:
     void SetState(LauncherState state);
     LauncherState GetState() const { return current_state_; }
     bool IsRunning() const { return running_; }
-    void SetRunning(bool running) { running_ = running; }
     // CLI direct-mode (--host/--connect/--spectate/--replay): there is no
     // interactive lobby to return to, so when the hosted game process exits
     // (clean end, desync-terminate, crash, or the spectator host-gone
@@ -55,7 +52,6 @@ public:
     bool UiWantsContinuousRedraw() const;
     
     // Games directory management
-    const std::vector<std::string>& GetGamesRootPaths() const { return games_root_paths_; }
     void SetGamesRootPaths(const std::vector<std::string>& paths);
     void SetSelectedGame(const FM2K::FM2KGameInfo& game);
     
@@ -80,7 +76,6 @@ public:
 
 private:
     bool InitializeSDL();
-    bool InitializeImGui();
     void WireUICallbacks();  // ui_->on_* lambda wiring (split into launcher_callbacks.cpp)
     
     SDL_Window* window_;
@@ -152,8 +147,6 @@ private:
     std::chrono::steady_clock::time_point last_frame_time_;
     
     // Game discovery helpers
-    bool ValidateGameFiles(FM2K::FM2KGameInfo& game);
-    std::string DetectGameVersion(const std::string& exe_path);
     
     // Multi-client testing helpers
     bool LaunchLocalClient(const std::string& game_path, bool is_host, int port);

@@ -531,9 +531,14 @@ bool SaveState_Load(int frame) {
     memcpy((void*)(WaveCAddrs::AFTERIMAGE_POOL + SHAKE_END_IN_AI),
            state->afterimage_pool + SHAKE_END_IN_AI,
            G_LAST_FRAME_TIME_OFFSET - SHAKE_END_IN_AI);
+    // Tail of the HEAD slice only (see the structure note in WaveCAddrs): the
+    // 160,000 B of trail samples past AFTERIMAGE_HEAD_SZ are render-only and are
+    // not in the save any more, so restoring them would write zeros over live
+    // trails. The sim-owned 16-byte entry headers are restored right after.
     memcpy((void*)(WaveCAddrs::AFTERIMAGE_POOL + G_LAST_FRAME_TIME_OFFSET + G_LAST_FRAME_TIME_SIZE),
            state->afterimage_pool + G_LAST_FRAME_TIME_OFFSET + G_LAST_FRAME_TIME_SIZE,
-           WaveCAddrs::AFTERIMAGE_POOL_SZ - G_LAST_FRAME_TIME_OFFSET - G_LAST_FRAME_TIME_SIZE);
+           WaveCAddrs::AFTERIMAGE_HEAD_SZ - G_LAST_FRAME_TIME_OFFSET - G_LAST_FRAME_TIME_SIZE);
+    WaveCAddrs::AfterimageRestoreEntryHdrs(state->afterimage_pool);
     if (is_spec_apply) {
         uint32_t* live_w = (uint32_t*)WaveCAddrs::AFTERIMAGE_POOL;
         size_t restored = 0;

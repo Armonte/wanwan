@@ -103,8 +103,8 @@ int ForcedMenuIndex() {
 // armed" cannot drift apart. Launcher side: StartLocalSession sets
 // FM2K_TRUE_OFFLINE=1 (offline play), StartStressSession sets
 // FM2K_STRESS_MODE=1 (the determinism sweep), the replay path sets
-// FM2K_REPLAY_FILE. FM2KLauncher::LaunchGame sets none of them, but it is
-// declared-and-defined-and-never-called dead code (audited 2026-08-17).
+// FM2K_REPLAY_FILE. (A FM2KLauncher::LaunchGame path used to be listed here
+// as setting none of them; it was never called and has been deleted.)
 bool LiveSessionArmed() {
     static const bool s_offline_replay = []{
         const char* v = std::getenv("FM2K_REPLAY_FILE");
@@ -303,8 +303,4 @@ void TitleModeSelect_Tick(uint32_t game_mode, bool from_input_hook) {
     }
 }
 
-TitleModeVerdict TitleModeSelect_Verdict() { return g_verdict; }
 
-bool TitleModeSelect_HasNoVsMode() {
-    return g_verdict == TitleModeVerdict::NoVsMode;
-}

@@ -53,6 +53,8 @@ struct Snapshot {
 // `FM2K_DDrawRedirect::ResolveCncDdrawDir`, but exposed in UTF-8 here to
 // match the rest of this module's WinHTTP / stdio surface. No trailing
 // separator. Returns empty string if GetModuleFileName failed.
+// Where cnc-ddraw lives: FM2K_DDRAW_DIR if set, else <launcher>\cnc-ddraw.
+// Same answer as ddraw_redirect::ResolveCncDdrawDir (it IS that call).
 std::string InstallDir();
 
 // Path to `<install_dir>/version.txt` (UTF-8). The file holds the

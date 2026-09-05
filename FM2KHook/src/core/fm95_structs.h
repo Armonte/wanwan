@@ -26,9 +26,6 @@ inline constexpr uintptr_t kRoundStateAddr = 0x5E98A0;   // g_round_state_block
 inline constexpr uintptr_t kCssPlayersAddr = 0x432720;   // g_css_players
 
 // Per-character data blob strides (RE-hygiene pass, Fm95CharSlotConst).
-inline constexpr size_t kCharSlotStride     = 229844;    // 0x381D4
-inline constexpr size_t kCharFrameTableOfs  = 65840;     // 0x10130
-inline constexpr size_t kCharFrameRecSize   = 39;
 
 // ---------------------------------------------------------------------------
 // Object-pool slot (0xA4 = 164 B). Type-punned in CPW: the same offsets carry
@@ -125,6 +122,5 @@ static_assert(sizeof(Fm95CssPlayer) == 0x10, "Fm95CssPlayer must be 16 B");
 // --- Accessors (FM95 builds only; unused-and-not-emitted in FM2K) -----------
 inline Fm95ObjectSlot* Pool()      { return reinterpret_cast<Fm95ObjectSlot*>(kObjectPoolAddr); }
 inline Fm95RoundStateBlock* Round(){ return reinterpret_cast<Fm95RoundStateBlock*>(kRoundStateAddr); }
-inline Fm95CssPlayer* CssPlayers() { return reinterpret_cast<Fm95CssPlayer*>(kCssPlayersAddr); }
 
 }  // namespace fm95

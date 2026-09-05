@@ -924,8 +924,6 @@ void SetPacing(Endpoint* ep, double rate_pps, double burst_max, int cwnd) {
     if (cwnd > 0)        ep->cwnd = cwnd;
 }
 
-float Rtt(Endpoint* ep)        { return (ep && ep->rel) ? reliable_endpoint_rtt(ep->rel) : 0.0f; }
-float PacketLoss(Endpoint* ep) { return (ep && ep->rel) ? reliable_endpoint_packet_loss(ep->rel) : 0.0f; }
 
 }  // namespace rc
 }  // namespace fm2k

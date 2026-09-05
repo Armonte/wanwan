@@ -1,0 +1,287 @@
+// replays.slint -- the sets you have played.
+//
+// A SET is the unit people watch. The recorder writes one .fm2kset per
+// connection plus one .fm2krep per match inside it, and a flat file list
+// throws away the only thing that makes a first-to-five legible. So sets
+// are the rows, with their matches nested underneath in PLAY order.
+//
+// ONE ACTION, NOT TWO. This had a WATCH button on every row AND a FROM
+// HERE button on match rows, which is two controls for what a person
+// experiences as one intention: play this. Worse, "FROM HERE" only made
+// sense if you already knew a match row was a seek point inside its set.
+//
+// So: double-click a row to play it. On a set that is the set; on a match
+// it is the set seeked to that match, which is the only thing playing one
+// match of a first-to-five can mean. The set rows keep a visible WATCH
+// because a list needs one obvious affordance to teach the rest.
+//
+// The rows also stop repeating themselves. A set is the human matchup --
+// ARMONTE vs KURONEKO, once, at the top. The matches under it are the
+// CHARACTER matchups, which is the thing that differs between them and
+// the reason to open one rather than another.
+import { Nerv, Type, Radius } from "theme.slint";
+import { ListView } from "std-widgets.slint";
+
+export struct ReplayRow {
+    kind: string,        // SET, GROUP (loose matches, no set file) or MATCH
+    when: string,
+    game: string,
+    p1: string,
+    p2: string,
+    detail: string,      // set: "N matches"; match: rounds won
+    size: string,
+    path: string,
+    set_path: string,
+    match_index: int,
+    p1_face: image,
+    p2_face: image,
+    // 1 or 2, or 0 when the recorder captured no outcome.
+    winner: int,
+}
+
+// A text-only action. NOT a bordered box, and NOT hover-gated.
+//
+// Hover-gating these caused a flicker loop: the row detected hover, the
+// button appeared, the button's own TouchArea then took the hover away
+// from the row, the button vanished, and the pointer was over the row
+// again. Anything whose visibility depends on hover that it can itself
+// intercept will do this. So the actions are always present -- quiet
+// enough not to become the texture of the page, which was the original
+// complaint about bordered boxes on every line.
+component Btn inherits Rectangle {
+    in property <string> label;
+    in property <bool> accent: false;
+    callback picked();
+    width: 74px;
+    height: 17px;
+    background: transparent;
+    Text {
+        text: root.label;
+        font-size: Type.body_sm;
+        color: ta.has-hover ? (root.accent ? Nerv.acc : Nerv.phos)
+             : root.accent ? Nerv.acc : Nerv.dim;
+        width: 100%; height: 100%;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.picked(); }
+    }
+}
+
+export component Replays inherits Rectangle {
+    in property <[ReplayRow]> rows;
+    in property <bool> scanning;
+    // 0 = this machine, 1 = everyone. Two genuinely different lists, not
+    // a filter over one: local rows are files on disk that can be watched
+    // immediately, community rows live on the hub and are fetched.
+    in-out property <int> source: 0;
+    in property <string> note;
+    callback source_changed(int);
+    // path, and the match to seek to (0 = from the start).
+    callback watch(string, int);
+
+    background: transparent;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        Rectangle {
+            height: 26px;
+            HorizontalLayout {
+                padding-left: 10px; padding-right: 10px; spacing: 8px;
+                Text {
+                    text: "REPLAYS"; font-size: Type.label; color: Nerv.ink3;
+                    letter-spacing: Type.track;
+                    vertical-alignment: center;
+                }
+                for t[i] in ["THIS PC", "EVERYONE"]: Rectangle {
+                    width: 76px;
+                    background: transparent;
+                    Text {
+                        text: t;
+                        font-size: Type.label;
+                        letter-spacing: Type.track;
+                        color: i == root.source ? Nerv.acc : Nerv.ink3;
+                        horizontal-alignment: center; vertical-alignment: center;
+                        width: 100%; height: 100%;
+                    }
+                    Rectangle {
+                        y: parent.height - 2px; height: 2px;
+                        background: i == root.source ? Nerv.acc : transparent;
+                    }
+                    // Named so the headless tests can find and click it.
+                    // This tab is exactly the control that synthetic mouse
+                    // events could never reliably hit.
+                    srcta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.source = i; root.source_changed(i); }
+                    }
+                }
+                Text {
+                    text: root.note;
+                    font-size: Type.body_sm; color: Nerv.faint;
+                    vertical-alignment: center; horizontal-stretch: 1;
+                    overflow: elide;
+                }
+                Text {
+                    text: root.rows.length + " ROW(S)";
+                    font-size: Type.label; color: Nerv.faint;
+                    letter-spacing: Type.track;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        Rectangle { height: 1px; background: Nerv.line; }
+
+        if root.rows.length == 0: Rectangle {
+            vertical-stretch: 1;
+            HorizontalLayout {
+                padding: 12px; alignment: start;
+                Text {
+                    // "None found" is a claim we can only make once the
+                    // walk has finished.
+                    text: root.scanning
+                          ? "Looking for replays..."
+                          : root.source == 1
+                            ? "No uploaded replays for this game yet. Hub matches upload themselves when they finish."
+                            : "No replays yet. They are written into each game's replays folder as you play.";
+                    font-size: Type.body_sm; color: Nerv.faint;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        // ListView, NOT ScrollView + VerticalLayout. The latter instantiates
+        // every row up front, and a real collection is fourteen thousand of
+        // them -- which is why opening this tab stalled for seconds. A
+        // ListView only builds the rows it can actually show.
+        if root.rows.length > 0: ListView {
+            vertical-stretch: 1;
+            for r in root.rows: Rectangle {
+                height: r.kind == "MATCH" ? 22px : 26px;
+                background: rowta.has-hover && r.path != "" ? Nerv.line
+                          : r.kind == "MATCH" ? transparent : Nerv.bg2;
+
+                // Double-click, not single: a replay list is scrolled and
+                // read far more than it is played, same argument as the
+                // roster. On a MATCH this opens the SET seeked to it, which
+                // is what the FROM HERE button used to be.
+                rowta := TouchArea {
+                    width: 100%; height: 100%;
+                    double-clicked => {
+                        if (r.kind == "MATCH" && r.set_path != "" && r.match_index > 0) {
+                            root.watch(r.set_path, r.match_index);
+                        } else if (r.path != "") {
+                            root.watch(r.path, 0);
+                        }
+                    }
+                }
+                // A rule above every set, so the eye can find where one
+                // session stops and the next begins without counting.
+                Rectangle {
+                    y: 0; height: 1px;
+                    background: r.kind == "MATCH" ? transparent : Nerv.line;
+                }
+                HorizontalLayout {
+                    padding-left: r.kind == "MATCH" ? 26px : 10px;
+                    padding-right: 10px;
+                    spacing: 8px;
+
+                    // A match inherits its date and game from the set it is
+                    // sitting under. Reprinting both on every child was the
+                    // bulk of the noise.
+                    Text {
+                        text: r.kind == "MATCH" ? "#" + r.match_index : r.when;
+                        font-size: Type.body_sm;
+                        color: r.kind == "MATCH" ? Nerv.faint : Nerv.dim;
+                        width: r.kind == "MATCH" ? 102px : 118px;
+                        vertical-alignment: center;
+                    }
+                    // On a set this is the game. On a match the host has
+                    // put the side (host / guest) here instead, since the
+                    // game is already named one row up.
+                    Text {
+                        text: r.game;
+                        font-size: Type.body_sm;
+                        color: r.kind == "MATCH" ? Nerv.faint : Nerv.acc;
+                        width: 150px; overflow: elide; vertical-alignment: center;
+                    }
+                    // Who played, as faces. A name tells you the person;
+                    // the face tells you the CHARACTER, which is the thing
+                    // you are usually scanning a replay list for.
+                    HorizontalLayout {
+                        spacing: 4px;
+                        horizontal-stretch: 1;
+                        alignment: start;
+
+                        if r.p1_face.width > 0: Rectangle {
+                            width: 20px; height: 20px;
+                            border-radius: Radius.sm;
+                            clip: true;
+                            Image {
+                                source: r.p1_face;
+                            height: 20px;
+                            width: 20px;
+                            image-fit: contain;
+                            // The loser recedes. Dimming is only applied
+                            // when an outcome was actually recorded --
+                            // dimming on a guess would tell the reader
+                            // something false about the match.
+                            opacity: r.winner == 2 ? 0.4 : 1.0;
+                            }
+                        }
+                        // NAMES ON THE SET ROW ONLY. Every match inside a
+                        // set is between the same two people, so repeating
+                        // "armonte vs kuroneko" down the children said
+                        // nothing and buried the faces, which is the part
+                        // that actually differs match to match.
+                        if r.kind != "MATCH": Text {
+                            // Names the recorder never captured are absent,
+                            // not "--". A row of placeholders reads as data
+                            // and is the loudest thing in a long list.
+                            text: r.p1 == "" && r.p2 == "" ? "" : r.p1 + "  vs  " + r.p2;
+                            font-size: Type.body;
+                            color: Nerv.ink;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                        if r.p2_face.width > 0: Rectangle {
+                            width: 20px; height: 20px;
+                            border-radius: Radius.sm;
+                            clip: true;
+                            Image {
+                                source: r.p2_face;
+                            height: 20px;
+                            width: 20px;
+                            image-fit: contain;
+                            opacity: r.winner == 1 ? 0.4 : 1.0;
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                    }
+                    Text {
+                        text: r.detail;
+                        font-size: Type.body_sm; color: Nerv.dim;
+                        width: 74px; vertical-alignment: center;
+                    }
+                    Text {
+                        text: r.size;
+                        font-size: Type.body_sm; color: Nerv.faint;
+                        width: 58px; vertical-alignment: center;
+                    }
+
+                    // One button, on the rows that teach the gesture. A
+                    // GROUP heading has no set file, so it gets none -- a
+                    // button with nothing to open is a dead control.
+                    if r.kind != "MATCH" && r.path != "": Btn {
+                        label: "WATCH";
+                        accent: true;
+                        picked => { root.watch(r.path, 0); }
+                    }
+                    if !(r.kind != "MATCH" && r.path != ""): Rectangle { width: 74px; }
+                }
+            }
+        }
+    }
+}

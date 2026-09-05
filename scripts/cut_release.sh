@@ -151,7 +151,18 @@ GH_FLAGS=()
 if [ "$CHANNEL" = "dev" ] || [ "$CHANNEL" = "bleeding" ]; then
     GH_FLAGS+=(--prerelease)
 fi
-gh release create "v${TAG_VERSION}" "$ZIP_PATH" \
+# The .sig ships as a second asset. The updater fetches it by convention
+# (<zip URL> + ".sig") and will not extract a download that does not verify
+# against the key compiled into the launcher, so a release uploaded without
+# it is uninstallable -- fail here instead.
+if [ ! -f "${ZIP_PATH}.sig" ]; then
+    echo "cut_release: ${ZIP_PATH}.sig is missing -- every client would" >&2
+    echo "  REFUSE this update. Run scripts/sign_release.sh (package_release" >&2
+    echo "  normally does it for you) and cut again." >&2
+    exit 1
+fi
+
+gh release create "v${TAG_VERSION}" "$ZIP_PATH" "${ZIP_PATH}.sig" \
     --repo "Armonte/fm2ktest" \
     --title "v${TAG_VERSION}" \
     --notes "$NOTES" \

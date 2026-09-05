@@ -62,6 +62,17 @@ void LauncherUI::LoadDDrawCfgIfNeeded() {
 // Window mode → Renderer → Performance → Hotkeys → Compatibility →
 // Undocumented (collapsing).
 void LauncherUI::RenderDisplayBody() {
+    // Re-read the ini every time the tab is OPENED (not every frame): the
+    // file changes under us -- cnc-ddraw writes window pos/size back on
+    // game exit when savesettings=1, and the launcher-start migration
+    // touches managed keys. A once-per-process read meant the next
+    // unrelated edit here wrote stale values over those (audit S4).
+    {
+        static int s_last_frame = -1;
+        const int f = ImGui::GetFrameCount();
+        if (s_last_frame != f - 1) ddraw_cfg_loaded_ = false;
+        s_last_frame = f;
+    }
     LoadDDrawCfgIfNeeded();
 
     namespace cd = fm2k::cnc_ddraw;
@@ -164,18 +175,22 @@ void LauncherUI::RenderDisplayBody() {
 
     // ── Renderer ─────────────────────────────────────────────────────
     if (ImGui::CollapsingHeader("Renderer", ImGuiTreeNodeFlags_DefaultOpen)) {
-        // Renderer is locked to direct3d9: our in-game ImGui overlay
+        // Renderer is pinned to direct3d9: our in-game ImGui overlay
         // hooks `IDirect3DDevice9::EndScene` (FM2KHook/src/ui/imgui_overlay.cpp)
         // and would never attach if cnc-ddraw routed through OpenGL or
-        // GDI. Force-write on every render of this tab so a stale
-        // pre-existing ini gets corrected the moment the user opens it.
-        if (c.renderer != "direct3d9") {
-            c.renderer = "direct3d9";
-            cd::SaveString("renderer", c.renderer);
-        }
+        // GDI. The pin is applied ONCE per launcher start by
+        // cnc_ddraw::MigrateManagedIniKeys -- this tab only reports it.
+        // It used to force-write the key on every frame the tab was
+        // visible, a hidden write on tab open (audit S3).
         ImGui::AlignTextToFramePadding();
-        ImGui::TextColored(ImVec4(0.6f, 0.85f, 0.6f, 1.0f),
-            "Renderer: direct3d9  (locked)");
+        if (c.renderer == "direct3d9") {
+            ImGui::TextColored(ImVec4(0.6f, 0.85f, 0.6f, 1.0f),
+                "Renderer: direct3d9  (managed by the launcher)");
+        } else {
+            ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.3f, 1.0f),
+                "Renderer: %s in ddraw.ini -- the launcher resets it to "
+                "direct3d9 at its next start", c.renderer.c_str());
+        }
         ImGui::TextWrapped(
             "Locked so the launcher's in-game ImGui overlay can attach via "
             "IDirect3DDevice9::EndScene. Edit ddraw.ini directly if you "

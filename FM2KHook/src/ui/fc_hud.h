@@ -42,11 +42,6 @@ void Render(int rect_x, int rect_y, int rect_w, int rect_h);
 // mutex; the next Render call picks up the new values. Setting a
 // field repeatedly with the same value is fine and cheap.
 
-// Update the player-name labels shown on the top bar. Pass UTF-8.
-// Either side may be null/empty -- Render falls back to "P1" / "P2"
-// for blank slots.
-void SetPlayerNames(const char* p1, const char* p2);
-
 // Push the latest stats. `fps` is current rendered fps, `ping_ms`
 // is round-trip ping (0 when offline), `delay` is the GekkoNet
 // input-delay value (frames). Render decides what's worth showing

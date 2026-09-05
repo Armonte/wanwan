@@ -1,0 +1,357 @@
+// config.slint -- one settings surface with a tab rail:
+// DISPLAY / INPUT / AUDIO / NETWORK / HUB / GAME, plus DEVELOPER when the
+// host says so.
+//
+// THE VIEW KNOWS NOTHING ABOUT WHERE A SETTING LIVES. The host publishes
+// rows (host_settings.cpp builds them from the launcher's real stores) and
+// this file renders them by KIND; every edit goes back as
+// setting_changed(key, value) and the host writes the file, then republishes
+// the rows so what is on screen is always what is on disk. That is the
+// whole reason the old five-property bitfield is gone: it was a private copy
+// of five settings in a spike-only file, and it could drift from both the
+// shipping launcher and the game.
+//
+// A row the host cannot write yet still renders (a button, a note) and the
+// host answers it with HOST_TODO -- loud on stderr and in the status bar --
+// never with silence.
+import { Nerv, Type, Radius } from "theme.slint";
+import { ScrollView, CheckBox } from "std-widgets.slint";
+import { NervInput, EdgeButton } from "widgets.slint";
+import { InputTab, InputPlayer, InputRow } from "input.slint";
+
+// One captured screenshot of the selected game, under review.
+export struct CaptureShot {
+    name: string,      // front_05, css_initial, battle ...
+    state: int,        // 0 none, 1 ok, 2 veto, 3 lead
+    image: image,      // its thumb, fitted to the card
+}
+
+export struct SettingRow {
+    tab: int,          // 0 display 1 input 2 audio 3 network 4 hub 5 game 6 developer
+    key: string,       // host key, e.g. "ddraw.vsync"
+    kind: int,         // 0 toggle 1 int 2 choice 3 text 4 vkey 5 action 6 note 7 group 9 advanced-toggle
+    label: string,
+    hint: string,
+    value: string,     // toggle "0"/"1"; int/choice index as text; text verbatim
+    value_text: string,// choice: the current item's label; vkey: hex
+    count: int,        // choice: number of items
+    advanced: bool,    // rendered only after the advanced toggle
+    enabled: bool,
+    onboard: bool,     // also shown in first-run setup (host decides which)
+}
+
+component Row inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> hint;
+    spacing: 10px;
+    VerticalLayout {
+        horizontal-stretch: 1;
+        Text { text: label; font-size: Type.body; color: Nerv.ink2; }
+        Text {
+            text: hint;
+            font-size: Type.body_sm;
+            color: Nerv.faint;
+            visible: hint != "";
+            wrap: word-wrap;
+        }
+    }
+    @children
+}
+
+// The generic settings renderer: one repeated element per SettingRow. Used
+// by every Config tab and, with `onboard`, by first-run setup, which shows
+// only the rows the host marked for it -- the same rows, the same host
+// keys, so a choice made during setup IS the setting.
+export component SettingsList inherits VerticalLayout {
+    in property <[SettingRow]> rows;
+    in property <int> tab;
+    in property <bool> onboard: false;
+    in-out property <bool> show_adv: false;
+    callback setting_changed(string, string);
+    spacing: 0px; alignment: start;
+                // One repeated element per row; the `if` inside it does the
+                // filtering (Slint has no `for ... : if ... :` form). A row
+                // that is not for this tab is an empty layout, and the outer
+                // spacing is 0 so it takes no space -- each visible row
+                // carries its own top padding instead.
+                for r in root.rows: VerticalLayout {
+                    spacing: 0px;
+                    if (root.onboard ? (r.onboard && r.tab == root.tab) : r.tab == root.tab) && (!r.advanced || root.show_adv): VerticalLayout {
+                    padding-top: 8px;
+                    spacing: 0px;
+
+                    if r.kind == 7: VerticalLayout {
+                        padding-top: 8px; spacing: 2px;
+                        Text { text: r.label; font-size: Type.body_sm; color: Nerv.dim; }
+                        Rectangle { height: 1px; background: Nerv.line; }
+                    }
+
+                    if r.kind == 6: Row { label: r.label; hint: r.hint; }
+
+                    if r.kind == 0: Row {
+                        label: r.label; hint: r.hint;
+                        CheckBox {
+                            enabled: r.enabled;
+                            checked: r.value == "1";
+                            toggled => { root.setting_changed(r.key, self.checked ? "1" : "0"); }
+                        }
+                    }
+
+                    if r.kind == 1 || r.kind == 3 || r.kind == 4: Row {
+                        label: r.label; hint: r.hint;
+                        NervInput {
+                            width: r.kind == 3 ? 260px : 110px;
+                            enabled: r.enabled;
+                            text: r.value;
+                            accepted(v) => { root.setting_changed(r.key, v); }
+                        }
+                    }
+
+                    // Choice: a cycler, because a struct row cannot carry a
+                    // model of its items. The host sends the current item's
+                    // label and the count; the arrows send the next index.
+                    if r.kind == 2: Row {
+                        label: r.label; hint: r.hint;
+                        HorizontalLayout {
+                            spacing: 4px;
+                            EdgeButton {
+                                label: "<"; min-w: 24px; enabled: r.enabled;
+                                clicked => { root.setting_changed(r.key, r.value.to-float() > 0 ? "" + (r.value.to-float() - 1) : "" + (r.count - 1)); }
+                            }
+                            Rectangle {
+                                width: 300px; height: 22px;
+                                border-radius: Radius.sm; border-width: 1px; border-color: Nerv.line;
+                                background: Nerv.bg;
+                                Text {
+                                    text: r.value_text; font-size: Type.body_sm; color: Nerv.ink;
+                                    width: 100%; height: 100%;
+                                    horizontal-alignment: center; vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                            }
+                            EdgeButton {
+                                label: ">"; min-w: 24px; enabled: r.enabled;
+                                clicked => { root.setting_changed(r.key, (r.value.to-float() + 1) >= r.count ? "0" : "" + (r.value.to-float() + 1)); }
+                            }
+                        }
+                    }
+
+                    if r.kind == 5: Row {
+                        label: r.label; hint: r.hint;
+                        EdgeButton { label: "RUN"; enabled: r.enabled; clicked => { root.setting_changed(r.key, "1"); } }
+                    }
+
+                    if r.kind == 9: HorizontalLayout {
+                        padding-top: 8px; spacing: 10px;
+                        EdgeButton {
+                            label: root.show_adv ? "HIDE ADVANCED" : "SHOW ADVANCED";
+                            min-w: 140px;
+                            clicked => { root.show_adv = !root.show_adv; }
+                        }
+                        Text {
+                            text: r.label; font-size: Type.body_sm; color: Nerv.faint;
+                            vertical-alignment: center; horizontal-stretch: 1;
+                        }
+                    }
+                    }
+                }
+}
+
+export component Config inherits Rectangle {
+    in-out property <int> tab: 0;
+    in property <[SettingRow]> rows;
+    in property <bool> show_dev: false;
+    in property <[InputPlayer]> input_players;
+    in property <[InputRow]> input_rows;
+    callback input_action(string);
+    in property <[string]> pads;
+    in-out property <string> display_name;
+    in-out property <string> hub_host;
+    in property <bool> connected;
+    in property <string> hub_note;
+    callback connect_hub();
+    // The game the GAME tab is about, so the page reads as THAT game's
+    // settings and not a generic form: its art, title, engine and folder.
+    in property <string> game_title;
+    in property <string> game_code;
+    in property <string> game_engine;
+    in property <image>  game_art;
+    in property <[CaptureShot]> captures;
+    // Display name edits (the only setting that is still a plain property:
+    // it is the spike's nick, sent on connect, not a stored preference).
+    callback changed();
+    callback setting_changed(string, string);
+
+    property <bool> show_adv: false;
+    property <[string]> tabs: ["DISPLAY", "INPUT", "AUDIO", "NETWORK", "HUB", "GAME", "DEVELOPER"];
+    property <int> tab_count: show_dev ? 7 : 6;
+    background: transparent;
+
+    HorizontalLayout {
+        spacing: 0px;
+
+        // ── tab rail (180px, per the blueprint) ──
+        Rectangle {
+            width: 180px;
+            background: Nerv.bg2;
+            VerticalLayout {
+                spacing: 0px; alignment: start;
+                Rectangle {
+                    height: 34px;
+                    background: transparent;
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        Text {
+                            text: "CONFIG";
+                            font-size: Type.label; color: Nerv.ink3;
+                            letter-spacing: Type.track;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                Rectangle { height: 1px; background: Nerv.line; }
+                for t[i] in root.tabs: Rectangle {
+                    height: i < root.tab_count ? 34px : 0px;
+                    visible: i < root.tab_count;
+                    background: i == root.tab ? Nerv.acc.with-alpha(0.06) : transparent;
+                    Rectangle { x: 0; width: 2px; background: i == root.tab ? Nerv.acc : transparent; }
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        Text {
+                            text: t;
+                            font-size: Type.body;
+                            color: i == root.tab ? Nerv.acc : Nerv.ink2;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Rectangle { y: parent.height - 1px; height: 1px; background: Nerv.line; }
+                    TouchArea { clicked => { root.tab = i; root.show_adv = false; } }
+                }
+            }
+        }
+        Rectangle { width: 1px; background: Nerv.line; }
+
+        ScrollView {
+            horizontal-stretch: 1;
+            VerticalLayout {
+                padding: 18px; spacing: 0px; alignment: start;
+
+                if root.tab != 5: Text { text: root.tabs[root.tab]; font-size: Type.body_lg; color: Nerv.ink; }
+                if root.tab == 5: HorizontalLayout {
+                    spacing: 16px; padding-bottom: 12px; alignment: start;
+                    // One 4:3 plate. This is the only place the launcher
+                    // scales art at draw time: a single 200x150 image from
+                    // the tile-sized capture is a few thousand pixels of
+                    // filtering, not the forty-tile grid that made
+                    // maximize crawl.
+                    Rectangle {
+                        width: 200px; height: 150px;
+                        background: Nerv.bg;
+                        border-width: 1px; border-color: Nerv.line;
+                        if root.game_art.width > 0: Image {
+                            x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                            source: root.game_art; image-fit: fill; image-rendering: smooth;
+                        }
+                        if root.game_art.width == 0: Text {
+                            text: "NO PREVIEW"; font-size: Type.label; color: Nerv.faint; letter-spacing: Type.track;
+                            width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center;
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 4px; alignment: start; horizontal-stretch: 1;
+                        Text { text: "GAME SETTINGS"; font-size: Type.label; color: Nerv.ink3; letter-spacing: Type.track; }
+                        Text { text: root.game_title; font-size: Type.chrome_lg; color: Nerv.ink; wrap: word-wrap; }
+                        Text {
+                            text: root.game_engine + (root.game_code == "" ? "" : "  " + root.game_code);
+                            font-size: Type.body_sm; color: Nerv.ink2;
+                        }
+                        Text {
+                            text: "Everything on this page is for this game only. Other games keep their own.";
+                            font-size: Type.body_sm; color: Nerv.faint; wrap: word-wrap;
+                        }
+                    }
+                }
+                // SCREENSHOTS MOVED OUT (2026-09-03, owner's call: "our
+                // screenshots under game -- that should not be there").
+                // Curation is a pass across the whole library, not a
+                // per-game setting, so it is its own destination now --
+                // the SHOTS icon in the rail, ui/shots.slint.
+                if root.tab == 5: VerticalLayout {
+                    padding-top: 8px; padding-bottom: 8px; spacing: 6px;
+                    Text { text: "SCREENSHOTS"; font-size: Type.label; color: Nerv.ink3; letter-spacing: Type.track; }
+                    Text {
+                        text: "Screenshot review lives in SHOTS now, in the left rail.";
+                        font-size: Type.body_sm; color: Nerv.faint; wrap: word-wrap;
+                    }
+                }
+
+                // NETWORK keeps its live hub controls above the stored rows:
+                // connect/disconnect is an action on the session, not a file.
+                if root.tab == 3: VerticalLayout {
+                    padding-top: 8px; padding-bottom: 8px;
+                    spacing: 6px;
+                    Text { text: "Hub server"; font-size: Type.body_sm; color: Nerv.dim; }
+                    Text {
+                        text: "Where the lobby, the player list and matchmaking come from. Leave it alone unless you are running your own.";
+                        font-size: Type.body_sm; color: Nerv.faint; wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        NervInput {
+                            horizontal-stretch: 1;
+                            placeholder: "hub.2dfm.org";
+                            text <=> root.hub_host;
+                            accepted => { root.connect_hub(); }
+                        }
+                        EdgeButton {
+                            label: root.connected ? "DISCONNECT" : "CONNECT";
+                            clicked => { root.connect_hub(); }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: root.connected ? "Connected" : "Not connected";
+                            font-size: Type.body_sm;
+                            color: root.connected ? Nerv.phos : Nerv.dim;
+                        }
+                        Text {
+                            text: root.hub_note;
+                            font-size: Type.body_sm; color: Nerv.faint;
+                            horizontal-stretch: 1; overflow: elide;
+                        }
+                    }
+                    Rectangle { height: 1px; background: Nerv.line; }
+                }
+
+                // HUB keeps the display name (a live nick, not a stored file).
+                if root.tab == 4: VerticalLayout {
+                    padding-top: 8px; padding-bottom: 8px;
+                    spacing: 6px;
+                    Text { text: "Display name"; font-size: Type.body_sm; color: Nerv.dim; }
+                    NervInput {
+                        placeholder: "name / 名前";
+                        text <=> root.display_name;
+                        edited => { root.changed(); }
+                    }
+                    Rectangle { height: 1px; background: Nerv.line; }
+                }
+
+                // INPUT is the binder: per-player cards over the shipping
+                // binder core (host_binder.cpp). No stored rows here.
+                if root.tab == 1: InputTab {
+                    players: root.input_players;
+                    rows: root.input_rows;
+                    action(a) => { root.input_action(a); }
+                }
+
+                // ── the stored rows, by kind ──
+                SettingsList {
+                    rows: root.rows; tab: root.tab;
+                    show_adv <=> root.show_adv;
+                    setting_changed(k, v) => { root.setting_changed(k, v); }
+                }
+            }
+        }
+    }
+}

@@ -17,7 +17,6 @@ namespace FM2KInputBinder {
 
 // ---- compile-time constants (were file-static constexpr in the anon ns) ----
 inline constexpr int   kPlayers           = 2;
-inline constexpr float kAxisBindThreshold = 0.45f;
 inline constexpr int   kAxisSampleThreshold = 16384;  // ~50% of int16 range
 
 // ---- shared runtime state (defined in input_binder.cpp) ----

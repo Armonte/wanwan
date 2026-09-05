@@ -201,7 +201,7 @@ struct FM2KSharedMemData {
     uint32_t hud_score_seq;       // bumped on hud_score_p1/p2 change
     uint16_t hud_score_p1;        // round wins for the P1 side
     uint16_t hud_score_p2;        // round wins for the P2 side
-    uint16_t hud_spectator_count; // hub-pushed; 0 when offline
+    uint16_t hud_spectator_count; // direct spectator subscribers; 0 = none
     uint16_t hud_pad0;
 
     // System message: short notice rendered centered inside the game
@@ -238,8 +238,9 @@ struct FM2KSharedMemData {
     //
     // When the hub forwards a spectator_incoming event to our launcher,
     // it carries the spectator's external UDP addr. The launcher writes
-    // it here (via SharedMem_PublishSpectatorPunchTarget below) and the
-    // hook's TickHostMaintenance polls spectator_punch_seq for changes,
+    // it here directly (there is no hook-side publisher -- this channel
+    // only ever runs launcher to hook) and the hook's
+    // TickHostMaintenance polls spectator_punch_seq for changes,
     // calling StartPunch toward the addr to open our NAT for the
     // spectator's first JOIN_REQ. Without this, spectators outside our
     // NAT got stuck on "Connecting..." through every reconnect cycle.
@@ -360,15 +361,6 @@ void SharedMem_PublishRoundResult(uint8_t  winner_idx,
                                   uint16_t p2_hp_remaining,
                                   uint32_t frames_elapsed);
 
-// Spectator NAT-punch coordination -- called from the launcher's
-// SpectatorIncoming hub event handler. Writes the spectator's external
-// UDP+TCP addr into shared mem and bumps spectator_punch_seq so the
-// hook's TickHostMaintenance polling loop notices and fires the UDP
-// heartbeat burst that opens our NAT for the spectator's SPEC_JOIN_REQ and
-// its reliable-channel stream. ip_be is network-byte-order; udp_port is
-// host-byte-order.
-void SharedMem_PublishSpectatorPunchTarget(uint32_t ip_be, uint16_t udp_port);
-
 // Hook → launcher: publish the client's own global IPv6 endpoint (16-byte
 // in6_addr network-order + bound UDP port network-order). Bumps local_v6_seq
 // on change so the launcher forwards it to the hub for the peer's v6 punch
@@ -381,20 +373,6 @@ void SharedMem_PublishLocalV6(const uint8_t addr[16], uint16_t port_be);
 //   kind: 0=menu/unknown, 1=CSS (game_mode 2000), 2=battle (game_mode 3000)
 void SharedMem_PublishSessionKind(uint8_t kind);
 
-// Launcher-side write hook for the v6 stats feed. The launcher process
-// opens the same FM2K_SharedMem_<pid> mapping read-write and stuffs
-// W-L-D + peer nick fields here whenever Hub::QueryRecord returns a
-// fresh record or MatchStart names a new opponent. The game-side hook
-// reads from these fields when formatting the in-game titlebar.
-//
-// Called from launcher; safe to call from hook side too (will just
-// re-stamp its own copy). Pass -1 for any wins/losses/draws value to
-// mean "not yet known"; pass nullptr for nicks to leave them blank.
-void SharedMem_PublishUiStats(int32_t wins, int32_t losses, int32_t draws,
-                              int32_t vs_wins, int32_t vs_losses, int32_t vs_draws,
-                              const char* peer_nick_utf8,
-                              const char* my_nick_utf8);
-
 // ─── HUD publishers (Slices B/C/D) ────────────────────────────────────
 //
 // Each one updates the relevant fields, then bumps the `*_seq` so
@@ -403,14 +381,22 @@ void SharedMem_PublishUiStats(int32_t wins, int32_t losses, int32_t draws,
 // from a wasted seq bump).
 
 // Set the round-win score shown in the HUD's center score box.
-// Hidden when this has never been called (seq=0). Pass {0,0} to
-// reset visible scores at match start.
+// Hidden while seq == 0. Called from the FM2K round-state detour
+// (round_events.cpp): {0,0} at the first round's start so the box
+// appears reading 0 - 0, then the live rounds-won pair at every
+// round end. Not published on FM95 (no round-state detour there) or
+// on a spectator viewer, so the box simply stays hidden in those
+// cases rather than showing a stale or invented score.
 void SharedMem_PublishHudScores(uint16_t p1, uint16_t p2);
 
-// Push a system message (centered overlay) with a TTL in milliseconds.
-// `text` is UTF-8; truncated to 159 bytes + NUL on overflow.
-// `ttl_ms == 0` immediately clears any pending message.
-void SharedMem_PublishHudSystemMessage(const char* text_utf8, uint32_t ttl_ms);
+// Hide the score box again (zeroes the pair AND resets seq to 0, the
+// "never written" sentinel fc_hud gates on). Called when the game
+// leaves battle so the last match's score does not linger over the
+// title screen and menus. Nothing else reads hud_score_seq, so
+// rewinding it is safe.
+void SharedMem_ClearHudScores(void);
 
-// Update the spectator count shown in the HUD bar.
+// Update the spectator count shown in the HUD bar. Published by
+// SpectatorNode_TickHostMaintenance (the netplay pump thread) from the
+// direct-subscriber set, on change only. 0 = nobody is watching.
 void SharedMem_PublishHudSpectatorCount(uint16_t n);

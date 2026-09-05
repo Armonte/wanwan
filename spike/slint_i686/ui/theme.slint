@@ -1,0 +1,113 @@
+// theme.slint -- the design system.
+//
+// THE CONTENT IS THE LOUDEST THING ON SCREEN, and that is the whole
+// premise. This launcher's job is to frame a hundred title screens of
+// saturated, hand-drawn, mostly-Japanese fighting game art. A UI that
+// competes with that art loses, and the previous palette competed: one
+// orange marked section heads, tab labels, the active underline, the
+// BOOT button, the wordmark, engine labels and the game title. Used for
+// everything, it meant nothing.
+//
+// So colour here is ROLES, not decoration:
+//
+//   ground/surface/line   structure, and never anything else
+//   ink/ink2/ink3         text, in three weights of attention
+//   acc                   INTERACTIVE AND CURRENT -- and only that
+//   ok/warn/bad           STATUS -- ping, drops, desync -- and only that
+//   tier_*                identity, because the hub says so
+//
+// The accent is never a FILL. It is a 2px edge, an underline, or the
+// colour of focused text. Every fill on screen is neutral. That single
+// constraint is what keeps the art the brightest thing in the window.
+export global Nerv {
+    // Cool graphite rather than neutral black. The art is warm -- skin,
+    // fire, sunsets, pink hair -- so a cool ground makes it advance and a
+    // warm one made it argue.
+    out property <color> bg:    #0d0e11;
+    out property <color> bg2:   #14161a;
+    out property <color> bg3:   #1b1e23;   // raised: menus, headers
+    out property <color> line:  #262a31;
+
+    out property <color> ink:   #eef1f5;
+    out property <color> ink2:  #a8b0bb;
+    out property <color> ink3:  #6b7280;
+    out property <color> dim:   #6b7280;   // alias, older call sites
+    out property <color> faint: #474d57;
+
+    // Ice cyan. It recedes behind warm art instead of fighting it, and it
+    // does not collide with the amber and red that status needs -- which
+    // the old orange did, so a warning and a heading were nearly the same
+    // colour.
+    out property <color> acc:   #4fd6e8;
+    out property <color> acc_dim: #2a7b87;
+
+    out property <color> phos:  #3ddc84;   // ok
+    out property <color> amber: #f5b544;   // attention
+    out property <color> red:   #ff5c5c;   // bad
+    out property <color> blue:  #7aa2f7;   // "challenging" status
+
+    // PATREON TIER NAME COLOURS. Not free choices: these are the values
+    // the shipping launcher uses and players already read names by them.
+    // They are identity, not decoration, which is why they survive a
+    // palette change untouched.
+    out property <color> tier_tester: #2c7bdb;
+    out property <color> tier_thanks: #ffbf03;
+    out property <color> tier_monte:  #e53935;
+    out property <color> tier_guest:  #9e9e9e;
+}
+
+// TYPE. One family, because game titles, chat and nicknames are CP932 and
+// CJK coverage is not negotiable -- naming a display face would trade a
+// working fallback chain for one machine's fonts.
+//
+// Chrome gets its voice from TREATMENT instead: labels are small,
+// uppercase and letterspaced; content is not. That contrast is doing the
+// job a second typeface would, and it costs nothing to ship.
+export global Type {
+    out property <length> label:    11px;   // uppercase, spaced: chrome
+    out property <length> body_sm:  12px;
+    out property <length> body:     14px;
+    out property <length> body_lg:  16px;
+    out property <length> rail:     11px;
+
+    out property <length> chrome_sm: 20px;
+    out property <length> chrome:    24px;
+    out property <length> chrome_lg: 28px;
+    out property <length> chrome_xl: 40px;
+
+    // Labels are spaced; running text never is. Slint takes an absolute
+    // length here, not an em, so this is tuned to the 11px label size.
+    out property <length> track: 0.9px;
+}
+
+// SPACING, on a 4px grid. Every gap and padding in the app comes from
+// here. The previous values were ad hoc -- 4, 5, 6, 8, 10, 12, 14, 18, 22
+// and 26 all appeared -- so nothing lined up with anything and the whole
+// thing read as approximate.
+export global Space {
+    out property <length> xs:  4px;
+    out property <length> s:   8px;
+    out property <length> m:  12px;
+    out property <length> l:  16px;
+    out property <length> xl: 24px;
+}
+
+// Chrome geometry.
+// Corner radius. Everything in the shell used to be a hard-edged
+// rectangle, which reads as unfinished rather than as precise. Three steps
+// only, matched to how big the surface is -- a 22px input taking a card's
+// radius looks like a pill, and a card taking an input's looks square.
+export global Radius {
+    out property <length> sm:  3px;   // inputs, buttons, chips, menu rows
+    out property <length> md:  5px;   // cards, panels, framed groups
+    out property <length> lg:  7px;   // library tiles and other big art
+}
+
+export global Chrome {
+    out property <length> rail_w:   80px;
+    out property <length> right_w:  154px;
+    out property <length> top_h:    32px;
+    out property <length> status_h: 20px;
+    out property <length> row_h:    22px;   // one list row, everywhere
+    out property <length> drag_w:  240px;
+}

@@ -7,6 +7,7 @@
 #include <SDL3/SDL.h>
 #include <imgui.h>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -174,6 +175,51 @@ bool RenderBody(int player_slot) {
     if (now - s_last_refresh > 1.5) { RefreshGamepadList(); s_last_refresh = now; }
 
     PlayerBindings& pb = g_players[player_slot];
+
+    // ------------------------------------------------------------------
+    // SOCD for this player's device. Lives here, next to the device it
+    // applies to, because it IS a property of the device binding: a hitbox
+    // wants L+R=neutral, a pad player may not care. Saved into the same
+    // profile as the bindings, applied at capture on this machine only --
+    // the host never pushes its mode (owner directive 2026-09-02). This body
+    // is shared by the launcher's Input tab and the in-game overlay, so the
+    // picker is available in both without a second implementation.
+    // ------------------------------------------------------------------
+    {
+        static const char* kSocdLabels[6] = {
+            "0 -- Default        (R wins L+R, U wins U+D)",
+            "1 -- Hitbox SOCD    (L+R neutral, U wins U+D)  [tournament default]",
+            "2 -- U/D Cancel     (R wins L+R, U+D neutral)",
+            "3 -- Both Cancel    (L+R neutral, U+D neutral)",
+            "4 -- Same as 0      (CCCaster compat alias)",
+            "5 -- Same as 1      (CCCaster compat alias)",
+        };
+        int shown = pb.socd_mode;
+        bool inherited = false;
+        if (shown < 0 || shown > 5) {
+            // Inherit: show the process-wide mode so the row is never
+            // blank, and say so. Selecting any row pins it to this device.
+            inherited = true;
+            shown = 1;
+            if (const char* env = std::getenv("FM2K_SOCD_MODE");
+                env && env[0] >= '0' && env[0] <= '5' && env[1] == '\0') {
+                shown = env[0] - '0';
+            }
+        }
+        ImGui::Text("SOCD for this device%s", inherited ? "  (inherited default)" : "");
+        ImGui::SetNextItemWidth(380);
+        char combo_id[32];
+        std::snprintf(combo_id, sizeof(combo_id), "##socd_dev_p%d", player_slot + 1);
+        if (ImGui::Combo(combo_id, &shown, kSocdLabels, 6)) {
+            pb.socd_mode = shown;
+            changed = true;
+        }
+        ImGui::SetItemTooltip(
+            "Applied to THIS player's inputs on this machine, before they go "
+            "on the wire. Each player uses their own device's mode; the host "
+            "does not override it. Peers on different modes cannot desync.");
+        ImGui::Separator();
+    }
 
     // Header / utility row
     ImGui::Text("Gamepads detected: %d", (int)g_gamepad_ids.size());

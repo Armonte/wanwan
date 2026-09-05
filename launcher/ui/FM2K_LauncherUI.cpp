@@ -9,6 +9,7 @@
 #include "version_local.h"
 #include "auto_upload_secret.h"
 #include "FM2K_UploadQueue.h"
+#include "FM2K_ReplayUpload.h"
 #include "FM2KHook/src/ui/input_binder.h"
 #include "FM2KHook/src/ui/shared_mem.h"
 #include "FM2KHook/src/util/pii_scrub.h"
@@ -140,7 +141,8 @@ LauncherUI::LauncherUI()
     on_launch_local_spectator2 = nullptr;
     on_terminate_all_clients = nullptr;
     on_get_client_status = nullptr;
-    // Network simulation callbacks removed - not connected to LocalNetworkAdapter
+    // Network simulation callbacks removed -- there is no in-launcher network
+// simulator to connect them to
     on_get_rollback_stats = nullptr;
 
     log_buffer_mutex_ = SDL_CreateMutex();
@@ -363,22 +365,10 @@ bool LauncherUI::WantsContinuousRedraw() const {
 }
 
 void LauncherUI::Render() {
-    // First-run nudge: if no cached Discord session and we haven't
-    // shown the prompt yet this run, auto-open the sign-in window.
-    // Hub auth is mandatory for online play during testing; users
-    // landing on the launcher should see the path forward right away
-    // rather than discovering it via "auth_required" after a failed
-    // Connect.
-    {
-        static bool s_did_first_run_nudge = false;
-        if (!s_did_first_run_nudge) {
-            s_did_first_run_nudge = true;
-            const auto a = fm2k::discord_auth::LoadCached();
-            if (!a.valid) {
-                show_discord_auth_ = true;
-            }
-        }
-    }
+    // Discord sign-in is optional: the hub takes a nick-only hello as a
+    // guest, so there is no first-run sign-in window any more. Signing in
+    // unlocks online replays, stats and Patreon entitlements from the
+    // Hub menu when the player wants them.
 
     // NOTE: PollMatchOutcome() used to live here. It now runs in
     // TickAlways() from FM2KLauncher::Update(), because Render() itself is
@@ -388,6 +378,9 @@ void LauncherUI::Render() {
     // bandwidth/UI hitches and lets transient failures get retried on
     // a later tick. Gated on dev checkbox + non-empty queue.
     PollUploadQueue();
+    // Arms at match end, fires once the hook has finished writing the
+    // session file. Cheap until then: a timestamp comparison.
+    fm2k::replay_upload::Process();
 
     // Render menu bar at application level first
     RenderMenuBar();
@@ -529,8 +522,6 @@ void LauncherUI::Render() {
 
 
 
-// Note: ShowGameValidationStatus removed ? UI simplified
-/* void LauncherUI::ShowGameValidationStatus(const FM2K::FM2KGameInfo& game) {} */
 
 
 
@@ -584,29 +575,4 @@ uint64_t LauncherUI::HubSpecRelayDropped() const {
     if (!hub_state_) return 0;
     return hub_state_->client.SpecRelayDropped();
 }
-
-void LauncherUI::SetFramesAhead(float frames_ahead) {
-    frames_ahead_ = frames_ahead;
-}
-
-// Simplified theme - always use Dark
-void LauncherUI::SetTheme(UITheme theme) {
-    current_theme_ = UITheme::Dark;
-    ImGui::StyleColorsDark();
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 

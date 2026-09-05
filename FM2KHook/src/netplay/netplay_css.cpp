@@ -10,6 +10,8 @@
 #include "../hooks/hooks.h"   // Hook_ApplySOCD_Public for SOCD-pre-apply on spec capture
 #include "../hooks/css_autoconfirm.h"  // CssAutoConfirm_OnReplayMatchStart (TEST_CSS_CHAR pin)
 #include "control_channel.h"
+#include "control_channel_internal.h"   // g_gekko_rx_* stamps, for [CSS-BEAT]
+#include "addr6_util.h"                // Addr_SameIp, for the [CSS-BEAT] verdict
 #include "game_hash.h"
 #include "input.h"
 #include "savestate.h"
@@ -54,7 +56,7 @@ bool Netplay_CanAdvanceCSS() {
     //     return value and this "run freely" branch really does let
     //     g_input_buffer_index and edge detection advance. That is exactly why
     //     the pre-rendezvous park is compiled out on FM95 (see the ENGINE SCOPE
-    //     block above CssRendezvousPark_Enabled): with the park off, this
+    //     block at the top of netplay_css_park.cpp): with the park off, this
     //     branch is the pre-fix behaviour and the two are consistent. Enabling
     //     the park on FM95 REQUIRES flipping this to false while parked, and
     //     setting g_fm95_skip_next_render on the legacy CSS return.
@@ -676,7 +678,74 @@ uint16_t Netplay_GetCSSInput(int player_id) {
 // especially once CSS gains a rollback prediction window (#66 Phase 2).
 // Always-on during CSS netplay: CSS is short (a few hundred frames) and quill
 // is async, so it also makes wild CSS desyncs (para/Ricky class) visible.
+// [CSS-BEAT] -- the character-select counterpart to the battle heartbeat,
+// and it exists because a real failure could not be diagnosed without it.
+//
+// A NA-East-to-SA pair reported "cannot play". Their logs show character
+// select running at a FULL 100 fps for the first 34 and 52 frames, then peer
+// input stopping DEAD, then GekkoNet declaring the peer gone 4.7 seconds
+// later and the match aborting. Neither log has a control-channel timeout:
+// our own 0xCC traffic kept flowing on that same socket the whole time. So
+// the peer was reachable and only gekko's session stopped receiving.
+//
+// That is the shape of an address mismatch. gekko drops any packet whose
+// source string does not equal the actor it was registered with (the same
+// failure [RELAY-RTT-DIAG] watches for in battle), and the CSS session
+// registers its actor from the address learned at session creation -- which
+// can be superseded afterwards by the punch settling or a NAT remap.
+//
+// BUT THE MISMATCH ALONE IS NOT THE FAULT, and saying so cost a wrong
+// conclusion once already. control_channel_io's receive path re-stamps any
+// direct packet arriving from the SAME IP with the pinned actor address, so
+// a port-only remap is absorbed and the session runs on untouched -- proved
+// by the churn rig on 2026-09-04, which moved the port mid-CSS and watched
+// character select carry on at 100 fps. What that relabel cannot absorb is a
+// remap to a DIFFERENT IP: Addr_SameIp fails, the raw source is stamped,
+// gekko drops every packet -- while the control channel adopts the new
+// address and keeps flowing, which is exactly why the field logs show a
+// starved gekko session and no control-channel timeout.
+//
+// So print, once a second while character select is in netplay: the frame,
+// how many gekko-classified datagrams have arrived and how long since the
+// last, the actor we registered, the address packets actually arrive from,
+// and -- the load-bearing bit -- whether the two share an IP.
+void Netplay_EmitCssBeat(uint32_t frame) {
+    static uint32_t s_last_ms = 0;
+    const uint32_t now = (uint32_t)GetTickCount();
+    if (s_last_ms != 0 && (now - s_last_ms) < 1000u) return;
+    s_last_ms = now;
+
+    const uint64_t rx_total = g_gekko_rx_total.load(std::memory_order_relaxed);
+    const uint64_t rx_last  = g_gekko_rx_last_ms.load(std::memory_order_relaxed);
+    const uint64_t rx_age   = rx_last ? ((uint64_t)GetTickCount64() - rx_last) : 0;
+    const std::string live  = NetSocket_GetRemoteActorString();
+    const bool match = (live == g_remote_addr);
+    const bool same_ip = !g_gekko_actor_pinned ||
+                         fm2k::Addr_SameIp(g_gekko_actor_addr, g_remote_sockaddr);
+
+    // DESCRIBE the address, do not predict from it. An earlier version of
+    // this line asserted that a mismatch meant gekko was dropping the peer,
+    // and that was wrong twice over: the receive path relabels same-IP
+    // packets, and since the remap-recovery work it relabels the
+    // re-authenticated peer too. The actor is SUPPOSED to sit at the address
+    // gekko registered while the live peer moves. What actually says the
+    // session is starving is the age of the last gekko datagram, so say that
+    // outright rather than inferring it from an address.
+    const char* addr_state = match ? "matched"
+                           : same_ip ? "remapped-port"
+                                     : "remapped-ip";
+    const bool starved = (rx_total > 0) && (rx_age > 1000);
+
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "[CSS-BEAT] fr=%u gko_rx=%llu gko_rx_age=%llums actor='%s' live='%s' "
+        "addr=%s%s",
+        frame, (unsigned long long)rx_total, (unsigned long long)rx_age,
+        g_remote_addr, live.c_str(), addr_state,
+        starved ? " STARVED -- no peer input reaching gekko" : "");
+}
+
 void Netplay_EmitCssFp(uint32_t frame, uint16_t p1, uint16_t p2) {
+    Netplay_EmitCssBeat(frame);
     const int32_t* p1cur = (const int32_t*)0x424E50;  // g_p1_cursor_pos {x,y}
     const int32_t* p2cur = (const int32_t*)0x424E58;  // g_p2_cursor_pos {x,y}
     const int32_t  p1sel = *(const int32_t*)0x470020; // g_selected_char_grid[0]
@@ -787,8 +856,13 @@ bool Netplay_StartCSSSession() {
         }
     }
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "Netplay: Creating CSS GekkoSession (%s, prediction=%d, delay=%d)",
-        g_css_rollback ? "rollback" : "lockstep", css_pred, css_delay);
+        // rtt/worst are printed because when character select starves, the
+        // delay and the link it was derived from are the first two numbers
+        // anyone needs and they were not in any log.
+        "Netplay: Creating CSS GekkoSession (%s, prediction=%d, delay=%d, "
+        "rtt_mean=%ums worst=%ums)",
+        g_css_rollback ? "rollback" : "lockstep", css_pred, css_delay,
+        (unsigned)ControlChannel_GetRttMs(), (unsigned)ControlChannel_GetWorstRttMs());
 
     GekkoConfig config = {};
     config.num_players              = 2;

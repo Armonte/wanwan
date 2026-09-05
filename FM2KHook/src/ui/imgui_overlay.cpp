@@ -736,19 +736,6 @@ bool InitializeImGuiOverlay() {
     return false;
 }
 
-void ShutdownImGuiOverlay() {
-    if (g_imgui_initialized) {
-        ImGui_ImplDX9_Shutdown();
-        ImGui_ImplWin32_Shutdown();
-        ImGui::DestroyContext();
-        g_imgui_initialized = false;
-    }
-    if (g_game_window && oWndProc) {
-        SetWindowLongPtrW(g_game_window, GWLP_WNDPROC, (LONG_PTR)oWndProc);
-    }
-}
-
-bool IsOverlayVisible() { return g_overlay_visible; }
 
 void ToggleOverlay() {
     g_overlay_visible    = !g_overlay_visible;

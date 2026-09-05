@@ -5,6 +5,7 @@
 // public FM2K_Integration.h) so FM2K_HubClient.h stays off the public surface.
 #include "FM2K_Integration.h"
 #include "FM2K_HubClient.h"
+#include <deque>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -30,6 +31,31 @@ struct LauncherUI::HubState {
 
     std::vector<fm2k::HubRoom> rooms;                     // discovered rooms
     std::unordered_map<std::string, fm2k::HubUser> users; // users in current room
+    // Room chat backlog ("chat_v1"). THE HUB KEEPS NO HISTORY -- this
+    // deque is the only scrollback that will ever exist, so it is
+    // rebuilt from scratch every time we enter a room and there is
+    // nothing to re-fetch after a disconnect.
+    struct ChatLine {
+        int64_t     ts = 0;        // unix seconds, hub clock (not local)
+        std::string user_id;
+        std::string nick;          // display name as the hub had it at send time
+        std::string text;
+        bool        system = false;  // hub notice rather than a user line
+    };
+    // 500 lines. The hub throttles a user to 1 line/s (burst 4), so at a
+    // realistically busy 10-person room this is several minutes of talk
+    // -- more than anyone scrolls back through -- while the worst case
+    // (500 * 500-char lines) is a bounded ~250 KB, small next to what the
+    // recent-matches + lobby caches already hold. Oldest lines are
+    // dropped from the front once the cap is hit.
+    static constexpr size_t kChatBacklogMax = 500;
+    std::deque<ChatLine> chat_lines;
+    // Capabilities from hello_ack. chat_supported gates a compose box:
+    // an older hub omits the field entirely, leaving this false, and the
+    // UI must then hide/disable chat rather than send into the void.
+    std::vector<std::string> hub_capabilities;
+    bool                     chat_supported = false;
+
     std::string pending_challenge_from_id;
     std::string pending_challenge_from_nick;
     // Match settings the challenger sent us (#54). Rendered in the

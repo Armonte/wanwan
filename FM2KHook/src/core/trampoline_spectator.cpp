@@ -26,6 +26,7 @@ uint32_t SaveState_CalculateFingerprint();
 #include <cstring>
 #include <windows.h>
 #include "trampoline_internal.h"
+#include "frame_timing.h"        // DIAGNOSTIC per-frame timing ring (dark by default)
 
 // Spectator playback -- pure input-replay model.
 //
@@ -105,6 +106,12 @@ static bool SpectatorSimOneFrame() {
         return false;
     }
     ++g_spec_pop_total;
+    // Per-frame timing ring: one simulated spectator frame. The catch-up loop
+    // one level up calls this many times per outer tick, and NoteSim
+    // accumulates, so a burst frame's row carries the whole burst rather than
+    // the last step of it.
+    const bool ft = FrameTiming_Enabled();
+    const uint64_t ft_t0 = ft ? SDL_GetPerformanceCounter() : 0;
 
     // PER-FRAME alignment-trace log: capture RNG before PGI runs so we can
     // pair with [HOST-TRACE] on the host. If host's bf=N rng_pre matches
@@ -160,6 +167,20 @@ static bool SpectatorSimOneFrame() {
             // match-2 rng desync (run_all_tests multi-match-e2e S2 seg1).
             SpectatorNode_ClearSnapshotAppliedForNextBattle();
             FacingTrace_Dump("spectator match end");  // between matches, not mid-match
+            // Per-frame timing ring, VIEWER plane. Same match-boundary
+            // legality argument as the [FACING] dump it sits beside, and it is
+            // load-bearing rather than symmetric: this is the ONLY dump site a
+            // spectator process ever reaches. Netplay_EndBattle is the player
+            // path and the harness auto-terminate lives in the player's
+            // battle-event handler, so without this the viewer accumulates
+            // rows for a whole session and is killed holding all of them --
+            // which is exactly what the first validation run did, producing
+            // player CSVs and no viewer CSV at all. The viewer is the plane
+            // whose outer tick is paced to the host's MEASURED production rate
+            // rather than a flat 100 Hz, so its frame profile is the one thing
+            // here that cannot be inferred from a player's.
+            FrameTiming_Dump(g_player_index, "spectator match end");
+            FrameTiming_NoteMatchBoundary();
         }
         s_spec_trace_in_battle = false;
     }
@@ -313,10 +334,12 @@ static bool SpectatorSimOneFrame() {
     extern uint32_t g_virtual_time_ms;
     g_virtual_time_ms += 10;
 
+    if (ft) FrameTiming_NoteSim(SDL_GetPerformanceCounter() - ft_t0, 1);
     return true;
 }
 
 void RunSpectatorTick() {
+    FrameTiming_NotePhase(FtPhase::SPECTATOR);
     Hook_CheckGameModeTransition_Public();
 
     // Drain UDP -- control channel (0xCC: SPEC_JOIN_ACK / HEARTBEAT) and

@@ -142,7 +142,6 @@ void OnCapture(uint32_t seq, int32_t match_phase,
  * rather than at the [CHECKSUM] emitter in netplay_battle_events.cpp only
  * because that TU is at the 1000-line ceiling; same frame, same pool, same
  * event. `frame` is the save frame (-1 = battle-entry marker, which re-arms). */
-bool CensusEnabled();
 void OnBattleFrame(int frame);
 
 }  /* namespace CssWindow */

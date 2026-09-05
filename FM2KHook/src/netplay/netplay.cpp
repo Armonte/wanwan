@@ -40,15 +40,6 @@
 // SimpleState enum now lives in netplay_internal.h (shared with the split TUs).
 SimpleState g_simple_state = SimpleState::DISCONNECTED;
 
-static NetplayState MapToLegacyState(SimpleState s) {
-    switch (s) {
-        case SimpleState::DISCONNECTED: return NetplayState::DISCONNECTED;
-        case SimpleState::CONNECTED: return NetplayState::CSS_LOBBY;
-        case SimpleState::BATTLE: return NetplayState::BATTLE_RUNNING;
-        default: return NetplayState::DISCONNECTED;
-    }
-}
-
 // =============================================================================
 // SESSION TRACKING
 // =============================================================================
@@ -446,7 +437,7 @@ bool Netplay_Init(int player_index, uint16_t local_port, const char* remote_addr
         // moment direct punch fails.
         ::fm2k::nat::ConfigureRelay();
 
-        if (match_tok && remote_addr && *remote_addr) {
+        if (match_tok) {
             // Decode the 32-hex-char match token into 16 binary bytes.
             uint8_t token_bytes[16] = {};
             size_t hex_len = std::strlen(match_tok);
@@ -464,6 +455,22 @@ bool Netplay_Init(int player_index, uint16_t local_port, const char* remote_addr
                 token_bytes[i / 2] = static_cast<uint8_t>((hi << 4) | lo);
             }
 
+            // Latch it FIRST, and unconditionally. Authenticating an inbound
+            // punch needs nothing but the token, and the burst below needs a
+            // peer address we may not have -- a host waiting to be connected
+            // to has none. Latching only as a side effect of the burst left
+            // such a host unable to authenticate ANY punch ("no local token
+            // set"), so it could not be reached through a NAT and could not
+            // answer an address challenge after a mid-session remap.
+            ::fm2k::nat::SetMatchToken(token_bytes);
+
+            if (!(remote_addr && *remote_addr)) {
+                // No peer address yet: token latched, nothing to burst at.
+                // The peer's punch will authenticate and latch it for us.
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "NAT: match token latched; no peer address yet -- waiting "
+                    "to be punched");
+            } else {
             // Parse "ip:port" from FM2K_REMOTE_ADDR (= remote_addr param).
             std::string addr(remote_addr);
             auto colon = addr.rfind(':');
@@ -526,6 +533,7 @@ bool Netplay_Init(int player_index, uint16_t local_port, const char* remote_addr
                                              token_bytes, lan_ip_be, lan_port,
                                              punch_reflexive, v6_ptr, v6_port);
                 }
+            }
             }
         }
     }
@@ -675,14 +683,6 @@ void Netplay_Shutdown() {
 // STATE ACCESSORS
 // =============================================================================
 
-NetplayState Netplay_GetState() {
-    return MapToLegacyState(g_simple_state);
-}
-
-void Netplay_SetState(NetplayState state) {
-    (void)state;  // Ignored - we use simplified state
-}
-
 bool Netplay_IsConnected() {
     return g_simple_state >= SimpleState::CONNECTED;
 }
@@ -708,45 +708,8 @@ bool Netplay_IsSessionReady() {
 // well-tested transport.
 // =============================================================================
 
-void Netplay_ResetCSSState() {
-    // Tear down the CSS GekkoSession if it's still alive -- happens when this
-    // is called outside the normal battle-entry path (e.g. peer disconnect).
-    if (g_session && g_session_kind == SessionKind::CSS) {
-        Netplay_EndCSSSession();
-    }
-    g_css_frame         = 0;
-    g_css_advance_p1    = 0;
-    g_css_advance_p2    = 0;
-    g_css_advance_ready = false;
-    g_css_active        = false;
-    g_css_synced        = false;
-    g_remote_css_ready  = false;
-    g_local_css_ready   = false;
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Reset state for new sync");
-}
-
-bool Netplay_IsRemoteCSSReady() {
-    return g_remote_css_ready;
-}
-
-bool Netplay_IsCSSFullySynced() {
-    return g_css_synced;
-}
-
-void Netplay_SetLocalCSSReady(bool ready) {
-    g_local_css_ready = ready;
-    if (ready) {
-        ControlChannel_SendBattleReady();
-    }
-}
-
 void Netplay_ProcessMenu() {
     ControlChannel_Poll();
-}
-
-const CSSState& Netplay_GetCSSState() {
-    static CSSState dummy;
-    return dummy;
 }
 
 uint32_t Netplay_GetFrame() {
@@ -809,9 +772,7 @@ float Netplay_GetFramesAhead() {
     return ahead;
 }
 
-void Netplay_HandleFrameTime() {
-    HandleFrameTime(Netplay_GetFramesAhead());
-}
+
 
 // ============================================================================
 // RUNAHEAD MID-MATCH TOGGLE (F8)

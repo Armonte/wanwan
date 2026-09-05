@@ -1,0 +1,173 @@
+// shots.slint -- SHOTS, the screenshot curation view.
+//
+// This used to be a section inside the per-game CONFIG page, which was the
+// wrong home for it twice over: curation is a pass you make across the whole
+// library in one sitting, not a setting you visit one game at a time, and
+// burying it under a game's options meant nobody found it. Here it is a
+// destination of its own: pick a game on the left, judge its shots on the
+// right, move to the next.
+//
+// LEAD is the picture the tile shows. OK shots join the hover slideshow.
+// VETO hides a shot for good. Every decision is written to
+// captures/<game>/picks.txt, which the capture pipeline honours over its
+// own automatic pick.
+import { Nerv, Type } from "theme.slint";
+import { ScrollView } from "std-widgets.slint";
+import { EdgeButton } from "widgets.slint";
+import { CaptureShot } from "config.slint";
+import { LibRow } from "browse.slint";
+
+export component Shots inherits Rectangle {
+    in property <[LibRow]> games;
+    // The shots of the game at `selected`. The host publishes these for
+    // whichever game is selected, so picking here is what loads them.
+    in property <[CaptureShot]> captures;
+    in-out property <int> selected;
+    callback pick(int);
+    callback decide(string, string);
+
+    background: Nerv.bg;
+
+    HorizontalLayout {
+        spacing: 0px;
+
+        // ── the games, left ──────────────────────────────────────────
+        Rectangle {
+            width: 240px;
+            background: Nerv.bg2;
+            VerticalLayout {
+                padding: 10px; spacing: 6px;
+                Text {
+                    text: "GAMES";
+                    font-size: Type.label; color: Nerv.ink3;
+                    letter-spacing: Type.track;
+                }
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 2px; alignment: start;
+                        for g[i] in root.games: Rectangle {
+                            height: 30px;
+                            background: i == root.selected ? Nerv.acc.with-alpha(0.16)
+                                                           : ta.has-hover ? Nerv.bg3 : transparent;
+                            HorizontalLayout {
+                                padding-left: 8px; padding-right: 8px; spacing: 6px;
+                                Rectangle {
+                                    width: 3px;
+                                    background: i == root.selected ? Nerv.acc : transparent;
+                                }
+                                Text {
+                                    text: g.title;
+                                    font-size: Type.body_sm;
+                                    color: i == root.selected ? Nerv.ink : Nerv.ink2;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    overflow: elide;
+                                }
+                                // A game with no tile art has not been
+                                // captured yet, and that is the single most
+                                // useful thing to see in this list.
+                                if g.thumb.width == 0: Text {
+                                    text: "--";
+                                    font-size: Type.body_sm; color: Nerv.faint;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            ta := TouchArea {
+                                clicked => { root.selected = i; root.pick(i); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Rectangle { width: 1px; background: Nerv.line; }
+
+        // ── the shots, right ─────────────────────────────────────────
+        Rectangle {
+            horizontal-stretch: 1;
+            VerticalLayout {
+                padding: 12px; spacing: 8px;
+
+                Text {
+                    text: root.selected >= 0 && root.selected < root.games.length
+                          ? root.games[root.selected].title : "SHOTS";
+                    font-size: Type.chrome_sm; color: Nerv.ink;
+                }
+                Text {
+                    text: root.captures.length == 0
+                          ? "No shots for this game yet. tools/capture_batch.py fills this in."
+                          : "LEAD is the picture on the tile. OK shots play in the slideshow when you hover it. VETO hides a shot for good.";
+                    font-size: Type.body_sm; color: Nerv.faint; wrap: word-wrap;
+                }
+
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        alignment: start; spacing: 10px;
+                        // Rows of three. Slint has no wrapping flow layout,
+                        // so the grid is built from explicit rows over an
+                        // index range -- three per row, last row short.
+                        for r in Math.ceil(root.captures.length / 3): HorizontalLayout {
+                            spacing: 10px; alignment: start;
+                            for c in 3: Rectangle {
+                                property <int> k: r * 3 + c;
+                                width: 260px;
+                                height: k < root.captures.length ? 236px : 0px;
+                                visible: k < root.captures.length;
+                                background: Nerv.bg2;
+                                border-width: 1px;
+                                border-color: root.captures[k].state == 3 ? Nerv.acc
+                                            : root.captures[k].state == 2 ? Nerv.red
+                                            : root.captures[k].state == 1 ? Nerv.phos
+                                            : Nerv.line;
+                                VerticalLayout {
+                                    spacing: 0px; alignment: start;
+                                    Rectangle {
+                                        height: 172px; background: Nerv.bg; clip: true;
+                                        opacity: root.captures[k].state == 2 ? 0.35 : 1.0;
+                                        if root.captures[k].image.width > 0: Image {
+                                            x: 1px; y: 1px; width: 258px; height: 170px;
+                                            source: root.captures[k].image;
+                                            image-fit: fill; image-rendering: smooth;
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        padding: 4px; spacing: 4px;
+                                        Text {
+                                            text: root.captures[k].name
+                                                  + (root.captures[k].state == 3 ? "  LEAD"
+                                                   : root.captures[k].state == 1 ? "  OK"
+                                                   : root.captures[k].state == 2 ? "  VETOED" : "");
+                                            font-size: Type.body_sm;
+                                            color: root.captures[k].state == 2 ? Nerv.faint : Nerv.ink2;
+                                            vertical-alignment: center;
+                                            horizontal-stretch: 1; overflow: elide;
+                                        }
+                                    }
+                                    HorizontalLayout {
+                                        padding-left: 4px; padding-right: 4px;
+                                        padding-bottom: 4px; spacing: 4px;
+                                        EdgeButton {
+                                            label: "LEAD"; min-w: 76px;
+                                            clicked => { root.decide("cap.lead:" + root.captures[k].name, ""); }
+                                        }
+                                        EdgeButton {
+                                            label: "OK"; min-w: 64px;
+                                            clicked => { root.decide("cap.ok:" + root.captures[k].name, ""); }
+                                        }
+                                        EdgeButton {
+                                            label: "VETO"; min-w: 76px;
+                                            clicked => { root.decide("cap.veto:" + root.captures[k].name, ""); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

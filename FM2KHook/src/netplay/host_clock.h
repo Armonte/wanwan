@@ -28,8 +28,6 @@ bool IsHost();
 // The host-clock "now" as this node sees it: host = LocalMicros(); peer =
 // LocalMicros() + estimated offset. Meaningful on the peer once HasAccurateOffset().
 uint64_t HostClockMicros();
-bool     HasAccurateOffset();
-
 // Stamp an outbound sync-bearing packet with this node's host-clock send time.
 uint64_t StampOutbound();
 
@@ -58,9 +56,6 @@ float OneWayLatencyFrames(uint32_t rtt_ms);
 // emulated asymmetry; not fed into pacing.
 float HostClockOneWayFramesDiag();
 
-// Instantaneous rift (see header comment). Positive => local behind.
-float RiftFrames(uint32_t remote_confirmed_frame, uint32_t local_sim_frame,
-                 uint32_t rtt_ms);
 
 // The value to feed the existing HandleFrameTime/SleepToTarget as `frames_ahead`:
 // the jitter-free projected frame-advantage (localSim - projected remote frame) when a

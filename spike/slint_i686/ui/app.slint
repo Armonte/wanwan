@@ -1,0 +1,1162 @@
+// app.slint -- the shell.
+//
+// STRUCTURE COMES FROM app.jsx IN THE DESIGN PROJECT (the "APP · END-TO-END
+// NAVIGABLE" artboard), not from the older static mock. The difference is
+// not cosmetic and I had it wrong:
+//
+//   * the LEFT RAIL is a GAME switcher -- recent games as code tiles --
+//     with a couple of destination icons and the avatar, NOT the view nav;
+//   * the VIEW TABS live in the TOP BAR, scoped to the current game;
+//   * the RIGHT RAIL is "LOOKING TO PLAY": the roster you challenge from.
+//     That is where matchmaking happens, which is why the lobby itself is
+//     free to be a chat channel.
+//
+// Tabs are LOBBY and REPLAYS only. RANK / EVENTS / STATS / PROFILE are in
+// the blueprint and are SHELVED here: each shows backend state that does
+// not exist, and an empty leaderboard teaches users the app is hollow.
+// CTRL MAP folds into CONFIG, where input belongs beside audio and video.
+import { ScrollView } from "std-widgets.slint";
+import { Nerv, Chrome, Type, Radius, Space } from "theme.slint";
+import { Onboarding } from "onboarding.slint";
+import { Browse, LibRow, BrowseRow } from "browse.slint";
+import { Lobby, ChatLine } from "lobby.slint";
+import { Config, SettingRow, CaptureShot } from "config.slint";
+import { Shots } from "shots.slint";
+import { InputPlayer, InputRow } from "input.slint";
+import { Replays, ReplayRow } from "replays.slint";
+import { MatchFlow, MatchStage } from "matchflow.slint";
+import { InGame } from "ingame.slint";
+
+// A user in the "looking to play" rail. Mirrors the launcher's real
+// fm2k::HubUser (FM2K_HubClient.h:32) rather than a mock shape: status is
+// the hub's own "idle" / "challenging" / "in_match", and `tier` is the
+// Patreon label the hub sends, which recolours the name.
+// One chip in the game switcher. The name is shortened by the HOST, not
+// here: Slint cannot slice a string, and a 30-character title wrapped into
+// a 64px chip is five lines of two letters -- unreadable, and taller than
+// the chip.
+export struct RailGame {
+    idx: int,
+    // Lines in this game's room since you last looked at it. The rail is
+    // the only place watching several rooms is visible, so the count
+    // lives here.
+    unread: int,
+    // TWO LINES, split by the host on a word boundary. Slint's word-wrap
+    // falls back to breaking mid-word when a single word is wider than the
+    // line -- "Hypotheti / cal HRT" -- and one elided line is too little
+    // for a name like "Bishi Bashi Touhou". Splitting where the spaces are
+    // is the only way to get both.
+    name: string,
+    name2: string,
+}
+
+export struct Peer {
+    nick: string,
+    status: string,
+    ping: int,
+    tier: string,
+    // Your own row. The hub sends it like any other, and the shipping
+    // launcher shows it -- you want to see your own tier colour and status
+    // without hunting. It is the CHALLENGE that has to be suppressed here,
+    // not the row.
+    is_self: bool,
+    // Head-to-head record against this player, "W-L-D", or "--" if you have
+    // never played them. On your own row it is your overall record.
+    vs: string,
+    // Who they are playing, resolved from HubUser::opponent_id. Only
+    // meaningful while in_match.
+    opponent: string,
+    // Sort bucket, derived from status by the FFI so the ordering and the
+    // group headers cannot disagree: 0 self, 1 available, 2 challenging,
+    // 3 in match, 4 anything the hub starts sending later.
+    group: int,
+    // Local moderation, so the menu can say UNIGNORE rather than offering
+    // IGNORE to someone already ignored.
+    ignored: bool,
+    blocked: bool,
+    // Position in the roster AS THE CALLER SENT IT. The FFI reorders rows
+    // into buckets, so the loop index here is a display position, not the
+    // caller's row -- challenging by loop index would send the challenge
+    // to whoever happened to sort into that slot.
+    orig: int,
+}
+
+component RailIcon inherits Rectangle {
+    in property <string> glyph;
+    in property <string> label;
+    in property <bool> active;
+    // Shown but not reachable. These destinations are in the blueprint and
+    // are coming; leaving them OUT entirely made the rail look like the
+    // whole product, and a user who has seen Fightcade expects rankings
+    // and events to exist somewhere. Greyed says "not yet" -- absent says
+    // "never", and only one of those is true.
+    in property <bool> disabled: false;
+    callback picked();
+    height: 30px;
+    Rectangle { x: 0; width: 2px; background: active ? Nerv.acc : transparent; }
+    opacity: disabled ? 0.35 : 1.0;
+    VerticalLayout {
+        alignment: center; spacing: 0px;
+        Text {
+            text: glyph; font-size: Type.body;
+            color: active ? Nerv.acc : Nerv.dim;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: label; font-size: Type.body_sm;
+            color: active ? Nerv.acc : Nerv.faint;
+            horizontal-alignment: center;
+        }
+    }
+    TouchArea {
+        mouse-cursor: root.disabled ? default : pointer;
+        clicked => { if (!root.disabled) { root.picked(); } }
+    }
+}
+
+// A group heading in the roster. The rail's whole job is to answer "who can
+// I play right now", and a status word on a row's second line does not
+// answer it -- you have to read every row to find the free ones. The
+// heading turns that into a glance.
+component RosterHead inherits Rectangle {
+    in property <int> group;
+    in property <int> count;
+    // Taller than the text needs, because the space ABOVE a heading is what
+    // separates it from the group before it. Without it the headings butt
+    // against the previous group's last row and the sections run together.
+    height: 24px;
+    HorizontalLayout {
+        padding-left: 4px; padding-right: 4px; padding-top: 7px; spacing: 4px;
+        Text {
+            text: group == 1 ? "AVAILABLE"
+                : group == 2 ? "CHALLENGING"
+                : group == 3 ? "IN MATCH" : "OTHER";
+            font-size: Type.label;
+            letter-spacing: Type.track;
+            // AVAILABLE is the only heading that is an invitation, so it is
+            // the only one that gets a colour. Colouring all three would
+            // make the section you can act on compete with the two you
+            // cannot.
+            color: group == 1 ? Nerv.phos : Nerv.ink3;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        Text {
+            text: count;
+            font-size: Type.body_sm; color: Nerv.faint;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// A window button. Deliberately plain glyphs rather than the Segoe MDL2
+// symbols Windows uses: this shell also has to run under Wine and on
+// machines without that font, where those code points render as boxes.
+component WinBtn inherits Rectangle {
+    in property <string> glyph;
+    in property <bool> danger: false;
+    callback picked();
+    width: 30px;
+    background: ta.has-hover
+                ? (danger ? Nerv.red : Nerv.line)
+                : transparent;
+    Text {
+        text: root.glyph;
+        font-size: Type.body_sm;
+        color: ta.has-hover && danger ? Nerv.bg : Nerv.ink2;
+        horizontal-alignment: center; vertical-alignment: center;
+        width: 100%; height: 100%;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.picked(); }
+    }
+}
+
+component MenuItem inherits Rectangle {
+    in property <string> label;
+    in property <bool> enabled;
+    callback picked();
+    height: 19px;
+    background: ta.has-hover && enabled ? Nerv.line : transparent;
+    HorizontalLayout {
+        padding-left: 6px;
+        Text {
+            text: root.label;
+            font-size: Type.body_sm;
+            color: root.enabled ? Nerv.ink2 : Nerv.faint;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea {
+        mouse-cursor: enabled ? pointer : default;
+        clicked => { if (root.enabled) { root.picked(); } }
+    }
+}
+
+// One player in the LOOKING TO PLAY rail.
+//
+// Two lines rather than one because the rail is 154px and the row has to
+// carry four facts a player actually acts on -- who, how good the
+// connection is, whether they are free, and how you have done against them.
+// Cramming those onto one line either elides the nick (the one field you
+// cannot lose) or drops the record.
+component RosterRow inherits Rectangle {
+    in property <Peer> peer;
+    callback challenge();
+    callback spectate();
+    callback ignore();
+    callback block();
+
+    // Challenging yourself is nonsensical, and the hub rejects a challenge
+    // to someone mid-match, so the row is only live when the shipping
+    // launcher's button would be enabled (launcher_ui_hub_panel.cpp:648).
+    property <bool> can_challenge: !peer.is_self && peer.status == "idle";
+
+    // The head-to-head record USED TO BE HERE and is not any more. The rail
+    // answers one question -- who is around and can I play them -- and a
+    // W-D-L against every name is a second question competing with it on
+    // every row. It belongs on the person, not on the list of people.
+    //
+    // So the only thing that earns a second line is a match in progress,
+    // because "playing yuudai" is the reason that row cannot be clicked.
+    property <bool> has_line2: peer.opponent != "";
+
+    height: has_line2 ? 32px : 21px;
+    background: touch.has-hover && can_challenge ? Nerv.line : transparent;
+    // Someone you cannot challenge is still worth seeing -- you want to
+    // know they are around -- but not at the same weight as someone you
+    // can. Tier colour survives; the whole row just recedes.
+    opacity: peer.blocked || peer.ignored ? 0.35
+           : peer.group == 1 || peer.group == 0 ? 1.0 : 0.55;
+
+    // SPECTATE is a shipped production feature that the port had no way
+    // to reach, and the lobby's own rules text tells users to ignore
+    // people "from their right-click menu". Both live here.
+    property <bool> can_spectate: !peer.is_self && peer.status == "in_match";
+
+    // SINGLE LEFT CLICK DOES NOTHING, deliberately. A roster is a list you
+    // read far more often than you act on, and challenging someone is not
+    // an action to fire on a stray click while scanning names. Double click
+    // challenges; right click opens everything else.
+    touch := TouchArea {
+        mouse-cursor: can_challenge ? pointer : default;
+        double-clicked => { if (can_challenge) { root.challenge(); } }
+        pointer-event(e) => {
+            if (e.button == PointerEventButton.right
+                && e.kind == PointerEventKind.down && !peer.is_self) {
+                menu.show();
+            }
+        }
+    }
+
+    menu := PopupWindow {
+        x: 8px; y: 20px; width: 118px;
+        close-policy: close-on-click-outside;
+        Rectangle {
+            background: Nerv.bg2;
+            border-radius: Radius.md;
+            border-width: 1px;
+            border-color: Nerv.line;
+            VerticalLayout {
+                padding: 3px; spacing: 1px;
+                MenuItem {
+                    label: "CHALLENGE";
+                    // Greyed rather than hidden, so the menu does not
+                    // change shape per peer and the reason an action is
+                    // unavailable stays visible.
+                    enabled: root.can_challenge;
+                    picked => { root.challenge(); }
+                }
+                MenuItem {
+                    label: "SPECTATE";
+                    enabled: root.can_spectate;
+                    picked => { root.spectate(); }
+                }
+                MenuItem {
+                    label: "PROFILE";
+                    // Permanently greyed until there is a profile screen.
+                    // Listed because it belongs in this menu and its
+                    // absence would be the surprise; enabled it would be a
+                    // control that opens nothing.
+                    enabled: false;
+                    picked => { }
+                }
+                Rectangle { height: 1px; background: Nerv.line; }
+                MenuItem {
+                    // Two different strengths, and the difference matters:
+                    // IGNORE hides what they say, BLOCK also refuses their
+                    // challenges. Collapsing them would make muting someone
+                    // silently decline their matches.
+                    label: root.peer.ignored ? "UNIGNORE" : "IGNORE";
+                    enabled: true;
+                    picked => { root.ignore(); }
+                }
+                MenuItem {
+                    label: root.peer.blocked ? "UNBLOCK" : "BLOCK";
+                    enabled: true;
+                    picked => { root.block(); }
+                }
+            }
+        }
+    }
+
+    VerticalLayout {
+        padding-left: 4px; padding-right: 4px;
+        padding-top: 2px; padding-bottom: 2px;
+        spacing: 0px;
+
+        HorizontalLayout {
+            spacing: 4px;
+            Text {
+                text: peer.is_self ? peer.nick + " (you)" : peer.nick;
+                font-size: Type.body;
+                // The hub's tier labels, mapped to the launcher's own
+                // colours. An unknown or empty tier -- a legacy hub, or a
+                // player on no tier -- stays plain rather than vanishing.
+                color: peer.tier == "monte"  ? Nerv.tier_monte
+                     : peer.tier == "thanks" ? Nerv.tier_thanks
+                     : peer.tier == "tester" ? Nerv.tier_tester
+                     : peer.tier == "guest"  ? Nerv.tier_guest
+                     : Nerv.ink;
+                horizontal-stretch: 1;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+            Text {
+                // PING ONLY WHERE IT IS ACTIONABLE. A ping answers one
+                // question -- "would this be a good match" -- and for
+                // someone already in a match that question is not on the
+                // table. Printing it there spent the row's scarcest space
+                // on a number nobody can use, on exactly the rows that are
+                // meant to recede.
+                //
+                // rtt 0 means "not measured yet", not "0ms", and a perfect
+                // ping for an unmeasured peer is a lie people act on -- so
+                // that stays blank rather than becoming a placeholder.
+                text: peer.group == 3 || peer.ping <= 0 ? "" : peer.ping + "ms";
+                font-size: Type.body_sm;
+                color: peer.ping < 50 ? Nerv.phos
+                     : peer.ping < 100 ? Nerv.amber : Nerv.red;
+                vertical-alignment: center;
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 4px;
+            Text {
+                // The heading above already says what the status is, so
+                // repeating it per row spends the rail's scarcest resource
+                // on nothing. In a match, the useful thing to say instead
+                // is WHO WITH.
+                text: peer.opponent != "" ? "vs " + peer.opponent : "";
+                font-size: Type.body_sm;
+                color: Nerv.amber;
+                horizontal-stretch: 1;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    preferred-width: 1280px;
+    preferred-height: 720px;
+    background: Nerv.bg;
+    title: "2DFM Launcher";
+
+    // ── data in ──
+    in property <[LibRow]> library: [];
+    in property <[BrowseRow]> library_rows: [];
+    in property <[Peer]> peers: [];
+    // Index into `peers`, not a nick: the host already holds the roster and
+    // a nick is not a key (the hub's key is `id`, and two rooms can show
+    // the same display name).
+    callback challenge(int);
+    callback spectate(int);
+    callback ignore_user(int);
+    callback block_user(int);
+    // Per-group totals, computed alongside the sort so a header can never
+    // claim a count the list does not show.
+    in property <int> n_avail: 0;
+    in property <int> n_challenging: 0;
+    in property <int> n_inmatch: 0;
+    in property <[ChatLine]> chat: [];
+    in property <string> chat_notice: "";
+    in property <[ReplayRow]> replays: [];
+    in-out property <int> replay_source: 0;
+    in-out property <int> config_tab: 0;
+    in property <string> replay_note: "";
+    callback replay_source_changed(int);
+    // Indices into `library`, most recently played first. Computed by the
+    // host, which is the side that knows what was opened and when.
+    in property <[RailGame]> rail_games: [];
+    // Whether the rail's list is taller than the space it has. Computed
+    // from the two numbers rather than read back off the ScrollView, since
+    // binding a view's own policy to its own measured height is a loop.
+    property <bool> rail_overflow:
+        root.rail_games.length * 70px + 4px > root.height - 190px;
+    in property <[string]> folders;
+    in property <[string]> pads;
+    in property <string> status: "IDLE";
+    in property <bool> scanning: true;
+    in property <bool> connected: false;
+
+    // ── state ──
+    in-out property <int> scene: 0;      // 0 onboarding, 1 shell
+    in-out property <int> view: 0;       // 0 lobby, 1 browse, 2 replays, 3 config
+    in-out property <int> selected: 0;   // current game
+    property <image> no_art;             // the empty image, for an empty library
+    in-out property <string> display_name;
+
+    callback launch();
+    callback leave_room(int);   // a rail chip's "leave room" (library index)
+    callback browse_folder();
+    callback onboarding_done();
+    callback send_chat(string);
+
+    // ── match flow ──
+    in property <MatchStage> match_stage: MatchStage.none;
+    in property <string> match_nick;
+    in property <int> match_rtt;
+    in property <int> match_seconds: 20;
+    in property <int> match_sync;
+    in property <string> match_detail;
+    in property <int> match_score_self;
+    in property <int> match_score_opp;
+    in property <string> match_format: "--";
+    in property <int> match_rollbacks;
+    in property <string> match_avg_rtt: "--";
+    in property <string> match_jitter: "--";
+    in property <int> match_drops;
+    in property <string> match_desync: "none";
+    in property <string> match_streak: "--";
+    callback match_accept();
+    callback match_decline();
+    callback match_cancel();
+    callback match_rematch();
+    callback match_quit();
+    callback match_end();
+    callback filter_games(string);
+    callback config_changed();
+    callback watch_replay(string, int);
+    // Settings live on the window rather than inside the Config view,
+    // because that view is instantiated by an `if` -- switching tabs away
+    // and back destroyed and rebuilt it, taking every value with it.
+    // The rows come from the host (host_settings.cpp reads the launcher's
+    // real stores); an edit goes back as setting_changed(key, value) and
+    // the host republishes, so this model is a VIEW of the files, not a
+    // copy that can drift.
+    in-out property <[SettingRow]> settings;
+    in-out property <[CaptureShot]> captures;   // the selected game's screenshots, under review
+    in-out property <bool> dev_tools: false;
+    // Browse layout, from the host's window width (host.cpp resync): how
+    // many tiles per row and the exact tile width, so the pre-scaled art
+    // matches the tile to the pixel.
+    in property <int> browse_heads: 0;   // heading rows in library_rows
+    in-out property <int> browse_cols: 3;
+    in-out property <length> browse_tile_w: 320px;
+    callback setting_changed(string, string);
+    // The binder: players and their button rows, from host_binder.cpp.
+    in-out property <[InputPlayer]> input_players;
+    in-out property <[InputRow]> input_rows;
+    callback input_action(string);
+    in-out property <string> hub_host;
+    in property <string> hub_note: "";
+    callback connect_hub();
+    // 1 minimise, 2 maximise/restore, 3 close.
+    callback window_action(int);
+    // NOT `maximized`: Window already has a builtin property of that name,
+    // and shadowing it means two sources of truth for the same question
+    // with nothing to say which wins. This one is ours, set by the host.
+    in property <bool> is_maximized: false;
+    // A session in progress. Not a MatchStage value: every stage in that
+    // enum is a modal that blocks the shell, and this one deliberately
+    // does not -- folding it in would have made it inherit the blocking.
+    in property <bool> ingame: false;
+    in property <int> match_round: 1;
+    in property <int> match_rounds_total: 5;
+    in property <int> match_elapsed: 0;
+
+    // ── SCREEN CLASS -- the architectural rule ──
+    //
+    // Two kinds of screen, and the chrome differs because the SCOPE differs.
+    //
+    //   GAME-SCOPED (lobby, replays): everything on screen is about ONE
+    //     game, so the top bar names it and carries its tabs, and the right
+    //     rail shows who is in THAT room.
+    //   GLOBAL (browse, config): not about any game. Browse is how you pick
+    //     one and config is app-wide, so a top bar naming a game and tabs
+    //     for a room you are not in would be describing something the screen
+    //     is not about -- and the "looking to play" roster has no room to be
+    //     about either.
+    //
+    // The design artboard renders the top bar unconditionally, which reads
+    // fine at a glance and wrong in use: it advertises a game you have not
+    // chosen while you are choosing one. These are their own screens.
+    property <bool> game_scoped: root.view == 0 || root.view == 2;
+
+    // Short code for a rail tile. The blueprint hand-authors these
+    // ("PKMN-CC"); derived here from the title because discovery has no
+    // such field, and a wrong-but-stable code beats a blank tile.
+    function code_for(t: string) -> string {
+        return t == "" ? "--" : t;
+    }
+
+    if root.scene == 0: Onboarding {
+        width: 100%; height: 100%;
+        folders: root.folders;
+        display_name <=> root.display_name;
+        scanning: root.scanning;
+        status: root.status;
+        found: root.library.length;
+        rows: root.settings;
+        input_players: root.input_players;
+        input_rows: root.input_rows;
+        browse_folder => { root.browse_folder(); }
+        finished => { root.onboarding_done(); }
+        setting_changed(k, v) => { root.setting_changed(k, v); }
+        input_action(a) => { root.input_action(a); }
+        name_changed => { root.config_changed(); }
+    }
+
+    // THE WINDOW IS ONE PIECE. The titlebar and the status bar span the
+    // full width, and the rails live BETWEEN them -- which is what makes
+    // this look like a window rather than three panels pushed together.
+    // They used to sit inside the middle column, so both rails ran past
+    // the titlebar to the top edge of the window and the whole thing
+    // read as appended rather than contained.
+    if root.scene == 1: VerticalLayout {
+        spacing: 0px;
+            // ══ TOP BAR ══
+            //
+            // ALWAYS PRESENT NOW, because it carries the window buttons. The
+            // shell is borderless -- there is no OS titlebar above this --
+            // so a bar that disappeared on Browse and Config would take
+            // close and minimise with it.
+            //
+            // What it CONTAINS is still game-scoped: the game name, its
+            // tabs and BOOT only appear on a game's own screens. Browse and
+            // Config are their own destinations and name themselves. That
+            // was the original ruling and it still holds; only the window
+            // furniture is unconditional.
+            Rectangle {
+                height: Chrome.top_h;
+                background: Nerv.bg2;
+                HorizontalLayout {
+                    padding-left: 0px; padding-right: 0px; spacing: 8px;
+
+                    // THE WORDMARK BELONGS IN THE TITLEBAR, which is where
+                    // an application says what it is. It was in the side
+                    // rail as "2D", which is a games column -- the product
+                    // name was sitting in the list of games.
+                    //
+                    // Exactly the rail's width, so the mark and the rail
+                    // below it share an edge instead of nearly sharing one.
+                    Rectangle {
+                        width: Chrome.rail_w;
+                        background: transparent;
+                        HorizontalLayout {
+                            alignment: center; spacing: 5px;
+                            Rectangle {
+                                width: 12px; height: 12px;
+                                y: (parent.height - 12px) / 2;
+                                background: Nerv.acc;
+                            }
+                            Text {
+                                text: "2DFM";
+                                font-size: Type.body;
+                                color: Nerv.ink;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // DRAG HANDLE. Fixed width on purpose: the host's hit
+                    // test needs to know exactly which strip of the bar
+                    // moves the window, and a stretchy title would make
+                    // that a moving target it could only guess at.
+                    Rectangle {
+                        width: Chrome.drag_w;
+                        background: transparent;
+                        Text {
+                            text: root.game_scoped
+                                  ? (root.library.length > 0
+                                     ? root.library[root.selected].title : "--")
+                                  : root.view == 1 ? "GAMES" : "CONFIG";
+                            font-size: Type.body;
+                            color: Nerv.ink;
+                            vertical-alignment: center;
+                            width: 100%; height: 100%;
+                            overflow: elide;
+                        }
+                    }
+
+                    if root.game_scoped: Rectangle { width: 1px; background: Nerv.line; }
+
+                    if root.game_scoped: HorizontalLayout {
+                        spacing: 0px;
+                        for t[i] in ["LOBBY", "REPLAYS"]: Rectangle {
+                            width: 78px;
+                            background: transparent;
+                            Text {
+                                text: t; font-size: Type.label;
+                                letter-spacing: Type.track;
+                                color: (i == 0 && root.view == 0) || (i == 1 && root.view == 2)
+                                       ? Nerv.acc : Nerv.ink2;
+                                horizontal-alignment: center; vertical-alignment: center;
+                                width: 100%; height: 100%;
+                            }
+                            Rectangle {
+                                y: parent.height - 2px; height: 2px;
+                                background: (i == 0 && root.view == 0) || (i == 1 && root.view == 2)
+                                            ? Nerv.acc : transparent;
+                            }
+                            TouchArea { clicked => { root.view = i == 0 ? 0 : 2; } }
+                        }
+                    }
+
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+
+                    if root.game_scoped: Rectangle {
+                        width: 84px;
+                        background: bootta.pressed ? Nerv.acc.with-alpha(0.22)
+                                  : bootta.has-hover ? Nerv.bg3 : transparent;
+                        border-radius: Radius.sm;
+                        border-width: 1px; border-color: Nerv.acc;
+                        Text {
+                            text: "BOOT"; font-size: Type.label; color: Nerv.acc;
+                            letter-spacing: Type.track;
+                            horizontal-alignment: center; vertical-alignment: center;
+                            width: 100%; height: 100%;
+                        }
+                        bootta := TouchArea { clicked => { root.launch(); } }
+                    }
+
+                    // The game's own settings -- match rules, patches, and (once
+                    // the binder is ported) its controller profile -- open from
+                    // its room, next to BOOT, on Config's GAME tab. A room with
+                    // only a BOOT button had no way to change what BOOT does.
+                    if root.game_scoped: Rectangle { width: 6px; background: transparent; }
+                    if root.game_scoped: Rectangle {
+                        width: 118px;
+                        background: gsta.pressed ? Nerv.acc.with-alpha(0.22)
+                                  : gsta.has-hover ? Nerv.bg3 : transparent;
+                        border-radius: Radius.sm;
+                        border-width: 1px; border-color: Nerv.line;
+                        Text {
+                            text: "GAME SETTINGS"; font-size: Type.label; color: Nerv.ink2;
+                            letter-spacing: Type.track;
+                            horizontal-alignment: center; vertical-alignment: center;
+                            width: 100%; height: 100%;
+                        }
+                        gsta := TouchArea { clicked => { root.config_tab = 5; root.view = 3; } }
+                    }
+
+                    // ── window buttons ──
+                    Rectangle { width: 8px; background: transparent; }
+                    WinBtn {
+                        glyph: "-";
+                        picked => { root.window_action(1); }
+                    }
+                    WinBtn {
+                        glyph: root.is_maximized ? "=" : "[]";
+                        picked => { root.window_action(2); }
+                    }
+                    WinBtn {
+                        glyph: "X";
+                        danger: true;
+                        picked => { root.window_action(3); }
+                    }
+                }
+            }
+            Rectangle { height: 1px; background: Nerv.line; }
+
+
+        // ══ BODY -- rails flank the content, all BELOW the titlebar ══
+        HorizontalLayout {
+            vertical-stretch: 1;
+            spacing: 0px;
+
+            // ══ LEFT RAIL -- games, then destinations ══
+            Rectangle {
+                width: Chrome.rail_w;
+                background: Nerv.bg2;
+                // NO `alignment` here. With alignment: start every child gets its
+                // MINIMUM height, which collapsed the scrollable game list to a
+                // single chip and stacked the destinations directly under it
+                // instead of leaving them at the bottom. The rail is three
+                // bands -- brand, games, destinations -- and only the middle one
+                // is allowed to grow.
+                VerticalLayout {
+                    spacing: 0px; padding-top: 6px; padding-bottom: 6px;
+
+                    // No wordmark here any more -- it is in the titlebar,
+                    // where an application says what it is. This column is
+                    // games, and the product name was sitting in the list
+                    // of them.
+
+                    // Recent games. Geometry is the ImGui implementation's,
+                    // not invented: chips are 36x27 at a 6px left inset, which
+                    // centres them in the 48px rail ((48-36)/2 = 6), and the
+                    // active marker is a 2px bar sitting OUTSIDE the chip's left
+                    // edge. I previously stretched these to the rail width and
+                    // drew the marker at the rail's own x=0, which is why they
+                    // looked unaligned and bled off the edge.
+                    // THE RAIL IS A GAME SWITCHER, so it shows the games you
+                    // actually switch between: most recently played first, from
+                    // the host. It used to show library[0..3] -- the first four
+                    // rows of a filesystem scan, which is an arbitrary four of a
+                    // hundred and puts a game you have never opened where your
+                    // main should be.
+                    // Scrollable, because the number of games you switch
+                    // between is not bounded by the height of a window. It used
+                    // to render a fixed handful and silently drop the rest.
+                    Rectangle {
+                        vertical-stretch: 1;
+                        background: transparent;
+                        rail_sv := ScrollView {
+                        width: 100%; height: 100%;
+                        // as-needed only reveals the bar when the pointer is
+                        // near it, which on a rail means the list looks
+                        // unscrollable until you happen to graze the edge --
+                        // the same trap the browse grid hit. Shown outright
+                        // whenever the content overflows, and hidden entirely
+                        // when it does not, so the bar is never decoration.
+                        // The stock bar is drawn by the widget style, which
+                        // paints a white track on hover -- a different design
+                        // system showing through, exactly as std-widgets'
+                        // LineEdit did. Turned off, and drawn below instead.
+                        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+                        // A Rectangle reports no preferred height, so the
+                        // viewport has to be stated or the view believes there
+                        // is nothing to scroll.
+                        viewport-height: root.rail_games.length * 70px + 4px;
+                        VerticalLayout {
+                            alignment: start; spacing: 4px; padding-top: 2px;
+                            // The rail is the games you play. Empty until you
+                            // boot one, and it says so rather than filling
+                            // itself from the library.
+                            if root.rail_games.length == 0: Text {
+                                text: "games you play show up here";
+                                font-size: Type.rail; color: Nerv.faint;
+                                width: Chrome.rail_w; wrap: word-wrap;
+                                horizontal-alignment: center;
+                            }
+                            for g[n] in root.rail_games: Rectangle {
+                                height: 66px;
+                                width: Chrome.rail_w;
+                                background: transparent;
+
+                                property <int> idx: g.idx;
+                                property <bool> on: idx == root.selected;
+
+                                Rectangle {
+                                    x: 1px; width: 2px; y: 4px; height: 58px;
+                                    background: on ? Nerv.acc : transparent;
+                                }
+                                Rectangle {
+                                    // 4:3 like the game frame, square corners,
+                                    // the art flush to the edge.
+                                    x: 5px; y: 4px; width: 72px; height: 54px;
+                                    background: Nerv.bg;
+                                    border-radius: 0px;
+                                    border-width: 1px;
+                                    border-color: on ? Nerv.acc : Nerv.line;
+                                    clip: true;
+
+                                    // Exactly the chip's inner size, pre-scaled
+                                    // by the host: a 1:1 blit, never a
+                                    // per-frame resample.
+                                    if root.library[idx].rail_thumb.width > 0: Image {
+                                        source: root.library[idx].rail_thumb;
+                                        x: 1px; y: 1px;
+                                        width: parent.width - 2px;
+                                        height: parent.height - 2px;
+                                        image-fit: fill;
+                                        image-rendering: pixelated;
+                                        opacity: on ? 1.0 : 0.62;
+                                    }
+
+                                    // THE ART IS THE BACKDROP, THE NAME IS THE
+                                    // CONTENT. A strip along the bottom cut every
+                                    // title to a few characters, which is exactly
+                                    // the information the chip exists to carry.
+                                    // The name now sits over the whole tile,
+                                    // wrapped and centred, on a scrim dark enough
+                                    // to stay readable over any screenshot.
+                                    // Unread in that room. Top-right so it
+                                    // never sits under the two-line name.
+                                    if g.unread > 0: Rectangle {
+                                        x: parent.width - 22px; y: 2px;
+                                        width: 20px; height: 14px;
+                                        background: Nerv.acc;
+                                        border-radius: Radius.sm;
+                                        Text {
+                                            text: g.unread > 99 ? "99+" : g.unread;
+                                            font-size: Type.rail; color: #000000;
+                                            width: 100%; height: 100%;
+                                            horizontal-alignment: center; vertical-alignment: center;
+                                        }
+                                        z: 3;
+                                    }
+                                    Rectangle {
+                                        background: #00000099;
+                                        VerticalLayout {
+                                            alignment: center;
+                                            padding-left: 2px; padding-right: 2px;
+                                            spacing: 0px;
+                                            Text {
+                                                text: g.name;
+                                                font-size: Type.rail;
+                                                color: on ? Nerv.ink : Nerv.ink2;
+                                                horizontal-alignment: center;
+                                                overflow: elide;
+                                            }
+                                            if g.name2 != "": Text {
+                                                text: g.name2;
+                                                font-size: Type.rail;
+                                                color: on ? Nerv.ink : Nerv.ink2;
+                                                horizontal-alignment: center;
+                                                overflow: elide;
+                                            }
+                                        }
+                                    }
+                                    if on: Rectangle {
+                                        background: Nerv.acc.with-alpha(0.14);
+                                    }
+                                    // Right-click: leave the room. A small popup
+                                    // rather than acting on the click itself, so
+                                    // a slip does not drop you out of a room.
+                                    leave_pop := PopupWindow {
+                                        x: 40px; y: 18px; width: 112px; height: 28px;
+                                        // WITHOUT THIS the popup never works: the
+                                        // default policy closes on ANY click, so
+                                        // the press that should confirm the leave
+                                        // dismisses the popup and is swallowed
+                                        // before the button below ever sees it.
+                                        close-policy: close-on-click-outside;
+                                        Rectangle {
+                                            background: Nerv.bg3;
+                                            border-width: 1px; border-color: Nerv.acc;
+                                            Text {
+                                                text: "LEAVE ROOM"; font-size: Type.label;
+                                                letter-spacing: Type.track; color: Nerv.ink;
+                                                width: 100%; height: 100%;
+                                                horizontal-alignment: center; vertical-alignment: center;
+                                            }
+                                            TouchArea { clicked => { root.leave_room(idx); } }
+                                        }
+                                    }
+                                    TouchArea {
+                                        clicked => { root.selected = idx; root.view = 0; }
+                                        pointer-event(e) => {
+                                            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                                                leave_pop.show();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        }
+                        // Fade at the bottom edge, and only while there IS more
+                        // below. A hard cut at the rail's edge reads as the end
+                        // of the list; a fade reads as continuing.
+                        if root.rail_overflow: Rectangle {
+                            y: parent.height - 18px;
+                            height: 18px;
+                            background: @linear-gradient(180deg, #12121200 0%, Nerv.bg2 100%);
+                        }
+                        // A 3px thumb in the rail's own palette, sized and
+                        // positioned from the view's own numbers. Indicator
+                        // only: the wheel already scrolls, and a draggable
+                        // thumb is a bigger control than a 3px strip should be.
+                        if root.rail_overflow: Rectangle {
+                            x: parent.width - 5px;
+                            width: 3px;
+                            y: -rail_sv.viewport-y / rail_sv.viewport-height * parent.height;
+                            height: max(24px,
+                                        rail_sv.visible-height / rail_sv.viewport-height
+                                        * parent.height);
+                            background: Nerv.dim;
+                        }
+                    }
+
+                    // ── destinations, pinned under the games ──
+                    Rectangle { height: 6px; background: transparent; }
+                    Rectangle { height: 1px; background: Nerv.line; }
+                    Rectangle { height: 4px; background: transparent; }
+                    RailIcon {
+                        glyph: "◎"; label: "games"; active: root.view == 1;
+                        picked => { root.view = 1; }
+                    }
+                    // Not built. Both need hub-side data that does not exist
+                    // yet -- rankings need per-game standings, events need a
+                    // schedule -- and an empty leaderboard teaches people the
+                    // app is hollow. Present and greyed until they have
+                    // something true to show.
+                    RailIcon { glyph: "▲"; label: "rank"; disabled: true; }
+                    RailIcon { glyph: "◆"; label: "evts"; disabled: true; }
+                    RailIcon {
+                        glyph: "▣"; label: "shots"; active: root.view == 4;
+                        picked => { root.view = 4; }
+                    }
+                    RailIcon {
+                        glyph: "⚙"; label: "cfg"; active: root.view == 3;
+                        picked => { root.view = 3; }
+                    }
+                    Rectangle { height: 6px; background: transparent; }
+
+                    // The avatar. Centred by giving the row the rail's full
+                    // width and placing the box in it, rather than letting a
+                    // 28px child float in an 80px column.
+                    Rectangle {
+                        height: 30px;
+                        background: transparent;
+                        Rectangle {
+                            x: (parent.width - 30px) / 2;
+                            width: 30px; height: 30px;
+                            background: av.has-hover ? Nerv.bg3 : Nerv.bg2;
+                            border-radius: Radius.sm;
+                            border-width: 1px;
+                            border-color: root.connected ? Nerv.phos : Nerv.line;
+                            Text {
+                                // Elided rather than reduced to an initial:
+                                // Slint strings are not indexable, and three
+                                // characters of a name identify it better than
+                                // one letter anyway. A dash says "unset"
+                                // without looking like the error "?" did.
+                                text: root.display_name == "" ? "-" : root.display_name;
+                                font-size: Type.body_sm; color: Nerv.ink;
+                                overflow: elide;
+                                horizontal-alignment: center; vertical-alignment: center;
+                                width: 100%; height: 100%;
+                            }
+                            av := TouchArea {
+                                mouse-cursor: pointer;
+                                // Clicking your own avatar goes where your name
+                                // and your hub connection are set.
+                                clicked => { root.view = 3; }
+                            }
+                        }
+                    }
+                }
+            }
+            Rectangle { width: 1px; background: Nerv.line; }
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                spacing: 0px;
+                // ══ CONTENT ══
+                Rectangle {
+                    vertical-stretch: 1;
+                    background: Nerv.bg;
+                    // The session does NOT take this area any more -- see
+                    // ingame.slint. Whatever tab you were on stays where you
+                    // left it, because when you tab back to this window
+                    // mid-match it is to type in the lobby.
+                    if root.view == 0: Lobby {
+                        game_code: root.library.length > 0 ? root.library[root.selected].title : "--";
+                        connected: root.connected;
+                        chat: root.chat;
+                        notice: root.chat_notice;
+                        send(t) => { root.send_chat(t); }
+                    }
+                    // Always instantiated (visible toggles): an `if` would
+                    // rebuild it and lose the scroll position on every
+                    // view switch.
+                    Browse {
+                        visible: root.view == 1;
+                        width: 100%; height: 100%;
+                        games: root.library;
+                        rows: root.library_rows;
+                        heads: root.browse_heads;
+                        cols: root.browse_cols;
+                        tile_w: root.browse_tile_w;
+                        // Picking a game IS entering its room -- browse is a
+                        // doorway. This is the wiring app.jsx uses, and getting
+                        // it wrong is what left the top bar advertising a game
+                        // the user had not chosen.
+                        picked(i) => { root.selected = i; root.view = 0; }
+                        filter_changed(t) => { root.filter_games(t); }
+                        folders: root.folders;
+                        browse_folder => { root.browse_folder(); }
+                    }
+                    if root.view == 2: Replays {
+                        rows: root.replays;
+                        scanning: root.scanning;
+                        source <=> root.replay_source;
+                        note: root.replay_note;
+                        source_changed(s) => { root.replay_source_changed(s); }
+                        watch(path, seek) => { root.watch_replay(path, seek); }
+                    }
+                    // SHOTS: screenshot curation across the whole library.
+                    // A destination, not a per-game setting -- see
+                    // shots.slint for why it moved out of CONFIG.
+                    if root.view == 4: Shots {
+                        games:    root.library;
+                        captures: root.captures;
+                        selected <=> root.selected;
+                        pick(i)  => { root.selected = i; }
+                        decide(k, v) => { root.setting_changed(k, v); }
+                    }
+                    if root.view == 3: Config {
+                        tab <=> root.config_tab;
+                        rows: root.settings;
+                        show_dev: root.dev_tools;
+                        setting_changed(k, v) => { root.setting_changed(k, v); }
+                        input_players: root.input_players;
+                        input_rows: root.input_rows;
+                        input_action(a) => { root.input_action(a); }
+                        hub_host <=> root.hub_host;
+                        connected: root.connected;
+                        hub_note: root.hub_note;
+                        connect_hub => { root.connect_hub(); }
+                        changed => { root.config_changed(); }
+                        pads: root.pads;
+                        display_name <=> root.display_name;
+                        game_title:  root.library.length > 0 ? root.library[root.selected].title  : "";
+                        game_code:   root.library.length > 0 ? root.library[root.selected].code   : "";
+                        game_engine: root.library.length > 0 ? root.library[root.selected].engine : "";
+                        game_art:    root.library.length > 0 ? root.library[root.selected].thumb  : root.no_art;
+                        captures:    root.captures;
+                    }
+                }
+
+            }
+
+            // ══ RIGHT RAIL -- LOOKING TO PLAY (game-scoped screens only) ══
+            if root.game_scoped: Rectangle { width: 1px; background: Nerv.line; }
+            if root.game_scoped: Rectangle {
+                width: Chrome.right_w;
+                background: Nerv.bg2;
+                VerticalLayout {
+                    spacing: 0px;
+                    Rectangle {
+                        height: 26px;
+                        background: transparent;
+                        HorizontalLayout {
+                            padding-left: 8px; padding-right: 8px;
+                            Text {
+                                text: "LOOKING TO PLAY";
+                                font-size: Type.body_sm; color: Nerv.dim;
+                                vertical-alignment: center; horizontal-stretch: 1;
+                            }
+                            Text {
+                                text: root.peers.length;
+                                font-size: Type.body_sm; color: Nerv.faint;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    Rectangle { height: 1px; background: Nerv.line; }
+                    VerticalLayout {
+                        padding: 6px; spacing: 3px; alignment: start; vertical-stretch: 1;
+                        if root.peers.length == 0: Text {
+                            text: root.connected
+                                  ? "Nobody in this room yet."
+                                  : "Not connected to the hub -- nobody to show yet.";
+                            font-size: Type.body_sm; color: Nerv.faint; wrap: word-wrap;
+                        }
+                        for p[i] in root.peers: VerticalLayout {
+                            spacing: 0px;
+                            // A header whenever the bucket changes. Rendered
+                            // from the same derived `group` the sort used, so
+                            // the list cannot be ordered one way and labelled
+                            // another.
+                            if p.group != 0 && (i == 0 ? true : root.peers[i - 1].group != p.group):
+                                RosterHead {
+                                    group: p.group;
+                                    count: p.group == 1 ? root.n_avail
+                                         : p.group == 2 ? root.n_challenging
+                                         : p.group == 3 ? root.n_inmatch : 0;
+                                }
+                            RosterRow {
+                                peer: p;
+                                challenge => { root.challenge(p.orig); }
+                                spectate  => { root.spectate(p.orig); }
+                                ignore    => { root.ignore_user(p.orig); }
+                                block     => { root.block_user(p.orig); }
+                            }
+                            // Your own row is pinned at the top and ruled off
+                            // from the room -- it is the one row that is never
+                            // someone you can play.
+                            if p.group == 0: Rectangle {
+                                height: 5px;
+                                Rectangle { y: 2px; height: 1px; background: Nerv.line; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+            // ══ STATUS BAR ══
+            Rectangle { height: 1px; background: Nerv.line; }
+            Rectangle {
+                height: Chrome.status_h;
+                background: Nerv.bg2;
+                HorizontalLayout {
+                    padding-left: 8px; padding-right: 8px; spacing: 10px;
+                    Text {
+                        text: root.status; font-size: Type.body_sm; color: Nerv.phos;
+                        vertical-alignment: center; horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: root.connected ? "HUB ONLINE" : "HUB OFFLINE";
+                        font-size: Type.body_sm;
+                        color: root.connected ? Nerv.phos : Nerv.faint;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+    }
+
+    // Painted last so it sits above the shell. It does NOT cover it: see
+    // matchflow.slint for why none of these stages earn a modal.
+    if root.scene == 1 && root.ingame: InGame {
+        width: 100%; height: 100%;
+        // Clear the 30px chat composer.
+        bottom_inset: 30px;
+        me: root.display_name == "" ? "you" : root.display_name;
+        opponent: root.match_nick;
+        format: root.match_format;
+        round: root.match_round;
+        rounds_total: root.match_rounds_total;
+        rtt: root.match_rtt;
+        elapsed_s: root.match_elapsed;
+        rollbacks: root.match_rollbacks;
+        drops: root.match_drops;
+        end_match => { root.match_end(); }
+    }
+
+    if root.scene == 1: MatchFlow {
+        width: 100%; height: 100%;
+        // Clear the composer, and the session card when one is up -- a
+        // desync during a match must not land on top of the match.
+        bottom_inset: root.ingame ? 30px + 172px + Space.m : 30px;
+        stage: root.match_stage;
+        nick: root.match_nick;
+        rtt: root.match_rtt;
+        game: root.library.length > 0 ? root.library[root.selected].title : "--";
+        seconds_left: root.match_seconds;
+        sync_pct: root.match_sync;
+        detail: root.match_detail;
+        score_self: root.match_score_self;
+        score_opp: root.match_score_opp;
+        format: root.match_format;
+        rollbacks: root.match_rollbacks;
+        avg_rtt: root.match_avg_rtt;
+        jitter: root.match_jitter;
+        drops: root.match_drops;
+        desync_state: root.match_desync;
+        streak: root.match_streak;
+        accept  => { root.match_accept(); }
+        decline => { root.match_decline(); }
+        cancel  => { root.match_cancel(); }
+        rematch => { root.match_rematch(); }
+        quit    => { root.match_quit(); }
+    }
+}

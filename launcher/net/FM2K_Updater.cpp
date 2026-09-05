@@ -1,6 +1,7 @@
 // FM2K_Updater -- auto-updater glue. See FM2K_Updater.h.
 
 #include "FM2K_Updater.h"
+#include "FM2K_ReleaseVerify.h"
 #include "version_local.h"
 
 #include <SDL3/SDL_log.h>
@@ -523,6 +524,7 @@ void DownloadWorker(std::string remote_version) {
         remote_version.c_str(), remote_version.c_str());
 
     const std::string zip_path = TempDir() + "fm2k_update_v" + remote_version + ".zip";
+    const std::string sig_path = zip_path + ".sig";
 
     bool ok = HttpDownloadFile(url, zip_path,
         [](uint32_t got, uint32_t total) {
@@ -538,13 +540,48 @@ void DownloadWorker(std::string remote_version) {
         return;
     }
 
+    // ── the download is not trusted until it verifies ──
+    //
+    // FM2KUpdater.exe extracts this over the launcher and both hook DLLs.
+    // TLS says we talked to github.com; it says nothing about what the
+    // bytes are once a release asset can be replaced. So the signature is
+    // fetched from the same release and checked before the zip is handed
+    // on, and a failure DELETES the download rather than leaving something
+    // that looked nearly-installed sitting in temp.
+    const std::string sig_url = std::string(url) + ".sig";
+    // A no-op rather than nullptr: HttpDownloadFile invokes the callback
+    // unconditionally, and a few hundred bytes has no progress worth
+    // reporting anyway.
+    if (!HttpDownloadFile(sig_url, sig_path, [](uint32_t, uint32_t) {})) {
+        std::error_code ec;
+        std::filesystem::remove(zip_path, ec);
+        std::filesystem::remove(sig_path, ec);
+        SetFail(fm2k::release::Explain(fm2k::release::Verdict::NoSignature));
+        g_st.busy.store(false);
+        return;
+    }
+
+    const fm2k::release::Verdict v =
+        fm2k::release::VerifyZip(zip_path, sig_path);
+    if (v != fm2k::release::Verdict::Ok) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+            "Updater: REFUSED update v%s -- %s",
+            remote_version.c_str(), fm2k::release::Explain(v));
+        std::error_code ec;
+        std::filesystem::remove(zip_path, ec);
+        std::filesystem::remove(sig_path, ec);
+        SetFail(fm2k::release::Explain(v));
+        g_st.busy.store(false);
+        return;
+    }
+
     {
         std::lock_guard<std::mutex> lk(g_st.mtx);
         g_st.zip_path  = zip_path;
         g_st.snap.state = State::Ready;
     }
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "Updater: downloaded %s", zip_path.c_str());
+        "Updater: downloaded and verified %s", zip_path.c_str());
     g_st.busy.store(false);
 }
 
@@ -591,6 +628,31 @@ bool ApplyUpdateAndExit() {
     // (ERROR_SHARING_VIOLATION → tar exits with status 1). The tmp
     // copy is fine to overwrite when the new launcher pulls a fresh
     // FM2KUpdater.exe out of the zip into app_dir.
+    // Is the helper even there? Distinguish MISSING from every other
+    // reason the copy or spawn could fail, because they need opposite
+    // things from the user and "err=2" tells a player nothing.
+    //
+    // pringle, 2026-08-29: switched to dev, downloaded 0.2.84 three times,
+    // and every attempt died here with err=2 (ERROR_FILE_NOT_FOUND) --
+    // FM2KUpdater.exe was not next to the launcher. The UI said
+    // "Couldn't spawn FM2KUpdater.exe (err=2)" and it was reported to us as
+    // "can't switch to dev", which is the wrong subsystem entirely. The
+    // most likely cause is Defender quarantining it: a tool whose whole job
+    // is overwriting running binaries looks exactly like what a heuristic
+    // scanner is built to stop.
+    if (GetFileAttributesA(app_updater.c_str()) == INVALID_FILE_ATTRIBUTES
+            && GetLastError() == ERROR_FILE_NOT_FOUND) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+            "Updater: FM2KUpdater.exe is MISSING from %s -- the update "
+            "downloaded fine but there is nothing to apply it with. "
+            "Antivirus quarantine is the usual cause.", app_dir.c_str());
+        SetFail("FM2KUpdater.exe is missing from your install folder, so the "
+                "update can't be applied. It was most likely removed by "
+                "antivirus -- restore it (or re-extract the zip) and try "
+                "again.");
+        return false;
+    }
+
     const std::string tmp_updater = TempDir() + "FM2KUpdater_run.exe";
     const BOOL copy_ok = CopyFileA(app_updater.c_str(), tmp_updater.c_str(),
                                    FALSE /* overwrite ok */);

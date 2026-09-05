@@ -73,25 +73,6 @@ static int DiscoveryThreadFunc(void* userdata) {
 
 // Utility implementations
 namespace Utils {
-    std::vector<std::string> FindFilesWithExtension(const std::string& directory, const std::string& extension) {
-        // Non-recursive scan using SDL3's filesystem helper.
-        std::vector<std::string> files;
-        int count = 0;
-        char* pattern = static_cast<char*>(SDL_malloc(SDL_strlen(extension.c_str()) + 2));
-        if (!pattern) return files;
-        
-        SDL_snprintf(pattern, SDL_strlen(extension.c_str()) + 2, "*%s", extension.c_str());
-        char **list = SDL_GlobDirectory(directory.c_str(), pattern, /*flags=*/0, &count);
-        SDL_free(pattern);
-
-        if (list) {
-            for (int i = 0; i < count; ++i) {
-                if (list[i]) files.emplace_back(list[i]);
-            }
-            SDL_free(list);
-        }
-        return files;
-    }
     
     bool FileExists(const std::string& path) {
         if (SDL_GetPathInfo(path.c_str(), nullptr)) {
@@ -101,10 +82,6 @@ namespace Utils {
         return false;
     }
     
-    std::string GetFileVersion(const std::string& exe_path SDL_UNUSED) {
-        // TODO: Implement proper version detection
-        return "Unknown";
-    }
     
     uint32_t Fletcher32(const uint16_t* data, size_t len) {
         uint32_t c0, c1;
@@ -126,20 +103,7 @@ namespace Utils {
         return (c1 << 16 | c0);
     }
     
-    float GetFM2KFrameTime(float frames_ahead) {
-        const float base_frame_time = 1.0f / 100.0f;  // 10ms per frame
-        
-        if (frames_ahead >= 0.75f) {
-            return base_frame_time * 1.02f;  // Slow down if too far ahead
-        } else {
-            return base_frame_time;
-        }
-    }
     
-    std::chrono::milliseconds GetFrameDuration() {
-        return std::chrono::milliseconds(10);  // 100 FPS = 10ms per frame
-    }
-
     // ---------------------------------------------------------------------
     // Config handling (persistent games folder)
     // ---------------------------------------------------------------------
@@ -334,34 +298,6 @@ namespace Utils {
         return result;
     }
 
-    // Recursively search for files that match the provided extension
-    inline std::vector<std::string> FindFilesWithExtensionRecursive(const std::string& directory,
-                                                                    const std::string& extension) {
-        std::vector<std::string> files;
-        std::string normalized_dir = NormalizePath(directory);
-        
-        int count = 0;
-        char* pattern = static_cast<char*>(SDL_malloc(SDL_strlen(extension.c_str()) + 2));
-        if (!pattern) return files;
-        
-        SDL_snprintf(pattern, SDL_strlen(extension.c_str()) + 2, "*%s", extension.c_str());
-        char **list = SDL_GlobDirectory(normalized_dir.c_str(), pattern, /*flags=*/0, &count);
-        SDL_free(pattern);
-
-        if (list) {
-            for (int i = 0; i < count; ++i) {
-                if (list[i]) files.emplace_back(list[i]);
-            }
-            SDL_free(list);
-            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "FindFilesWithExtensionRecursive: found %d '%s' under %s", 
-                        (int)files.size(), extension.c_str(), normalized_dir.c_str());
-            return files;
-        }
-
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "SDL_GlobDirectory failed for %s: %s", 
-                    normalized_dir.c_str(), SDL_GetError());
-        return files;
-    }
 }
 
 void FM2KLauncher::StartAsyncDiscovery(bool show_spinner) {
@@ -744,18 +680,3 @@ std::vector<FM2K::FM2KGameInfo> FM2KLauncher::DiscoverGames() {
     return games;
 }
 
-bool FM2KLauncher::ValidateGameFiles(FM2K::FM2KGameInfo& game) {
-    // Basic validation - check if executable exists and is readable
-    if (!Utils::FileExists(game.exe_path)) {
-        return false;
-    }
-    
-    // TODO: Add more sophisticated validation
-    game.is_host = true;
-    return true;
-}
-
-std::string FM2KLauncher::DetectGameVersion(const std::string& exe_path SDL_UNUSED) {
-    // TODO: Implement version detection based on file properties
-    return "Unknown";
-}

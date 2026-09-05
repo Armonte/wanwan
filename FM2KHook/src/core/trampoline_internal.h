@@ -33,5 +33,23 @@ void RunNativeTick();                                             // trampoline_
 void RunSpectatorTick();                                          // trampoline_spectator.cpp
 void SpecWatchdogTick(bool offline_replay);                       // trampoline_spec_watchdog.cpp
 void SleepToTarget(uint64_t start_qpc, uint32_t target_ms, float frames_ahead = 0.0f);  // trampoline_pacing.cpp
+
+// What the frame pacer did since the last read, drained by the netplay
+// heartbeat. The brake decides every frame and the heartbeat reports every
+// ten seconds, so without these a braking episode is invisible in a log --
+// which is why "the game stutters" has never been answerable from one.
+struct PacingStats {
+    uint32_t braked_frames;    // frames the drift brake lengthened
+    uint32_t total_frames;     // frames paced at all, so the above is a rate
+    uint32_t added_us_sum;     // microseconds added across the window
+    uint32_t added_us_max;     // worst single frame
+    float    frames_ahead_max; // worst advantage seen, not an instant sample
+};
+void Pacing_TakeStats(PacingStats* out);   // reads AND resets
+// Non-destructive peek at what the brake did to the LAST frame. Separate from
+// TakeStats on purpose: TakeStats is the heartbeat's window and draining it
+// per frame would blank the [BEAT] line. Consumed by frame_timing.cpp.
+uint32_t Pacing_LastAddedUs();
+float    Pacing_LastFramesAhead();
 void MaybeLogFrametime(uint64_t tick_start);                      // trampoline_pacing.cpp
 void MaybeLogOfflineSections(uint64_t pgi, uint64_t ug, uint64_t render, uint32_t render_rand);  // trampoline_pacing.cpp

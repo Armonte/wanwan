@@ -4,6 +4,7 @@
 #include "savestate_internal.h"
 #include "globals.h"
 #include "seam_trace.h"   // Phase 1bc per-save fingerprint ring (diagnostic)
+#include "cursor_trace.h" // cross-peer per-save cursor/input-word trace (diagnostic)
 #include "envelope_shadow.h"  // envelope-inversion phase 1 shadow mode (diagnostic)
 #include "../parity/css_window.h"   // [BATTLE-OBJ] battle-frame object census
 #include <SDL3/SDL_log.h>
@@ -17,10 +18,21 @@
 // netplay-side [PERF] line. Reports avg microsec/region every 500 saves.
 // MEASURED 2026-07-06 (1v1, ~active slots): ~105us/save total --
 // afterimage=37 char=27 obj=22 sound=10 (+ throttled fullcrc ~1/sec 180us).
-// The active-slot char/obj optimizations already cut this ~15x from the
-// original full-copy cost; per-frame save is ~1% of the 10ms budget, not a
-// bottleneck. Remaining lever is the ~1MB *transmission* blob (reserved
-// struct), not per-frame work.
+// RE-MEASURED 2026-09-04 on a faster box (wanwan 1v1, FM2K_CHECK_DISTANCE=10,
+// FM2K_FULL_CRCS=0, 29,500 saves per run, two runs each side):
+//   before the afterimage cut: save 42.8us, load 57.5us, tick 45.0us
+//                              head 1.0 char 9.8 obj 10.7 afterimage 13.7
+//                              misc 0.9 fingerprint 0.2 sound 3.8 tail 0.9
+//   after                    : save 30.2us, load 43.6us, tick 45.1us
+//                              afterimage 1.5, everything else unchanged
+// The afterimage region went from a 163,216 B memcpy to a 3,216 B one once the
+// 160,000 B of trail SAMPLES were shown to be render-only (see the structure
+// note on WaveCAddrs in savestate.h). Ranked remaining per-save cost: obj
+// ~10.7us (1024 x 1-byte active probes scattered over a 391 KB pool plus 1024
+// scattered inactive-marker writes -- a compact active bitmap would roughly
+// halve it), char ~9.8us (114 KB of genuine state at memcpy bandwidth; only a
+// smaller PROVEN-mutable sub-range would help), sound ~3.8us. Note the ~1MB
+// *transmission* blob (reserved struct) is a separate axis from per-frame work.
 namespace {
 struct SBucket { uint64_t ns = 0; uint32_t n = 0; };
 static const bool g_ss_perf_on = [] {
@@ -160,8 +172,11 @@ bool SaveState_Save(int frame) {
         // after the zero-out). Without this, every replay save would flag
         // a spurious DIFF because live memory has the real timer byte
         // while the save-buffer CRC was over the zeroed version.
+        // Built with the SAME shape the save uses (head + entry headers only,
+        // samples left at their zero-init value) so the two CRCs are comparable.
         static uint8_t s_ai_cmp_buf[WaveCAddrs::AFTERIMAGE_POOL_SZ];
-        memcpy(s_ai_cmp_buf, (void*)WaveCAddrs::AFTERIMAGE_POOL, WaveCAddrs::AFTERIMAGE_POOL_SZ);
+        memcpy(s_ai_cmp_buf, (void*)WaveCAddrs::AFTERIMAGE_POOL, WaveCAddrs::AFTERIMAGE_HEAD_SZ);
+        WaveCAddrs::AfterimageCaptureEntryHdrs(s_ai_cmp_buf);
         constexpr size_t G_LFT_OFFSET = 0x447DD4 - WaveCAddrs::AFTERIMAGE_POOL;  // 0x4A4
         *(uint32_t*)(s_ai_cmp_buf + G_LFT_OFFSET) = 0;
         uint32_t cur_ai_crc  = Fletcher32(s_ai_cmp_buf, WaveCAddrs::AFTERIMAGE_POOL_SZ);
@@ -437,12 +452,13 @@ bool SaveState_Save(int frame) {
     // render rng calls → drift. The "skip restore" pattern is the only one
     // that keeps host's many rollbacks aligned with replay's straight
     // forward-only sim. Same logic for shake_effects + pflash2 below.
-    // FM2K_SEAM_NOCARVE=1 (diagnostic, default off): keep the real bytes in
-    // the saved buffer so Load can actually restore these regions. The
-    // zeroing below is one half of the deliberate "let render-side state
-    // free-run across rollback" design; the exclusion test needs BOTH halves
-    // off or Load would faithfully restore a buffer full of zeros, which is
-    // destructive rather than a test. See savestate_fm2k_load.cpp.
+    // The zeroing below is one half of the deliberate "let render-side state
+    // free-run across rollback" design; the skip in Load is the other. (A
+    // FM2K_SEAM_NOCARVE arm was documented here for keeping the real bytes,
+    // but no getenv ever read it, so the memset has always been
+    // unconditional. Both halves have to move together: with only this one
+    // off, Load would faithfully restore a buffer full of zeros, which is
+    // destructive rather than a test.) See savestate_fm2k_load.cpp.
     std::memset(state->effect_sys1, 0, EffectAddrs::EFFECT_SYS1_SZ);
     // EFFECT_SYS2 carve-outs (REVERTED back to original -- same reasoning
     // as effect_sys1 above):
@@ -488,8 +504,21 @@ bool SaveState_Save(int frame) {
     // same saved bytes there, killing the f=9 AfterimagePool +0x4A4 diff.
     // Live memory keeps whatever main_game_loop last wrote; the save buffer
     // has a deterministic 0 at that slot.
+    //
+    // 2026-09-04: this used to be one 163,216 B memcpy and was the single most
+    // expensive item in the save (~37 us of ~105). It is now the 1,616 B head
+    // plus the 100 x 16 B afterimage entry headers = 3,216 B. The 160,000 B of
+    // trail SAMPLES are written by the sim and read by exactly one function --
+    // sprite_rendering_engine @0x40CC30, reached only from render_game -- so no
+    // sample byte can reach simulation state and none of them needs to be in the
+    // rollback envelope. The full derivation, including the entry layout and the
+    // enumeration of every reference into the slice, is in
+    // WaveCAddrs (savestate.h) and artifacts/resim_cost_2026-09-04.md.
+    // state->afterimage_pool keeps the full slice layout; the sample bytes in it
+    // are never written, so they stay zero-initialised and hash deterministically.
     { SScope _s(&g_ss_after);
-      memcpy(state->afterimage_pool,       (void*)WaveCAddrs::AFTERIMAGE_POOL,      WaveCAddrs::AFTERIMAGE_POOL_SZ); }
+      memcpy(state->afterimage_pool,       (void*)WaveCAddrs::AFTERIMAGE_POOL,      WaveCAddrs::AFTERIMAGE_HEAD_SZ);
+      WaveCAddrs::AfterimageCaptureEntryHdrs(state->afterimage_pool); }
     constexpr size_t G_LAST_FRAME_TIME_OFFSET = 0x447DD4 - WaveCAddrs::AFTERIMAGE_POOL;  // 0x4A4
     *(uint32_t*)(state->afterimage_pool + G_LAST_FRAME_TIME_OFFSET) = 0;
     // Shake region overlap: g_shake_effect_1/_2 (40 bytes at 0x447DA9) live
@@ -636,6 +665,14 @@ bool SaveState_Save(int frame) {
     // save, which a dedupe-by-frame ring would erase. Written to a file only
     // from HandleDesyncDetected.
     SeamTrace_PushSave(frame, is_replay_save, g_is_rolling_back);
+    // CROSS-PEER SAVE TRACE (DIAGNOSTIC, FM2K_CURSOR_TRACE=1, dark by
+    // default). Same instant as the seam ring -- after the fingerprint for
+    // this save has been computed, so the row records the cursor and the two
+    // ring words that the checksum crossing the wire was actually built from.
+    // The seam ring answers the INTRA-process question (forward vs resim in
+    // one process); this answers the CROSS-peer one, which needs the whole
+    // session rather than a per-match window.
+    CursorTrace_OnSave(frame, is_replay_save, g_is_rolling_back);
     // Broad snapshot for the offline differ (FM2K_SEAM_MEMSNAP=1, default
     // off). Taken AFTER PushSave so the CSV row and the .bin share a save.
     SeamTrace_MemSnap(frame, is_replay_save);

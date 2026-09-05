@@ -1,0 +1,6 @@
+target/
+slint_sdl3_skeleton.exe
+2dfm_launcher_spike.ini
+2dfm_spike_games.cache
+*.png
+*.webp

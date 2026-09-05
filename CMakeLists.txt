@@ -438,9 +438,12 @@ add_executable(FM2K_RollbackLauncher
     launcher/core/launcher_init.cpp  # FM2KLauncher ctor/dtor + Initialize/InitializeSDL/Shutdown (split from RollbackClient)
     launcher/core/launcher_frame.cpp  # HandleEvent/Update/Render + small setters (split from RollbackClient)
     launcher/core/launcher_cli.cpp  # CLI parse + headless probes + replay/stress/offline/direct launch modes (split from RollbackClient)
+    launcher/core/FM2K_FolderPicker.cpp  # modern native folder picker, shared with the Slint launcher
     launcher/core/FM2K_GameInstance.cpp  # process mgmt: lifecycle + spawn + DLL injection (split)
     launcher/core/FM2K_GameInstance_ipc.cpp  # runtime IPC: rollback ops + DLL-event pump + shared mem + debug cmds (split)
     launcher/session/OnlineSession.cpp
+    launcher/session/FM2K_OnlineLaunch.cpp  # hub-brokered online launch, shared with the Slint launcher
+    launcher/session/FM2K_MatchOutcome.cpp  # the hook's match outcome from shared mem, shared with the Slint launcher
     launcher/session/LocalSession.cpp
     launcher/ui/FM2K_LauncherUI.cpp
     launcher/ui/launcher_ui_settings_io.cpp  # shared dev-flags/game-patches/settings.ini persistence (namespace lui; split from LauncherUI)
@@ -471,18 +474,20 @@ add_executable(FM2K_RollbackLauncher
     launcher/net/FM2K_DiscordAuth.cpp
     launcher/game/FM2K_Locale.cpp
     launcher/net/FM2K_Updater.cpp
+    launcher/net/FM2K_ReleaseVerify.cpp
     launcher/game/FM2K_GameIni.cpp
     launcher/game/FM2K_InstallHealth.cpp
     launcher/render/FM2K_DDrawRedirect.cpp
     launcher/render/FM2K_CncDDraw.cpp
     launcher/game/FM2K_KgtParser.cpp
     launcher/net/FM2K_UploadQueue.cpp
+    launcher/net/FM2K_HttpPost.cpp
+    launcher/net/FM2K_ReplayUpload.cpp
     # Stock miniz (public domain) for in-process zip extraction. SDL_image
     # ships its own statically-scoped copy with archive APIs disabled, so
     # this independent copy gives us mz_zip_reader_* without disturbing
     # the SDL_image build.
     vendored/miniz/miniz.c
-    launcher/session/LocalNetworkAdapter.cpp
     launcher/core/FM2K_Integration.h
     # ImGui-based input binder (shared with the hook overlay) — depends only
     # on SDL3 + ImGui, no project-specific includes. Split 5-way: core +
@@ -555,6 +560,9 @@ target_link_libraries(FM2K_RollbackLauncher PRIVATE
     oleaut32
     wininet
     winhttp
+    # bcrypt for FM2K_ReleaseVerify -- CNG verifies the update signature,
+    # so there is no third-party crypto to vendor.
+    bcrypt
     # XInput for input_binder's Sample_Win32 path. Compiled into the
     # launcher EXE too even though SDL3-Sample() is the default there;
     # unifying lets the launcher fall back if SDL3 events stop pumping.

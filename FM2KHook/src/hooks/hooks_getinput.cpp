@@ -29,7 +29,7 @@
 #include "../audio/sound_rollback.h"        // Mike Z desired/actual sound layer
 #include "../netplay/spectator_node.h"      // spectator playback queue accessors
 #include "../ui/input_binder.h"             // FM2KInputBinder::Sample_Win32 + Bindings
-#include "../ui/screenshot.h"               // FM2KCapture::SaveScreenshot for the auto-banner pipeline
+#include "../ui/screenshot.h"               // FM2KCapture::RememberFrame for the auto-banner pipeline
 #include "../ui/fc_hud.h"                   // IsChatInputActive -- gate local input during typing
 #include "../vfs/fpk_reader.h"              // FM2K_FPK_VFS: inflate a slim .fpk -> original asset bytes
 #include <MinHook.h>
@@ -129,7 +129,7 @@ static uint16_t Fm95FoldFacingSocd(uint16_t input, int facing_idx) {
     if (IsCSSMode(*(uint32_t*)FM2K::ADDR_GAME_MODE)) {
         input &= (uint16_t)~0x400u;
     }
-    return Hook_ApplySOCD(input);
+    return Hook_ApplySOCDSlot(input, facing_idx - 1);
 }
 
 // Netplay/stress consume path. When a battle session is active, the FM95
@@ -155,7 +155,7 @@ static bool Fm95TryNetplayInput(int slot, int facing_idx, int* out) {
     // Netplay_ProcessCSS and fed to the gekko CSS session; here we return what
     // that session DELIVERED, so the sim runs lockstep.
     if (Netplay_IsConnected() && IsCSSMode(mode)) {
-        *out = (int)Hook_ApplySOCD(Netplay_GetCSSInput(slot));
+        *out = (int)Hook_ApplySOCDSlot(Netplay_GetCSSInput(slot), slot);
         return true;
     }
     return false;
@@ -701,7 +701,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
             uint16_t right_bit = (input & 0x002);
             input = (input & ~0x003) | (left_bit << 1) | (right_bit >> 1);
         }
-        input = Hook_ApplySOCD(FacingTrace_Note(0, player_id, input_type, game_mode, facing_reversed, input));  // [FACING] ring (dark), Phase 4b
+        input = Hook_ApplySOCDSlot(FacingTrace_Note(0, player_id, input_type, game_mode, facing_reversed, input), player_id);  // [FACING] ring (dark), Phase 4b
 
         // Log only the first 4 calls (initial handshake verification). After
         // that stay silent -- Hook_GetPlayerInput fires 2x per sim tick, and
@@ -722,7 +722,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
     // CSS mode with connection - return CSS input from control channel
     if (IsCSSMode(game_mode) && Netplay_IsConnected()) {
         uint16_t input = Netplay_GetCSSInput(player_id);
-        input = Hook_ApplySOCD(input);
+        input = Hook_ApplySOCDSlot(input, player_id);
         return capture_and_return((int)input);
     }
 
@@ -885,7 +885,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
                 uint16_t right_bit = (bound & 0x002);
                 bound = (bound & ~0x003) | (left_bit << 1) | (right_bit >> 1);
             }
-            bound = Hook_ApplySOCD(bound);
+            bound = Hook_ApplySOCDSlot(bound, slot);
             // Strip meta-bits (OPTION/FN1/FN2) before passing to engine so
             // they don't leak into game state. Hook-side features that
             // consume those bits did so above (or read via Sample directly).
@@ -916,7 +916,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
     {
         int o = PerGamePatches_TryOverrideInput(player_id, game_mode);
         if (o >= 0) {
-            o = (int)Hook_ApplySOCD((uint16_t)o);
+            o = (int)Hook_ApplySOCDSlot((uint16_t)o, player_id);
             return capture_and_return(o);
         }
     }
@@ -926,7 +926,7 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
         ? original_get_player_input(player_id, input_type)
         : 0;
 
-    orig = (int)Hook_ApplySOCD((uint16_t)orig);
+    orig = (int)Hook_ApplySOCDSlot((uint16_t)orig, player_id);
     return capture_and_return(orig);
 }
 

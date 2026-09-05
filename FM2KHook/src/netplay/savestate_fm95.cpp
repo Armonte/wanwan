@@ -321,6 +321,16 @@ const RegionChecksums& SaveState_GetRegionChecksums() {
     z.object_pool = Fletcher32((const uint8_t*)fm95save::OBJECT_POOL,
                                FM2K::SIZE_OBJECT_POOL);
     z.gameplay_fingerprint = SaveState_CalculateFingerprint();
+    // FM95 SENDS WHAT IT ALWAYS SENT. The FM2K side now separates the value
+    // that crosses the wire from the one used inside a process, because two
+    // of FM2K's fingerprint fields are not shared state (see
+    // savestate_fm2k_diag.cpp). FM95's fingerprint is a different function
+    // over different addresses and has not been audited for the same flaw,
+    // so pointing wire_fingerprint at the same value keeps FM95's behaviour
+    // byte-identical rather than changing it blind. Leaving it unset would
+    // put an uninitialised checksum on the wire -- the save sites are shared
+    // between both engines.
+    z.wire_fingerprint = z.gameplay_fingerprint;
     z.combined    = SaveState_CalculateFullChecksum();
     return z;
 }

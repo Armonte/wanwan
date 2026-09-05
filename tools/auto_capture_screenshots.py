@@ -1,42 +1,26 @@
 #!/usr/bin/env python3
-"""Drive each installed game through intro → title → CSS → battle and
-collect screenshots into dist/captures/<game_id>/.
+"""SUPERSEDED by tools/capture_batch.py -- do not extend this file.
 
-Pipeline:
-  1. For each game in `games/registry.json` (or a --only filter list)
-     that has a known exe path on this machine, spawn the launcher
-     in capture mode.
-  2. Wait for the hook's `.capture_done` sentinel file (written by
-     FM2KHook/src/hooks/hooks.cpp once title+css+battle screenshots
-     have all been saved).
-  3. Hard-cap each run at 60 s — most games reach battle in under
-     20 s with the existing AutoTitleSkip mash. If a run times out,
-     log + retry up to 3 times.
-  4. Kill the game cleanly afterward; the launcher's existing
-     StopSession path handles teardown.
+It was scaffolded around a launcher CLI (`--capture-game`) that was never
+written, so it could not drive a capture run: everything below the
+docstring assumes a flag the launcher does not have.
 
-Output: dist/captures/<game_id>/{title,css_initial,battle}.png plus
-manifest.json with the capture timestamp + a list of files written.
+What actually works, and what the 2026-09-03 library sweep used:
 
-Usage:
-    python3 tools/auto_capture_screenshots.py
-    python3 tools/auto_capture_screenshots.py --only pkmncc,vanpri
-    python3 tools/auto_capture_screenshots.py --refresh   # ignore cached
-    python3 tools/auto_capture_screenshots.py --launcher /path/to/exe
+    tools/capture_batch.py --limit 200      # every game in the registry
+    tools/capture_batch.py --games "D:\\...\\a.exe,D:\\...\\b.exe"
+    tools/capture_transcode.py              # PNG -> WebP + thumbs
+    tools/capture_pick.py --sheet out.png   # choose each game's thumbnail
 
-The `--launcher` arg is required when not running on a Windows host
-that has the launcher installed; this script's MAIN purpose is to
-be invoked from the launcher's "Tools → Capture banners" menu, which
-hands us its own exe path.
+capture_batch drives the SHIPPING launcher through its existing
+`--offline` path with the hook's capture env set, which is why it needed
+no new launcher flag. The hook writes a series per state (front x6,
+css x3, battle x3) plus a per-character roster sweep, and signals
+completion with a `.capture_done` sentinel.
 
-Status: scaffolded. The hook side (FM2KHook/src/ui/screenshot.cpp +
-the FM2K_AUTO_CAPTURE state machine in hooks.cpp) is implemented and
-shipping; the launcher side (--capture-game CLI flag, env-var setup)
-needs a follow-up landing in FM2K_RollbackClient.cpp before this
-orchestrator can do anything useful. Until then, running this
-script will spawn each game with FM2K_AUTO_CAPTURE=1 set on the
-LAUNCHER process so the hook DLL inherits it, and rely on the hook's
-existing AutoTitleSkip to drive intro→title→CSS→battle.
+This file is kept only because docs/dev/banner_pipeline.md and
+docs/roadmaps/hub_catalog_rework.md still name it as the orchestrator;
+delete it once those point at capture_batch.py instead.
 """
 
 from __future__ import annotations
@@ -116,9 +100,6 @@ def run_one(game: dict[str, Any], launcher_exe: Path,
     # for menu input. AutoTitleSkip is on by default but we explicitly
     # set it here in case the user disabled it for normal play.
     env["FM2K_AUTO_TITLE_SKIP"] = "1"
-    # Mute audio so a 30-game capture session doesn't blast the room.
-    env["FM2K_MUTE_BGM"]       = "1"
-    env["FM2K_MUTE_SE"]        = "1"
     # Make sure netplay paths stay quiet — capture is offline-only.
     env["FM2K_TRUE_OFFLINE"]   = "1"
 
@@ -211,5 +192,11 @@ def main() -> int:
     return 0 if not fails else 2
 
 
+def _superseded() -> int:
+    print(__doc__)
+    print("Refusing to run: use tools/capture_batch.py.")
+    return 2
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(_superseded())

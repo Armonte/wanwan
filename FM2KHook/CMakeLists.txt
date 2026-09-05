@@ -33,6 +33,7 @@ set(FM2KHOOK_SOURCES
     src/core/trampoline_native.cpp     # RunNativeTick
     src/core/trampoline_spectator.cpp  # RunSpectatorTick + SpectatorSimOneFrame
     src/core/trampoline_spec_watchdog.cpp # spectator liveness watchdog (self-stall credit, rung catch-up, host-gone)
+    src/core/frame_timing.cpp          # DIAGNOSTIC per-frame timing ring: frame/sim/render/sleep/stall/rollback/brake, percentile summary (FM2K_FRAME_TIMING, dark by default)
     # Hooks
     src/hooks/hooks.cpp
     src/hooks/hooks_rng.cpp        # RNG trace + Hook_GameRand (split from hooks.cpp)
@@ -59,6 +60,7 @@ set(FM2KHOOK_SOURCES
     src/hooks/wndproc_subclass.cpp
     src/hooks/background_mode.cpp     # FM2K_TEST_BACKGROUND user32 detours (harness-only, OFF by default)
     src/hooks/render_simd.cpp
+    src/hooks/scene_frame_guard.cpp  # 0x40DD62 fix: never draw a destroyed object (stale scene table) + [FRAMEIDX] detector
     # Netplay
     src/netplay/netplay.cpp
     src/netplay/netplay_heartbeat.cpp  # [BEAT] diagnostic heartbeat (split from netplay.cpp)
@@ -91,6 +93,7 @@ set(FM2KHOOK_SOURCES
     src/netplay/savestate_fm2k_diag.cpp # FM2K snapshot/checksum/desync-diag (#if !ENGINE_FM95)
     src/netplay/seam_trace.cpp          # DIAGNOSTIC match-end-seam instruments + FM2K_SEAM_LEGACY_PARK A/B lever (dark by default)
     src/netplay/envelope_shadow.cpp     # DIAGNOSTIC envelope-inversion phase 1 shadow mode: full-image forward-vs-replay block diff (FM2K_ENVELOPE_SHADOW, dark by default)
+    src/netplay/cursor_trace.cpp        # DIAGNOSTIC cross-peer per-save cursor/input-word trace for the fingerprint false-positive class (FM2K_CURSOR_TRACE, dark by default)
     src/netplay/spectator_node.cpp
     src/netplay/spec_wire.cpp  # SessionEvent wire codecs + zero-RLE (split from spectator_node)
     src/netplay/spec_transport.cpp  # UDP/TCP/relay send + EVENT_BATCH flush (split from spectator_node)

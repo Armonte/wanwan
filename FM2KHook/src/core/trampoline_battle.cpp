@@ -17,12 +17,17 @@
 #include <cstring>
 #include <windows.h>
 #include "trampoline_internal.h"
+#include "frame_timing.h"        // DIAGNOSTIC per-frame timing ring (dark by default)
 
 // Battle: GekkoNet owns state transitions. main_game_loop's prologue writes
 // are gone -- we neither replicate them here nor let the native wrapper run.
 // Any per-advance setup (like the per-slot buf-idx fan-out) already lives
 // inside the AdvanceEvent handler in netplay.cpp.
 void RunBattleTick() {
+    // Name the phase FIRST, so an early return (waiting on the peer's battle
+    // sync, or a failed stress start) still produces a correctly labelled row
+    // instead of one that reads as a menu frame.
+    FrameTiming_NotePhase(FtPhase::BATTLE_NET);
     Hook_CheckGameModeTransition_Public();
 
     // Apply any pending F8 runahead toggle BEFORE gekko_update_session
@@ -35,6 +40,7 @@ void RunBattleTick() {
     // determinism check -- it rolls back every check_distance frames and
     // compares save hashes.
     if (g_stress_mode) {
+        FrameTiming_NotePhase(FtPhase::BATTLE_STRESS);
         if (!Netplay_IsActive()) {
             if (!Netplay_StartStressBattle()) {
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
@@ -42,7 +48,15 @@ void RunBattleTick() {
                 return;
             }
         }
-        Netplay_ProcessBattleInputPhase();
+        {
+            // One gekko step, whole: add -> update -> the Save/Load/Advance
+            // dispatch. Under stress that INCLUDES the forced rollback resim,
+            // which is the point -- "time spent in the sim" for a rollback
+            // frame is the resim, and rb_depth in the same row explains it.
+            const uint64_t _ft_s0 = SDL_GetPerformanceCounter();
+            Netplay_ProcessBattleInputPhase();
+            FrameTiming_NoteSim(SDL_GetPerformanceCounter() - _ft_s0, 1);
+        }
         if (g_frame_pending_render) {
             RenderFrameWithSnapshot();
             g_frame_pending_render = false;
@@ -62,6 +76,7 @@ void RunBattleTick() {
     // 3000. Sound rollback / GekkoNet-driven state machine are inert here;
     // the hook gates on Netplay_IsActive() which stays false.
     if (g_offline_mode) {
+        FrameTiming_NotePhase(FtPhase::BATTLE_OFFLINE);
         // [REMOVED] per-slot fan-out at slot+0xDF79 / slot+0xDF7D.
         // Originally added to mimic main_game_loop's prologue, but IDA
         // xref scan reveals those fields are DirectPlay-specific:
@@ -147,6 +162,11 @@ void RunBattleTick() {
             }
             ParityRecorder::Capture();   // per confirmed sim frame
         }
+
+        // The heavy-stage catch-up: sim_steps logic ticks for ONE render. Both
+        // numbers go in the row, because a frame that ran 4 sim steps is not a
+        // slow frame in the same sense as one that ran 1 and still missed.
+        FrameTiming_NoteSim(sim_ns, sim_steps);
 
         g_render_rand_calls = 0;
         const uint64_t _r0 = SDL_GetPerformanceCounter();
@@ -238,10 +258,21 @@ void RunBattleTick() {
         // (lockstep stall waiting on remote input) -- spinning would not help
         // and would over-predict.
         int taken = 0;
+        const uint64_t _ft_s0 = SDL_GetPerformanceCounter();
         for (int s = 0; s < steps; ++s) {
             if (!Netplay_ProcessBattleInputPhase()) break;
             ++taken;
         }
+        // THE recorded event. Netplay_ProcessBattleInputPhase returning false
+        // on the FIRST attempt means gekko emitted no Advance: the frame is
+        // SKIPPED, and that is a dropped frame, not a slow one. Gekko stalls
+        // once it has predicted input_prediction_window consecutive frames
+        // with no real input (CanPredictInput, GekkoLib/src/input.cpp), so a
+        // RUN of these is the prediction wall, and runs are what the summary
+        // counts. Sim time is taken across the whole loop, so a rollback
+        // batch's resim lands in the frame that paid for it.
+        FrameTiming_NoteSim(SDL_GetPerformanceCounter() - _ft_s0, taken);
+        if (taken == 0) FrameTiming_NoteStall();
         if (steps > 1 && taken > 1) {
             static uint32_t s_skip_log = 0;
             static const bool s_perf = []{ const char* v = std::getenv("FM2K_PERF_PROFILE");

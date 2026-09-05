@@ -60,6 +60,15 @@ void LauncherUI::HandleHubEvent(const fm2k::HubEvent& ev) {
                 hs.my_id = ev.user_id;
                 hs.rooms = ev.rooms;
                 hs.status_line = "connected";
+                // Feature negotiation. A hub that predates the field
+                // sends no capabilities at all, so chat_supported stays
+                // false and any future compose box stays disabled --
+                // degrade quietly rather than sending chat_send into a
+                // hub that will just log an unknown type.
+                hs.hub_capabilities = ev.capabilities;
+                hs.chat_supported =
+                    std::find(ev.capabilities.begin(), ev.capabilities.end(),
+                              std::string("chat_v1")) != ev.capabilities.end();
                 // Drain any match results queued while the WS was down.
                 // PollMatchOutcome falls through to push here when
                 // hs.client.IsConnected() is false (long pause →
@@ -218,6 +227,12 @@ void LauncherUI::HandleHubEvent(const fm2k::HubEvent& ev) {
                     }
                 }
                 hs.users.clear();
+                // The hub keeps no chat history, so a reconnect can
+                // never refill this -- drop it with the user list
+                // rather than leave stale lines above fresh ones.
+                hs.chat_lines.clear();
+                hs.chat_supported = false;
+                hs.hub_capabilities.clear();
                 hs.current_room_id.clear();
                 hs.my_id.clear();
                 hs.status_line = ev.error.empty() ? "disconnected" : ("disconnected: " + ev.error);
@@ -228,6 +243,9 @@ void LauncherUI::HandleHubEvent(const fm2k::HubEvent& ev) {
             case K::RoomJoined: {
                 if (!ev.rooms.empty()) hs.current_room_id = ev.rooms.front().id;
                 hs.users.clear();
+                // Chat is per-room and unreplayable -- start the new
+                // room's scrollback empty.
+                hs.chat_lines.clear();
                 for (auto& u : ev.users) hs.users[u.id] = u;
                 // Auto-select the installed game matching this room and
                 // ALSO fire on_game_selected so the launcher's
@@ -258,6 +276,7 @@ void LauncherUI::HandleHubEvent(const fm2k::HubEvent& ev) {
                 hs.last_room_id.clear();
                 hs.last_room_name.clear();
                 hs.users.clear();
+                hs.chat_lines.clear();
                 break;
             case K::UserJoined:
                 if (ev.room_id == hs.current_room_id) hs.users[ev.user.id] = ev.user;
@@ -592,6 +611,36 @@ void LauncherUI::HandleHubEvent(const fm2k::HubEvent& ev) {
                     hs.current_matches.end());
                 break;
             }
+            case K::ChatReceived: {
+                // Includes our own sends -- the hub echoes them back to
+                // the whole room, which is exactly why SendChat does not
+                // echo locally. Drop lines for a room we are no longer
+                // in so a late broadcast can't contaminate the new room.
+                if (!ev.chat.room_id.empty() &&
+                    ev.chat.room_id != hs.current_room_id) {
+                    break;
+                }
+                HubState::ChatLine line;
+                line.ts      = ev.chat.ts;
+                line.user_id = ev.chat.user_id;
+                line.nick    = ev.chat.nick;
+                line.text    = ev.chat.text;
+                line.system  = ev.chat.system;
+                hs.chat_lines.push_back(std::move(line));
+                while (hs.chat_lines.size() > HubState::kChatBacklogMax) {
+                    hs.chat_lines.pop_front();
+                }
+                break;
+            }
+            case K::ChatRateLimited:
+                // The line was dropped by the hub, not queued. Say so in
+                // the status line; there is nothing to resend for them.
+                hs.status_line = "chat rate limited -- retry in "
+                    + std::to_string(ev.chat_rate_limited.retry_after_ms) + " ms";
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                            "Hub: chat rate limited, retry_after_ms=%d",
+                            ev.chat_rate_limited.retry_after_ms);
+                break;
             case K::Error:
                 hs.status_line = "error: " + ev.error;
                 SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,

@@ -18,60 +18,6 @@
 #include <iostream>
 #include <windows.h>
 
-bool FM2KLauncher::LaunchGame(const FM2K::FM2KGameInfo& game) {
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Attempting to launch game: %s", game.exe_path.c_str());
-
-    if (!game.is_host) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Cannot launch invalid game - is_host flag is false");
-        return false;
-    }
-
-    // Terminate existing game if running
-    if (game_instance_ && game_instance_->IsRunning()) {
-        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Terminating existing game instance before new launch");
-        game_instance_->Terminate();
-    }
-
-    // Create new game instance
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Creating new FM2KGameInstance");
-    game_instance_ = std::make_unique<FM2KGameInstance>();
-
-    // Apply any pending configuration before launching
-    ApplyPendingConfigToInstance(game_instance_.get());
-
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "Launching game with EXE: %s, KGT: %s, engine=%s",
-                 game.exe_path.c_str(), game.dll_path.c_str(),
-                 FM2K::EngineName(game.engine));
-
-    if (!game_instance_->Launch(game.exe_path, game.engine)) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to launch game: %s", game.exe_path.c_str());
-        game_instance_.reset();
-        return false;
-    }
-
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Game launched successfully: %s", game.exe_path.c_str());
-
-    // Wait a moment and check if process is still running
-    SDL_Delay(100);
-    if (!game_instance_->IsRunning()) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Game process terminated immediately after launch!");
-        game_instance_.reset();
-        return false;
-    }
-
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Game process confirmed running after 100ms");
-
-    return true;
-}
-
-void FM2KLauncher::TerminateGame() {
-    if (game_instance_) {
-        game_instance_->Terminate();
-        game_instance_.reset();
-        std::cout << "? Game terminated\n";
-    }
-}
-
 // Multi-client testing implementation
 bool FM2KLauncher::LaunchLocalClient(const std::string& game_path, bool is_host, int port) {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Launching local client: %s (Host: %s, Port: %d)",
@@ -102,11 +48,9 @@ bool FM2KLauncher::LaunchLocalClient(const std::string& game_path, bool is_host,
     (*target_instance)->SetEnvironmentVariable("FM2K_LOCAL_PORT", std::to_string(port));  // Keep port different (required for networking)
     // LOCAL-TEST PATH ONLY. LaunchLocalClient spawns two instances on this
     // machine over loopback for hands-on testing -- hence the hardcoded
-    // 127.0.0.1 remote and the FIXED RNG seed (both local instances must agree
-    // on the seed). The real matchmaked/networked path is session_control.cpp,
-    // which sets FM2K_REMOTE_ADDR from the actual peer and NEVER sets
-    // FM2K_FORCE_RNG_SEED (real matches derive their seed from the match). Do
-    // NOT route production matches through here.
+    // 127.0.0.1 remote. The real matchmaked/networked path is
+    // session_control.cpp, which sets FM2K_REMOTE_ADDR from the actual peer.
+    // Do NOT route production matches through here.
     (*target_instance)->SetEnvironmentVariable("FM2K_REMOTE_ADDR", "127.0.0.1:" + std::to_string(is_host ? 7001 : 7000));  // loopback (local test)
 
     // FM2K_PRODUCTION_MODE=0 keeps verbose desync diagnostics on during the
@@ -114,11 +58,7 @@ bool FM2KLauncher::LaunchLocalClient(const std::string& game_path, bool is_host,
     // builds (here AND in session_control.cpp) so shipped clients aren't in
     // debug mode.
     (*target_instance)->SetEnvironmentVariable("FM2K_PRODUCTION_MODE", "0");
-    (*target_instance)->SetEnvironmentVariable("FM2K_INPUT_RECORDING", "1");  // Enable input recording by default
 
-    // Fixed seed -- SAFE here (local loopback test, both instances identical).
-    // Never set on the matchmaked path.
-    (*target_instance)->SetEnvironmentVariable("FM2K_FORCE_RNG_SEED", "12345678");
 
     // Launch clients simultaneously - no delay needed
     // The GekkoNet synchronization will handle timing differences
@@ -182,8 +122,6 @@ bool FM2KLauncher::LaunchLocalSpectator(const std::string& game_path,
     spectator_instance_->SetEnvironmentVariable("FM2K_REMOTE_ADDR",    "127.0.0.1:" + std::to_string(host_port));
     spectator_instance_->SetEnvironmentVariable("FM2K_SPECTATOR_MODE", "1");
     spectator_instance_->SetEnvironmentVariable("FM2K_PRODUCTION_MODE", "0");
-    spectator_instance_->SetEnvironmentVariable("FM2K_INPUT_RECORDING", "0");
-    spectator_instance_->SetEnvironmentVariable("FM2K_FORCE_RNG_SEED",  "12345678");
     // Parity recorder is OPT-IN: an unset FM2K_PARITY_RECORD_PATH means no
     // recording, not a default path. See the note in session_control.cpp --
     // the old default named a developer's absolute drive path and failed
@@ -233,6 +171,7 @@ bool FM2KLauncher::LaunchRemoteSpectator(const std::string& game_path,
     // patch env (team size / damage mult) would fork their sim from the
     // stream. Same neutralize the online session start does.
     lui::NeutralizeGamePatchEnvVars();
+    lui::NeutralizeDevLaunchEnvVars();
 
     ApplyPendingConfigToInstance(spectator_instance_.get());
 
@@ -245,8 +184,6 @@ bool FM2KLauncher::LaunchRemoteSpectator(const std::string& game_path,
     spectator_instance_->SetEnvironmentVariable("FM2K_REMOTE_ADDR",     remote_addr);
     spectator_instance_->SetEnvironmentVariable("FM2K_SPECTATOR_MODE",  "1");
     spectator_instance_->SetEnvironmentVariable("FM2K_PRODUCTION_MODE", "0");
-    spectator_instance_->SetEnvironmentVariable("FM2K_INPUT_RECORDING", "0");
-    spectator_instance_->SetEnvironmentVariable("FM2K_FORCE_RNG_SEED",  "12345678");
     // Auto-derived spec transport from the host's spectate_grant. "relay"
     // enables the hub-relay data plane in the spec hook; "direct" (and the
     // legacy spelling "tcp" an older hub still sends for the non-relay case)
@@ -352,7 +289,6 @@ bool FM2KLauncher::LaunchReplayPlayer(const std::string& game_path,
     spectator_instance_->SetEnvironmentVariable("FM2K_SPECTATOR_MODE",  "1");
     spectator_instance_->SetEnvironmentVariable("FM2K_REPLAY_FILE",     replay_path);
     spectator_instance_->SetEnvironmentVariable("FM2K_PRODUCTION_MODE", "0");
-    spectator_instance_->SetEnvironmentVariable("FM2K_INPUT_RECORDING", "0");
 
     if (!spectator_instance_->Launch(game_path)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to launch replay player: %s",
@@ -400,8 +336,6 @@ bool FM2KLauncher::LaunchLocalSpectator2(const std::string& game_path,
     spectator2_instance_->SetEnvironmentVariable("FM2K_REMOTE_ADDR",    "127.0.0.1:" + std::to_string(upstream_port));
     spectator2_instance_->SetEnvironmentVariable("FM2K_SPECTATOR_MODE", "1");
     spectator2_instance_->SetEnvironmentVariable("FM2K_PRODUCTION_MODE", "0");
-    spectator2_instance_->SetEnvironmentVariable("FM2K_INPUT_RECORDING", "0");
-    spectator2_instance_->SetEnvironmentVariable("FM2K_FORCE_RNG_SEED",  "12345678");
 
     if (!spectator2_instance_->Launch(game_path)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,

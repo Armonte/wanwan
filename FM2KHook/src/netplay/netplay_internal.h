@@ -34,14 +34,13 @@ inline constexpr uint32_t SWAP_FRAME_BUFFER = 8;  // barrier swap-frame lead
 // which peer led. 32 = window(16) + 16 margin.
 inline constexpr uint32_t FM95_END_SWAP_BUFFER = 32;
 
-// Pre-rendezvous character-select park (css_child_asymmetry.md fix). Kill
-// switch FM2K_CSS_PARK, default ON (FM2K only); A/B scaffolding scheduled for
-// deletion. All four live in netplay_css_park.cpp next to the park itself,
-// which is where the design comment, the FM95 engine-scope argument and the
-// deletion schedule are written down.
-bool CssRendezvousPark_Enabled();
+// Pre-rendezvous character-select park (css_child_asymmetry.md fix). FM2K
+// only -- the A/B kill switch it shipped behind is deleted, the park is now
+// unconditional there. All three live in netplay_css_park.cpp next to the park
+// itself, which is where the design comment and the FM95 engine-scope argument
+// are written down.
 // One pre-rendezvous CSS tick: false = parked (skip sim AND render), true =
-// pre-fix free-run. leg 1 = pre-CONNECTED, leg 2 = !g_remote_css_ready.
+// free-run (FM95 only). leg 1 = pre-CONNECTED, leg 2 = !g_remote_css_ready.
 bool CssPreRendezvousTick(int leg);
 // Per-phase census reset (pass the live g_css_synced) + the one [CSS-RDV]
 // rendezvous: line per peer per CSS phase.
@@ -111,11 +110,6 @@ extern uint32_t g_entry_remote_cfg_digest;
 extern bool g_received_hello;
 extern bool g_received_hello_ack;
 extern uint32_t g_pending_random_stage;
-extern NetplaySessionKind g_pending_swap_kind;
-extern uint32_t           g_pending_swap_frame;
-extern LARGE_INTEGER g_perf_freq;
-extern LARGE_INTEGER g_frame_start;
-extern bool g_frame_timer_initialized;
 
 // stragglers (had parens in their comments, so the bulk generator skipped them):
 extern bool     g_css_active;
@@ -163,8 +157,6 @@ void    Netplay_EndCSSSession();
 void HandleDesyncDetected(int frame, uint32_t local_chk, uint32_t remote_chk, bool synthetic);
 void MaybeFireSyntheticDesync();
 // cross-TU between netplay.cpp and the battle-phase TU:
-bool MaybeSwapPendingSpectator(uint32_t advanced_frame);  // defined in netplay.cpp
-void HandleFrameTime(float frames_ahead);                 // defined in netplay_battle_phase.cpp
 
 // Rollback update-event handlers (netplay_battle_events.cpp), dispatched by the
 // engine-agnostic driver in netplay_battle_phase.cpp. Engine-agnostic in

@@ -557,6 +557,4 @@ void LauncherUI::ClearLog() {
     SDL_UnlockMutex(log_buffer_mutex_);
 }
 
-void LauncherUI::RenderObjectAnalysis() {}
 
-void LauncherUI::RenderSlotInspectionWindow() {}

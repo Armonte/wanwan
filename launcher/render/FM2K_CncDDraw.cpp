@@ -2,6 +2,7 @@
 
 #include "FM2K_CncDDraw.h"
 #include "FM2K_Utf8Path.h"  // WideToUtf8 -- keep the module path UTF-8, not ANSI
+#include "FM2K_DDrawRedirect.h"  // ResolveCncDdrawDir -- THE ONE cnc-ddraw dir resolver
 
 #include <SDL3/SDL_log.h>
 
@@ -331,21 +332,43 @@ bool ExtractZip(const std::string& zip_path, const std::string& dst_dir) {
 //   WH_KEYBOARD hook (keyboard.c) -- with F4 bound there, Alt+F4 toggled
 //   fullscreen instead of closing the game. Our wndproc subclass owns F4
 //   now (wndproc_subclass.cpp); cnc-ddraw itself passes Alt+F4 through
-//   to the normal close chain once nothing binds F4. Only the exact old
-//   default 0x73 is rewritten, so a deliberate custom binding survives.
+//   to the normal close chain once nothing binds F4.
+//   ONCE ONLY: the migration is stamped (`launcher_migrated=1` in [ddraw])
+//   so a user who later binds F4 in Settings > Display > Hotkeys keeps it.
+//   Before the stamp, every launcher start silently rewrote that binding
+//   back to 0x00 (audit 2026-09-02, S2).
+//   renderer: pinned to direct3d9 on every launcher START (not on every
+//   frame the Display tab is open, which is what it used to be -- S3). The
+//   in-game overlay hooks IDirect3DDevice9::EndScene and never attaches on
+//   opengl/gdi, so this is a hard requirement, but it belongs here, once,
+//   logged, not hidden inside a tab render.
 void MigrateManagedIniKeys() {
     const std::string ini = InstallDir() + "\\ddraw.ini";
     std::error_code ec;
     if (!std::filesystem::exists(ini, ec)) return;
-    // GetPrivateProfileIntA parses the 0x-prefixed hex these keys use.
-    const int fs2 = (int)GetPrivateProfileIntA("ddraw", "keytogglefullscreen2",
-                                               0, ini.c_str());
-    if (fs2 == 0x73) {
-        WritePrivateProfileStringA("ddraw", "keytogglefullscreen2", "0x00",
-                                   ini.c_str());
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "CncDDraw: migrated keytogglefullscreen2 0x73 -> 0x00 "
-            "(F4 is hook-owned now; frees Alt+F4 to close the game)");
+    const int stamp = (int)GetPrivateProfileIntA("ddraw", "launcher_migrated",
+                                                 0, ini.c_str());
+    if (stamp < 1) {
+        // GetPrivateProfileIntA parses the 0x-prefixed hex these keys use.
+        const int fs2 = (int)GetPrivateProfileIntA("ddraw", "keytogglefullscreen2",
+                                                   0, ini.c_str());
+        if (fs2 == 0x73) {
+            WritePrivateProfileStringA("ddraw", "keytogglefullscreen2", "0x00",
+                                       ini.c_str());
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "CncDDraw: migrated keytogglefullscreen2 0x73 -> 0x00 "
+                "(F4 is hook-owned now; frees Alt+F4 to close the game)");
+        }
+        WritePrivateProfileStringA("ddraw", "launcher_migrated", "1", ini.c_str());
+    }
+    char renderer[64] = {};
+    GetPrivateProfileStringA("ddraw", "renderer", "", renderer, sizeof(renderer),
+                             ini.c_str());
+    if (std::strcmp(renderer, "direct3d9") != 0) {
+        WritePrivateProfileStringA("ddraw", "renderer", "direct3d9", ini.c_str());
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "CncDDraw: renderer='%s' in ddraw.ini reset to direct3d9 "
+            "(the in-game overlay requires D3D9)", renderer);
     }
 }
 
@@ -577,6 +600,13 @@ void JoinWorker() {
 // ---------------------------------------------------------------------------
 
 std::string InstallDir() {
+    // ONE resolver for "where cnc-ddraw lives". The launch path
+    // (FM2K_GameInstance.cpp) already used ddraw_redirect::ResolveCncDdrawDir,
+    // which honours the FM2K_DDRAW_DIR override; this installer/ini side used
+    // to hardcode <launcher>\cnc-ddraw, so with the override set every Display
+    // tab edit landed in a file the game never read (audit 2026-09-02, S1).
+    const std::wstring w = FM2K::ddraw_redirect::ResolveCncDdrawDir();
+    if (!w.empty()) return fm2k::utf8path::WideToUtf8(w);
     return AppDir() + "\\cnc-ddraw";
 }
 

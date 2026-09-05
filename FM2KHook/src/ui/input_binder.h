@@ -80,6 +80,12 @@ struct PlayerBindings {
     // configs). Persisted as "device_id" / "device_name" per [PlayerN].
     std::string device_id;
     std::string device_name;  // display label when the pad is disconnected
+
+    // SOCD mode for THIS player's device (0..5, see hooks_input.cpp), or
+    // -1 = inherit the process-wide FM2K_SOCD_MODE. Travels with the
+    // profile, i.e. with the device identity above -- per player, per
+    // device, never pushed by the host. Persisted as "socd_mode".
+    int socd_mode = -1;
 };
 
 // Initialize: opens any visible gamepads and loads bindings from
@@ -165,9 +171,6 @@ bool ForkDefaultToGameProfile();
 // the per-game file and re-Loads from default. Returns false if no
 // per-game profile was active.
 bool DeleteGameProfile();
-
-// Path of the currently-active profile (for diagnostic UI / logging).
-const char* CurrentConfigPath();
 
 // Direct access (for diagnostic UI, etc.).
 PlayerBindings& Bindings(int player_slot);

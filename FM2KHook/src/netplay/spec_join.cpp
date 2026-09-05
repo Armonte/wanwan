@@ -664,8 +664,6 @@ void SpectatorNode_HandleHeartbeat(const sockaddr_in& from) {
 // STATUS
 // -----------------------------------------------------------------------------
 
-size_t SpectatorNode_GetSubscriberCount() { return g_state.subscribers.size(); }
-bool   SpectatorNode_IsBroadcasting()     { return g_state.broadcasting;      }
 
 std::vector<sockaddr_in> SpectatorNode_GetSubscriberAddrs() {
     std::vector<sockaddr_in> out;

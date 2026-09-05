@@ -203,8 +203,3 @@ GekkoNetAdapter* CreateMultiplexAdapter() {
     return &g_multiplex_adapter;
 }
 
-void DestroyMultiplexAdapter() {
-    // Clear any remaining queued packets
-    g_gekko_packet_queue.clear();
-    g_gekko_result_ptrs.clear();  // Note: results themselves are freed by GekkoNet
-}

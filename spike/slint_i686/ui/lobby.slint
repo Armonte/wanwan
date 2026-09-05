@@ -1,0 +1,143 @@
+// lobby.slint -- the game's CHAT CHANNEL, which is what a lobby actually is
+// here. Structure from app.jsx's LobbyView in the design project: a rules /
+// resources / events header, the channel scroll, and a compose row.
+//
+// THIS IS NOT A MATCH SCREEN. An earlier version of this file rendered
+// P1/VS/P2 seats and a spectator list, taken from an older mock. That is a
+// match view; the lobby is the room you sit in before there is a match, and
+// the thing you do in it is talk. Matchmaking happens in the right rail
+// ("looking to play"), not here.
+import { Nerv, Type } from "theme.slint";
+import { ScrollView } from "std-widgets.slint";
+import { NervInput } from "widgets.slint";
+
+export struct ChatLine {
+    time: string,
+    who: string,
+    text: string,
+    system: bool,
+    me: bool,
+}
+
+export component Lobby inherits Rectangle {
+    in property <string> game_code;
+    in property <bool> connected;
+    in property <[ChatLine]> chat;
+    // Set while the hub is throttling us. The hub DROPS a throttled line
+    // rather than queueing it, so saying nothing would let a message the
+    // user watched themselves type simply never appear.
+    in property <string> notice;
+    callback send(string);
+
+    // A channel that does not follow the bottom is a channel you have to
+    // drag every time somebody speaks. Tracked through a mirror property
+    // because the handler has to fire on the COUNT changing, not on the
+    // model being re-read.
+    property <int> chat_count: root.chat.length;
+    changed chat_count => {
+        channel.viewport-y = min(0px, channel.visible-height - channel.viewport-height);
+    }
+
+    background: transparent;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // ── house rules ──
+        //
+        // This was a 92px block: a rules paragraph plus a RESOURCES slot
+        // that said it had nothing in it. Both were permanent furniture in
+        // a view whose entire job is the conversation below them. A slot
+        // that announces its own emptiness is worse than no slot, so it is
+        // gone until the hub actually serves per-game links; and the rules
+        // are read once, ever, so they get one line instead of four.
+        Rectangle {
+            height: 22px;
+            background: transparent;
+            HorizontalLayout {
+                padding-left: 8px; padding-right: 8px; spacing: 6px;
+                Text {
+                    text: "HOUSE RULES";
+                    font-size: Type.label; color: Nerv.ink3;
+                    letter-spacing: Type.track;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "Be civil. No turbo, macros or rank-boosting. Right-click a name to ignore.";
+                    font-size: Type.body_sm; color: Nerv.dim;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+            }
+        }
+        Rectangle { height: 1px; background: Nerv.line; }
+
+        // ── channel ──
+        channel := ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding: 8px; spacing: 2px; alignment: start;
+                if root.chat.length == 0: Text {
+                    text: root.connected
+                          ? "No messages yet."
+                          : "Not connected to the hub. Check the hub server under CONFIG > NETWORK.";
+                    font-size: Type.body_sm;
+                    color: Nerv.faint;
+                    wrap: word-wrap;
+                }
+                for m in root.chat: HorizontalLayout {
+                    spacing: 5px;
+                    Text { text: m.time; font-size: Type.body_sm; color: Nerv.faint; }
+                    Text {
+                        // System lines are the accent, your own are phos,
+                        // everyone else is plain -- so you can find yourself
+                        // in a fast channel without reading names.
+                        text: m.system ? "<" + m.who + ">" : m.who + ":";
+                        font-size: Type.body_sm;
+                        color: m.system ? Nerv.acc_dim : m.me ? Nerv.phos : Nerv.ink2;
+                    }
+                    Text {
+                        text: m.text;
+                        font-size: Type.body;
+                        color: m.system ? Nerv.acc_dim : Nerv.ink;
+                        horizontal-stretch: 1;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        // ── compose ──
+        Rectangle { height: 1px; background: Nerv.line; }
+        if root.notice != "": Rectangle {
+            height: 16px;
+            background: transparent;
+            HorizontalLayout {
+                padding-left: 6px;
+                Text {
+                    text: root.notice;
+                    font-size: Type.body_sm; color: Nerv.amber;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        Rectangle {
+            height: 30px;
+            background: transparent;
+            HorizontalLayout {
+                padding: 5px; spacing: 6px;
+                Text { text: ">"; font-size: Type.body; color: Nerv.ink3; vertical-alignment: center; }
+                NervInput {
+                    horizontal-stretch: 1;
+                    enabled: root.connected;
+                    placeholder: root.connected
+                                 ? "message #" + root.game_code + "-lobby..."
+                                 : "not connected";
+                    accepted(t) => { root.send(t); self.text = ""; }
+                }
+                Text { text: "ENTER"; font-size: Type.body_sm; color: Nerv.faint; vertical-alignment: center; }
+            }
+        }
+    }
+}

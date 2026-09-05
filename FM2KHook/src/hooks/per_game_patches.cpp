@@ -14,7 +14,7 @@
 #include "MinHook.h"
 #include <safetyhook.hpp>  // SafetyHook MidHook for KOF HP-init patch
 #include "round_events.h"  // RoundEvents_KofSnapshot* accessors
-#include "combat_state.h"  // combat_state::ShouldGuardP2 for state-driven Guard
+#include "combat_state.h"  // combat_state::GuardP2Input for state-driven Guard
 #include "../netplay/netplay.h"          // Netplay_IsConnected (BTB handshake hold)
 #include "../netplay/control_channel.h"  // ControlChannel_Poll/SendHello
 #include "../netplay/game_hash.h"        // fm2k::game_hash::Compute
@@ -160,7 +160,6 @@ SafetyHookMid g_kof_mid_hook{};
 // scope for this hijack.
 
 
-SafetyHookMid g_story_init_mid_hook{};
 
 // MidHook handler -- invoked BEFORE the original instruction runs.
 // SafetyHook saves & restores all registers + flags + XMM around us.

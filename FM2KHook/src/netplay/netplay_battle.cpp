@@ -240,15 +240,62 @@ bool Netplay_StartBattle() {
         ControlChannel_ResetWorstRttMs();
     }
 
-    // prediction_window: how far GekkoNet will speculatively rewind
-    // before stalling. Default 16 at 100 FPS gives ~160 ms wall-clock
-    // budget (matches the GekkoNet OnlineSession reference's 10-frame
-    // budget at 60 FPS). Free CPU at steady state -- only costs work
-    // *during* a recovery from a deep rollback, which is rare.
+    // prediction_window: how many frames GekkoNet will speculate before it
+    // REFUSES TO ADVANCE. That refusal is the thing players feel. Gekko
+    // stops advancing once it has predicted this many consecutive frames
+    // with no real input arriving (CanPredictInput, GekkoLib input.cpp),
+    // our Netplay_ProcessBattleInputPhase returns false, and the frame is
+    // skipped. And because the other peer can only advance as fast as
+    // inputs arrive, ONE peer stalling drags BOTH down -- the session runs
+    // at the slowest peer's rate.
     //
-    // FM2K_PREDICTION_WINDOW env override accepts 0..64. Set 8 to
-    // bisect a regression against the pre-2026-05-18 default.
-    int prediction_window = 16;
+    // 32 FRAMES = 320 ms of tolerated silence, raised from 16 (160 ms) on
+    // 2026-09-04. 160 ms was chosen to match the reference's 10 frames at
+    // 60 FPS, which is the same wall clock, but the reference was not aimed
+    // at our players: field logs show 138-261 ms ping with jitter reaching
+    // 76 ms, so a single spike leaves more than 160 ms of silence and they
+    // stall. They were living on the edge of the window.
+    //
+    // WHAT IT COSTS. CORRECTED 2026-09-04 by the per-frame instrument
+    // against a live impaired match (200 ms delay, 45 ms jitter, 10% loss),
+    // because the first number here was wrong and wrong in the optimistic
+    // direction. A rolled-back frame is NOT "one save plus one tick" at
+    // ~75 us: that figure came from micro-benchmarking the save and the
+    // gekko tick in isolation. A real re-simulated frame runs the game's
+    // whole update, and the instrument measures it at a MEDIAN 342 us and
+    // a p90 of ~600 us -- roughly five to eight times the bench figure. A
+    // normal un-rolled-back frame's sim is ~580 us for comparison.
+    //
+    // So a full-depth 32-frame rollback is about 9 ms of a 10 ms frame,
+    // not 2.4 ms. Measured directly: depths of 31, 32 and 33 came in at
+    // 8.9 to 9.5 ms. That FITS, but with no margin, and some of those
+    // frames overran the budget once render was added.
+    //
+    // KEPT AT 32 ANYWAY, and here is the honest trade rather than the
+    // flattering one. Going deep costs ONE over-budget frame. Stalling
+    // costs a run: the same match recorded a stall run of 100 consecutive
+    // dropped frames, a full second of frozen game, and because the peer
+    // can only advance as fast as inputs arrive, one peer's stall run
+    // drags the other down too. One late frame against a one-second freeze
+    // is not a close call. But this window is now at its ceiling, not
+    // comfortably inside it: the binding cost is the GAME'S OWN update,
+    // which we cannot make cheaper, so 64 is NOT available no matter what
+    // the save costs. Memory was never the constraint (the rings are
+    // already MAX_ROLLBACK_FRAMES = 64 deep).
+    //
+    // The asymmetry is the point. A deep rollback that FITS in the budget
+    // is invisible -- the frame takes 8 ms instead of 2 and still meets its
+    // deadline. A stall drops the frame outright and takes the other peer
+    // with it. So buying silence tolerance with occasional re-simulation is
+    // a good trade right up until the rollback stops fitting.
+    //
+    // Not raised further, and 64 is now ruled OUT rather than deferred:
+    // at 342 us per re-simulated frame a 64-frame rollback is ~22 ms, more
+    // than two whole frames. The measurement that would justify moving
+    // this number again is a cheaper game update, not a cheaper save.
+    //
+    // FM2K_PREDICTION_WINDOW env override accepts 0..64.
+    int prediction_window = 32;
     if (const char* env = std::getenv("FM2K_PREDICTION_WINDOW"); env && env[0]) {
         int v = std::atoi(env);
         if (v >= 0 && v <= 64) prediction_window = v;
@@ -388,6 +435,12 @@ bool Netplay_StartBattle() {
     // MATCH_START event's 96-byte payload (byte-compatible with the old
     // ReplayHeader so the wire schema stays stable).
     const uint32_t initial_seed = Netplay_TestBattleSeed();
+    // NOT the wire fingerprint. This is the MATCH_START payload's state
+    // hash, part of the .fm2krep schema and compared host-against-spectator
+    // by the harness -- a different question from the peer checksum, and it
+    // must keep hashing what it always hashed or every spectator reads as
+    // desynced. (It did, for one build: a blanket rename of the peer sites
+    // caught this one too and the whole spectator stage went red.)
     const uint32_t initial_state_hash =
         SaveState_GetRegionChecksums().gameplay_fingerprint;
 

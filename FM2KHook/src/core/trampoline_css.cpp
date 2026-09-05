@@ -17,12 +17,16 @@
 #include <cstring>
 #include <windows.h>
 #include "trampoline_internal.h"
+#include "frame_timing.h"        // DIAGNOSTIC per-frame timing ring (dark by default)
 
 // CSS: lockstep via control channel. Same sim functions as native, plus a
 // stall check that waits for the remote peer's input before advancing.
 // When stalling we only pump messages and poll the control channel; we do
 // NOT run the sim (so the peers stay frame-aligned).
 void RunCssTick() {
+    // Named first: the lockstep stall below returns early, and that row is a
+    // CSS row that did no sim, not a menu row.
+    FrameTiming_NotePhase(FtPhase::CSS);
     Hook_CheckGameModeTransition_Public();
 
     // Stress mode + offline both run CSS natively -- no peer, no lockstep.
@@ -61,8 +65,13 @@ void RunCssTick() {
     // waiting on a remote input for the current CSS frame. Under #66 CSS
     // rollback it instead runs the sim PER AdvanceEvent (re-sim) internally
     // and returns true once at least one confirmed advance landed this tick.
+    // Under #66 CSS rollback the sim runs INSIDE Netplay_ProcessCSS (once per
+    // AdvanceEvent), so timing it here rather than only the native tick below
+    // is what keeps `sim` honest on the rollback-CSS path.
+    const uint64_t _ft_s0 = SDL_GetPerformanceCounter();
     if (!skip_netplay) {
         if (!Netplay_ProcessCSS()) {
+            FrameTiming_NoteSim(SDL_GetPerformanceCounter() - _ft_s0, 0);
             return;
         }
     }
@@ -87,6 +96,7 @@ void RunCssTick() {
             Netplay_EmitCssFpHost();
         }
     }
+    FrameTiming_NoteSim(SDL_GetPerformanceCounter() - _ft_s0, 1);
 
     // Advance virtual_time to match the spectator's per-pop bump cadence, so
     // the counter the SPECTATOR reads through Hook_timeGetTime advances at the

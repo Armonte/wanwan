@@ -73,9 +73,17 @@ rm -f "$ZIP_PATH"
 
 rm -rf "$STAGED"
 
+# ── sign it here, not as a separate thing you have to remember ──
+#
+# The updater REFUSES a zip whose .sig is missing or does not verify, so a
+# release packaged without this is a release nobody can install. Making it
+# part of packaging means the failure is "the cut stopped", not "everyone's
+# update broke and we found out from Discord".
+"$(dirname "$0")/sign_release.sh" "$ZIP_PATH"
+
 echo "wrote $ZIP_PATH"
 echo
 echo "next steps:"
-echo "  1. cut release:  gh release create v${VERSION} ${ZIP_PATH} --title v${VERSION} --notes 'release notes'"
+echo "  1. cut release:  gh release create v${VERSION} ${ZIP_PATH} ${ZIP_PATH}.sig --title v${VERSION} --notes 'release notes'"
 echo "  2. update LatestVersion in armonte/fm2ktest:"
 echo "       (in fm2ktest checkout) echo '${VERSION}' > LatestVersion && git commit -am 'release v${VERSION}' && git push"

@@ -35,7 +35,15 @@ from __future__ import annotations
 import argparse, os, shutil, subprocess, sys, threading, time
 from pathlib import Path
 
-LAUNCHER = Path("/mnt/c/games/FM2K_RollbackLauncher.exe")
+# ONE DEPLOY DIRECTORY IS SHARED BY EVERY CHECKOUT. go.sh copies into
+# /mnt/c/games, so two gates running at once -- two agent worktrees, or a
+# worktree and the main tree -- overwrite each other's binaries mid-run and
+# every stage after the overwrite tests a build nobody meant to test. That
+# happened on 2026-09-04 and produced seven red stages that were not real.
+# FM2K_TEST_LAUNCHER points a run at its own deployed launcher so parallel
+# gates stop lying to each other; unset, this is exactly the old path.
+LAUNCHER = Path(os.environ.get("FM2K_TEST_LAUNCHER",
+                               "/mnt/c/games/FM2K_RollbackLauncher.exe"))
 # FM2K game registry: --game <name> picks the exe. Different games have
 # different rosters / CSS grid layouts / stage-select mechanics, so the
 # multi-game sweep validates the spectator across them.
@@ -2871,7 +2879,7 @@ def _parity_gates(out_dir, specs):
     # object pool is identical by construction -- that is the acceptance term,
     # and printing it here is what stops it being re-derived by hand from
     # [POOLSET] every time. ADVISORY: it touches no verdict. It is a DETECTOR,
-    # not scaffolding -- it stays when the FM2K_CSS_PARK switch is deleted.
+    # not scaffolding -- it outlived the FM2K_CSS_PARK switch it shipped with.
     #
     # PARKED-WHILE-WAITING (review amendment 1, css_rendezvous_review.md G1a).
     # The rendezvous line only exists when the rendezvous COMPLETES, so a peer
@@ -2950,7 +2958,8 @@ def _parity_gates(out_dir, specs):
             print("[harness] CSS-RDV: NONZERO pre-rendezvous sim ticks "
                   f"(P1={fr1} P2={fr2}) -- the character-select scene was "
                   "free-run before lockstep, which is the pool-transposition "
-                  "shape. Expected ONLY in a FM2K_CSS_PARK=0 red arm "
+                  "shape. On FM2K the park is unconditional now, so this "
+                  "should not appear at all "
                   "[advisory]")
         elif fr1 and fr2:
             print(f"[harness] CSS-RDV: pre-rendezvous sim ticks 0 on BOTH "
@@ -3315,7 +3324,9 @@ def main():
     common_env = {
         "FM2K_PARITY_AUTOPLAY": "1",
         "FM2K_PARITY_AUTOPLAY_BATTLE": "1",
-        "FM2K_AUTO_TITLE_SKIP": "1",
+        # Overridable so the 0x40DD62 A/B can run the arm where the A-mash is
+        # off; unset it and this is exactly the old hardcoded "1".
+        "FM2K_AUTO_TITLE_SKIP": os.environ.get("FM2K_AUTO_TITLE_SKIP", "1"),
         # p1char,p1color,p2char,p2color,STAGE -- overridable so we can test a
         # non-zero stage (e.g. FM2K_TEST_AUTO_CSS=0,0,0,1,1) and verify the
         # live spectator loads the SAME stage the players picked.
@@ -3331,6 +3342,16 @@ def main():
         # compared P1==P2==every spectator per (match, bf). Primary verification.
         "FM2K_CINPUT":           os.environ.get("FM2K_CINPUT", "1"),
     }
+    # WSL env does not cross into the .bat the launcher is started from (see
+    # launch()), so anything the hook reads has to be forwarded by name. These
+    # are the 0x40DD62 stale-scene-table levers: the [FRAMEIDX] detector and
+    # the kill switch that restores the vanilla "draw destroyed objects"
+    # behaviour for A/B. Both dark unless the caller exports them.
+    for _passthrough in ("FM2K_FRAMEIDX_DETECT", "FM2K_RENDER_DEAD_OBJECTS",
+                         "FM2K_TITLE_FORCE_MODE_INDEX"):
+        _v = os.environ.get(_passthrough)
+        if _v:
+            common_env[_passthrough] = _v
     if args.rounds > 0:
         # Force N-round matches on both players (host writes g_default_round, the
         # HOST_CONFIG syncs it to the client) -> short matches -> fast
@@ -3405,7 +3426,7 @@ def main():
               # NOT optional: without it the columns silently emit 0x00000000
               # for every row and a whole 24-run hunt reads as "all regions
               # match" when in fact nothing was ever hashed.
-              "FM2K_SEAM_HASH", "FM2K_SEAM_RNGSITE", "FM2K_SEAM_FULLPOOL", "FM2K_SEAM_NOCARVE", "FM2K_SEAM_MEMSNAP", "FM2K_SEAM_INPUTSAVE", "FM2K_SEAM_RAWZERO", "FM2K_SEAM_ITPOST", "FM2K_CSM_DIAG", "FM2K_CSM_SEAM",
+              "FM2K_SEAM_HASH", "FM2K_SEAM_RNGSITE", "FM2K_SEAM_MEMSNAP", "FM2K_CSM_DIAG", "FM2K_CSM_SEAM",
               # Envelope inversion phase 1 (SHADOW MODE): full-image per-256B
               # block hashes diffed forward-vs-replay, so every remaining hole in
               # the save envelope names itself. Observe only -- it restores
@@ -3416,6 +3437,32 @@ def main():
               # FM2K_ENVELOPE_SHADOW_WITNESS=0 drops the byte-level witness ring
               # (block resolution only, ~20MB and ~280us/save cheaper).
               "FM2K_ENVELOPE_SHADOW", "FM2K_ENVELOPE_SHADOW_WITNESS",
+              # Cross-peer save trace (docs/dev/desync_false_positive_2026-09-03.md).
+              # Per-save cursor + the two ring words the gekko fingerprint is
+              # built from, whole session, one CSV per peer, joined offline by
+              # tools/cursor_trace_compare.py. MUST reach BOTH players: the
+              # whole question is a P1-vs-P2 one, so a one-sided forward
+              # produces a file that can never be joined and reads as "no
+              # mismatch" for the wrong reason -- the recorded env-forwarding trap.
+              "FM2K_CURSOR_TRACE",
+              # Per-frame timing ring (FM2KHook/src/core/frame_timing.cpp).
+              # Splits every frame into sim / render / sleep with stalls,
+              # rollbacks and the brake, so "was this box slow or was it the
+              # connection" is answerable from one run. MUST reach BOTH
+              # players: the cross-peer read in tools/frame_timing_report.py
+              # is the half that separates a one-sided slow MACHINE from a
+              # shared network cause, and a one-sided forward makes exactly
+              # that comparison impossible -- the recorded env-forwarding trap.
+              "FM2K_FRAME_TIMING",
+              # Asset-load levers. The frame ring above proved that the worst
+              # single frames of a session are not pacing at all -- they are
+              # synchronous .player loads running inside process_game_inputs
+              # (artifacts/load_hitch_2026-09-04.md). These arm the loader
+              # profiler and the load-side mitigations, and they belong on the
+              # PLAYER list because the loads happen on the player planes.
+              "FM2K_FPK_CSS_PROFILE", "FM2K_FPK_CSS_FASTSOUND",
+              "FM2K_FAST_PLAYER_LOAD", "FM2K_ASSET_PREFETCH",
+              "FM2K_ASSET_PREFETCH_MB",
               # Phase 4b spectator across-match-boundary diagnosis. ALL of
               # these must ALSO reach the spectators (see the spectator list
               # below) -- forwarding them here only is exactly the recorded
@@ -3487,10 +3534,11 @@ def main():
     if os.environ.get("FM2K_TEST_ROUNDS_HOST_ONLY") is not None:
         common_env["FM2K_TEST_ROUNDS_HOST_ONLY"] = os.environ["FM2K_TEST_ROUNDS_HOST_ONLY"]
     # FM2K_SOCD_MODE is deliberately NOT in the list above: it is read
-    # per-process (hooks_input.cpp) and setting it on both peers would make the
-    # SOCD variant a local-config test instead of a delivery test. It goes to
-    # the HOST ONLY, below, and every other plane must obtain it from
-    # HOST_CONFIG -- which is also what the entry barrier's digest gates.
+    # per-process (hooks_input.cpp) and goes to the HOST ONLY, below. Since
+    # 2026-09-02 SOCD is per player per device -- the host does NOT push its
+    # mode, and the entry-barrier digest does not hash it -- so the SOCD
+    # variant (spec_sweep V3) proves NON-delivery: the other planes keep
+    # their own mode while the digest still agrees.
     # FM2K_SEAM_LEGACY_PARK: same presence-not-truthiness rule. It is the
     # DIAGNOSTIC A/B lever that restores the deleted blanket load-site park
     # (i.e. reinstates the match-end-seam desync on purpose), default OFF in
@@ -3513,18 +3561,6 @@ def main():
     # list below -- it is no longer inert there.
     if os.environ.get("FM2K_ROUNDS_RELATCH") is not None:
         common_env["FM2K_ROUNDS_RELATCH"] = os.environ["FM2K_ROUNDS_RELATCH"]
-    # FM2K_CSS_PARK: pre-rendezvous character-select park (netplay_css.cpp).
-    # DEFAULT ON in the hook -- it is the fix for the sim-silent player-plane
-    # pool transposition (top=/bind= red from battle f=0 at ~1-in-3), so the
-    # value that matters is "0" and it is forwarded BY PRESENCE for exactly the
-    # reason the two switches above are: `if os.environ.get(k)` forwards "0"
-    # only by accident of Python truthiness, and one refactor to int()/== "1"
-    # silently turns every red arm into a second measurement of the default.
-    # BOTH peers get it -- a one-sided park is a phase offset by construction,
-    # i.e. the bug, so a half-forwarded lever would measure nothing.
-    # A/B SCAFFOLDING: delete this block when the switch is deleted.
-    if os.environ.get("FM2K_CSS_PARK") is not None:
-        common_env["FM2K_CSS_PARK"] = os.environ["FM2K_CSS_PARK"]
     # FM2K_SEAM_GUARD is RETIRED. It is still FORWARDED (so the hook's loud
     # "RETIRED and IGNORED" line lands in the Debug log) and warned about here,
     # because an old recipe that silently measures the default is exactly how a
@@ -3599,12 +3635,12 @@ def main():
     if _css_anim:
         p1_env["FM2K_CSS_ANIM"] = _css_anim
     # HOST-ONLY by design (Phase 6 settings-variance leg):
-    #   FM2K_SOCD_MODE          -- a per-process input filter. On the host it is
-    #                              the authoritative value HOST_CONFIG carries;
-    #                              on any other plane it would be a local
-    #                              setting, and the leg would stop testing
-    #                              delivery. Also one of the five digest fields,
-    #                              so a failure to deliver blocks battle entry.
+    #   FM2K_SOCD_MODE          -- a per-process input filter, per player per
+    #                              device since 2026-09-02. HOST_CONFIG still
+    #                              carries the host's value (provenance), but
+    #                              no other plane applies it and the digest
+    #                              does not hash it; spec_sweep V3 asserts the
+    #                              other planes KEEP their own mode.
     #   FM2K_SPEC_HOSTCFG_DROP  -- the RED-PROOF lever: the host stops sending
     #                              HOST_CONFIG to spectators (peer untouched).
     #                              Host-side only by construction.
@@ -3666,6 +3702,12 @@ def main():
                "FM2K_CSS_WIN": (_css_win if _spec_css_instruments else "0")}
         if _css_fall_delta:
             env["FM2K_CSS_FALL_DELTA"] = _css_fall_delta
+        # 0x40DD62 levers, same passthrough as common_env: the title demo the
+        # spectators boot through is the same one that crashes the players.
+        for _passthrough in ("FM2K_FRAMEIDX_DETECT", "FM2K_RENDER_DEAD_OBJECTS"):
+            _v = os.environ.get(_passthrough)
+            if _v:
+                env[_passthrough] = _v
         # [CSS-ANIM] viewer half. The whole instrument is a host-vs-spectator
         # comparison, so this MUST stay symmetric with P1's above -- unless the
         # O1 viewer-only instruments-off arm is armed, which deliberately breaks
@@ -3737,7 +3779,7 @@ def main():
                    # [HOST-FP] is gated on it and the pair is read together.
                    "FM2K_FACING_TRACE", "FM2K_FULL_CRCS", "FM2K_EB_DIAG",
                    "FM2K_SPEC_FINGERPRINT", "FM2K_HOST_TRACE",
-                   "FM2K_SEAM_TRACE", "FM2K_SEAM_HASH", "FM2K_SEAM_RNGSITE", "FM2K_SEAM_FULLPOOL", "FM2K_SEAM_NOCARVE", "FM2K_SEAM_MEMSNAP", "FM2K_SEAM_INPUTSAVE", "FM2K_SEAM_RAWZERO", "FM2K_SEAM_ITPOST", "FM2K_CSM_DIAG", "FM2K_CSM_SEAM",
+                   "FM2K_SEAM_TRACE", "FM2K_SEAM_HASH", "FM2K_SEAM_RNGSITE", "FM2K_SEAM_MEMSNAP", "FM2K_CSM_DIAG", "FM2K_CSM_SEAM",
                    # Envelope inversion phase 1 shadow mode, viewer half. Kept
                    # symmetric with the player list on principle. Honest note,
                    # same shape as the [BATTLE-OBJ] entry below: the instrument
@@ -3746,6 +3788,21 @@ def main():
                    # all-zero [ENVSHADOW] summary and no CSV on S*. If a
                    # spectator ever emits a non-zero one, that is itself a finding.
                    "FM2K_ENVELOPE_SHADOW", "FM2K_ENVELOPE_SHADOW_WITNESS",
+                   # Cross-peer save trace, viewer half. Same honest note as
+                   # the shadow entry above: it hangs off SaveState_Save, which
+                   # never runs on a spectator, so an all-zero [CURSOR] summary
+                   # and no CSV is the EXPECTED result on S*. A non-zero one
+                   # would itself be a finding.
+                   "FM2K_CURSOR_TRACE",
+                   # Per-frame timing ring, viewer half. UNLIKE the two entries
+                   # above this one is NOT expected to be all-zero: the ring
+                   # hangs off the trampoline's outer loop, which the spectator
+                   # runs like everyone else, so S* produces real rows tagged
+                   # phase=spec. That is the point -- the spectator is the
+                   # plane whose render pacing tracks the host's PRODUCTION
+                   # rate rather than a flat 100 Hz, and its frame profile has
+                   # never been measured against the players' at all.
+                   "FM2K_FRAME_TIMING",
                    # Phase 6 (a) stage switching, viewer half. Forwarded so the
                    # "the spectator NEVER rolls" assertion tests the code gate
                    # (Hook_LoadStageFile's g_spectator_mode exclusion) rather
@@ -3788,17 +3845,6 @@ def main():
         # second measurement of the default.
         if os.environ.get("FM2K_ROUNDS_RELATCH") is not None:
             env["FM2K_ROUNDS_RELATCH"] = os.environ["FM2K_ROUNDS_RELATCH"]
-        # FM2K_CSS_PARK, viewer half -- INERT BY CONSTRUCTION and forwarded
-        # anyway. A spectator is pinned to LoopPhase::SPECTATOR_PLAYBACK by
-        # ClassifyPhase, so it never calls Netplay_ProcessCSS and the park has
-        # no site to act on; its character-select walk is driven entirely by
-        # the host's recorded confirmed-input stream. Forwarded so a
-        # kill-switch A/B is never split-brain across planes and so the
-        # [CSS-RDV] contract line's absence on a viewer is a fact about the
-        # plane rather than about the env. Presence-forwarded, never
-        # truthiness. A/B SCAFFOLDING: delete with the switch.
-        if os.environ.get("FM2K_CSS_PARK") is not None:
-            env["FM2K_CSS_PARK"] = os.environ["FM2K_CSS_PARK"]
         # FM2K_TEST_ROUNDS_HOST_ONLY, viewer half. The per-frame force it
         # disables runs on the SPECTATOR too (hooks_update.cpp is reached before
         # the g_spectator_mode early return), and the spectator is the plane

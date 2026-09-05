@@ -58,6 +58,11 @@ void HubClient::OnMessage(const std::string& msg) {
         if (!rooms_arr.empty()) {
             for (auto& obj : SplitObjectArray(rooms_arr)) ev.rooms.push_back(ParseRoom(obj));
         }
+        // Optional feature list ("chat_v1", ...). Absent on hubs older
+        // than the field, which leaves the vector empty -- consumers
+        // must read that as "feature unsupported", never as "assume yes".
+        std::string caps_arr = GetSub(msg, "capabilities");
+        if (!caps_arr.empty()) ev.capabilities = SplitStringArray(caps_arr);
         EmitEvent(std::move(ev));
         return;
     }
@@ -80,6 +85,46 @@ void HubClient::OnMessage(const std::string& msg) {
         }
         std::string users_arr = GetSub(msg, "users");
         for (auto& uobj : SplitObjectArray(users_arr)) ev.users.push_back(ParseUser(uobj));
+        EmitEvent(std::move(ev));
+        return;
+    }
+
+    if (type == "subscriptions") {
+        // The accepted watch set, and one roster snapshot per room so a
+        // client can render every watched room without asking again.
+        // `rooms` carries the ids in order; `users` carries every room's
+        // members flattened, each with its own room_id, because the
+        // event has one user vector and a per-room split would need a
+        // second container for no gain -- the room id is on each user.
+        ev.kind = HubEvent::Kind::Subscriptions;
+        // One entry per REQUESTED id, carrying what it became. A hub that
+        // predates the map still sends `rooms`, so fall back to it with
+        // requested == id: on such a hub nothing folds anyway.
+        const std::string map_arr = GetSub(msg, "map");
+        if (!map_arr.empty()) {
+            for (auto& pair : SplitObjectArray(map_arr)) {
+                HubRoom hr;
+                hr.id = GetStr(pair, "room");
+                hr.requested = GetStr(pair, "asked");
+                ev.rooms.push_back(std::move(hr));
+            }
+        } else {
+            for (auto& r : SplitStringArray(GetSub(msg, "rooms"))) {
+                HubRoom hr;
+                hr.id = r;
+                hr.requested = r;
+                ev.rooms.push_back(std::move(hr));
+            }
+        }
+        for (auto& snap : SplitObjectArray(GetSub(msg, "snapshots"))) {
+            const std::string room_obj = GetSub(snap, "room");
+            HubRoom r = room_obj.empty() ? HubRoom{} : ParseRoom(room_obj);
+            for (auto& uobj : SplitObjectArray(GetSub(snap, "users"))) {
+                HubUser u = ParseUser(uobj);
+                if (u.room_id.empty()) u.room_id = r.id;
+                ev.users.push_back(std::move(u));
+            }
+        }
         EmitEvent(std::move(ev));
         return;
     }
@@ -483,6 +528,31 @@ void HubClient::OnMessage(const std::string& msg) {
     if (type == "match_in_progress_ended") {
         ev.kind = HubEvent::Kind::MatchInProgressEnded;
         ev.current_match_token = GetStr(msg, "token");
+        EmitEvent(std::move(ev));
+        return;
+    }
+
+    if (type == "chat") {
+        // Room chat broadcast. The hub sends this to EVERY member of the
+        // room including whoever sent it, so our own lines come back here
+        // too -- the send path never echoes locally (see SendChat).
+        ev.kind         = HubEvent::Kind::ChatReceived;
+        ev.chat.room_id = GetStr(msg, "room_id");
+        ev.chat.user_id = GetStr(msg, "user_id");
+        ev.chat.nick    = GetStr(msg, "nick");
+        ev.chat.text    = GetStr(msg, "text");
+        ev.chat.ts      = (int64_t)GetInt(msg, "ts", 0);
+        ev.chat.system  = GetBool(msg, "system", false);
+        EmitEvent(std::move(ev));
+        return;
+    }
+
+    if (type == "chat_rate_limited") {
+        // Sent to the offender alone. The line was DROPPED by the hub,
+        // not queued, so there is nothing to resend automatically.
+        ev.kind = HubEvent::Kind::ChatRateLimited;
+        ev.chat_rate_limited.retry_after_ms = GetInt(msg, "retry_after_ms", 0);
+        ev.chat_rate_limited.last_send_ts   = (int64_t)GetInt(msg, "last_send_ts", 0);
         EmitEvent(std::move(ev));
         return;
     }

@@ -77,7 +77,12 @@ constexpr Region kEnvelope[] = {
     { 0x004280D8, SIZE_INPUT_HISTORY },                 // input history ring, 8200
     { WaveCAddrs::OBJECT_LIST_HEADS, WaveCAddrs::OBJECT_LIST_HEADS_SZ },
     { EffectAddrs::EFFECT_SYS2, EffectAddrs::EFFECT_SYS2_SZ },
-    { WaveCAddrs::AFTERIMAGE_POOL, WaveCAddrs::AFTERIMAGE_POOL_SZ },
+    // The afterimage slice is two things (structure note in WaveCAddrs): the
+    // head is densely saved, the 100-entry trail array is saved SPARSELY (16-byte
+    // entry header only, samples are render-only), so it is listed below too.
+    { WaveCAddrs::AFTERIMAGE_POOL, WaveCAddrs::AFTERIMAGE_HEAD_SZ },
+    { WaveCAddrs::AFTERIMAGE_ENTRY_BASE,
+      WaveCAddrs::AFTERIMAGE_ENTRY_STRIDE * WaveCAddrs::AFTERIMAGE_ENTRY_COUNT },
     { ADDR_GAME_STATE, SIZE_GAME_STATE },
     { ADDR_OBJECT_POOL, SIZE_OBJECT_POOL },
     { WaveCAddrs::OBJECT_NODE_POOL, WaveCAddrs::OBJECT_NODE_POOL_SZ },
@@ -93,6 +98,13 @@ constexpr Region kEnvelope[] = {
 constexpr Region kSparse[] = {
     { ADDR_OBJECT_POOL, SIZE_OBJECT_POOL },
     { CHAR_SLOT_BASE, NUM_CHAR_SLOTS * CHAR_SLOT_SIZE },
+    // Third sparse member since 2026-09-04: only the 16-byte header of each
+    // afterimage entry is saved/restored. The 1,600-byte sample payload after it
+    // is written by the sim and read only by sprite_rendering_engine, so it is
+    // deliberately outside the envelope and its forward-vs-replay divergence is
+    // expected residue, not a restore bug.
+    { WaveCAddrs::AFTERIMAGE_ENTRY_BASE,
+      WaveCAddrs::AFTERIMAGE_ENTRY_STRIDE * WaveCAddrs::AFTERIMAGE_ENTRY_COUNT },
 };
 
 // ---- the deliberate carve-outs (E1..E5 of the study's exclusion list) ----

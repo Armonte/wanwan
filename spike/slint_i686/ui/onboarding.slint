@@ -1,0 +1,254 @@
+// onboarding.slint -- first-run setup.
+//
+// FOUR DECISIONS, EACH ONE REAL. Every control on these steps is the same
+// control Config shows later, bound to the same host key, so a choice made
+// here IS the setting -- there is no setup ritual to un-learn:
+//   1. Games folder: pick it and the scan runs right here, so you can see
+//      the games it found before you move on. The only required step:
+//      with no games there is nothing to launch, list or replay.
+//   2. Your name: a nick is all online play needs. Discord sign-in is the
+//      real Account rows from CONFIG > HUB, optional, with what it unlocks.
+//   3. Controls: the real Player 1 binder card (CONFIG > INPUT).
+//   4. Video: the renderer install and the three display choices that
+//      matter (CONFIG > DISPLAY), writing ddraw.ini.
+import { Nerv, Chrome, Type, Radius } from "theme.slint";
+import { ScrollView } from "std-widgets.slint";
+import { NervInput, EdgeButton } from "widgets.slint";
+import { SettingRow, SettingsList } from "config.slint";
+import { InputPlayer, InputRow, PlayerCard } from "input.slint";
+
+export component Onboarding inherits Rectangle {
+    in property <[string]> folders;
+    in-out property <string> display_name;
+    in-out property <int> step: 0;
+    // Live scan, from the host: running, its progress line, games so far.
+    in property <bool> scanning;
+    in property <string> status;
+    in property <int> found;
+    in property <[SettingRow]> rows;
+    in property <[InputPlayer]> input_players;
+    in property <[InputRow]> input_rows;
+    callback browse_folder();
+    callback finished();
+    callback setting_changed(string, string);
+    callback input_action(string);
+    callback name_changed();
+
+    property <[string]> titles: ["GAMES FOLDER", "YOUR NAME", "CONTROLS", "VIDEO"];
+    // Only step 0 blocks, and on GAMES FOUND, not on a folder existing: a
+    // folder with nothing in it is the same dead end one step later.
+    property <bool> can_advance: root.step != 0 || root.found > 0;
+
+    background: Nerv.bg;
+
+    VerticalLayout {
+        padding: 28px;
+        spacing: 14px;
+
+        Text { text: "2DFM"; font-size: Type.chrome_xl; color: Nerv.ink; }
+        Text {
+            text: "FIRST RUN SETUP -- STEP " + (root.step + 1) + " OF 4";
+            font-size: Type.body; color: Nerv.dim;
+        }
+
+        // Step pips: done, current, blocked, pending.
+        HorizontalLayout {
+            spacing: 4px; height: 4px;
+            for t[i] in root.titles: Rectangle {
+                horizontal-stretch: 1;
+                background: i < root.step ? Nerv.acc
+                          : i == root.step ? (root.can_advance ? Nerv.acc : Nerv.amber)
+                          : Nerv.line;
+            }
+        }
+
+        Rectangle { height: 6px; background: transparent; }
+
+        Text { text: root.titles[root.step]; font-size: Type.chrome_lg; color: Nerv.ink; }
+
+        // -- STEP 0: games folder (required) --
+        if root.step == 0: VerticalLayout {
+            spacing: 8px;
+            Text {
+                text: "Pick the folder your FM2K games live in. Every game inside it, at any depth, is found. Add more than one if they are split across drives.";
+                font-size: Type.body_lg; color: Nerv.ink2; wrap: word-wrap;
+            }
+            Rectangle {
+                background: Nerv.bg2;
+                vertical-stretch: 1;
+                ScrollView {
+                    VerticalLayout {
+                        padding: 6px; spacing: 2px; alignment: start;
+                        if root.folders.length == 0: Text {
+                            text: "No folders yet.";
+                            font-size: Type.body; color: Nerv.dim;
+                        }
+                        for f in root.folders: Text {
+                            // A filesystem path can contain Japanese; the
+                            // body face has the glyphs.
+                            text: f; font-size: Type.body; color: Nerv.ink2;
+                        }
+                    }
+                }
+            }
+            // The scan, live. This line is the whole point of the step:
+            // a folder that looks right but holds nothing shows up HERE,
+            // not after FINISH.
+            Text {
+                text: root.scanning ? root.status
+                    : root.found > 0 ? root.found + " GAME(S) FOUND"
+                    : root.folders.length > 0 ? "No FM2K games found in these folders. Try the folder that holds the game .exe files."
+                    : "";
+                font-size: Type.body;
+                color: root.scanning ? Nerv.amber : root.found > 0 ? Nerv.phos : Nerv.amber;
+                wrap: word-wrap;
+            }
+            Rectangle {
+                height: 28px;
+                background: bta.pressed ? Nerv.acc.with-alpha(0.22)
+                          : bta.has-hover ? Nerv.bg3 : transparent;
+                border-radius: Radius.sm;
+                border-width: 1px; border-color: Nerv.acc;
+                Text {
+                    text: root.folders.length == 0 ? "CHOOSE A GAMES FOLDER" : "ADD ANOTHER FOLDER";
+                    font-size: Type.body; color: Nerv.acc;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    width: 100%; height: 100%;
+                }
+                bta := TouchArea { clicked => { root.browse_folder(); } }
+            }
+        }
+
+        // -- STEP 1: your name, and the optional Discord sign-in --
+        if root.step == 1: VerticalLayout {
+            spacing: 8px; alignment: start;
+            Text {
+                text: "What other players see in the lobby. A name is all you need to play online.";
+                font-size: Type.body_lg; color: Nerv.ink2; wrap: word-wrap;
+            }
+            NervInput {
+                placeholder: "name / 名前";
+                text <=> root.display_name;
+                edited => { root.name_changed(); }
+            }
+            Rectangle { height: 8px; background: transparent; }
+            // The Account rows from CONFIG > HUB, verbatim: signed in,
+            // waiting on the browser, or the optional sign-in offer.
+            SettingsList {
+                rows: root.rows; tab: 4; onboard: true;
+                setting_changed(k, v) => { root.setting_changed(k, v); }
+            }
+        }
+
+        // -- STEP 2: controls (the real Player 1 card) --
+        // Steps 2 and 3 FILL the page (vertical-stretch) so the scroll
+        // view inside them has a height to scroll in; without it the view
+        // took its minimum and the card was cut off after one row.
+        if root.step == 2: VerticalLayout {
+            spacing: 8px; vertical-stretch: 1;
+            Text {
+                text: "Player 1 is you. Pick the pad, then \"Use this pad for every button\" sets it up in one go; or click a box and press the key you want. Keyboard works without any of this. Player 2 and per-game bindings are under CONFIG > INPUT.";
+                font-size: Type.body; color: Nerv.ink2; wrap: word-wrap;
+            }
+            ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    alignment: start;
+                    HorizontalLayout {
+                        alignment: start;
+                        if root.input_players.length > 0: PlayerCard {
+                            p: root.input_players[0]; rows: root.input_rows;
+                            width: 470px;
+                            action(a) => { root.input_action(a); }
+                        }
+                    }
+                }
+            }
+        }
+
+        // -- STEP 3: video (the real DISPLAY rows) --
+        if root.step == 3: VerticalLayout {
+            spacing: 8px; vertical-stretch: 1;
+            Text {
+                text: "How the game window is drawn. The renderer is a one-click install; window mode, scaling and VSync can change any time under CONFIG > DISPLAY.";
+                font-size: Type.body; color: Nerv.ink2; wrap: word-wrap;
+            }
+            ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    alignment: start;
+                    SettingsList {
+                        rows: root.rows; tab: 0; onboard: true;
+                        setting_changed(k, v) => { root.setting_changed(k, v); }
+                    }
+                }
+            }
+        }
+
+        // The spacer only pads the short steps; the tall ones own the space.
+        Rectangle { vertical-stretch: root.step >= 2 ? 0 : 1; background: transparent; }
+
+        HorizontalLayout {
+            spacing: 8px; height: 30px;
+
+            Rectangle {
+                width: 100px;
+                background: backa.pressed ? Nerv.line : Nerv.bg2;
+                opacity: root.step > 0 ? 1.0 : 0.35;
+                Text {
+                    text: "BACK"; font-size: Type.body; color: Nerv.ink2;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    width: 100%; height: 100%;
+                }
+                backa := TouchArea { clicked => { if (root.step > 0) { root.step -= 1; } } }
+            }
+
+            Rectangle { horizontal-stretch: 1; background: transparent;
+                Text {
+                    // Say WHY the button is dead rather than just dimming it.
+                    text: root.can_advance ? ""
+                        : root.scanning ? "Looking for games..."
+                        : root.folders.length == 0 ? "Choose a games folder to continue"
+                        : "No games found yet -- add the right folder to continue";
+                    font-size: Type.body; color: Nerv.amber;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    width: 100%; height: 100%;
+                }
+            }
+
+            // Steps after the first are optional, and the label says so.
+            Rectangle {
+                width: 100px;
+                background: nexta.pressed ? Nerv.line : Nerv.bg2;
+                opacity: (root.step > 0 && root.step < 3) ? 1.0 : 0.0;
+                Text {
+                    text: "SKIP"; font-size: Type.body; color: Nerv.dim;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    width: 100%; height: 100%;
+                }
+                nexta := TouchArea { clicked => { if (root.step > 0 && root.step < 3) { root.step += 1; } } }
+            }
+
+            Rectangle {
+                width: 130px;
+                background: root.can_advance
+                    ? (fwda.pressed ? Nerv.acc.with-alpha(0.22) : fwda.has-hover ? Nerv.bg3 : transparent)
+                    : Nerv.bg2;
+                Text {
+                    text: root.step == 3 ? "FINISH" : "NEXT"; font-size: Type.body;
+                    color: root.can_advance ? Nerv.acc : Nerv.faint;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    width: 100%; height: 100%;
+                }
+                fwda := TouchArea {
+                    clicked => {
+                        if (root.can_advance) {
+                            if (root.step == 3) { root.finished(); }
+                            else { root.step += 1; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

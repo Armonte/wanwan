@@ -69,10 +69,6 @@ void OnDatagram(Endpoint* ep, const uint8_t* data, int len);
 // Call every poll tick with the current monotonic time in seconds.
 void Update(Endpoint* ep, double now);
 
-// Metrics from the underlying reliable.io endpoint (for pacing / FEC rate).
-float Rtt(Endpoint* ep);
-float PacketLoss(Endpoint* ep);
-
 // True when at least one ORDERED rx channel of this endpoint is pinned at a
 // hole AND the peer's latest ack carrier advertises that it is STILL HOLDING
 // that hole (S2). The app's starve ladder consults this so it does not tear

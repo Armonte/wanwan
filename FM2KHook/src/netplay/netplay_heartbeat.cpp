@@ -7,7 +7,8 @@
 // was its only caller.
 
 #include "netplay.h"
-#include "netplay_internal.h"   // g_beat_*, g_session, g_session_kind, g_pred_window...
+#include "netplay_internal.h"
+#include "../core/trampoline_internal.h"   // g_beat_*, g_session, g_session_kind, g_pred_window...
 #include "control_channel.h"    // NetSocket_GetRemoteActorString
 #include "control_channel_internal.h"  // g_gekko_rx_* stamps, g_remote_sockaddr
 #include "nat_traversal.h"      // fm2k::nat::IsRelayMode
@@ -169,13 +170,24 @@ void Netplay_TickHeartbeat() {
     // frontier (frozen conf with climbing gko_rx = admit-side stall);
     // gko_rx_age = ms since a gekko-classified datagram last reached us.
     const uint64_t beat_rx_ms = g_gekko_rx_last_ms.load(std::memory_order_relaxed);
+    // FA is one instantaneous sample of a value the pacer reacts to every
+    // frame. These carry the whole window instead: how many frames were
+    // braked out of how many, the total time added, the worst single frame,
+    // and the worst advantage actually reached. A player reporting a stutter
+    // is answerable from this line; from FA alone it never was.
+    PacingStats pace{};
+    Pacing_TakeStats(&pace);
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "[BEAT] bf=%u role=%s ping=%ums jit=%.1fms FA=%+.1f "
+        "[BEAT] bf=%u role=%s ping=%ums jit=%.1fms FA=%+.1f FAmax=%+.1f "
+        "brake=%u/%u brake_ms=%.1f brake_worst=%.2fms "
         "delay=%d ra=%d pred=%d rb_total=%u rb_win=%u rb_avg=%.1f rb_max=%u "
         "conf=%d gko_rx=%llu gko_rx_age=%llums "
         "ackrej=%llu ackneut=%llu",
         g_netplay_frame, SessionRoleStr(),
-        stats.last_ping, stats.jitter, fa,
+        stats.last_ping, stats.jitter, fa, pace.frames_ahead_max,
+        pace.braked_frames, pace.total_frames,
+        (double)pace.added_us_sum / 1000.0,
+        (double)pace.added_us_max / 1000.0,
         g_local_delay,
         g_runahead_active.load(std::memory_order_acquire),
         g_pred_window,

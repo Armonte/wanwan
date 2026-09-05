@@ -24,6 +24,7 @@
 #include "globals.h"            // FM2K::ADDR_*, FM2K::kIsFM95, original_*, g_sim_step_count
 #include "gekkonet.h"
 #include "seam_trace.h"         // SeamTrace_Dump on the harness auto-terminate path
+#include "../core/frame_timing.h"   // DIAGNOSTIC per-frame timing ring (dark by default)
 #include "../hooks/facing_trace.h"  // Phase 4b [FACING] ring dump on the same path
 #include "../hooks/seam_free_probe.h"   // [ENDSEAM-FREE] per-tick window sampling
 #include "../parity/parity_recorder.h"  // ParityRecorder::Capture/Close
@@ -101,7 +102,7 @@ void Netplay_HandleSaveEvent(GekkoGameEvent* update) {
     // fire DESYNC at f=0. Real checking starts at f=1.
     uint32_t checksum = (frame < 1)
         ? 0x464D3230u
-        : SaveState_GetRegionChecksums().gameplay_fingerprint;
+        : SaveState_GetRegionChecksums().wire_fingerprint;
     *update->data.save.state_len = sizeof(uint32_t);
     *update->data.save.checksum = checksum;
     memcpy(update->data.save.state, &frame, sizeof(uint32_t));
@@ -135,8 +136,17 @@ void Netplay_HandleSaveEvent(GekkoGameEvent* update) {
             // remains the documented "not computed" sentinel.
             const ParityPool::Topology host_top = ParityPool::ComputeTopology();
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                // THE FENCEPOST LOGS THE FULL FINGERPRINT, NOT THE WIRE
+                // VALUE. These are two different comparisons and they must
+                // not share a number. The wire value is deliberately narrow
+                // -- only state two MACHINES must agree on -- while this
+                // line is compared host-against-SPECTATOR by ck_compare.py
+                // and wants every field it can get. Logging the wire value
+                // here changed what the spectator gate compares and turned
+                // the whole spectator stage red for one build.
                 "[CHECKSUM] f=%d crc=0x%08X tv=2 top=0x%08X bind=0x%08X nobj=%u",
-                frame, checksum, host_top.digest, host_top.binding,
+                frame, SaveState_GetRegionChecksums().gameplay_fingerprint,
+                host_top.digest, host_top.binding,
                 host_top.active_count);
         }
     }
@@ -190,6 +200,11 @@ void Netplay_HandleLoadEvent(GekkoGameEvent* update, int& load_events_in_batch) 
             s_rb_window_rewind_max = 0;
         }
         uint32_t rewind = g_netplay_frame - (uint32_t)frame;
+        // Per-frame timing ring: attribute this rollback to the frame that is
+        // about to pay for its resim. Reuses the runahead-vs-real split above
+        // rather than re-deriving it -- the whole reason that distinction is
+        // hard-won is that getting it wrong pinned g_rollback_count at 0.
+        FrameTiming_NoteRollback(rewind);
         s_rb_window_rewind_sum += rewind;
         if (rewind > s_rb_window_rewind_max) s_rb_window_rewind_max = rewind;
         // [BEAT] window -- same numbers but reset on each
@@ -493,8 +508,8 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
     // The game loop must NOT run its own tick - we handle everything here.
     {
         PerfScope _pa(&g_perf_adv);  // profile game-tick cost (#62)
-        // FM2K_SEAM_INPUTSAVE=1 (diagnostic, default off) -- PER-FRAME restore
-        // of the raw-local-input globals.
+        // PER-FRAME restore of the raw-local-input globals. Unconditional --
+        // the FM2K_SEAM_INPUTSAVE gate it shipped behind was never read.
         //
         // The earlier arm restored these at LOAD time and measurably did
         // nothing: a byte diff taken with it active showed the same 12 bytes
@@ -715,6 +730,11 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
             // normal exit path.
             SeamTrace_Dump(g_player_index, "harness auto-terminate");
             FacingTrace_Dump("harness auto-terminate");  // Phase 4b [FACING] ring
+            // Per-frame timing ring. Legal here for exactly the reason the two
+            // above are: TerminateProcess is a few statements away, so the
+            // fprintf cannot hitch a live match. This is also the ONLY dump a
+            // --frames harness run reaches, since it never runs EndBattle.
+            FrameTiming_Dump(g_player_index, "harness auto-terminate");
             // Flush parity recorder -- fopen("wb") is fully
             // buffered and TerminateProcess kills the stdio
             // buffer without writing. Without this the

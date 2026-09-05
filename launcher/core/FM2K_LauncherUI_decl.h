@@ -168,12 +168,6 @@ public:
         // Raw memory for deep inspection
         uint8_t raw_data[382];              // Complete action data
         
-        // Analysis helpers
-        bool IsCharacter() const { return type == 4; }
-        bool IsProjectile() const { return type == 5; }
-        bool IsEffect() const { return type == 6; }
-        bool IsSystem() const { return type == 1; }
-        bool HasMovement() const { return velocity_x != 0 || velocity_y != 0; }
     };
     
     // Action inspection callback - returns current active actions with enhanced data
@@ -185,7 +179,7 @@ public:
     std::function<bool(bool)> on_set_minimal_gamestate_testing;    // Set MinimalGameState testing
     
     // Multi-client testing data structures
-    // NetworkStats struct removed - network stats handled by LocalNetworkAdapter
+    // NetworkStats struct removed -- live net stats come from the hook
     
     // RollbackStats is now defined at global scope
     
@@ -213,7 +207,8 @@ public:
     // Returns empty string when game isn't installed locally.
     std::function<std::string(const std::string&, uint32_t)> on_resolve_char_name;
     
-    // Network simulation callbacks removed - not connected to LocalNetworkAdapter
+    // Network simulation callbacks removed -- there is no in-launcher
+    // network simulator to connect them to
     
     // Rollback monitoring  
     std::function<bool(RollbackStats&)> on_get_rollback_stats;           // Get rollback performance data
@@ -222,7 +217,6 @@ public:
     void SetGames(const std::vector<FM2K::FM2KGameInfo>& games);
     void SetNetworkConfig(const NetworkConfig& config);
     void SetLauncherState(LauncherState state);
-    void SetFramesAhead(float frames_ahead);
     // Update scanning progress (0-1). Only meaningful while scanning flag is true.
     void SetScanning(bool scanning);
     // Re-run a match_start that arrived while game discovery was still
@@ -318,8 +312,6 @@ private:
     void RenderMultiClientTools();
     void RenderNetworkTools();
     void RenderConsoleLog();
-    void RenderObjectAnalysis();        // Stub
-    void RenderSlotInspectionWindow();  // Stub
     void RenderHubPanel();              // Fightcade-style lobby
     void HandleHubEvent(const fm2k::HubEvent& ev);  // hub WS event dispatch (split into launcher_ui_hub_events.cpp)
     void HandleMatchStartEvent(const fm2k::HubEvent& ev);  // K::MatchStart handler (launcher_ui_hub_events_match.cpp)
@@ -401,7 +393,6 @@ private:
     int  socd_mode_[2] = {1, 1};   // tournament-default (Hitbox SOCD)
     bool socd_state_loaded_ = false;
     void LoadSocdState();
-    void SaveSocdState();
     // Random-stage host preference (#56). Persisted PER GAME in the
     // game-patches ini (Patrick, 2026-06-11: "stage range isn't game
     // specific" -- a range tuned for one game's stage list carried into
@@ -603,13 +594,10 @@ public:
     void NotifyHubMatchAborted(const char* reason);
 
     // Helper methods
-    void ShowGameValidationStatus(const FM2K::FM2KGameInfo& game);
     void ShowNetworkDiagnostics();      // Stub
-    bool ValidateNetworkConfig();
     
     // Simplified theme - always Dark
     enum class UITheme { Dark };
-    void SetTheme(UITheme theme);
     UITheme current_theme_;
 
     // Save state inspection

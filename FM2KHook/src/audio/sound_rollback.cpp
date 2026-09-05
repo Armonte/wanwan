@@ -82,7 +82,6 @@ bool BgmTrace() {
 // locks. The launcher writes %APPDATA%\FM2K_Rollback\audio.ini and the
 // dispatcher refreshes from it ~once per second.
 SoundRollback::MuteState g_mute = {};
-uint32_t                 g_mute_last_check_tick = 0;
 
 bool StatesEqual(const SoundRollback::DesiredState& a,
                  const SoundRollback::DesiredState& b) {
@@ -132,7 +131,6 @@ void SetMuteState(const MuteState& m) {
         "SoundRollback: mute bgm=%d se=%d", m.bgm ? 1 : 0, m.se ? 1 : 0);
 }
 
-MuteState GetMuteState() { return g_mute; }
 bool IsMusicMuted() { return g_mute.bgm; }
 bool IsSfxMuted()   { return g_mute.se;  }
 

@@ -16,7 +16,7 @@
 #include "MinHook.h"
 #include <safetyhook.hpp>  // SafetyHook MidHook for KOF HP-init patch
 #include "round_events.h"  // RoundEvents_KofSnapshot* accessors
-#include "combat_state.h"  // combat_state::ShouldGuardP2 for state-driven Guard
+#include "combat_state.h"  // combat_state::GuardP2Input for state-driven Guard
 #include "../netplay/netplay.h"          // Netplay_IsConnected (BTB handshake hold)
 #include "../netplay/control_channel.h"  // ControlChannel_Poll/SendHello
 #include "../netplay/game_hash.h"        // fm2k::game_hash::Compute
@@ -71,13 +71,6 @@ constexpr uintptr_t OFF_AI_DIFFICULTY     = 0x0000DF61;
 constexpr uintptr_t OFF_AI_MODE           = 0x0000DF65;
 constexpr uint32_t  AI_DEFAULT_DIFFICULTY = 50;  // mid; story uses stage data
 
-void ApplyAiFieldsForSlot(int slot, uint32_t difficulty) {
-    const uintptr_t base = CHAR_SLOT0_BASE + (uintptr_t)slot * CHAR_SLOT_STRIDE;
-    *(volatile uint32_t*)(base + OFF_AI_GATE)       = 1;
-    *(volatile uint32_t*)(base + OFF_AI_DIFFICULTY) = difficulty;
-    *(volatile uint32_t*)(base + OFF_AI_MODE)       = 1;
-}
-
 // Story-init AI hijack handler -- see big comment near the MidHook decl
 // (top of file). Fires AFTER `mov eax, g_game_mode_flag` so ctx.eax
 // already holds the loaded flag; we override to 0 when a hijack mode
@@ -111,7 +104,7 @@ bool PerGamePatches_InstallStoryInitHijack() {
     //
     // Without this MidHook the engine takes the VS-init branch, which
     // writes the correct xor_mask = -1 - (1 << slot_id). The AI fields
-    // we WANT are now written directly by ApplyAiFieldsForSlot -- gate,
+    // we WANT are now written directly by ApplyAiFieldsForSlotWithMode -- gate,
     // difficulty, and mode -- invoked every battle frame from round_-
     // events.cpp's Hook_vs_round_function. This separates "tell the
     // engine to run AI for this slot" (direct field writes) from "let
@@ -228,6 +221,56 @@ void PerGamePatches_OnBattleInitComplete() {
 // TEAM SIZE OVERRIDE + ENV VAR INTAKE
 // =============================================================================
 
+// ---- Combo counter: show at hit 1 (FM2K_COMBO_COUNTER_HIT1) ----
+// hit_detection_system @ 0x40F7F0 increments the per-fighter combo counter
+// (char_data + 0xDF01) on every landed hit, then gates the counter's on-screen
+// object on `cmp eax, 1` / `jle` at 0x40F81E-0x40F821 -- so stock FM2K only
+// draws the readout from hit 2 onward and a single hit shows nothing. The
+// community exe hack flips the compare's imm8 at 0x40F820 from 01 to 00, which
+// turns the guard into `cmp eax, 0` and lets hit 1 spawn it too.
+// (tools/extractors/combo_counter_patcher.py patches the same gate from the
+// other side, 7E jle -> 7C jl at 0x40F821; identical net effect.)
+//
+// NOT a pure overlay: the guarded body calls create_game_object @ 0x406570,
+// which hands out the first free slot of g_object_pool @ 0x4701E0 -- a region
+// the rollback state manager saves in full (docs/game/state_manager_audit.md).
+// One extra object means a different pool occupancy and a different slot index
+// for every later spawn, so a peer running this against a peer without it
+// desyncs. That is exactly why this rides the per-game patch env vars: they
+// are cleared by NeutralizeGamePatchEnvVars on every online / stress /
+// spectate launch, so the patch is structurally offline-only.
+//
+// Verified identical at 0x40F812 across every FM2K title on hand (wanwan,
+// vanpri, URORFG, Mikyaku Impact) -- the runtime is byte-identical there --
+// but we still byte-guard the write so a build that moved it is skipped
+// loudly rather than corrupted silently.
+static void ApplyComboCounterHit1Patch() {
+    if (const char* e = std::getenv("FM2K_COMBO_COUNTER_HIT1");
+        !(e && std::strcmp(e, "1") == 0)) {
+        return;  // default: vanilla (counter appears at hit 2)
+    }
+    uint8_t* imm = (uint8_t*)0x0040F820;  // imm8 of `cmp eax, 1` at 0x40F81E
+    DWORD old = 0;
+    if (!VirtualProtect(imm, 1, PAGE_EXECUTE_READWRITE, &old)) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "PerGamePatches: combo-counter VirtualProtect failed @0x40F820");
+        return;
+    }
+    const uint8_t was = *imm;
+    if (was == 0x01) {
+        *imm = 0x00;
+        FlushInstructionCache(GetCurrentProcess(), imm, 1);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "PerGamePatches: combo counter shows from hit 1 "
+            "(cmp imm 0x01->0x00 @0x40F820)");
+    } else {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "PerGamePatches: combo-counter patch SKIPPED -- unexpected byte "
+            "0x%02X @0x40F820 (want 0x01); this build moved hit_detection_system", was);
+    }
+    VirtualProtect(imm, 1, old, &old);
+}
+
 void PerGamePatches_ApplyRuntime() {
     // ---- Team size override (FM2K_TEAM_SIZE) ----
     // Stash the value as an atomic; css_autoconfirm.cpp's game_state_manager
@@ -280,6 +323,9 @@ void PerGamePatches_ApplyRuntime() {
             (int)g_training_mode.load(),
             (int)g_option_mode_selector.load());
     }
+
+    // ---- Combo counter display threshold ----
+    ApplyComboCounterHit1Patch();
 }
 
 // =============================================================================

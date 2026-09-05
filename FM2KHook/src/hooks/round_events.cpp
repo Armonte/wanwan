@@ -22,6 +22,7 @@
 #include "../core/globals.h"           // g_is_rolling_back, g_player_index
 #include "../netplay/netplay.h"        // Netplay_MatchSettingsDigest / HostConfigRxCount
 #include "../netplay/spectator_node.h" // SpectatorNode_AppendRound{Start,End}
+#include "../ui/shared_mem.h"          // SharedMem_PublishHudScores (HUD score box)
 #include "per_game_patches.h"          // PerGamePatches_OnBattleInitComplete
 #include "seam_free_probe.h"           // [ENDSEAM-FREE] window latch (telemetry)
 
@@ -605,6 +606,15 @@ static char __cdecl Hook_vs_round_function() {
             : (uint16_t)0;
         SpectatorNode_AppendRoundStart(
             s_round_idx_counter, p1_hp_max, p2_hp_max, timer_seconds);
+        // HUD score box. The first round of a match publishes 0 - 0, which
+        // is also what makes the box appear at all (fc_hud gates it on
+        // hud_score_seq != 0). Later rounds are covered by the ROUND_END
+        // publish below, and leaving battle clears it again
+        // (CheckGameModeTransition). Both edges are already past the
+        // g_is_rolling_back return, so a re-sim never re-publishes.
+        if (s_round_idx_counter == 1) {
+            SharedMem_PublishHudScores(0, 0);
+        }
         // PER-BATTLE SETTINGS STAMP. `timer=` alone has always been here and
         // is the decisive cross-peer check for the lost-HOST_CONFIG class
         // (host 15s vs guest 60s => g_score_value 1499 vs 5999 => the peers
@@ -668,6 +678,11 @@ static char __cdecl Hook_vs_round_function() {
         // grep'ing logs/FM2K_P*_Debug.log shows round outcomes inline.
         const uint32_t p1_wins   = *(uint32_t*)0x4DFC6D;
         const uint32_t p2_wins   = *(uint32_t*)0x4EDCAC;
+        // Same pair drives the HUD score box. Read here rather than
+        // anywhere later because the match-over branch of vs_round_function
+        // resets these counters once the type=10 match-end object updates --
+        // the same reason spec_host_events.cpp caches them at this edge.
+        SharedMem_PublishHudScores((uint16_t)p1_wins, (uint16_t)p2_wins);
         const int32_t  score_val = *(int32_t*)ADDR_SCORE_VAL;
         const uint16_t timer_remaining = (score_val >= 0)
             ? (uint16_t)((score_val + 1) / 100)

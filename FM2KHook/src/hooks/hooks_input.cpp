@@ -27,7 +27,7 @@
 #include "../audio/sound_rollback.h"        // Mike Z desired/actual sound layer
 #include "../netplay/spectator_node.h"      // spectator playback queue accessors
 #include "../ui/input_binder.h"             // FM2KInputBinder::Sample_Win32 + Bindings
-#include "../ui/screenshot.h"               // FM2KCapture::SaveScreenshot for the auto-banner pipeline
+#include "../ui/screenshot.h"               // FM2KCapture::RememberFrame for the auto-banner pipeline
 #include "../ui/fc_hud.h"                   // IsChatInputActive -- gate local input during typing
 #include "../vfs/fpk_reader.h"              // FM2K_FPK_VFS: inflate a slim .fpk -> original asset bytes
 #include <MinHook.h>
@@ -217,6 +217,20 @@ uint16_t Hook_ComputeAutoplayCssInput(int player_id) {
         g_css_autoplay_in_css = false;
         return 0;
     }
+    // Capture's per-character sweep owns the cursor: no wander, no
+    // confirm, and the dwell clock below does not run (the tick counter
+    // is not touched), so the normal browse-then-lock still follows.
+    if (FM2KCapture::g_sweep_active) {
+        if (player_id == 0 && FM2KCapture::g_sweep_nudge) {
+            FM2KCapture::g_sweep_nudge = false;
+            return 0x002;   // RIGHT, one frame: next cell in this row
+        }
+        if (player_id == 0 && FM2KCapture::g_sweep_nudge_down) {
+            FM2KCapture::g_sweep_nudge_down = false;
+            return 0x008;   // DOWN, one frame: next row
+        }
+        return 0;
+    }
     // g_input_buffer_index is an index into the 1024-frame input ring --
     // it WRAPS (975 -> 39 observed mid-CSS, 2026-06-11 16:11), so it can
     // never be used as an elapsed-time anchor: the old `buf - anchor`
@@ -313,6 +327,46 @@ uint16_t Hook_ApplySOCD(uint16_t input) {
         } else {
             input &= ~DOWN;            // U wins
         }
+    }
+    return input;
+}
+
+// PER-PLAYER, PER-DEVICE SOCD (owner directive 2026-09-02: "this needs to
+// be per-player per-device, not host overriding other players").
+//
+// The mode a player's inputs are cleaned with is a property of that
+// player's binding profile (FM2KInputBinder::PlayerBindings::socd_mode,
+// saved next to the device identity in fm2k_inputs*.ini). -1 there means
+// "inherit the process-wide mode" (FM2K_SOCD_MODE / Hook_SetSOCDMode), which
+// keeps every existing profile and the harness lever working unchanged.
+//
+// Cleaning happens at CAPTURE (Input_CaptureLocal*, before the input goes
+// on the wire / into the input ring), with the capturing slot's mode. The
+// consume-side Hook_ApplySOCD calls stay as a second pass: a cleaned input
+// has no opposing pair left, so any mode is a no-op on it -- which is
+// exactly why two peers on different modes cannot desync, and why the host
+// no longer needs to push its mode to the guest (netplay_control.cpp).
+int Hook_GetSOCDModeForSlot(int slot) {
+    if (slot >= 0 && slot < 2) {
+        const int m = FM2KInputBinder::Bindings(slot).socd_mode;
+        if (m >= 0 && m <= 5) return m;
+    }
+    return Hook_GetSOCDMode();
+}
+
+uint16_t Hook_ApplySOCDSlot(uint16_t input, int slot) {
+    constexpr uint16_t LEFT  = 0x001;
+    constexpr uint16_t RIGHT = 0x002;
+    constexpr uint16_t UP    = 0x004;
+    constexpr uint16_t DOWN  = 0x008;
+    const int mode = Hook_GetSOCDModeForSlot(slot);
+    if ((input & (LEFT | RIGHT)) == (LEFT | RIGHT)) {
+        input = (mode & 1) ? (uint16_t)(input & ~(LEFT | RIGHT))
+                           : (uint16_t)(input & ~LEFT);
+    }
+    if ((input & (UP | DOWN)) == (UP | DOWN)) {
+        input = (mode & 2) ? (uint16_t)(input & ~(UP | DOWN))
+                           : (uint16_t)(input & ~DOWN);
     }
     return input;
 }

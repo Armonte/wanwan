@@ -646,24 +646,26 @@ void SpectatorNode_HandleJoinAck(const sockaddr_in& from, uint8_t host_session_k
     //      WRONG kind is alive", but a spectator's Netplay_GetSessionKind() is
     //      ALWAYS SPECTATE -- never CSS, never BATTLE -- so it was true for
     //      every live refresh ever received, kind change or not.
-    //   2. What it armed can never fire. The arm sets g_pending_swap_kind,
-    //      whose ONLY consumer is MaybeSwapPendingSpectator, whose ONLY caller
-    //      is Netplay_ProcessSpectatorPhase -- which has NO callers at all
-    //      (SpectatorNode viewers are driven by RunSpectatorTick, not by a
+    //   2. What it armed could never fire. The arm set g_pending_swap_kind,
+    //      whose ONLY consumer was MaybeSwapPendingSpectator, whose ONLY
+    //      caller was Netplay_ProcessSpectatorPhase -- which had NO callers at
+    //      all (SpectatorNode viewers are driven by RunSpectatorTick, not by a
     //      GekkoSession event drain). Corpus-confirmed: "caught up to
     //      swap_frame=" and "Destroying SpectateSession" appear ZERO times in
-    //      every spectate log we hold.
+    //      every spectate log we hold. That whole chain was deleted
+    //      2026-09-04; only the two announcement log lines in
+    //      netplay_spectate.cpp remain.
     //   3. It actively misled. Because the host answers each gap-fill pull
     //      with a live-refresh JOIN_ACK, a starving viewer emitted one
     //      "pending CSS->battle swap" per pull -- which read as a swap LOOP and
     //      sent the first pass at the 2026-08-07 starve down the wrong road for
     //      a whole phase. The real fault was one layer down, in RC.
     //
-    // Deleted rather than gated: a gate would leave a latent path that, if
-    // Netplay_ProcessSpectatorPhase were ever wired up, would tear down and
-    // recreate the SpectateSession under a healthy live mirror on a routine
-    // liveness re-ACK. The stream's own MATCH_START / MATCH_END ops are and
-    // always were the actual phase-transition signal.
+    // Deleted rather than gated: a gate would have left a latent path that,
+    // if the drain were ever wired up, would tear down and recreate the
+    // SpectateSession under a healthy live mirror on a routine liveness
+    // re-ACK. The stream's own MATCH_START / MATCH_END ops are and always were
+    // the actual phase-transition signal.
     if (Netplay_GetSessionKind() == NetplaySessionKind::SPECTATE) {
         SpecReplayPreSubStash();  // task #55: anything that beat this ACK
         return;

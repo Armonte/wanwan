@@ -137,9 +137,9 @@ void LauncherUI::RenderNetworkConfig() {
             ImGui::InputInt("Local Port", &network_config_.local_port, 0, 0, ImGuiInputTextFlags_CharsDecimal);
         }
 
-        // Input Delay
-        ImGui::SetNextItemWidth(100);
-        ImGui::SliderInt("Input Delay (frames)", &network_config_.input_delay, 0, 10);
+        // The "Input Delay (frames)" slider that used to sit here was dead:
+        // it wrote network_config_.input_delay, which only a (void) stub
+        // consumed. The live knob is the Hub panel's Delay combo (audit S6).
 
         ImGui::Unindent();
     }
@@ -189,26 +189,6 @@ void LauncherUI::RenderInGameUI() {
 
 void LauncherUI::ShowNetworkDiagnostics() {}
 
-bool LauncherUI::ValidateNetworkConfig() {
-    // Check if remote address is valid format
-    if (network_config_.remote_address.empty()) {
-        return false;
-    }
-    
-    // Check if port is in valid range
-    if (network_config_.local_port < 1024 || network_config_.local_port > 65535) {
-        return false;
-    }
-    
-    // Basic IP:port format check
-    size_t colon_pos = network_config_.remote_address.find(':');
-    if (colon_pos == std::string::npos) {
-        return false;
-    }
-    
-    return true;
-}
-
 void LauncherUI::RenderSessionControls() {
     if (ImGui::CollapsingHeader(T("panel_session_controls"), ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
@@ -221,16 +201,22 @@ void LauncherUI::RenderSessionControls() {
 
         // Boot/auto-mash defaults -- applied to every offline launch, both
         // dev and end-user paths. End users never see these toggles.
-        static int  s_boot_strategy     = 0;     // 0=safe, 1=fast
-        static bool s_auto_title_skip   = true;
-        static bool s_bypass_trampoline = false;
-        static bool s_force_t4_patch    = false;
-        static bool s_skip_vs_mode_patch= false;
-        static bool s_t4_probe          = false;
+        // All persisted in dev_flags.ini (audit 2026-09-02, S5: they were
+        // function statics while every sibling below was saved, so a
+        // developer re-set them each launcher start). They are OFFLINE
+        // launch parameters: applied by the Play Offline button below and
+        // CLEARED by NeutralizeDevLaunchEnvVars on every other launch path,
+        // so a prior offline click can no longer leak into an online match.
+        static int  s_boot_strategy     = LoadDevFlagInt("boot_strategy", 0);  // 0=safe, 1=fast
+        static bool s_auto_title_skip   = LoadDevFlag("auto_title_skip", true);
+        static bool s_bypass_trampoline = LoadDevFlag("bypass_trampoline", false);
+        static bool s_force_t4_patch    = LoadDevFlag("force_t4_patch", false);
+        static bool s_skip_vs_mode_patch= LoadDevFlag("skip_vs_mode_patch", false);
+        static bool s_t4_probe          = LoadDevFlag("t4_probe", false);
         // FM95-specific opt-in: drive the trampoline tick from
         // Hook_UpdateGameState instead of the (skipped) RUN_GAME_LOOP
         // detour, so FM95 reaches rollback parity with FM2K.
-        static bool s_fm95_trampoline   = false;
+        static bool s_fm95_trampoline   = LoadDevFlag("fm95_trampoline", false);
         // Persisted across launcher restarts via %APPDATA%\FM2K_Rollback\dev_flags.ini.
         // First-frame init reads the saved value; toggling the checkbox writes back.
         static bool s_eb_diag = []() {
@@ -276,8 +262,10 @@ void LauncherUI::RenderSessionControls() {
         // now that the META is PII-scrubbed before transmit (fm2k::pii::Scrub
         // in FM2K_UploadQueue) and log contents are scrubbed at write time --
         // so we actually get crash telemetry from the playerbase instead of
-        // chasing manual log sends. Users can still opt OUT via the dev
-        // checkbox (the saved flag overrides this default once they touch it).
+        // chasing manual log sends. Users opt OUT from the Settings menu
+        // ("Send crash and desync diagnostics"); the saved flag overrides
+        // this default once they touch it. Loaded here AND lazily by the
+        // menu bar, whichever renders first.
         // No env var: the launcher reads g_auto_upload_logs directly
         // in PollUploadQueue and the hook side doesn't need to know.
         // File-scope (not function-static) so PollUploadQueue can read.
@@ -392,18 +380,18 @@ void LauncherUI::RenderSessionControls() {
             ImGui::Separator();
 
             ImGui::Text("%s", T("dev_boot_strategy"));
-            ImGui::RadioButton(T("dev_boot_safe"), &s_boot_strategy, 0);
+            if (ImGui::RadioButton(T("dev_boot_safe"), &s_boot_strategy, 0)) SaveDevFlagInt("boot_strategy", 0);
             ImGui::SetItemTooltip(
                 "Boots to title_screen_manager (skips intro cutscene). The "
                 "hook auto-mashes button A with cursor pre-set to VS Player. "
                 "Works on every game -- adds ~10 frames to boot.");
-            ImGui::RadioButton(T("dev_boot_fast"), &s_boot_strategy, 1);
+            if (ImGui::RadioButton(T("dev_boot_fast"), &s_boot_strategy, 1)) SaveDevFlagInt("boot_strategy", 1);
             ImGui::SetItemTooltip(
                 "Skips title screen entirely. WORKS on WW. BREAKS StudioS "
                 "Fighters / Strip Fighter Zero -- characters self-damage on "
                 "frame 0. Only enable per-game once verified safe.");
 
-            ImGui::Checkbox(T("dev_auto_title_skip"), &s_auto_title_skip);
+            if (ImGui::Checkbox(T("dev_auto_title_skip"), &s_auto_title_skip)) SaveDevFlag("auto_title_skip", s_auto_title_skip);
             ImGui::SetItemTooltip(
                 "Default ON. Disable to walk title screen manually with your "
                 "own inputs.");
@@ -498,32 +486,11 @@ void LauncherUI::RenderSessionControls() {
                 "after the spectator's first session start).\n"
                 "Safe to leave off; required if you're testing spectator perf.");
 
-            // Auto-upload crash + desync diagnostic bundles to the hub
-            // so we can pull them down for debugging. OFF by default
-            // (user must explicitly opt in -- game logs are sensitive
-            // even with PII-scrubbed IP addresses).
-            const bool secret_baked =
-                fm2k::kLogUploadSecret && fm2k::kLogUploadSecret[0] != '\0';
-            ImGui::BeginDisabled(!secret_baked);
-            if (ImGui::Checkbox("Auto-upload crash/desync diagnostics",
-                                &s_dev_auto_upload_logs)) {
-                SaveDevFlag("auto_upload_logs", s_dev_auto_upload_logs);
-            }
-            ImGui::EndDisabled();
-            ImGui::SetItemTooltip(
-                "On crash or desync, the hook drops a manifest in the "
-                "game's upload_queue/ directory. The launcher then POSTs "
-                "the bundle (debug.log tail + desync diff + RNG trace) to "
-                "%s.\n\n"
-                "%s",
-                fm2k::kLogUploadUrl,
-                secret_baked
-                    ? "Logs are tagged with session_id + match_id + "
-                      "client_version + game_id + hook-DLL SHA1, indexed "
-                      "for pull-down by the dev tool."
-                    : "Disabled: this build wasn't compiled with a "
-                      "FM2K_LOG_UPLOAD_SECRET -- feature would have no "
-                      "endpoint to authenticate against.");
+            // The crash/desync diagnostics upload toggle used to be here,
+            // behind developer mode, while defaulting ON for everyone. It is
+            // a user setting: Settings menu > "Send crash and desync
+            // diagnostics" (launcher_ui_menubar.cpp). Audit S7.
+            (void)s_dev_auto_upload_logs;
 
             ImGui::Spacing();
 
@@ -533,19 +500,19 @@ void LauncherUI::RenderSessionControls() {
             if (ImGui::CollapsingHeader("FM2K diagnostics")) {
                 ImGui::Indent();
 
-                ImGui::Checkbox(T("dev_bypass_trampoline"), &s_bypass_trampoline);
+                if (ImGui::Checkbox(T("dev_bypass_trampoline"), &s_bypass_trampoline)) SaveDevFlag("bypass_trampoline", s_bypass_trampoline);
                 ImGui::SetItemTooltip(
                     "Routes Hook_RunGameLoop to vanilla. Other hooks still fire. "
                     "Offline only -- netplay/spectator require the trampoline.");
 
-                ImGui::Checkbox(T("dev_skip_vs_mode_patch"), &s_skip_vs_mode_patch);
+                if (ImGui::Checkbox(T("dev_skip_vs_mode_patch"), &s_skip_vs_mode_patch)) SaveDevFlag("skip_vs_mode_patch", s_skip_vs_mode_patch);
                 ImGui::SetItemTooltip("%s", T("dev_skip_vs_mode_tooltip"));
 
-                ImGui::Checkbox(T("dev_force_t4_patch"), &s_force_t4_patch);
+                if (ImGui::Checkbox(T("dev_force_t4_patch"), &s_force_t4_patch)) SaveDevFlag("force_t4_patch", s_force_t4_patch);
                 ImGui::SetItemTooltip(
                     "Re-enables the case-200 t4-walk neuter patch (0x408EC5).");
 
-                ImGui::Checkbox(T("dev_t4_probe"), &s_t4_probe);
+                if (ImGui::Checkbox(T("dev_t4_probe"), &s_t4_probe)) SaveDevFlag("t4_probe", s_t4_probe);
                 ImGui::SetItemTooltip("%s", T("dev_t4_probe_tooltip"));
 
                 if (ImGui::Checkbox(T("dev_eb_diag"), &s_eb_diag)) {
@@ -602,8 +569,8 @@ void LauncherUI::RenderSessionControls() {
             if (ImGui::CollapsingHeader("FM95 (CPW etc.)")) {
                 ImGui::Indent();
 
-                ImGui::Checkbox("Trampoline-driven loop (FM95_TRAMPOLINE)",
-                                &s_fm95_trampoline);
+                if (ImGui::Checkbox("Trampoline-driven loop (FM95_TRAMPOLINE)",
+                                    &s_fm95_trampoline)) SaveDevFlag("fm95_trampoline", s_fm95_trampoline);
                 ImGui::SetItemTooltip(
                     "FM95's RUN_GAME_LOOP is _WinMain (no separate driver), so the "
                     "trampoline can't replace it like on FM2K. With this enabled, "

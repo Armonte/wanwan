@@ -59,8 +59,10 @@
 #                    has 2 stages, which makes a "random stage" run untestable.
 #   6b. specsettings spec_sweep.py --leg settings (FULL: V0+V1; SPECSWEEP adds
 #                    V2+V3) -- the HOST_CONFIG payload dimensions (round time,
-#                    round count, game speed, SOCD) varied across runs and
-#                    asserted on ALL THREE PLANES via the hook's [CFG] stamp.
+#                    round count, game speed) varied across runs and
+#                    asserted on ALL THREE PLANES via the hook's [CFG] stamp;
+#                    V3 varies the HOST's SOCD and asserts the other planes
+#                    KEEP their own (SOCD is per player per device).
 #                    The two PLAYERS have the entry-barrier digest; the
 #                    SPECTATOR has nothing, by construction, which is the hole.
 #                    Sets FM2K_TEST_ROUNDS_HOST_ONLY=1, which makes this the
@@ -654,7 +656,7 @@ else
 fi
 
 # Stage 6b -- SETTINGS VARIANCE on all three planes (FULL: V0 + V1; SPECSWEEP
-# additionally V2 infinite-timer + V3 SOCD). Judged on the hook's per-battle
+# additionally V2 infinite-timer + V3 host-only SOCD). Judged on the hook's per-battle
 # [CFG] stamp: the three planes must carry the SAME settings digest AND the raw
 # values the harness asked for (three equal-but-wrong planes is a real failure
 # mode this catches and digest-equality alone does not), zero

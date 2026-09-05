@@ -20,7 +20,7 @@
 #include <ws2tcpip.h>
 #include <wininet.h>
 #include <shellapi.h>  // Shell_NotifyIcon for challenge toast
-#include <shobjidl.h>  // IFileOpenDialog (modern native folder picker)
+#include "FM2K_FolderPicker.h"  // the modern native folder picker, shared
 #include <iostream>
 #include <algorithm>
 #include <fstream>
@@ -61,66 +61,8 @@ using namespace lui;  // shared persistence helpers (launcher_ui_internal.h)
 // locked up the window.) So: open it on a detached STA worker, keep
 // rendering, and the render thread collects the result via the holder below
 // on a later frame -- the same shape as SDL's own async dialog API.
-namespace {
-std::mutex               g_folder_pick_mtx;
-std::vector<std::string> g_folder_pick_result;
-std::atomic<bool>        g_folder_pick_ready{false};
-std::atomic<bool>        g_folder_dialog_open{false};
-
-void OpenGamesFolderDialogAsync(HWND hwnd) {
-    if (g_folder_dialog_open.exchange(true)) return;  // one dialog at a time
-    std::thread([hwnd]() {
-        std::vector<std::string> picked;
-        if (SUCCEEDED(CoInitializeEx(nullptr,
-                COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE))) {
-            IFileOpenDialog* dlg = nullptr;
-            if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr,
-                                           CLSCTX_INPROC_SERVER, IID_IFileOpenDialog,
-                                           reinterpret_cast<void**>(&dlg))) && dlg) {
-                DWORD opts = 0;
-                dlg->GetOptions(&opts);
-                dlg->SetOptions(opts | FOS_PICKFOLDERS | FOS_ALLOWMULTISELECT |
-                                FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
-                if (SUCCEEDED(dlg->Show(hwnd))) {
-                    IShellItemArray* items = nullptr;
-                    if (SUCCEEDED(dlg->GetResults(&items)) && items) {
-                        DWORD count = 0;
-                        items->GetCount(&count);
-                        for (DWORD i = 0; i < count; ++i) {
-                            IShellItem* item = nullptr;
-                            if (SUCCEEDED(items->GetItemAt(i, &item)) && item) {
-                                PWSTR wpath = nullptr;
-                                if (SUCCEEDED(item->GetDisplayName(
-                                        SIGDN_FILESYSPATH, &wpath)) && wpath) {
-                                    int n = WideCharToMultiByte(CP_UTF8, 0, wpath,
-                                                -1, nullptr, 0, nullptr, nullptr);
-                                    if (n > 1) {
-                                        std::string s(static_cast<size_t>(n - 1), '\0');
-                                        WideCharToMultiByte(CP_UTF8, 0, wpath, -1,
-                                                s.data(), n, nullptr, nullptr);
-                                        picked.push_back(std::move(s));
-                                    }
-                                    CoTaskMemFree(wpath);
-                                }
-                                item->Release();
-                            }
-                        }
-                        items->Release();
-                    }
-                }
-                dlg->Release();
-            }
-            CoUninitialize();
-        }
-        {
-            std::lock_guard<std::mutex> lk(g_folder_pick_mtx);
-            g_folder_pick_result = std::move(picked);
-        }
-        g_folder_pick_ready.store(true, std::memory_order_release);
-        g_folder_dialog_open.store(false, std::memory_order_release);
-    }).detach();
-}
-}  // namespace
+// The picker itself: launcher/core/FM2K_FolderPicker.cpp, shared with the
+// Slint launcher (2026-09-02).
 
 // One Settings window with TabBar -- bindings, host config, hub server,
 // games folders, recent matches. Floats above the dockspace, can't be
@@ -215,12 +157,8 @@ void LauncherUI::RenderSettingsWindow() {
 // started anywhere else would sit in the buffer unread until the user
 // happened to open Settings.
 void LauncherUI::DrainPickedGamesFolders() {
-    if (!g_folder_pick_ready.exchange(false, std::memory_order_acq_rel)) return;
     std::vector<std::string> picked;
-    {
-        std::lock_guard<std::mutex> lk(g_folder_pick_mtx);
-        picked.swap(g_folder_pick_result);
-    }
+    if (!fm2k::folder_picker::Take(&picked)) return;
     if (picked.empty()) return;
     std::vector<std::string> paths = games_root_paths_;
     for (auto& p : picked) {
@@ -239,11 +177,11 @@ void LauncherUI::OpenGamesFolderPicker() {
                     SDL_GetWindowProperties(window_),
                     SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr))
                         : nullptr;
-    OpenGamesFolderDialogAsync(hwnd);
+    fm2k::folder_picker::OpenAsync(hwnd);
 }
 
 bool LauncherUI::GamesFolderPickerBusy() const {
-    return g_folder_dialog_open.load(std::memory_order_acquire);
+    return fm2k::folder_picker::Busy();
 }
 
 // The folder editor, INLINE, in whatever pane called it.
@@ -296,7 +234,7 @@ void LauncherUI::RenderGamesFoldersBody() {
     }
 
     ImGui::Separator();
-    const bool dialog_open = g_folder_dialog_open.load(std::memory_order_acquire);
+    const bool dialog_open = fm2k::folder_picker::Busy();
     ImGui::BeginDisabled(dialog_open);
     if (ImGui::Button(dialog_open ? "Choosing folder..." : T("btn_browse_folder"))) {
         OpenGamesFolderPicker();
@@ -537,11 +475,7 @@ void LauncherUI::RenderDiscordAuthWindow() {
     }
 
     ImGui::Separator();
-    ImGui::TextWrapped(
-        "Tester ($5+) tier on Patreon required during testing. Pledge on "
-        "Patreon, link your Discord on the Patreon Connections page, then "
-        "click Sign in here. Patreon assigns the Discord role automatically; "
-        "the hub checks your roles when you sign in.");
+    ImGui::TextWrapped("%s", T("hub_signin_optional_hint"));
     ImGui::End();
 }
 
@@ -799,6 +733,7 @@ void LauncherUI::RenderHostConfigBody() {
     static bool s_patch_cpu_vs_cpu_mode      = false;
     static bool s_patch_training_mode        = false;
     static bool s_patch_option_mode_selector = false;
+    static bool s_patch_combo_counter_hit1   = false;
     if (s_patches_loaded_for != selected_game_index_) {
         s_patches_loaded_for = selected_game_index_;
         const std::string gid = GameIdForExePath(game.exe_path);
@@ -811,6 +746,10 @@ void LauncherUI::RenderHostConfigBody() {
         s_patch_cpu_vs_cpu_mode      = LoadGamePatchBool(gid, "cpu_vs_cpu_mode", false);
         s_patch_training_mode        = LoadGamePatchBool(gid, "training_mode", false);
         s_patch_option_mode_selector = LoadGamePatchBool(gid, "option_mode_selector", false);
+        // Built-in default is off; a bundled distribution flips it on for its
+        // own game via <exedir>\game_patch_defaults\<game_id>.ini.
+        s_patch_combo_counter_hit1   = LoadGamePatchBool(gid, "combo_counter_hit1",
+                GamePatchDistDefaultBool(gid, "combo_counter_hit1", false));
     }
 
     const std::string gid_for_save = GameIdForExePath(game.exe_path);
@@ -873,6 +812,12 @@ void LauncherUI::RenderHostConfigBody() {
         "percentage. 100 = no change. 50 = halved damage. 200 = doubled. "
         "Hook only installs when != 100, so default users pay no "
         "trampoline cost.");
+
+    if (ImGui::Checkbox(T("patch_combo_counter"), &s_patch_combo_counter_hit1)) {
+        SaveGamePatchBool(gid_for_save, "combo_counter_hit1",
+                          s_patch_combo_counter_hit1);
+    }
+    ImGui::SetItemTooltip("%s", T("patch_combo_counter_tip"));
 
     ImGui::Spacing();
     ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.4f, 1.0f), "Modes");

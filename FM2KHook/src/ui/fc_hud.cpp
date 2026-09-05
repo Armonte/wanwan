@@ -93,12 +93,6 @@ void Shutdown() {
     // No resources to free; placeholder so callers can pair with Init().
 }
 
-void SetPlayerNames(const char* p1, const char* p2) {
-    std::lock_guard<std::mutex> lk(g_mtx);
-    if (p1) std::snprintf(g_state.p1_name, sizeof(g_state.p1_name), "%s", p1);
-    if (p2) std::snprintf(g_state.p2_name, sizeof(g_state.p2_name), "%s", p2);
-}
-
 void SetStats(int fps, uint32_t ping_ms, int delay) {
     std::lock_guard<std::mutex> lk(g_mtx);
     g_state.fps     = fps;

@@ -201,6 +201,9 @@ bool Save() {
             std::fprintf(f, "device_id=%s\n",   g_players[p].device_id.c_str());
             std::fprintf(f, "device_name=%s\n", g_players[p].device_name.c_str());
         }
+        if (g_players[p].socd_mode >= 0) {
+            std::fprintf(f, "socd_mode=%d\n", g_players[p].socd_mode);
+        }
         for (size_t i = 0; i < (size_t)Bit::COUNT; ++i) {
             WriteBinding(f, kBitNames[i], g_players[p].bits[i]);
             // Alt slot -- emit only when set so legacy single-source
@@ -239,6 +242,7 @@ bool Load() {
         for (auto& b : g_players[p].bits_alt) b = Binding{};
         g_players[p].device_id.clear();
         g_players[p].device_name.clear();
+        g_players[p].socd_mode = -1;  // missing key = inherit, like device_id
     }
 
     int section = -1;  // -1 = none, 0/1 = player slot
@@ -265,6 +269,11 @@ bool Load() {
 
         if (key == "device_id")   { g_players[section].device_id   = val; continue; }
         if (key == "device_name") { g_players[section].device_name = val; continue; }
+        if (key == "socd_mode") {
+            const int m = std::atoi(val.c_str());
+            g_players[section].socd_mode = (m >= 0 && m <= 5) ? m : -1;
+            continue;
+        }
 
         for (size_t i = 0; i < (size_t)Bit::COUNT; ++i) {
             if (key == kBitNames[i]) {
@@ -431,11 +440,6 @@ bool DeleteGameProfile() {
     RefreshActivePath();
     Load();  // pull bindings back from default
     return true;
-}
-
-const char* CurrentConfigPath() {
-    if (g_config_path.empty()) g_config_path = DefaultConfigPath();
-    return g_config_path.c_str();
 }
 
 }  // namespace FM2KInputBinder

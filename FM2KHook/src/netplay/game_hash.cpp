@@ -326,10 +326,6 @@ uint32_t Compute() {
 }
 
 const char* DescribeLocal() { return s_describe; }
-const char* ManifestLocal() {
-    return s_manifest.empty() ? "(not computed yet)" : s_manifest.c_str();
-}
-
 void ForEachManifestEntry(
     void (*cb)(const char* name, uint64_t size, uint64_t content_hash, void* user),
     void* user)

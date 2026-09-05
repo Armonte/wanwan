@@ -19,7 +19,9 @@
 #include "../ui/shared_mem.h"  // SharedMem_PublishMatchOutcome
 #include "../parity/parity_recorder.h"  // ParityRecorder::Close on harness auto-terminate
 #include "../hooks/facing_trace.h"      // Phase 4b [FACING] ring match-boundary dump
-#include "envelope_shadow.h"            // envelope-inversion phase 1 shadow-mode dump
+#include "envelope_shadow.h"
+#include "cursor_trace.h"            // cross-peer per-save cursor/input-word trace dump
+#include "../core/frame_timing.h"     // DIAGNOSTIC per-frame timing ring (dark by default)
 #include <SDL3/SDL_log.h>
 #include <ws2tcpip.h>
 #include <cstdlib>
@@ -59,6 +61,27 @@ void Netplay_EndBattle() {
     // the [FACING] dump above (between matches, never mid-match). Dark by
     // default, in which case this is one all-zero summary line.
     EnvelopeShadow_Dump(g_player_index, "player match end");
+    // Cross-peer save trace: same match-boundary legality argument, and here
+    // it is load-bearing rather than symmetric. Riding ONLY SeamTrace_Dump
+    // made the CSV depend on reaching the harness auto-terminate, which the
+    // multi-match (FM2K_AUTO_TERMINATE_TOTAL) shape does not: the harness
+    // kills the processes first and three runs produced no file at all. That
+    // is also the shape where a CURSOR SKEW could be born, because the engine
+    // free-runs its own process_game_inputs between matches. Writing at every
+    // match end makes the rows survive whatever ends the run, and the file is
+    // rewritten whole each time (rows accumulate across matches by design).
+    // Dark by default: unarmed, this is one all-zero summary line and no file.
+    CursorTrace_Dump(g_player_index, "player match end");
+    // Per-frame timing ring: same match-boundary legality argument, and the
+    // same load-bearing reason as the cursor trace above -- a multi-match
+    // session's harness kills the process rather than reaching the
+    // auto-terminate path, so writing here is what makes the rows survive
+    // whatever ends the run. The file is rewritten whole each time and rows
+    // accumulate across matches by design; the match counter is bumped AFTER
+    // the write so the rows just written keep the number of the match they
+    // belong to. Dark by default: unarmed, one all-zero summary line, no file.
+    FrameTiming_Dump(g_player_index, "player match end");
+    FrameTiming_NoteMatchBoundary();
     // Capture match outcome BEFORE we destroy the session -- reading HP
     // at this point reflects the final state of the just-ended battle.
     // Outcome is from the local player's perspective; the launcher

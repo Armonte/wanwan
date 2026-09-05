@@ -110,6 +110,7 @@ void RawReceive() {
     if (g_socket == INVALID_SOCKET) return;
     RawReceiveRaceGuard _race_guard;
 
+    int conn_reset_seen = 0;   // bounds the WSAECONNRESET skip below
     while (true) {
         // Receive into a sockaddr_in6 (28 bytes) so the dual-stack socket can
         // report v4-mapped / native-v6 sources. from_len is in/out -- re-set to
@@ -125,12 +126,28 @@ void RawReceive() {
 
         if (recv_len == SOCKET_ERROR) {
             int err = WSAGetLastError();
-            // WSAEWOULDBLOCK = no data available (normal)
-            // WSAECONNRESET (10054) = remote port not open yet (normal during connection)
-            if (err != WSAEWOULDBLOCK && err != WSAECONNRESET) {
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "NetSocket: recvfrom failed: %d", err);
+            // WSAEWOULDBLOCK = no data available. That, and only that, means
+            // the queue is empty.
+            if (err == WSAEWOULDBLOCK) break;
+            // WSAECONNRESET (10054) is NOT emptiness. It is Windows handing
+            // us an ICMP port-unreachable for something we SENT, on a socket
+            // that is not even connected -- and real datagrams may be queued
+            // right behind it. Breaking here was a silent deafness bug: once
+            // a peer's NAT mapping died we kept sending to the dead address
+            // every frame, so an error was pending on nearly every poll and
+            // this loop returned "no more data" without ever reading the
+            // peer's actual traffic. No timeout fires, so the match simply
+            // hangs -- reproduced at character select on 2026-09-04, where
+            // gekko sat at "syncing 1/4" forever. Skip the error and keep
+            // draining. (The socket also asks Windows to stop reporting this
+            // at all -- see SIO_UDP_CONNRESET in control_channel.cpp -- but
+            // the loop must be correct on its own.)
+            if (err == WSAECONNRESET) {
+                if (++conn_reset_seen > 64) break;  // bound the drain, never spin
+                continue;
             }
-            break;  // No more data
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "NetSocket: recvfrom failed: %d", err);
+            break;
         }
 
         if (recv_len == 0) break;
@@ -270,11 +287,19 @@ void RawReceive() {
                         s_last_foreign_ms = now_ms;
                         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                             "NetSocket: peer-type CTRL from foreign source %s while "
-                            "connected to %s -- ignored (different IP, not "
-                            "adoptable)",
+                            "connected to %s -- not adoptable on faith, "
+                            "challenging it",
                             fm2k::Addr_ActorString(from_addr).c_str(),
                             fm2k::Addr_ActorString(g_remote_sockaddr).c_str());
                     }
+                    // REFUSING IS NOT ENOUGH. If this really is our peer after
+                    // a carrier remap onto a new IP, ignoring it leaves us
+                    // sending to a dead mapping forever -- one-way link, no
+                    // timeout, match hung at character select. Challenge the
+                    // address with an authenticated punch; only the real peer
+                    // can answer, and the answer re-latches it through the
+                    // path that authenticated it in the first place.
+                    ::fm2k::nat::ChallengeAddress(from_addr);
                 }
             }
 
@@ -402,12 +427,21 @@ void RawReceive() {
             // any same-IP direct packet with the PINNED actor addr so the
             // in-flight session keeps accepting; a genuinely foreign IP still
             // gets its raw source (gekko drops it, as before).
+            // Same-IP is not the only legitimate move, though: a carrier can
+            // remap a peer onto a different IP entirely, and once that address
+            // has RE-AUTHENTICATED with the match token (nat_traversal's
+            // ChallengeAddress path) it is latched as the peer and is exactly
+            // as trusted as the original. Stamp for it too, or gekko keeps
+            // dropping the peer we have already re-authenticated -- character
+            // select then starves with a working control channel, which is
+            // the 2026-09-04 failure.
             const sockaddr_storage& stamp =
                 from_relay
                     ? (g_gekko_actor_pinned ? g_gekko_actor_addr
                                             : g_remote_sockaddr)
                     : (g_gekko_actor_pinned &&
-                       fm2k::Addr_SameIp(g_gekko_actor_addr, from_addr))
+                       (fm2k::Addr_SameIp(g_gekko_actor_addr, from_addr) ||
+                        fm2k::Addr_Equal(g_remote_sockaddr, from_addr)))
                         ? g_gekko_actor_addr
                         : from_addr;
             g_gekko_packet_queue.push_back({std::move(pkt_data), stamp});

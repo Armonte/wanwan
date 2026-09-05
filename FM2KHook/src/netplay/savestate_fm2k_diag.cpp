@@ -155,6 +155,56 @@ uint32_t SaveState_CalculateFingerprint() {
     g_region_checksums.gameplay_fingerprint =
         Fletcher32((const uint8_t*)&fp, sizeof(fp));
 
+    // THE VALUE THAT CROSSES THE WIRE, and it is deliberately NOT the one
+    // above. A peer comparison may only hash state the two machines are
+    // required to agree on at the same netplay frame. Two fields in the
+    // fingerprint fail that test, and both were killing live matches:
+    //
+    //   0x470060 is NOT a round timer despite the name. IDA: its only write
+    //   in the whole binary is 0x40703B, copying this peer's own game.ini
+    //   Editor.TestPlay.VSMode value in at match init (loader 0x414AB4,
+    //   writer 0x414EEE). Nothing reads it. It is a per-peer settings copy,
+    //   so two honest peers differ whenever their ini files differ, and the
+    //   value is sampled either side of that init write during the first
+    //   frames of a battle. That is the frame-1/frame-2 kill.
+    //
+    //   The input words are indexed by 0x447EE0, the engine's input-history
+    //   write cursor. IDA: it is advanced only at 0x4146F4, once per engine
+    //   tick, is never reset, and counts every tick since process start mod
+    //   1024 -- title and menus included -- inside a timeGetTime catch-up
+    //   loop that runs 0 to 9 ticks per iteration. Nothing synchronises it
+    //   between machines, so two peers at the same netplay frame legitimately
+    //   read different slots of the ring and hash different inputs. That is
+    //   the mid-match kill, and it fires whenever the two adjacent slots
+    //   happen to hold different words.
+    //
+    // What is left is rng, both HP values, and 0x470044 -- which is the
+    // ROUND NUMBER, not a frame timer (incremented once per round at
+    // 0x408986, read by character_state_machine at 0x411D39/0x411F2D and by
+    // script get-var opcode 7 at 0x4138C5). All four are simulated, inside
+    // the save envelope, and required to match.
+    //
+    // NOT ADDED YET, deliberately: 0x470048 (g_round_limit, the value the
+    // game actually compares the round counter against, 0x4088C0) and
+    // 0x470050 (the per-round countdown, decremented at 0x408E5F) are real
+    // shared state and would restore genuine coverage of the lost-HOST_CONFIG
+    // class. They go in once the repro rig has measured them, not on the
+    // same change that removes the bad terms -- otherwise a new false
+    // positive would be indistinguishable from a failure to fix the old one.
+    struct __attribute__((packed)) WireFingerprint {
+        uint32_t rng;
+        uint32_t p1_hp;
+        uint32_t p2_hp;
+        uint32_t round_number;
+    } wire = {
+        *(uint32_t*)0x41FB1C,
+        *(uint32_t*)0x4DFC85,
+        *(uint32_t*)0x4EDCC4,
+        *(uint32_t*)0x470044,
+    };
+    g_region_checksums.wire_fingerprint =
+        Fletcher32((const uint8_t*)&wire, sizeof(wire));
+
     // Stash the raw scalars too. They're cheap (32 bytes) and on a
     // fingerprint-DIFF dump we can name the specific field that diverged
     // without needing FM2K_FULL_CRCS or per-region CRCs at all.
@@ -436,8 +486,18 @@ void SaveState_DumpDesyncDiagnostic(int frame, uint32_t local_crc, uint32_t remo
     fprintf(f, "  rng        = 0x%08X  (g_rand_seed @ 0x41FB1C)\n", *(uint32_t*)0x41FB1C);
     {
         uint32_t buf_idx = *(uint32_t*)0x447EE0 & 0x3FF;
-        uint16_t p1_in = ((const uint16_t*)0x4280E0)[buf_idx];
-        uint16_t p2_in = ((const uint16_t*)0x4290E0)[buf_idx];
+        // UINT32 PER ENTRY. This printer read the rings as uint16 while the
+        // fingerprint that produced the numbers above reads them as uint32,
+        // so a uint16 index landed on the low half of entry buf_idx/2 and
+        // the two lines below disagreed with the hash they claimed to
+        // explain -- which showed up as a phantom "p1_input differs" in a
+        // desync where the inputs were in fact identical. The engine's own
+        // stride settles it: process_game_inputs writes
+        // `mov [edx*4+0x4280e0],eax` at 0x41472E.
+        const uint32_t* p1_hist_dbg = (const uint32_t*)0x4280E0;
+        const uint32_t* p2_hist_dbg = (const uint32_t*)0x4290E0;
+        uint16_t p1_in = (uint16_t)(p1_hist_dbg[buf_idx] & 0xFFFF);
+        uint16_t p2_in = (uint16_t)(p2_hist_dbg[buf_idx] & 0xFFFF);
         fprintf(f, "  buf_idx    = %u  (slot %u of 1024)\n",
                 *(uint32_t*)0x447EE0, buf_idx);
         fprintf(f, "  p1_input   = 0x%04X  (g_p1_input_history[buf_idx])\n", p1_in);

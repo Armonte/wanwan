@@ -75,7 +75,6 @@ inline bool CsmSeamWindow() {
            g_netplay_frame >= 820 && g_netplay_frame <= 835;
 }
 FILE* g_csm_diag_fp = nullptr;
-uint32_t g_csm_diag_frame = 0;  // approximate, derived from buf_idx
 
 // Per-opcode trace. Hook fires at 0x4125FC (`mov al, [edi]`) where edi
 // already holds the current script-item pointer (= item_idx * 16 +

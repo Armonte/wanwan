@@ -25,7 +25,8 @@ extern void NeuterFullscreenTogglesForCncDdraw();
 #include "../hooks/per_game_patches.h"
 #include "../hooks/background_mode.h"  // FM2K_TEST_BACKGROUND: harness-only no-foreground-steal mode
 #include "../netplay/upload_queue.h"
-#include "../netplay/spectator_node.h"  // SpectatorNode_GetSessionId
+#include "../hooks/wndproc_subclass.h"  // FM2KWndProc::Uninstall (detach)
+#include "../netplay/spectator_node.h"  // SpectatorNode_GetSessionId / _Shutdown
 #include "version_local.h"  // fm2k::kAppBranch / kAppVersion / kAppRevision
 #include <SDL3/SDL_log.h>
 #include <windows.h>
@@ -111,6 +112,19 @@ static void ApplyBootToCharacterSelectPatches() {
     //     g_char_velocity_multiplier and self-execute KGT_OP_THROW_EXECUTE
     //     (opcode 0x15) on frame 0 of battle. Only enable for games
     //     verified to behave (WW, etc.).
+    // Trace the boot decision next to the captures. The hook's SDL log is
+    // silent on this launch path, and "did the skip flag actually arrive"
+    // is the fact that separates "the game has no intro" from "we patched
+    // the intro away and then wondered where it went".
+    if (const char* cd = std::getenv("FM2K_CAPTURE_DIR"); cd && *cd) {
+        const char* skip = std::getenv("FM2K_SKIP_BOOT_CSS_PATCH");
+        const char* fast = std::getenv("FM2K_BOOT_TO_CSS_DIRECT");
+        if (FILE* tf = std::fopen((std::string(cd) + "/boot.txt").c_str(), "wb")) {
+            std::fprintf(tf, "SKIP_BOOT_CSS_PATCH=%s BOOT_TO_CSS_DIRECT=%s\n",
+                         skip ? skip : "(unset)", fast ? fast : "(unset)");
+            std::fclose(tf);
+        }
+    }
     if (const char* e = std::getenv("FM2K_SKIP_BOOT_CSS_PATCH"); e && std::strcmp(e, "1") == 0) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
             "PATCH: FM2K_SKIP_BOOT_CSS_PATCH=1 -- leaving vanilla intro "
@@ -818,6 +832,25 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
 
         // Cleanup shared memory
         CleanupSharedMemory();
+
+        // Take our WndProc out of the window. FM2KWndProc::Uninstall writes
+        // the GAME's original proc back over whatever is currently installed,
+        // so it removes the imgui overlay's chained proc in the same store --
+        // no code in this DLL can be reached through the window after this.
+        // wndproc_subclass.cpp claimed this already happened "from the
+        // trampoline shutdown path"; it did not, because there was no such
+        // path and nothing called Uninstall.
+        FM2KWndProc::Uninstall();
+
+        // Spectator node teardown. This was written and never called: it
+        // writes the C7 full session log, sends SPEC_LEAVE to every
+        // subscriber and to our upstream so they fail over immediately
+        // instead of waiting out a silence timer, and closes both
+        // spec-relay shared-memory views. Runs BEFORE NetSocket_Shutdown
+        // because the LEAVE packets need the socket, and before
+        // Netplay_Shutdown only for symmetry with the reverse-order rule
+        // above -- it touches no GekkoNet state.
+        SpectatorNode_Shutdown();
 
         // Shutdown netplay (GekkoNet session if active)
         Netplay_Shutdown();

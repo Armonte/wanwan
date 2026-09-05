@@ -95,7 +95,3 @@ enum class TitleModeVerdict : int {
 // human is driving the menu and we must not move their cursor.
 void TitleModeSelect_Tick(uint32_t game_mode, bool from_input_hook);
 
-TitleModeVerdict TitleModeSelect_Verdict();
-
-// True once the content has been proven to have no VS entry. Sticky.
-bool TitleModeSelect_HasNoVsMode();

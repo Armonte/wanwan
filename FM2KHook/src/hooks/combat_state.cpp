@@ -97,12 +97,6 @@ PlayerView ReadPlayer(int slot) {
     return v;
 }
 
-bool ShouldGuardP2() {
-    // Kept for back-compat callers -- uses zero P1-input (no attack-press
-    // signal). New callers should use GuardP2Input() with the real p1_input.
-    return GuardP2Input(0) != 0u;
-}
-
 namespace {
 // Latched hold-counter shared across BattleInputOverride calls. Reset to
 // kGuardHoldFrames any time a trigger condition fires; decremented each
@@ -130,7 +124,6 @@ constexpr uint16_t kAttackBits = 0x3F0;
 // making P2 jump backwards every guard trigger.
 constexpr uint16_t kInputLeft  = 0x001;
 constexpr uint16_t kInputRight = 0x002;
-constexpr uint16_t kInputUp    = 0x004;
 constexpr uint16_t kInputDown  = 0x008;
 }  // namespace
 
@@ -203,7 +196,6 @@ uint16_t GuardP2Input(uint16_t p1_input_screen_coord) {
 
 namespace combat_state {
 PlayerView ReadPlayer(int) { return PlayerView{}; }
-bool       ShouldGuardP2() { return false; }
 }  // namespace combat_state
 
 #endif

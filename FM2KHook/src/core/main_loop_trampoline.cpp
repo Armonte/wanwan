@@ -32,6 +32,7 @@
 #include <cstring>
 #include <windows.h>
 #include "trampoline_internal.h"  // shared externs + cross-TU phase helpers
+#include "frame_timing.h"          // DIAGNOSTIC per-frame timing ring (dark by default)
 
 
 // ============================================================================
@@ -301,9 +302,19 @@ BOOL TrampolineMainLoop() {
         // capping the loop at ~90 FPS. Using QPC + a busy-wait tail on
         // the final ~1 ms hits 100 Hz cleanly.
         uint64_t tick_start = SDL_GetPerformanceCounter();
+        // Per-frame timing ring. Anchored on the SAME QPC value the pacer
+        // uses, so `frame` in the CSV and the pacing deadline cannot drift
+        // apart. Dark by default (FM2K_FRAME_TIMING).
+        FrameTiming_BeginFrame(tick_start);
 
         if (!PumpMessages()) {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Trampoline: WM_QUIT -- exiting");
+            // Teardown path, so the fprintf cost cannot hitch a live frame.
+            // This is the ONLY dump an offline player ever reaches: there is
+            // no Netplay_EndBattle and no harness auto-terminate off the
+            // netplay path, so without it a local "the game feels sluggish"
+            // session would arm the ring and produce no file.
+            FrameTiming_Dump(g_player_index, "WM_QUIT");
             // Patch the .pty header's frame_count and close the file before
             // process teardown. DllMain's DLL_PROCESS_DETACH runs at a point
             // where CRT FILE* state may already be torn down, so close here.
@@ -327,6 +338,54 @@ BOOL TrampolineMainLoop() {
         // Sample work-vs-frame timing (offline-inclusive, #63). Must run
         // before the pacing sleep so `work` excludes the sleep itself.
         MaybeLogFrametime(tick_start);
+        // Close the work half of the row BEFORE the pacing sleep, for the same
+        // reason MaybeLogFrametime samples here: `work` has to exclude the
+        // sleep or the split that separates a slow box from a slow connection
+        // collapses into one number.
+        FrameTiming_EndWork();
+
+        // TURBO (FM2K_TURBO=1): collapse the pacing target so a capture
+        // sweep runs as fast as the machine allows. 108 games at 100 Hz is
+        // roughly an hour of real time spent waiting for title screens.
+        //
+        // OFF BY DEFAULT and only for offline capture. It must never reach a
+        // netplay session: the battle phase's SleepToTarget carries the
+        // frames-ahead slowdown that keeps two peers aligned, and running it
+        // at zero would hand the rollback pacing a target it cannot use.
+        // Nothing else consumes wall-clock here -- the autoplay counts input
+        // ring ticks and the capture dwell counts frames, not milliseconds --
+        // so both stay correct at any speed.
+        static const int s_turbo = []{
+            const char* v = std::getenv("FM2K_TURBO");
+            return (v && v[0] == '1') ? 1 : 0;
+        }();
+        const int pace_ms = s_turbo ? 0 : 10;
+
+        // THE ORIGINAL LOOP'S ELAPSED-MS GLOBAL, which we must keep writing
+        // because we replaced the loop that wrote it. main_game_loop stores
+        // the milliseconds since the previous frame at 0x425960 (0x405B71),
+        // and render_game divides 1000 by it for its on-screen debug counter
+        // (the `div` at 0x405487). Left at its load-time zero that div is a
+        // DIVIDE BY ZERO, exception 0xC0000094, which is in the field crash
+        // corpus. Exactly the same class as g_frame_time_ms above.
+        //
+        // FLOORED AT 1, which the original is not: timeGetTime has
+        // millisecond resolution, so two frames inside one millisecond make
+        // the original divide by zero too. Our floor cannot make the counter
+        // read worse than the engine's own -- 1000/1 is simply the ceiling of
+        // what that display can express.
+        if constexpr (FM2K::kIsFM2K && FM2K::ADDR_LAST_FRAME_ELAPSED_MS != 0) {
+            static uint32_t s_last_ms = 0;
+            // GetTickCount, NOT timeGetTime: we virtualize timeGetTime for the
+            // sim (Hook_timeGetTime returns frame-derived virtual time), so
+            // asking it here would measure the virtual clock rather than the
+            // wall clock this counter is meant to report.
+            const uint32_t now_ms = GetTickCount();
+            uint32_t elapsed = s_last_ms ? (now_ms - s_last_ms) : (uint32_t)pace_ms;
+            if (elapsed == 0) elapsed = 1;
+            s_last_ms = now_ms;
+            *(volatile uint32_t*)FM2K::ADDR_LAST_FRAME_ELAPSED_MS = elapsed;
+        }
 
         // Phase-specific pacing.
         switch (phase) {
@@ -339,11 +398,11 @@ BOOL TrampolineMainLoop() {
                 // saw. Stress / offline / pre-session paths all return
                 // 0.0 from Netplay_GetFramesAhead so the slowdown is a
                 // no-op there.
-                SleepToTarget(tick_start, 10, Netplay_GetFramesAhead());
+                SleepToTarget(tick_start, pace_ms, Netplay_GetFramesAhead());
                 break;
             case LoopPhase::CSS:
             case LoopPhase::NATIVE:
-                SleepToTarget(tick_start, 10);
+                SleepToTarget(tick_start, pace_ms);
                 break;
             case LoopPhase::SPECTATOR_PLAYBACK: {
                 // Always 100 Hz outer tick. Catchup behaviour lives entirely
@@ -372,6 +431,13 @@ BOOL TrampolineMainLoop() {
                 break;
             }
         }
+
+        // Close the row AFTER the pacing sleep, which is what makes `sleep` a
+        // measurement rather than an inference, then service any F7 request.
+        // The dump runs HERE, on the trampoline thread, for the same reason
+        // the F8 runahead toggle does: nothing off-thread may touch the ring.
+        FrameTiming_EndFrame();
+        FrameTiming_PollDump(g_player_index);
     }
 }
 

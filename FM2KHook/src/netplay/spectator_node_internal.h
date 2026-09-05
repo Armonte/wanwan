@@ -628,7 +628,6 @@ struct State {
     // De-dup gate. Backfill from a reconnected upstream replays history
     // from frame 0; frames at or below this counter were already consumed
     // locally and would re-render the past. Updated by PopFrameInputs.
-    uint32_t                  highest_consumed_frame = 0;
     // Frame-counter offset so highest_consumed_frame is comparable to
     // the start_frame field on incoming EVENT_BATCH datagrams. Set on the
     // first batch received after JOIN_ACK; subsequent batches increment.

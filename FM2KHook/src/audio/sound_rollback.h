@@ -86,7 +86,6 @@ struct MuteState {
     bool se  = false;
 };
 void      SetMuteState(const MuteState& m);
-MuteState GetMuteState();
 bool      IsMusicMuted();   // BGM (MIDI / CD)
 bool      IsSfxMuted();     // SFX (WAV)
 

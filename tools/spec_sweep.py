@@ -421,7 +421,10 @@ def leg_stage_once(a, attempt: int = 1) -> tuple[bool, dict]:
             if offset + i >= len(host_cfg):
                 break
             h = host_cfg[offset + i]
-            for field in ("digest", "time", "rounds", "speed", "socd"):
+            # SOCD is NOT compared: it is per player, per device, applied at
+            # capture on each plane (hooks_input.cpp Hook_ApplySOCDSlot), so
+            # planes legitimately differ and the digest no longer hashes it.
+            for field in ("digest", "time", "rounds", "speed"):
                 if c[field] != h[field]:
                     fails.append(f"{tag} match{c['match']} {field}={c[field]} "
                                  f"but host match{h['match']} {field}={h[field]}")
@@ -494,8 +497,12 @@ VARIANTS = {
     # infinite timer (0 is VALID, not unset) + a non-default game speed
     "V2": {"time": 0,  "rounds": 1, "speed": 16, "socd": 1,
            "frames": 2500, "single": True},
-    # SOCD variance -- one of the five digest fields, so a delivery failure
-    # blocks battle entry rather than desyncing the sim
+    # SOCD variance -- since 2026-09-02 SOCD is per player, per device: the
+    # host runs mode 4, the guest and the spectator keep their OWN mode (the
+    # default 1, nothing sets it on those planes), and the settings digest
+    # no longer hashes it, so the three planes must still AGREE on the digest
+    # while DISAGREEING on socd. This variant is the red/green proof that the
+    # host no longer overrides the other players.
     "V3": {"time": -1, "rounds": 1, "speed": 10, "socd": 4,
            "frames": 8000, "single": False},
 }
@@ -667,14 +674,22 @@ def judge_settings(out_dir: Path, name: str, rc: int,
                              f"(viewer saw more battles than the host logged)")
                 continue
             h = host[hi]
-            for field in ("time", "speed", "socd", "digest"):
+            for field in ("time", "speed", "digest"):
                 if c[field] != h[field]:
                     msg = (f"{tag} match{c['match']} {field}={c[field]} but host "
                            f"match{h['match']} {field}={h[field]}")
                     if field == "digest":
-                        msg += (" -- the five sim-relevant settings are NOT the "
+                        msg += (" -- the four sim-relevant settings are NOT the "
                                 "same on this plane")
                     fails.append(msg)
+            # SOCD: per player, per device. The host's mode must NOT reach
+            # this plane. When the variant asks for a non-default host mode,
+            # a non-host plane reporting the host's value is the OLD
+            # behaviour (host override) coming back.
+            if v["socd"] != 1 and c["socd"] == h["socd"]:
+                fails.append(f"{tag} match{c['match']} socd={c['socd']} EQUALS "
+                             f"the host's -- SOCD was pushed by the host; it "
+                             f"must stay per player per device")
             if c["rounds"] != h["rounds"]:
                 rounds_fails.append(
                     f"{tag} match{c['match']} rounds={c['rounds']} but host "

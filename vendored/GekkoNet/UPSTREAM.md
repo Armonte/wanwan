@@ -64,6 +64,28 @@ BYTE FORMAT of every Gekko message -- an old peer cannot parse a new packet.
     gate and WILL fail. That is expected behavior for a wire break, not a bug --
     the fix is "both sides update".
 
+!! UPSTREAM MOVED AGAIN (assessed 2026-09-01) -- see docs/dev/gekkonet_upstream_midjoin_2026-09-01.md !!
+-----------------------------------------------------------------------------------------------------
+Upstream main is now 3945a61 "Mid session joining as a spectator (#56)"
+(2026-09-01) over 5924b5c "Validate untrusted input and replay data"
+(2026-08-04) over the 675b31d ReplaySession merge below. Late spectator join
+is no longer "work in progress" upstream.
+
+  * 3945a61 adds two wire messages (SpectatorState / SpectatorStateAck) and
+    ships the host's confirmed state INSIDE GekkoNet in 900-byte chunks with
+    a block retry every 200 ms and a 128-frame input window. That does not
+    fit a ~1 MB FM2K state (see the doc, section 4) and we already do late
+    join over our own FEC'd channel. NOT a candidate for our state path.
+  * What IS worth taking from 3945a61: ReclaimDisconnectedSpectators +
+    _pending_disconnects + the free-handle scan in AddActor + CheckStatusActors
+    in Poll. That is the "per-address actor tracking" fix 5580a1d asked for.
+  * 5924b5c: two OnInputs payload-bounds checks worth hand-applying; the RLE
+    odd-length check targets the delta+RLE codec we do not carry.
+  * The fork this file recommends already exists: Armonte/GekkoNet (branches
+    main, povertycaster, replay). Add an `fm2k` branch carrying our 4 patches
+    on b5c6528 before the next update; keep it a separate branch from
+    povertycaster (qoh's fork base is bce8ddd with its own 3 patches).
+
 !! STOP -- READ BEFORE UPDATING PAST b5c6528 (assessed 2026-07-27) !!
 --------------------------------------------------------------------
 Upstream tip 675b31d "ReplaySession (#55)" (2026-07-26) is **WIRE-BREAKING**.

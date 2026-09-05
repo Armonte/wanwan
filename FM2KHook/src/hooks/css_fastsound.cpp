@@ -121,7 +121,6 @@ uint32_t      g_move_seq      = 0;
 constexpr uintptr_t kAddr_ClearCharacterSlot = 0x4039B0;
 constexpr uintptr_t kAddr_GameMode           = 0x470054;  // 1000 title/2000 css/3000 battle
 constexpr uintptr_t kAddr_CharDataBase       = 0x4D1D80;
-constexpr uintptr_t kAddr_CharDataEnd        = 0x541F78;
 constexpr uintptr_t kAddr_LoadedCharSlot     = 0x4CF9E0;  // int[8]
 constexpr size_t    kSlotStride   = 57407;
 constexpr int       kNumSlots     = 8;
@@ -173,7 +172,6 @@ bool                  g_async = false;
 std::thread           g_async_worker;
 std::mutex            g_async_mtx;
 std::condition_variable g_async_cv;
-bool                  g_async_stop = false;
 // request: latest char the cursor wants per preview slot (-1 = none)
 int                   g_async_req_char[2]  = {-1, -1};
 // result: a spare slot finished loading req_char for a preview slot
@@ -184,15 +182,20 @@ int                   g_async_done_char    = -1;
 int                   g_async_next_spare   = kFirstCacheSlot;  // rotate 2..7
 uint64_t              g_async_loads = 0;
 
+// Runs for the life of the process. There is no stop path and there cannot be
+// a useful one: the thread is detached, and the only place that could ask it
+// to stop is DLL_PROCESS_DETACH, where the loader has already terminated it --
+// possibly while it held g_async_mtx, so DllMain must not touch that lock.
+// (An unsettable g_async_stop flag used to be read here, which read like a
+// shutdown that exists.)
 void AsyncWorkerMain() {
     for (;;) {
         int previewSlot = -1, charId = -1;
         {
             std::unique_lock<std::mutex> lk(g_async_mtx);
             g_async_cv.wait(lk, [] {
-                return g_async_stop || g_async_req_char[0] >= 0 || g_async_req_char[1] >= 0;
+                return g_async_req_char[0] >= 0 || g_async_req_char[1] >= 0;
             });
-            if (g_async_stop) return;
             // take the lowest preview slot with a pending request
             for (int p = 0; p < 2; ++p) {
                 if (g_async_req_char[p] >= 0) { previewSlot = p; charId = g_async_req_char[p]; g_async_req_char[p] = -1; break; }

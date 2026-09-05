@@ -1,0 +1,176 @@
+// ingame.slint -- what the launcher is while the game is actually running.
+//
+// The port had no state for this at all: the match flow went booting ->
+// post, as though the session between them did not exist. It is where the
+// user spends nearly all of their time, and the launcher is not idle
+// during it -- it is holding the rollback session up.
+//
+// IT IS A CARD, NOT A SCREEN. This used to replace the whole content area,
+// which was already better than covering the shell, but still wrong: while
+// a game is up the launcher is in the BACKGROUND. The person is in the
+// game, and when they come back to this window it is to type in the lobby
+// -- "gg", "one more", "brb" -- not to look at a splash telling them a
+// game is running, which they can see, because they were just in it.
+//
+// So the lobby stays exactly where they left it and the session becomes a
+// status card in the corner: the live connection numbers, which are the
+// half that genuinely earns the launcher its place mid-match, and the way
+// out. Same shape and same corner as the match flow, so a running match
+// and an arriving challenge are the same kind of object.
+import { Nerv, Type, Space, Chrome, Radius } from "theme.slint";
+
+// A stat, as a column. Four of these fit the card width; the label is
+// small and quiet because mid-match the eye is looking for the NUMBER
+// going the wrong colour, not reading captions.
+component Stat inherits VerticalLayout {
+    in property <string> label;
+    in property <string> value;
+    in property <color> tint: Nerv.ink2;
+    spacing: 0px;
+    horizontal-stretch: 1;
+    Text {
+        text: label; font-size: Type.label; letter-spacing: Type.track;
+        color: Nerv.faint; horizontal-alignment: center;
+    }
+    Text {
+        text: value; font-size: Type.body_lg; color: tint;
+        horizontal-alignment: center;
+    }
+}
+
+export component InGame inherits Rectangle {
+    in property <string> me;
+    in property <string> opponent;
+    in property <string> format;
+    in property <int> round;
+    in property <int> rounds_total;
+    in property <int> rtt;
+    in property <int> elapsed_s;
+    in property <int> rollbacks;
+    in property <int> drops;
+    // What the shell already owns at the bottom edge -- the chat composer.
+    in property <length> bottom_inset;
+    callback end_match();
+
+    background: transparent;
+
+    card := Rectangle {
+        x: parent.width - self.width - Chrome.right_w - Space.m;
+        y: parent.height - self.height - Chrome.status_h - root.bottom_inset - Space.m;
+        width: 380px;
+        height: col.preferred-height;
+        background: Nerv.bg3;
+        border-radius: Radius.md;
+        border-width: 1px;
+        border-color: Nerv.amber;
+
+        col := VerticalLayout {
+            spacing: 0px;
+
+            Rectangle {
+                height: 22px;
+                background: Nerv.amber.with-alpha(0.10);
+                HorizontalLayout {
+                    padding-left: Space.s; padding-right: Space.s;
+                    Text {
+                        text: "MATCH RUNNING";
+                        font-size: Type.label; letter-spacing: Type.track;
+                        color: Nerv.amber;
+                        vertical-alignment: center; horizontal-stretch: 1;
+                    }
+                    Text {
+                        // floor() is not optional: Slint's `/` is FLOAT
+                        // division, so the minutes field rendered as
+                        // "3.5666666:34" rather than "3:34".
+                        text: floor(root.elapsed_s / 60) + ":"
+                              + (mod(root.elapsed_s, 60) < 10 ? "0" : "")
+                              + mod(root.elapsed_s, 60);
+                        font-size: Type.label; color: Nerv.ink2;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            Rectangle { height: 1px; background: Nerv.amber; }
+
+            VerticalLayout {
+                padding: Space.m; spacing: Space.s;
+
+                // The matchup. Coloured apart so a glance answers "which
+                // side am I" without parsing the names.
+                HorizontalLayout {
+                    spacing: Space.s;
+                    Text {
+                        text: root.opponent == "" ? "--" : root.opponent;
+                        font-size: Type.body_lg; color: Nerv.tier_tester;
+                        overflow: elide;
+                    }
+                    Text {
+                        text: "vs"; font-size: Type.body_sm; color: Nerv.faint;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.me; font-size: Type.body_lg; color: Nerv.acc;
+                        overflow: elide; horizontal-stretch: 1;
+                    }
+                    Text {
+                        text: root.format + " - R" + root.round + "/" + root.rounds_total;
+                        font-size: Type.body_sm; color: Nerv.dim;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle { height: 1px; background: Nerv.line; }
+
+                // Live connection health -- the reason to glance at this
+                // window at all while a game is up.
+                HorizontalLayout {
+                    spacing: Space.s;
+                    Stat {
+                        label: "RTT"; value: root.rtt + "ms";
+                        tint: root.rtt < 50 ? Nerv.phos
+                            : root.rtt < 100 ? Nerv.amber : Nerv.red;
+                    }
+                    Stat { label: "ROLLBACKS"; value: root.rollbacks; }
+                    Stat {
+                        label: "DROPS"; value: root.drops;
+                        // Any drop at all earns the amber. Rollbacks are
+                        // normal and a count of them is just information; a
+                        // dropped packet is the thing that turns into a
+                        // desync, so it does not get to look normal.
+                        tint: root.drops > 0 ? Nerv.amber : Nerv.ink2;
+                    }
+                }
+            }
+
+            // NO "trigger desync" button, which the blueprint has at
+            // app.jsx:1498. That is a dev stepper for demoing the mock's
+            // states, and shipping a control that deliberately corrupts a
+            // live match would be a weapon, not a feature. The equivalent
+            // for development is the host's --match flag.
+            Rectangle { height: 1px; background: Nerv.line; }
+            Rectangle {
+                height: 40px;
+                HorizontalLayout {
+                    padding: Space.s; alignment: end;
+                    Rectangle {
+                        width: 104px;
+                        border-radius: Radius.sm;
+                        border-width: 1px;
+                        border-color: endta.has-hover ? Nerv.red : Nerv.line;
+                        background: endta.has-hover ? Nerv.line : transparent;
+                        Text {
+                            text: "END MATCH";
+                            font-size: Type.body_sm; color: Nerv.red;
+                            width: 100%; height: 100%;
+                            horizontal-alignment: center; vertical-alignment: center;
+                        }
+                        endta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.end_match(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

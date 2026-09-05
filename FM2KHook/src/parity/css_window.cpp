@@ -665,11 +665,6 @@ void OnCapture(uint32_t seq, int32_t match_phase,
     ++s_frames;
 }
 
-bool CensusEnabled() {
-    ReadCensusEnv();
-    return s_census_en == 1;
-}
-
 void OnBattleFrame(int frame) {
     ReadCensusEnv();
     if (s_census_en != 1) return;

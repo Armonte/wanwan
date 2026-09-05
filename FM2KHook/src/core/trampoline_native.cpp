@@ -17,12 +17,16 @@
 #include <cstring>
 #include <windows.h>
 #include "trampoline_internal.h"
+#include "frame_timing.h"        // DIAGNOSTIC per-frame timing ring (dark by default)
 
 // Native: menu / intro / results. No netplay state, run sim at wall-clock
 // cadence. We don't replicate main_game_loop's frame-skip math -- a simple
 // one-tick-per-10ms gets the same perceived behavior without any of the
 // prologue writes that broke determinism in battle.
 void RunNativeTick() {
+    // Named first so the handshake-hold early returns below still produce a
+    // correctly labelled row.
+    FrameTiming_NotePhase(FtPhase::NATIVE);
     Hook_CheckGameModeTransition_Public();
 
     const bool skip_netplay = g_offline_mode || g_stress_mode;
@@ -88,8 +92,10 @@ void RunNativeTick() {
         Netplay_ProcessMenu();
     }
 
+    const uint64_t _ft_s0 = SDL_GetPerformanceCounter();
     if (original_process_game_inputs) original_process_game_inputs();
     if (original_update_game)         original_update_game();
+    FrameTiming_NoteSim(SDL_GetPerformanceCounter() - _ft_s0, 1);
     ++g_sim_step_count;   // sim-fps: one logic tick
     ParityRecorder::Capture();  // post-update snapshot for parity .pty
 

@@ -7,6 +7,7 @@
 #include "css_fastsound.h"    // FM2K_FPK_CSS_FASTSOUND: lazy DSound buffers (CSS dip fix)
 #include "per_game_patches.h" // damage multiplier MinHook + team-size override
 #include "render_simd.h"      // FM2K_BLIT_SIMD: blit + case -10 blur reimplementation
+#include "scene_frame_guard.h" // destroyed-object draw suppression + frame-index detector
 #include "globals.h"
 
 #include <cstdlib>
@@ -29,7 +30,7 @@
 #include "../audio/sound_rollback.h"        // Mike Z desired/actual sound layer
 #include "../netplay/spectator_node.h"      // spectator playback queue accessors
 #include "../ui/input_binder.h"             // FM2KInputBinder::Sample_Win32 + Bindings
-#include "../ui/screenshot.h"               // FM2KCapture::SaveScreenshot for the auto-banner pipeline
+#include "../ui/screenshot.h"               // FM2KCapture::RememberFrame for the auto-banner pipeline
 #include "../ui/fc_hud.h"                   // IsChatInputActive -- gate local input during typing
 #include "../vfs/fpk_reader.h"              // FM2K_FPK_VFS: inflate a slim .fpk -> original asset bytes
 #include <MinHook.h>
@@ -566,6 +567,58 @@ static int __cdecl Hook_BlitSpriteWithBlendMode(int sprite_desc, int src_pixels,
                                                 int palette_lut, int dst_x, int dst_y,
                                                 int width, int height, short flags) {
     if (g_blit_cfg.mode != fm2k::render_simd::Mode::Off) {
+        // GEOMETRY SANITY, and it is not paranoia -- it closes a path from a
+        // KNOWN engine bug into memory corruption.
+        //
+        // sprite_rendering_engine indexes a sprite-frame descriptor by an
+        // object's frame index, and that index can point PAST THE END of the
+        // frame table (see docs/dev/desync_cluster_0284_2026-09-02.md section
+        // 5, the 0x40DD62 access violation). When the table happens to end at
+        // a page boundary the read faults and we get that crash. The rest of
+        // the time -- which is most of the time -- it silently reads whatever
+        // follows, and those bytes become the width, height and destination
+        // of a blit.
+        //
+        // The engine's own blitter has survived that for twenty years. Ours is
+        // a reimplementation whose clip arithmetic assumes the caller is sane:
+        // `clip_w = 640 - dst_x` and friends are correct for real geometry and
+        // can compute a destination run that leaves the framebuffer for
+        // garbage, and `dst_x + width` can overflow outright. A blit that
+        // writes past the framebuffer corrupts the heap, and the fault then
+        // lands wherever the allocator next walks its own metadata -- which is
+        // exactly the signature of the launch-time crashes in the field
+        // corpus, scattered across ntdll and apphelp with no useful stack.
+        //
+        // So: anything outside plausible 640x480 sprite geometry goes to the
+        // ORIGINAL blitter, which is the code that has always handled it. This
+        // is not a fallback for our own bugs -- our arithmetic is fine for
+        // sane inputs -- it is a refusal to translate someone else's bad data
+        // into a memory write. Display path only; it cannot affect the sim.
+        {
+            const int aw = width  < 0 ? -width  : width;
+            const int ah = height < 0 ? -height : height;
+            const bool sane =
+                aw <= 4096 && ah <= 4096 &&
+                dst_x > -4096 && dst_x < 4096 &&
+                dst_y > -4096 && dst_y < 4096;
+            if (!sane) {
+                // Once per process, not per blit -- hook logging is
+                // synchronous and this fires from the render path.
+                static bool s_warned = false;
+                if (!s_warned) {
+                    s_warned = true;
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "BlitSIMD: REFUSED implausible geometry dst=(%d,%d) "
+                        "size=%dx%d flags=%d -- handing to the engine's "
+                        "blitter. This means a sprite-frame descriptor was "
+                        "read out of range (the 0x40DD62 class); the refusal "
+                        "prevents it becoming a heap write.",
+                        dst_x, dst_y, width, height, (int)flags);
+                }
+                return original_blit_sprite(sprite_desc, src_pixels, palette_lut,
+                                            dst_x, dst_y, width, height, flags);
+            }
+        }
         if (g_blit_cfg.verify) {
             BlitVerify(sprite_desc, src_pixels, palette_lut, dst_x, dst_y, width, height, flags);
             return 0;
@@ -615,13 +668,22 @@ static int __cdecl Hook_BlitSpriteWithBlendMode(int sprite_desc, int src_pixels,
     return ret;
 }
 
-// sprite_rendering_engine @ 0x40CC30 hook (FM2K_BLIT_SIMD only). Intercepts
-// the case -10 full-screen feedback blur (render_mode obj[+0x10]==-10, which
-// does ONLY the blur), runs our reimplementation, and skips the original. All
-// other render modes fall through untouched.
+// sprite_rendering_engine @ 0x40CC30 hook. Two jobs:
+//   1. ALWAYS (FM2K): refuse to draw an object the sim already destroyed, or
+//      one whose kind selects no scene block. That is the 0x40DD62 access
+//      violation -- see scene_frame_guard.h for the whole mechanism.
+//   2. FM2K_BLIT_SIMD only: intercept the case -10 full-screen feedback blur
+//      (render_mode obj[+0x10]==-10, which does ONLY the blur), run our
+//      reimplementation and skip the original.
+// All other render modes fall through untouched.
 static void __cdecl Hook_SpriteRenderingEngine(int mode_arg) {
+    if (SceneFrameGuard::ShouldSuppressDraw()) return;
     const uint32_t obj = *(uint32_t*)0x4CFA00;
-    if (obj && *(int*)(obj + 0x10) == -10) {
+    // The blur reimplementation REPLACES the original for case -10, so it may
+    // only run when FM2K_BLIT_SIMD actually asked for it. The detour itself is
+    // now installed unconditionally for job 1.
+    if (g_blit_cfg.mode != fm2k::render_simd::Mode::Off &&
+        obj && *(int*)(obj + 0x10) == -10) {
         const int passes = *(int*)(obj + 342) / 20;       // obj[+342]/20 (case -10)
         if (passes > 0) {
             uint16_t* fb = *(uint16_t**)0x4246CC;
@@ -753,9 +815,16 @@ void __cdecl Hook_RenderGame() {
         memcpy(s_saved_afterimage_pool + kPflash1End,
                (void*)(WaveCAddrs::AFTERIMAGE_POOL + kPflash1End),
                kShakeOffset - kPflash1End);
+        // Tail of the HEAD slice only, plus the sim-owned entry headers. The
+        // 160,000 B of trail samples are read by sprite_rendering_engine and
+        // written by nothing in the render path, so snapshotting them protects
+        // nothing (see the structure note in WaveCAddrs). The 16-byte entry
+        // headers ARE still protected, so anything the sim can observe keeps
+        // exactly the coverage it had before.
         memcpy(s_saved_afterimage_pool + kShakeEnd,
                (void*)(WaveCAddrs::AFTERIMAGE_POOL + kShakeEnd),
-               WaveCAddrs::AFTERIMAGE_POOL_SZ - kShakeEnd);
+               WaveCAddrs::AFTERIMAGE_HEAD_SZ - kShakeEnd);
+        WaveCAddrs::AfterimageCaptureEntryHdrs(s_saved_afterimage_pool);
         memcpy(s_saved_input_tracking,  (void*)0x447EE0,                     0xA0);
     }
 
@@ -790,7 +859,8 @@ void __cdecl Hook_RenderGame() {
                kShakeOffset - kPflash1End);
         memcpy((void*)(WaveCAddrs::AFTERIMAGE_POOL + kShakeEnd),
                s_saved_afterimage_pool + kShakeEnd,
-               WaveCAddrs::AFTERIMAGE_POOL_SZ - kShakeEnd);
+               WaveCAddrs::AFTERIMAGE_HEAD_SZ - kShakeEnd);
+        WaveCAddrs::AfterimageRestoreEntryHdrs(s_saved_afterimage_pool);
         memcpy((void*)0x447EE0,                    s_saved_input_tracking,  0xA0);
     }
     EbDiag_Dump("POST-RESTORE");
@@ -844,18 +914,24 @@ bool InstallRenderHooks() {
                     (int)g_blit_cfg.verify, (int)want_profile);
             }
         }
-        if (want_simd) {
-            if (MH_CreateHook((void*)FM2K::ADDR_SPRITE_RENDER_ENGINE,
-                              (void*)Hook_SpriteRenderingEngine,
-                              (void**)&original_sprite_render_engine) != MH_OK ||
-                MH_QueueEnableHook((void*)FM2K::ADDR_SPRITE_RENDER_ENGINE) != MH_OK) {
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                             "Hooks: Failed to hook sprite_rendering_engine (case -10 blur)");
-            } else {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "Hooks: sprite_rendering_engine @ 0x%08X hooked (case -10 blur reimpl)",
-                    (unsigned)FM2K::ADDR_SPRITE_RENDER_ENGINE);
-            }
+        // Always hooked on FM2K: the destroyed-object draw suppression is the
+        // fix for the 0x40DD62 access violation and must be live in shipping
+        // builds, not just under FM2K_BLIT_SIMD. One detour, two jobs.
+        if (MH_CreateHook((void*)FM2K::ADDR_SPRITE_RENDER_ENGINE,
+                          (void*)Hook_SpriteRenderingEngine,
+                          (void**)&original_sprite_render_engine) != MH_OK ||
+            MH_QueueEnableHook((void*)FM2K::ADDR_SPRITE_RENDER_ENGINE) != MH_OK) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                         "Hooks: Failed to hook sprite_rendering_engine -- the "
+                         "0x40DD62 stale-scene-table crash is NOT guarded in "
+                         "this session");
+        } else {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "Hooks: sprite_rendering_engine @ 0x%08X hooked (dead-object draw "
+                "suppression%s%s)",
+                (unsigned)FM2K::ADDR_SPRITE_RENDER_ENGINE,
+                want_simd ? " + case -10 blur reimpl" : "",
+                SceneFrameGuard::DetectorArmed() ? " + [FRAMEIDX] detector" : "");
         }
     }
 

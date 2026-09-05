@@ -111,44 +111,12 @@
 // freerun_sim_ticks>0). To enable the park on FM95 later, BOTH legs must land
 // first: Netplay_CanAdvanceCSS() must return false while parked, and the legacy
 // CSS return must set g_fm95_skip_next_render.
-//
-// KILL SWITCH: FM2K_CSS_PARK, default ON. A/B scaffolding for the causality
-// proof only -- NOT a fallback and NOT a permanent resident. DELETION IS
-// SCHEDULED, not wished (review G6): delete FM2K_CSS_PARK, this function, the
-// CssPreRendezvousTick branch and the two harness forwarding blocks
-// (tools/spec_selftest.py, tools/hub_spectate_e2e.py) in the release AFTER the
-// first stable that ships the park. The [CSS-RDV] census and the harness
-// advisory block are DETECTORS and stay.
-bool CssRendezvousPark_Enabled() {
-    if constexpr (!FM2K::kIsFM2K) {
-        return false;                       // FM95: see ENGINE SCOPE above
-    }
-    static int s_on = -1;
-    if (s_on < 0) {
-        const char* v = std::getenv("FM2K_CSS_PARK");
-        if (v == nullptr || v[0] == '\0') {
-            s_on = 1;                       // default ON -- this is the fix
-        } else if ((v[0] == '0' || v[0] == '1') && v[1] == '\0') {
-            s_on = v[0] - '0';              // strict: only "0" and "1" parse
-        } else {
-            s_on = 1;                       // fail SAFE (fix stays on), loudly
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                "[CSS-RDV] FM2K_CSS_PARK=\"%s\" is not \"0\" or \"1\" -- "
-                "refusing to guess; keeping the pre-rendezvous park ON", v);
-        }
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "[CSS-RDV] contract: park=%d (FM2K_CSS_PARK, default ON; =0 "
-            "restores the pre-fix unsynchronised character-select free-run for "
-            "A/B only -- it re-opens a real pool divergence)", s_on);
-    }
-    return s_on == 1;
-}
 
 namespace {
     // Per-CSS-phase census, emitted once at the rendezvous. park = ticks the
     // sim was held; freerun = pre-rendezvous ticks that DID sim (must be 0 with
     // the park on -- this is acceptance term P2, and it is a DETECTOR, so it
-    // stays after the kill switch goes).
+    // outlived the kill switch it was written alongside).
     uint32_t s_css_park_ticks    = 0;
     uint32_t s_css_freerun_ticks = 0;
     bool     s_css_prev_synced   = false;
@@ -161,7 +129,7 @@ namespace {
     // netplay character-select phase ran". That is a freeze reported as an
     // absence. Every 2 s while parked, say so out loud instead. Once per 2 s,
     // never per frame (hook logging is SYNCHRONOUS). DETECTOR, not scaffolding:
-    // it stays when FM2K_CSS_PARK is deleted.
+    // it stays now that the FM2K_CSS_PARK kill switch is gone.
     constexpr uint32_t kParkWarnMs = 2000u;
     uint32_t s_park_start_ms = 0;      // 0 = not currently parked
     uint32_t s_park_last_warn_ms = 0;
@@ -173,9 +141,13 @@ namespace {
 // wait it is stuck in (they have different deadlock properties -- see the
 // deadlock-safety block above). Returns what Netplay_ProcessCSS must hand
 // back: false = park (RunCssTick skips sim AND render via its existing stall
-// return), true = pre-fix free-run.
+// return), true = free-run, which only FM95 does.
 bool CssPreRendezvousTick(int leg) {
-    if (!CssRendezvousPark_Enabled()) {
+    if constexpr (!FM2K::kIsFM2K) {
+        // FM95: free-run, per the ENGINE SCOPE argument above. Both legs it
+        // names (Netplay_CanAdvanceCSS returning false while parked, and the
+        // legacy CSS return setting g_fm95_skip_next_render) have to land
+        // before the park can be turned on here.
         ++s_css_freerun_ticks;
         return true;
     }
@@ -221,5 +193,5 @@ void CssPark_EmitRendezvousCensus() {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
         "[CSS-RDV] rendezvous: park_ticks=%u freerun_sim_ticks=%u park=%d",
         s_css_park_ticks, s_css_freerun_ticks,
-        CssRendezvousPark_Enabled() ? 1 : 0);
+        FM2K::kIsFM2K ? 1 : 0);
 }

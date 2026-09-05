@@ -47,6 +47,12 @@ struct HubRoom {
     std::string id;            // == game_id
     std::string name;
     int user_count = 0;
+    // K::Subscriptions ONLY: the id this client asked for, before the hub
+    // folded it onto a room ("URORFGRelease103" -> "URORFG"). Two stems
+    // can fold onto one room, so the accepted list cannot be zipped
+    // against the request -- this is how a caller matches an incoming
+    // room_id back to the game on its own list. Empty elsewhere.
+    std::string requested;
 };
 
 // Mirror of fm2k::game_ini::GamePlayConfig -- kept in this header
@@ -89,6 +95,7 @@ struct HubEvent {
         RoomList,              // initial / list_rooms response
         RoomJoined,            // self joined a room (carries user list)
         RoomLeft,
+        Subscriptions,         // the room list the hub accepted, with per-room rosters
         UserJoined,
         UserLeft,
         UserStatus,            // status / opponent change
@@ -116,6 +123,8 @@ struct HubEvent {
         MatchInProgressStarted,// public broadcast: an in-flight match began
         MatchInProgressUpdated,// public broadcast: chars/stage filled in
         MatchInProgressEnded,  // public broadcast: in-flight match resolved
+        ChatReceived,          // room chat line (the hub echoes our OWN sends back too)
+        ChatRateLimited,       // our chat_send was throttled and DROPPED by the hub
         Error,
     };
 
@@ -309,6 +318,36 @@ struct HubEvent {
     std::vector<MatchInProgress> current_matches;
     MatchInProgress              current_match_update;
     std::string                  current_match_token;
+
+    // Room chat payload ("chat_v1"). The hub broadcasts every accepted
+    // line to EVERY member of the room INCLUDING the sender, so this is
+    // the only path by which a message we sent reaches our own backlog
+    // -- see HubClient::SendChat for why we must not echo locally.
+    // ts is unix seconds off the hub clock; system marks a hub-generated
+    // notice rather than a user line.
+    struct {
+        std::string room_id;
+        std::string user_id;
+        std::string nick;
+        std::string text;
+        int64_t     ts     = 0;
+        bool        system = false;
+    } chat;
+
+    // ChatRateLimited payload -- sent to the offender alone when their
+    // token bucket runs dry (hub: 1.0/s refill, burst 4.0). The line was
+    // DROPPED, not queued, so there is nothing to retry automatically;
+    // retry_after_ms is how long until the next send would be accepted.
+    struct {
+        int     retry_after_ms = 0;
+        int64_t last_send_ts   = 0;   // unix seconds of our last accepted send
+    } chat_rate_limited;
+
+    // Capabilities the hub advertised in hello_ack (Kind::Connected).
+    // "chat_v1" == chat_send/chat are supported. Empty on hubs older
+    // than the field, which every consumer must read as "no optional
+    // features" rather than assuming support.
+    std::vector<std::string> capabilities;
 };
 
 class HubClient {
@@ -398,9 +437,32 @@ public:
     // hubs ignore the unknown nat_type field -- backward compatible.
     void SendNatType(const std::string& nat_type);
 
-    void ListRooms();
     void JoinRoom(const std::string& game_id, const std::string& display_name = "");
-    void LeaveRoom();
+    // Leave ONE room; empty leaves the one currently being read. Rooms
+    // work like IRC channels (see SetRooms), so this is the only way out
+    // of one -- switching rooms does not leave the one you were in.
+    void LeaveRoom(const std::string& game_id = "");
+    // THE ROOMS THIS CLIENT IS IN (protocol §4.1), sent whole, the way an
+    // IRC client holds a channel list. The hub reconciles: rooms that are
+    // new get joined, rooms left off get parted. Being in a room means
+    // appearing in its user list and being challengeable there, whether
+    // or not it is the one being read -- JoinRoom only changes which one
+    // that is. The hub answers with K::Subscriptions: the accepted rooms
+    // (it caps the list, so this may be shorter than the request), how it
+    // folded each requested id, and a roster snapshot per room.
+    void SetRooms(const std::vector<std::string>& game_ids);
+
+    // Send a room chat line ("chat_v1"). room_id MUST be the room we are
+    // currently in -- the hub silently drops a mismatch. The hub strips
+    // C0 control chars, trims, and TRUNCATES at 500 chars rather than
+    // rejecting, so an over-long line still lands (clipped). An empty
+    // line after trimming is dropped server-side.
+    //
+    // Deliberately does NOT echo locally: the hub broadcasts the accepted
+    // line back to us as an ordinary `chat`, so a local echo would
+    // double every message in the backlog.
+    void SendChat(const std::string& room_id, const std::string& text);
+
     void Challenge(const std::string& target_id);
     // Variant -- includes the host's resolved [GamePlay] config so the
     // target sees what they're agreeing to in the accept modal (#54).

@@ -73,6 +73,11 @@ SOCKET ControlChannel_GetSocket();
 // addr should only update on legitimate authentication).
 void ControlChannel_LatchPeerAddr(const sockaddr_storage& peer);
 
+// Is `addr` the address we are currently sending gameplay traffic to?
+// Used by nat_traversal to tell an authentic punch from the CURRENT
+// peer apart from one arriving after a mid-session address remap.
+bool ControlChannel_PeerAddrEquals(const sockaddr_storage& addr);
+
 // Send a control packet to remote peer
 void ControlChannel_Send(const CtrlPacket& packet);
 
@@ -86,9 +91,6 @@ void ControlChannel_SendTo(const CtrlPacket& packet, const sockaddr_in& dest);
 // Check if control channel is connected (received HELLO_ACK)
 bool ControlChannel_IsConnected();
 
-// Get time since last received packet (for timeout detection)
-uint32_t ControlChannel_GetLastRecvMs();
-
 // Get round-trip time estimate (ping)
 uint32_t ControlChannel_GetRttMs();
 
@@ -97,7 +99,6 @@ uint32_t ControlChannel_GetRttMs();
 // (delay covers the worst spike, not just the mean) at session
 // creation time.
 uint32_t ControlChannel_GetWorstRttMs();
-uint32_t ControlChannel_GetRttSampleCount();
 void     ControlChannel_ResetWorstRttMs();
 
 // --- Input-delay negotiation (#24) -------------------------------------
@@ -150,9 +151,6 @@ void ControlChannel_SendPing();
 // run an identical value rather than each picking its own.
 void ControlChannel_SendBattleReady();
 
-// Send battle acknowledgment
-void ControlChannel_SendBattleAck();
-
 // Send battle entering signal (game_mode changed to battle).
 // swap_frame carries the proposed CSS-session frame at which to swap CSS
 // session for battle session. Both peers compute swap_frame = local_css_frame
@@ -166,9 +164,6 @@ void ControlChannel_SendBattleAck();
 void ControlChannel_SendBattleEntering(uint32_t swap_frame, uint8_t epoch = 0,
                                        uint8_t flags = 0,
                                        uint32_t cfg_digest = 0);
-
-// Send battle start (both sides ready)
-void ControlChannel_SendBattleStart(uint32_t start_frame);
 
 // Send battle end (game_mode left the [3000,4000) range).
 // swap_frame carries the proposed battle-session frame at which to destroy
@@ -211,9 +206,6 @@ void ControlChannel_SendChat(const char* text);
 // Control packets (0xCC prefix) are filtered out and queued for ControlChannel_Poll
 // GekkoNet packets are passed through normally
 GekkoNetAdapter* CreateMultiplexAdapter();
-
-// Destroy the custom adapter (just nulls the static, doesn't free socket)
-void DestroyMultiplexAdapter();
 
 // =============================================================================
 // CALLBACKS - Set by netplay.cpp to handle received control messages

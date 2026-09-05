@@ -732,4 +732,20 @@ void SpectatorNode_TickHostMaintenance() {
         }
     }
 
+    // ---- HUD spectator count --------------------------------------------
+    // The in-game HUD reads hud_spectator_count out of shared mem every
+    // frame; this is its only writer. Published here rather than from the
+    // render thread because the subscriber vector is owned by this (netplay
+    // pump) thread -- a size() read from the overlay would be a data race.
+    // On change only: a shared-mem write per maintenance tick would be
+    // pointless traffic, and the field has no seq to keep monotonic.
+    {
+        static uint16_t s_last_published = 0xFFFF;
+        const size_t n = g_state.subscribers.size();
+        const uint16_t count = (n > 0xFFFEu) ? 0xFFFEu : (uint16_t)n;
+        if (count != s_last_published) {
+            s_last_published = count;
+            SharedMem_PublishHudSpectatorCount(count);
+        }
+    }
 }

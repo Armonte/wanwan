@@ -30,7 +30,6 @@ namespace combat_state {
 //   0xC  → hitstun
 constexpr uint32_t kStunStateMask  = 0x0C;
 constexpr uint32_t kStunActionable = 0x00;
-constexpr uint32_t kStunScripted   = 0x04;
 constexpr uint32_t kStunBlock      = 0x08;
 constexpr uint32_t kStunHit        = 0x0C;
 
@@ -59,14 +58,6 @@ struct PlayerView {
 // opponent ptr is P2, P2's is P1). This avoids scanning g_object_pool per
 // frame.
 PlayerView ReadPlayer(int slot);
-
-// Convenience predicate: should a reactive Guard hold back this frame?
-// Returns true when ANY of:
-//   - P2 is currently in blockstun (continuing a string)
-//   - P1 (the opponent) has an active hitbox (a hit is incoming OR landing)
-// Returns false during hitstun (P2 can't act anyway), idle frames, or when
-// player snapshots are invalid.
-bool ShouldGuardP2();
 
 // Compute the actual input bits P2 should produce this frame for a state-
 // driven Guard. Returns 0 (no input), back direction alone (stand-block),

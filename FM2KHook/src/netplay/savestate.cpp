@@ -177,25 +177,6 @@ uint32_t Fletcher32(const uint8_t* data, size_t len) {
     return (uint32_t)(h ^ (h >> 32));
 }
 
-// Kept the original Fletcher32 body below (unused) for reference; the
-// wrapper above takes precedence at the linker level.
-[[maybe_unused]] static uint32_t Fletcher32_orig(const uint8_t* data, size_t len) {
-    uint32_t sum1 = 0xFFFF, sum2 = 0xFFFF;
-    while (len) {
-        size_t tlen = (len > 360) ? 360 : len;
-        len -= tlen;
-        do {
-            sum1 += *data++;
-            sum2 += sum1;
-        } while (--tlen);
-        sum1 = (sum1 & 0xFFFF) + (sum1 >> 16);
-        sum2 = (sum2 & 0xFFFF) + (sum2 >> 16);
-    }
-    sum1 = (sum1 & 0xFFFF) + (sum1 >> 16);
-    sum2 = (sum2 & 0xFFFF) + (sum2 >> 16);
-    return (sum2 << 16) | sum1;
-}
-
 // Single replay-diff log per battle session. Truncated in SaveState_Init,
 // then appended every time a replay save diverges from its forward save.
 // Replaces the old one-file-per-frame scheme that flooded the disk.

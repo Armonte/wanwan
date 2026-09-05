@@ -202,13 +202,6 @@ void SpectatorNode_Shutdown() {
 }
 
 
-void SpectatorNode_SetCapacity(size_t max_direct) {
-    g_state.capacity = max_direct;
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "SpectatorNode: Capacity set to %zu", max_direct);
-}
-
-
 // =============================================================================
 // SNAPSHOT CACHE (task #18 phase 2)
 // =============================================================================
@@ -335,10 +328,6 @@ void SpectatorNode_StashSnapshot() {
             "SpectatorNode: battle-entry JOIN_ACK re-broadcast to %zu sub(s)",
             g_state.subscribers.size());
     }
-}
-
-bool SpectatorNode_HasSnapshot() {
-    return g_state.current_snapshot.valid;
 }
 
 void SpectatorNode_ApplyPendingPinRng() {
@@ -623,7 +612,6 @@ void SpectatorNode_ApplyPendingSnapshot() {
         }
     }
     g_state.have_frame_baseline    = true;
-    g_state.highest_consumed_frame = 0;
     g_state.playing_back           = true;
     g_state.pb_snapshot_applied_once = true;
     // Snapshot supersedes any in-flight boundary state (e.g. a stale SEAM
@@ -670,17 +658,6 @@ void SpectatorNode_ApplyPendingSnapshot() {
     inbox = State::SnapshotInbox{};
 }
 
-SpectatorSnapshotInfo SpectatorNode_GetSnapshotInfo() {
-    SpectatorSnapshotInfo out = {};
-    if (!g_state.current_snapshot.valid) return out;
-    out.input_frame = g_state.current_snapshot.input_frame;
-    out.match_index = g_state.current_snapshot.match_index;
-    out.total_bytes = (uint32_t)g_state.current_snapshot.blob.size();
-    out.checksum    = g_state.current_snapshot.checksum;
-    return out;
-}
-
-
 // -----------------------------------------------------------------------------
 // SPECTATOR-SIDE OP APPLY (C3)
 // -----------------------------------------------------------------------------
@@ -690,14 +667,6 @@ SpectatorSnapshotInfo SpectatorNode_GetSnapshotInfo() {
 // happens at the same logical frame the host's write happened, eliminating
 // the game_mode-driven mirror race that lived in CheckGameModeTransition.
 
-
-void SpectatorNode_LeaveUpstream() {
-    if (!g_state.subscribed_upstream) return;
-    CtrlPacket leave = {};
-    leave.header.type = CtrlMsg::SPEC_LEAVE;
-    ControlChannel_SendTo(leave, g_state.upstream_addr);
-    g_state.subscribed_upstream = false;
-}
 
 void SpectatorNode_SetRootAddr(const sockaddr_in& root) {
     g_state.root_addr = root;

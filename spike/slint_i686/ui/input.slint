@@ -1,0 +1,224 @@
+// input.slint -- the controller binder as a player sees it: one card per
+// player, the device it uses, the eleven buttons a match needs, and the
+// SOCD rule for that device. Clicking a button box arms a capture; the
+// next key or pad press lands in it; clicking again cancels.
+//
+// Every value here comes from the host (host_binder.cpp over the shipping
+// binder core); every click goes back as input_action(string). The view
+// holds no binding state of its own.
+import { Nerv, Type, Radius } from "theme.slint";
+
+export struct InputPlayer {
+    player: int,
+    device_label: string,
+    device_index: int,     // -1 keyboard
+    device_count: int,     // pads seen
+    socd: int,             // 0 inherit, 1..6 = mode 0..5
+    socd_label: string,
+    per_game: bool,
+    game: string,
+    unmapped: string,      // "" when every required button is bound
+}
+
+export struct InputRow {
+    player: int,
+    bit: int,
+    name: string,
+    primary: string,       // "" = unbound
+    alt: string,
+    capturing: int,        // 0 none, 1 primary, 2 alt
+    required: bool,
+}
+
+component Small inherits Rectangle {
+    in property <string> label;
+    in property <bool> accent: false;
+    in property <bool> enabled: true;
+    callback clicked();
+    width: max(60px, t.preferred-width + 14px);
+    height: 20px;
+    border-radius: Radius.sm;
+    border-width: 1px;
+    border-color: !enabled ? Nerv.faint : ta.has-hover ? Nerv.acc : Nerv.line;
+    background: ta.has-hover && enabled ? Nerv.line : transparent;
+    t := Text {
+        text: label; font-size: Type.body_sm;
+        color: !enabled ? Nerv.faint : accent ? Nerv.acc : Nerv.ink2;
+        width: 100%; height: 100%;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+    ta := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+// One binding box. Empty reads "click to bind"; capturing pulses the edge.
+component BindBox inherits Rectangle {
+    in property <string> label;
+    in property <bool> capturing: false;
+    callback clicked();
+    callback cleared();
+    width: 150px; height: 22px;
+    border-radius: Radius.sm;
+    border-width: capturing ? 2px : 1px;
+    border-color: capturing ? Nerv.amber : ta.has-hover ? Nerv.acc : Nerv.line;
+    background: capturing ? Nerv.amber.with-alpha(0.10) : Nerv.bg;
+    HorizontalLayout {
+        padding-left: 6px; padding-right: 2px;
+        Text {
+            text: capturing ? "press a key or button..." : label == "" ? "click to bind" : label;
+            font-size: Type.body_sm;
+            color: capturing ? Nerv.amber : label == "" ? Nerv.faint : Nerv.ink;
+            vertical-alignment: center; horizontal-stretch: 1; overflow: elide;
+        }
+        if label != "" && !capturing: Rectangle {
+            width: 18px;
+            Text {
+                text: "x"; font-size: Type.body_sm; color: xa.has-hover ? Nerv.red : Nerv.faint;
+                width: 100%; height: 100%;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
+            xa := TouchArea { mouse-cursor: pointer; clicked => { root.cleared(); } }
+        }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+export component PlayerCard inherits Rectangle {
+    in property <InputPlayer> p;
+    in property <[InputRow]> rows;
+    callback action(string);
+    border-radius: Radius.md;
+    border-width: 1px; border-color: Nerv.line;
+    background: Nerv.bg2;
+    VerticalLayout {
+        padding: 14px; spacing: 8px; alignment: start;
+        Text {
+            text: "PLAYER " + (p.player + 1);
+            font-size: Type.label; color: Nerv.ink3; letter-spacing: Type.track;
+        }
+        // Device
+        HorizontalLayout {
+            spacing: 6px;
+            Text { text: "Device"; font-size: Type.body; color: Nerv.ink2; vertical-alignment: center; width: 60px; }
+            Small { label: "<"; clicked => { root.action("device:" + p.player + ":" + (p.device_index - 1 < -1 ? p.device_count - 1 : p.device_index - 1)); } }
+            Rectangle {
+                horizontal-stretch: 1; height: 22px;
+                border-radius: Radius.sm; border-width: 1px; border-color: Nerv.line; background: Nerv.bg;
+                Text {
+                    text: p.device_label; font-size: Type.body_sm; color: Nerv.ink;
+                    width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; overflow: elide;
+                }
+            }
+            Small { label: ">"; clicked => { root.action("device:" + p.player + ":" + (p.device_index + 1 >= p.device_count ? -1 : p.device_index + 1)); } }
+        }
+        if p.device_count == 0: Text {
+            text: "No gamepads detected. Keyboard is used; plug one in any time.";
+            font-size: Type.body_sm; color: Nerv.amber; wrap: word-wrap;
+        }
+        if p.device_index >= 0: HorizontalLayout {
+            spacing: 6px;
+            Small { label: "Use this pad for every button"; clicked => { root.action("padfill:" + p.player); } }
+            Small { label: "Stick as directions"; clicked => { root.action("stickfill:" + p.player); } }
+        }
+
+        // Buttons
+        Rectangle { height: 1px; background: Nerv.line; }
+        HorizontalLayout {
+            spacing: 6px;
+            Text { text: ""; width: 92px; }
+            Text { text: "Main"; font-size: Type.label; color: Nerv.ink3; letter-spacing: Type.track; width: 150px; }
+            Text { text: "Also"; font-size: Type.label; color: Nerv.ink3; letter-spacing: Type.track; width: 150px; }
+        }
+        // The rows of BOTH players are in one model; the other player's
+        // rows must take no space here, so they sit in a spacing-0 layout
+        // and each visible row carries its own gap.
+        VerticalLayout {
+            spacing: 0px;
+            for r in rows: VerticalLayout {
+            spacing: 0px;
+            if r.player == p.player: HorizontalLayout {
+                spacing: 6px; padding-top: 3px;
+                Text {
+                    text: r.name; font-size: Type.body;
+                    color: r.required && r.primary == "" && r.alt == "" ? Nerv.amber : Nerv.ink2;
+                    width: 92px; vertical-alignment: center;
+                }
+                BindBox {
+                    label: r.primary; capturing: r.capturing == 1;
+                    clicked => { root.action(r.capturing == 1 ? "cancel" : "bind:" + r.player + ":" + r.bit + ":0"); }
+                    cleared => { root.action("clear:" + r.player + ":" + r.bit + ":0"); }
+                }
+                BindBox {
+                    label: r.alt; capturing: r.capturing == 2;
+                    clicked => { root.action(r.capturing == 2 ? "cancel" : "bind:" + r.player + ":" + r.bit + ":1"); }
+                    cleared => { root.action("clear:" + r.player + ":" + r.bit + ":1"); }
+                }
+            }
+            }
+        }
+        Text {
+            text: p.unmapped == "" ? "Every button a match needs is bound."
+                                   : "Not bound yet: " + p.unmapped + (p.unmapped == "Pause / Start" ? " (the game cannot be paused without it)" : "");
+            font-size: Type.body_sm; color: p.unmapped == "" ? Nerv.phos : Nerv.amber; wrap: word-wrap;
+        }
+
+        // SOCD
+        Rectangle { height: 1px; background: Nerv.line; }
+        HorizontalLayout {
+            spacing: 6px;
+            Text { text: "Opposite directions"; font-size: Type.body; color: Nerv.ink2; vertical-alignment: center; width: 150px; }
+            Small { label: "<"; clicked => { root.action("socd:" + p.player + ":" + (p.socd > 0 ? p.socd - 1 : 6)); } }
+            Rectangle {
+                horizontal-stretch: 1; height: 22px;
+                border-radius: Radius.sm; border-width: 1px; border-color: Nerv.line; background: Nerv.bg;
+                Text {
+                    text: p.socd_label; font-size: Type.body_sm; color: Nerv.ink;
+                    width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; overflow: elide;
+                }
+            }
+            Small { label: ">"; clicked => { root.action("socd:" + p.player + ":" + (p.socd >= 6 ? 0 : p.socd + 1)); } }
+        }
+        Text {
+            text: "What happens when this device holds left and right (or up and down) together. Applied to your own inputs, on this machine, before they go online.";
+            font-size: Type.body_sm; color: Nerv.faint; wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            spacing: 6px; padding-top: 4px;
+            Small { label: "Reset to defaults"; clicked => { root.action("defaults:" + p.player); } }
+        }
+    }
+}
+
+export component InputTab inherits VerticalLayout {
+    in property <[InputPlayer]> players;
+    in property <[InputRow]> rows;
+    callback action(string);
+    spacing: 10px; alignment: start;
+
+    Text {
+        text: "Click a box, then press the key or button you want. Click the box again to cancel. Changes save as you make them and reach a running game within a second.";
+        font-size: Type.body_sm; color: Nerv.faint; wrap: word-wrap;
+    }
+    HorizontalLayout {
+        spacing: 12px; alignment: start;
+        for p in players: PlayerCard {
+            p: p; rows: root.rows;
+            width: 470px;
+            action(a) => { root.action(a); }
+        }
+    }
+    if players.length > 0: HorizontalLayout {
+        spacing: 8px;
+        Text {
+            text: players[0].game == "" ? "Bindings apply to every game." :
+                  players[0].per_game ? "These bindings are only for " + players[0].game + "."
+                                      : "Shared bindings. Give " + players[0].game + " its own:";
+            font-size: Type.body_sm; color: Nerv.ink2; vertical-alignment: center;
+        }
+        if players[0].game != "": Small {
+            label: players[0].per_game ? "Use the shared bindings" : "Make a profile for this game";
+            accent: true;
+            clicked => { root.action("profile:0:" + (players[0].per_game ? "0" : "1")); }
+        }
+    }
+}

@@ -1,6 +1,7 @@
 #include "wndproc_subclass.h"
 #include "../netplay/control_channel.h"
 #include "../netplay/netplay.h"   // Netplay_RequestRunaheadToggle (F8 hotkey)
+#include "../core/frame_timing.h"  // F7 on-demand per-frame timing dump (dark by default)
 #include "../core/globals.h"   // FM2K::kIsFM2K / kIsFM95, g_spectator_*
 #include <SDL3/SDL_log.h>
 #include <windows.h>
@@ -164,10 +165,22 @@ static LRESULT CALLBACK SubclassProc(HWND hwnd, UINT msg,
                 Netplay_RequestRunaheadToggle();
                 return 0;
             }
+            // F7: dump the per-frame timing ring on demand. ONLY when the ring
+            // is armed (FM2K_FRAME_TIMING=1) -- an unarmed build must not
+            // swallow a key the game might want, so a dark run's F7 falls
+            // through to the engine exactly as it always did. Queues a request;
+            // the write happens on the trampoline thread in FrameTiming_PollDump,
+            // same cross-thread handoff as F8 above, because the ring is
+            // single-threaded by construction.
+            if (wparam == VK_F7 && FrameTiming_Enabled()) {
+                FrameTiming_RequestDump();
+                return 0;
+            }
             break;
         case WM_KEYUP:
             if (wparam == VK_F12 && g_spectator_mode) return 0;
             if (wparam == VK_F8) return 0;
+            if (wparam == VK_F7 && FrameTiming_Enabled()) return 0;
             break;
         case WM_SYSCHAR:
             // Suppresses the "ding" Alt+letter would otherwise emit.
@@ -212,10 +225,9 @@ static LRESULT CALLBACK SubclassProc(HWND hwnd, UINT msg,
             break;
 
         case WM_NCDESTROY:
-            // Belt-and-suspenders timer cleanup; subclass uninstall
-            // happens via Uninstall() from the trampoline shutdown
-            // path, but if the window is destroyed without going
-            // through that we still want the timer dead.
+            // Belt-and-suspenders timer cleanup; the subclass itself is
+            // uninstalled from DLL_PROCESS_DETACH (dllmain.cpp), but if the
+            // window is destroyed before that we still want the timer dead.
             KillTimer(hwnd, kModalPumpTimerId);
             g_in_modal_loop = false;
             break;

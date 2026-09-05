@@ -257,6 +257,33 @@ std::vector<std::string> SplitObjectArray(const std::string& arr) {
     return out;
 }
 
+// Split a JSON array of plain strings into its elements. Sibling of
+// SplitObjectArray, for flat arrays like hello_ack's
+// "capabilities":["chat_v1"]. No escape decoding: the only consumer is
+// the capability list, whose tokens are plain ASCII identifiers by
+// protocol. Returns empty for a non-array or an empty array.
+std::vector<std::string> SplitStringArray(const std::string& arr) {
+    std::vector<std::string> out;
+    if (arr.size() < 2 || arr.front() != '[') return out;
+    bool esc = false;
+    bool in_str = false;
+    size_t start = 0;
+    for (size_t i = 1; i + 1 < arr.size(); ++i) {
+        char c = arr[i];
+        if (esc) { esc = false; continue; }
+        if (c == '\\') { esc = true; continue; }
+        if (c != '"') continue;
+        if (!in_str) {
+            in_str = true;
+            start = i + 1;
+        } else {
+            in_str = false;
+            out.push_back(arr.substr(start, i - start));
+        }
+    }
+    return out;
+}
+
 HubUser ParseUser(const std::string& obj) {
     HubUser u;
     u.id          = GetStr(obj, "id");

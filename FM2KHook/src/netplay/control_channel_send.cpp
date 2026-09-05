@@ -71,14 +71,6 @@ void ControlChannel_SendChat(const char* text) {
                 "ControlChannel: Sent CHAT \"%s\"", pkt.data.chat.text);
 }
 
-void ControlChannel_SendBattleAck() {
-    CtrlPacket pkt = {};
-    pkt.header.type = CtrlMsg::BATTLE_ACK;
-    ControlChannel_Send(pkt);
-
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ControlChannel: Sent BATTLE_ACK");
-}
-
 // cfg_digest is supplied by the caller (the netplay layer) rather than read
 // here, so this TU stays ENGINE-AGNOSTIC -- the digest is computed from FM2K
 // engine globals and must not be reachable from the transport code.
@@ -95,16 +87,6 @@ void ControlChannel_SendBattleEntering(uint32_t swap_frame, uint8_t epoch,
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "ControlChannel: Sent BATTLE_ENTERING (swap_frame=%u epoch=%u flags=0x%02X cfg=0x%08X)",
                 swap_frame, epoch, flags, cfg_digest);
-}
-
-void ControlChannel_SendBattleStart(uint32_t start_frame) {
-    CtrlPacket pkt = {};
-    pkt.header.type = CtrlMsg::BATTLE_START;
-    pkt.data.sync.frame = start_frame;
-    ControlChannel_Send(pkt);
-
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "ControlChannel: Sent BATTLE_START (frame=%u)",
-                start_frame);
 }
 
 void ControlChannel_SendBattleEnd(uint32_t swap_frame, uint8_t epoch,

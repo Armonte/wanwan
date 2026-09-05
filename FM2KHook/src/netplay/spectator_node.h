@@ -444,10 +444,6 @@ uint8_t SpectatorNode_GetMatchIndexInSession();
 // no transmission yet -- phase 3 wires the host send path.
 void SpectatorNode_StashSnapshot();
 
-// Status: is a valid snapshot cached on this node right now? False
-// before the first Netplay_StartBattle of the session.
-bool SpectatorNode_HasSnapshot();
-
 // Read-only snapshot metadata, valid when HasSnapshot() returns true.
 // Used by phase 3's send path. Returns sentinel zeros if no snapshot.
 struct SpectatorSnapshotInfo {
@@ -456,8 +452,6 @@ struct SpectatorSnapshotInfo {
     uint32_t total_bytes;   // byte size of the cached blob
     uint32_t checksum;      // fletcher32 over the blob
 };
-SpectatorSnapshotInfo SpectatorNode_GetSnapshotInfo();
-
 // Spectator-side: lazily apply a snapshot whose SNAPSHOT_END validation
 // completed but whose SaveState_LoadFromBytes was deferred because the
 // local engine hadn't progressed past pre-WinMain bootup (game_mode == 0).
@@ -582,10 +576,6 @@ constexpr size_t SPECTATOR_DEFAULT_CAPACITY = 32;
 // compile-time budget assertions can read the one definition.
 constexpr uint32_t SPECTATOR_HOST_GONE_DEFAULT_MS = 12000;
 
-// Set the direct-subscriber cap. 0 disables accepting (node still relays if
-// it already has subscribers).
-void SpectatorNode_SetCapacity(size_t max_direct);
-
 // Reset the per-session GekkoSpectator addr tracking set. Call once
 // after each fresh gekko_create + gekko_start so the new session starts
 // with an empty "already added" map. Without this, spec rejoins after a
@@ -622,12 +612,6 @@ void SpectatorNode_HandleHeartbeat(const sockaddr_in& from);
 // =============================================================================
 // STATUS / INTROSPECTION
 // =============================================================================
-
-// How many direct subscribers this node is serving.
-size_t SpectatorNode_GetSubscriberCount();
-
-// Is this node currently pushing a live match to subscribers?
-bool SpectatorNode_IsBroadcasting();
 
 // Snapshot of subscriber addresses, used by Netplay_Start{CSS,Battle}Session
 // to call gekko_add_actor(GekkoSpectator, &addr) for each. Returned by value
@@ -803,9 +787,6 @@ void SpectatorNode_TickHealth();
 // Idempotent and short-circuiting when there are no subscribers.
 void SpectatorNode_TickHostMaintenance();
 
-// Clean disconnect from upstream.
-void SpectatorNode_LeaveUpstream();
-
 // =============================================================================
 // VIEWER-SIDE PLAYBACK DRIVER (consumed by main_loop_trampoline)
 // =============================================================================
@@ -838,12 +819,6 @@ bool SpectatorNode_PopFrameInputs(uint16_t* p1_input, uint16_t* p2_input);
 // where Netplay_GetInput returns a stable per-frame value.
 uint16_t SpectatorNode_GetCurrentP1Input();
 uint16_t SpectatorNode_GetCurrentP2Input();
-
-// Force the cached inputs to zero. Used by RunSpectatorTick during
-// post-match idle (queue empty, playing_back=false) so the local sim
-// auto-advances through results / intermission with neutral inputs
-// rather than re-using last frame's streamed input.
-void SpectatorNode_ResetCurrentInputs();
 
 // Number of buffered (p1, p2) frames waiting to be consumed. Used by the
 // trampoline to decide if we're paused (0) or have headroom.

@@ -445,6 +445,29 @@ bool FM2KGameInstance::Launch(const std::string& exe_path, FM2K::Engine engine) 
     return true;
 }
 
+// See the header: the exit code is the only evidence left when a game dies
+// without the hook's crash handler firing.
+void FM2KGameInstance::NoteExited(DWORD code) const {
+    last_exit_code_ = code;
+    if (exit_reported_) return;
+    exit_reported_ = true;
+    // 0xC0000000-and-up codes are NTSTATUS exception values the process died
+    // of. Naming the common ones saves a lookup in the middle of a support
+    // thread; the raw value is always printed.
+    const char* meaning =
+        (code == 0)          ? "clean exit" :
+        (code == 1)          ? "terminated (usually our own Terminate)" :
+        (code == 0xC0000005) ? "ACCESS VIOLATION -- unhandled, the crash handler did not run" :
+        (code == 0xC0000094) ? "DIVIDE BY ZERO -- unhandled" :
+        (code == 0xC00000FD) ? "STACK OVERFLOW -- unhandled" :
+        (code == 0xC000041D) ? "unhandled exception inside a callback" :
+        (code >= 0xC0000000) ? "unhandled exception (NTSTATUS)" :
+                               "exited";
+    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+        "GameInstance: pid %lu exited, code 0x%08lX -- %s",
+        (unsigned long)process_id_, (unsigned long)code, meaning);
+}
+
 void FM2KGameInstance::Terminate() {
     UninstallHooks();
 
@@ -476,13 +499,6 @@ void FM2KGameInstance::Terminate() {
 
     process_id_ = 0;
     memset(&process_info_, 0, sizeof(process_info_));
-}
-
-bool FM2KGameInstance::InstallHooks() {
-    // Hooks are installed via DLL injection in SetupProcessForHooking
-    // No additional action needed from launcher side
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Hooks managed by injected DLL");
-    return true;
 }
 
 bool FM2KGameInstance::UninstallHooks() {
@@ -638,34 +654,4 @@ bool FM2KGameInstance::SetupProcessForHooking(const std::string& dll_path) {
         "Inject: DLL loaded (module handle 0x%lx)", exit_code);
     return true;
 }
-
-bool FM2KGameInstance::LoadGameExecutable(const std::filesystem::path& exe_path) {
-    (void)exe_path; // Unused for now
-    // TODO: Implement game executable loading
-    return true;
-}
-
-bool FM2KGameInstance::ExecuteRemoteFunction(HANDLE process, uintptr_t function_address) {
-    HANDLE thread = CreateRemoteThread(process, 
-                                     nullptr, 
-                                     0, 
-                                     reinterpret_cast<LPTHREAD_START_ROUTINE>(function_address),
-                                     nullptr, 
-                                     0, 
-                                     nullptr);
-    
-    if (!thread) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-            "Failed to create remote thread at 0x%08X: %lu",
-            function_address, GetLastError());
-        return false;
-    }
-
-    // Wait for the function to complete
-    WaitForSingleObject(thread, INFINITE);
-    CloseHandle(thread);
-    return true;
-}
-
-
 

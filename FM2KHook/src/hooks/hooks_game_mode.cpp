@@ -28,7 +28,7 @@
 #include "../audio/sound_rollback.h"        // Mike Z desired/actual sound layer
 #include "../netplay/spectator_node.h"      // spectator playback queue accessors
 #include "../ui/input_binder.h"             // FM2KInputBinder::Sample_Win32 + Bindings
-#include "../ui/screenshot.h"               // FM2KCapture::SaveScreenshot for the auto-banner pipeline
+#include "../ui/screenshot.h"               // FM2KCapture::RememberFrame for the auto-banner pipeline
 #include "../ui/fc_hud.h"                   // IsChatInputActive -- gate local input during typing
 #include "../vfs/fpk_reader.h"              // FM2K_FPK_VFS: inflate a slim .fpk -> original asset bytes
 #include <MinHook.h>
@@ -117,15 +117,6 @@ bool IsBattleMode(uint32_t mode) {
     }
 }
 
-// Current FM95 phase as a small ordinal: 2=battle, 1=CSS, 0=other. Classifies
-// the LIVE object pool -- callers that need a DETERMINISTIC (cross-peer-equal)
-// phase must record this per confirmed frame in the gekko advance handler, not
-// read it off the live (post-prediction) pool. On FM2K this maps the game_mode
-// scalar the same way so the ring path compiles for both engines.
-int Fm95CurrentPhaseByte() {
-    return IsBattleMode(0) ? 2 : (IsCSSMode(0) ? 1 : 0);
-}
-
 // Deterministic FM95 match-END classifier (re-verified from disasm 2026-07-11,
 // see docs/dev/fm95_re_findings.md RE-2b). Neither g_game_mode nor the type-16
 // pool sub_state cleanly marks "match in progress": FM95 resets g_game_mode to 0
@@ -171,6 +162,348 @@ void CheckGameModeTransition();
 extern "C" void Hook_CheckGameModeTransition_Public() { CheckGameModeTransition(); }
 
 
+// ---- auto-capture: arm on mode entry, shoot once settled ----------------
+//
+// Settle frames exist because a state's first frame is never its
+// representative one. FM2K runs at 100 Hz, so the default is ~0.6 s.
+namespace {
+
+enum CapShot { kCapTitle = 0, kCapCss = 1, kCapBattle = 2, kCapCount = 3 };
+
+// EVERY STATE IS A SERIES NOW, not just the front end. The owner reviews
+// the shots in the launcher (picks.txt) and wants choice: a CSS with the
+// cursors mid-wander and then locked in, a battle at the intro and then
+// mid-fight on a random stage. One settled shot per state gave one chance
+// per game and it was often the wrong frame.
+//
+// How many frames to emit per state before moving on. Six front-end
+// samples at a ~1s window covers a couple of splash cards plus the title
+// on every game measured.
+constexpr int kFrontMax = 6;
+// CSS: three samples. The first waits the full settle (the roster has
+// animated in), the next two follow at a window that lands while the
+// autoplay cursors (FM2K_AUTOPLAY_CSS_DWELL) are still browsing and then
+// after they lock -- so at least one shot shows the versus layout with
+// both cursors placed.
+constexpr int kCssMax = 3;
+constexpr int kCssWindow = 120;
+// Battle: three samples. Settle covers the round intro; the later windows
+// are mid-fight with the autoplay inputs, which is where the action is.
+constexpr int kBattleMax = 3;
+// Measured on colors: at 250 the second battle shot still lands on the VS
+// splash; 400 puts it in the fight.
+constexpr int kBattleWindow = 400;
+
+// ── Per-character sweep (FM2K_CAPTURE_CHARS=1, FM2K only) ──
+// Walks the roster by pressing RIGHT once per cell and shooting the
+// highlighted portrait: char_01.png .. char_NN.png, N = the number of
+// non-empty slots in g_char_slot_data (capped). Engine-agnostic about the
+// grid: the game moves the cursor, we only count. Runs at CSS entry, before
+// the CSS series, with the autoplay frozen (screenshot.h).
+// STILLNESS, the thing a frame count cannot express. These games fade and
+// wipe between screens, and a shot taken mid-transition is a smeared
+// half-frame nobody would ever pick as a game's tile. So the dwell below is
+// only a FLOOR: once it elapses we additionally wait for the picture to stop
+// moving (FM2KCapture::FramesSettled, a coarse thumbnail diff, so an
+// animating portrait does not count as motion). kStillWaitMax bounds it, for
+// a screen that genuinely never stops moving -- a scrolling attract loop.
+constexpr int kStillNeed    = 10;
+constexpr int kStillWaitMax = 240;
+
+constexpr int kSweepSettle = 60;    // frames after CSS entry before the first shot
+// FRAMES PER CELL: press, let the screen FINISH changing, shoot. Twelve was
+// not a dwell, it was a flinch -- the big portrait crossfades in over rather
+// more than that, so a good fraction of the roster came out mid-dissolve.
+// The stillness gate below is what actually decides; this is the floor.
+constexpr int kSweepStep   = 30;
+constexpr int kSweepMax    = 50;
+bool s_sweep_done = false;
+int  s_sweep_left = 0;      // cells still to shoot
+int  s_sweep_frames = 0;    // frames into the current cell
+int  s_sweep_seq = 0;
+// WHERE THE CURSOR IS, not what the screen looks like. Comparing frames
+// cannot work here: the CSS animates its fighters, so two frames on the
+// same cell differ in thousands of pixels and a pixel hash never repeats
+// (measured: 34 shots, every one "changed"). The cursor pair at
+// ADDR_P1_CURSOR_POS is the real signal -- a press that does not move it
+// hit a row edge, and a press that returns to a cell already shot means
+// the grid wrapped and the roster is done. The .player count is only an
+// upper bound: colors has 34 entries and about a dozen cells.
+int  s_sweep_cells[kSweepMax][2] = {};
+int  s_sweep_cell_n = 0;
+// RIGHT alone walks ONE ROW: it wraps back to the row's first cell, and
+// the roster is a grid (colors: 7 across, more below). So a repeat means
+// "row done" -- press DOWN once and keep going. Only a repeat that
+// survives a row change means every reachable cell has been shot.
+bool s_sweep_tried_down = false;
+
+void SweepReadCursor(int* x, int* y) {
+    const int* c = reinterpret_cast<const int*>(FM2K::ADDR_P1_CURSOR_POS);
+    *x = c[0];
+    *y = c[1];
+}
+
+bool SweepSeenCell(int x, int y) {
+    for (int i = 0; i < s_sweep_cell_n; ++i) {
+        if (s_sweep_cells[i][0] == x && s_sweep_cells[i][1] == y) return true;
+    }
+    return false;
+}
+
+bool SweepWanted() {
+    static int s = -1;
+    if (s < 0) {
+        const char* e = std::getenv("FM2K_CAPTURE_CHARS");
+        s = (e && e[0] == '1' && !FM2K::kIsFM95) ? 1 : 0;
+    }
+    return s == 1;
+}
+
+int RosterCount() {
+    if constexpr (FM2K::kIsFM95) return 0;
+    int n = 0;
+    for (size_t i = 0; i < FM2K::CHAR_FILENAME_COUNT && n < kSweepMax; ++i) {
+        const char* slot = reinterpret_cast<const char*>(FM2K::ADDR_CHAR_FILENAME_TABLE + i * FM2K::CHAR_FILENAME_STRIDE);
+        if (slot[0] != '\0') ++n;
+    }
+    return n;
+}
+
+// Returns true while the sweep owns the CSS (the series waits).
+bool SweepTick(uint32_t mode) {
+    if (s_sweep_done || !SweepWanted()) return false;
+    if (mode != 2000u) {
+        // Left CSS before finishing (or never got there): give up quietly.
+        if (FM2KCapture::g_sweep_active) { FM2KCapture::g_sweep_active = false; s_sweep_done = true; }
+        return false;
+    }
+    if (!FM2KCapture::g_sweep_active) {
+        const int n = RosterCount();
+        if (n <= 0) { s_sweep_done = true; return false; }
+        FM2KCapture::g_sweep_active = true;
+        s_sweep_left = n;
+        s_sweep_frames = -kSweepSettle;   // settle first
+        s_sweep_seq = 0;
+        s_sweep_cell_n = 0;
+        s_sweep_tried_down = false;
+    }
+    ++s_sweep_frames;
+    if (s_sweep_frames < 0) return true;
+    FM2KCapture::RememberFrame();
+    // Same rule as the state series: the step is a floor, and the portrait
+    // must have stopped crossfading before this cell is worth writing.
+    if (s_sweep_frames >= kSweepStep &&
+        FM2KCapture::FramesSettled() < kStillNeed &&
+        s_sweep_frames < kSweepStep + kStillWaitMax) {
+        return true;
+    }
+    if (s_sweep_frames >= kSweepStep) {
+        int cx = 0, cy = 0;
+        SweepReadCursor(&cx, &cy);
+        const bool fresh = !SweepSeenCell(cx, cy);
+        if (fresh) {
+            if (s_sweep_cell_n < kSweepMax) {
+                s_sweep_cells[s_sweep_cell_n][0] = cx;
+                s_sweep_cells[s_sweep_cell_n][1] = cy;
+                ++s_sweep_cell_n;
+            }
+            s_sweep_tried_down = false;
+            char name[32];
+            std::snprintf(name, sizeof name, "char_%02d.png", ++s_sweep_seq);
+            FM2KCapture::WriteRememberedFrame(name);
+        } else if (!s_sweep_tried_down) {
+            // The row wrapped: drop to the next one and keep walking.
+            s_sweep_tried_down = true;
+            FM2KCapture::ResetHeldScore();
+            FM2KCapture::g_sweep_nudge_down = true;
+            s_sweep_frames = 0;
+            FM2KCapture::ResetSettle();
+            return true;
+        } else {
+            // A row change reached nothing new either: the grid is done.
+            FM2KCapture::g_sweep_active = false;
+            s_sweep_done = true;
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "FM2KCapture: roster sweep ended after %d cell(s)", s_sweep_seq);
+            return false;
+        }
+        FM2KCapture::ResetHeldScore();
+        if (--s_sweep_left <= 0) {
+            FM2KCapture::g_sweep_active = false;
+            s_sweep_done = true;
+            return false;
+        }
+        FM2KCapture::g_sweep_nudge = true;   // step to the next cell
+        s_sweep_frames = 0;
+    }
+    return true;
+}
+// SAMPLE THE FRONT END DENSELY, because it is SHORT. Measured with the boot
+// patch verifiably skipped (boot.txt confirms the flag reaches the hook),
+// wanwan still enters mode 1000 at frame 0 and leaves at 57 -- the game has
+// no long intro on this path and nothing is patching one away. A 50-frame
+// window across a ~55-frame front end therefore yielded two near-identical
+// shots. Eight frames per sample spreads six captures over the whole
+// sequence instead, which is what actually separates a splash card from the
+// title behind it.
+constexpr int kFrontWindow = 24;
+
+
+int  s_cap_seq[kCapCount] = {0, 0, 0};
+
+int CapMax(int i) {
+    return i == kCapTitle ? kFrontMax : i == kCapCss ? kCssMax : kBattleMax;
+}
+int CapWindow(int i) {
+    return i == kCapTitle ? kFrontWindow : i == kCapCss ? kCssWindow : kBattleWindow;
+}
+
+// Numbered per state: front_01.., css_01.., battle_01.. (css_initial and
+// battle used to be single shots; the picker and the review UI go by the
+// prefix, so the numbering costs nothing downstream).
+void CapFileName(int i, char* out, size_t n) {
+    const char* prefix = (i == kCapTitle) ? "front" : (i == kCapCss) ? "css" : "battle";
+    std::snprintf(out, n, "%s_%02d.png", prefix, ++s_cap_seq[i]);
+}
+
+int CapShotForMode(uint32_t mode) {
+    // EVERYTHING BELOW CSS IS "THE FRONT END", mode 0 included. The splash
+    // cards live in mode 0, not 1000 -- vanpri's publisher card was the
+    // richest frame we could find and mode 1000 itself only lasts ~55
+    // frames -- so treating 1000 alone as "the title" both misses the intro
+    // entirely and gives the sampler no room to walk a sequence.
+    if (mode < 2000u) return kCapTitle;
+    if (mode == 2000u) return kCapCss;
+    if (mode >= 3000u && mode < 4000u) return kCapBattle;
+    return -1;
+}
+
+bool s_cap_done[kCapCount] = {false, false, false};
+int  s_cap_pending = -1;
+int  s_cap_settle_left = 0;
+int  s_cap_still_wait  = 0;   // frames spent waiting for the picture to settle
+int  s_cap_settle = -1;   // resolved from env on first use
+
+// Mode trace, written next to the captures. Deliberately NOT going through
+// the hook's SDL log: that lands at a CWD-relative "logs\\" path, and on the
+// --offline launch path nothing appeared anywhere on disk, so the one
+// diagnostic that would explain a missed capture was itself unavailable.
+// This writes where we already know we can write, and only on transitions,
+// so it is not per-frame logging.
+void CaptureTraceMode(uint32_t from, uint32_t to) {
+    const char* dir = std::getenv("FM2K_CAPTURE_DIR");
+    if (!dir || !*dir) return;
+    FILE* f = std::fopen((std::string(dir) + "/modes.txt").c_str(), "ab");
+    if (!f) return;
+    // Frame-stamped: "how long did mode 1000 last" is the question that
+    // separates "the title is skipped" from "the title renders blank", and
+    // a bare transition list cannot answer it.
+    const uint32_t frame = *(volatile uint32_t*)FM2K::ADDR_FRAME_COUNTER;
+    std::fprintf(f, "f=%u  %u -> %u\n", frame, from, to);
+    std::fclose(f);
+}
+
+// Capture is driven ENTIRELY from the per-frame tick. It used to arm from
+// the mode-transition branch, which ran first and overwrote the pending
+// state before the tick could notice the previous state had ended -- so the
+// outgoing shot was silently dropped every time.
+// Sentinel the capture-runner polls. Called after EVERY successful write,
+// not just on a state exit: battle is the last shot and it completes on its
+// DWELL, never on an exit (the game keeps running), so an exit-only check
+// meant the sentinel was never written and every run burned its full
+// timeout instead of finishing in seconds.
+void CaptureMaybeSignalDone() {
+}
+
+void CaptureTick(uint32_t mode) {
+    if (s_cap_settle < 0) {
+        // Dwell, in frames. FM2K runs at 100 Hz, so 300 is ~3 seconds: long
+        // enough that a CSS has finished animating in and a title has run
+        // its fade, which "capture on entry" never waits for.
+        s_cap_settle = 300;
+        if (const char* e = std::getenv("FM2K_CAPTURE_DWELL")) {
+            const int v = std::atoi(e);
+            if (v >= 0 && v < 100000) s_cap_settle = v;
+        }
+    }
+
+    const int here = CapShotForMode(mode);
+
+    // The per-character sweep goes first in CSS; the CSS series waits.
+    if (here == kCapCss && !s_cap_done[kCapCss] && SweepTick(mode)) return;
+
+    if (s_cap_pending < 0) {
+        if (here >= 0 && !s_cap_done[here]) {
+            s_cap_pending = here;
+            // Front end samples on a shorter window so the series spreads
+            // across splash+title instead of landing twice on one card.
+            s_cap_settle_left = (here == kCapTitle) ? kFrontWindow : s_cap_settle;
+            // The screen just changed on purpose; do not count the frames
+            // before this as stillness.
+            FM2KCapture::ResetSettle();
+            s_cap_still_wait = 0;
+        }
+        return;
+    }
+
+    // Still in the armed state: hold this frame and count down. Holding
+    // every frame is what makes the shot correct on a SHORT state too --
+    // if the state ends before the dwell elapses we still have its last
+    // fully-drawn frame, instead of nothing.
+    if (here == s_cap_pending) {
+        FM2KCapture::RememberFrame();
+        if (s_cap_settle_left > 0) { --s_cap_settle_left; return; }
+        // Dwell done. Now hold until the screen stops moving, so the shot
+        // lands on the finished picture instead of inside its transition.
+        if (FM2KCapture::FramesSettled() < kStillNeed &&
+            s_cap_still_wait < kStillWaitMax) {
+            ++s_cap_still_wait;
+            return;
+        }
+        s_cap_still_wait = 0;
+        char name[64];
+        CapFileName(s_cap_pending, name, sizeof name);
+        if (FM2KCapture::WriteRememberedFrame(name)) {
+            if (s_cap_seq[s_cap_pending] < CapMax(s_cap_pending)) {
+                FM2KCapture::ResetHeldScore();
+                // Keep sampling this state: re-arm for the next window so
+                // the series walks the state (splash -> title, cursors
+                // browsing -> locked, intro -> mid-fight) rather than
+                // stopping at the first drawn frame.
+                s_cap_settle_left = CapWindow(s_cap_pending);
+                FM2KCapture::ResetSettle();
+            } else {
+                s_cap_done[s_cap_pending] = true;
+                s_cap_pending = -1;
+                CaptureMaybeSignalDone();
+            }
+        }
+        return;
+    }
+
+    // State ended before the dwell: commit the last frame we held in it.
+    {
+        char name[64];
+        CapFileName(s_cap_pending, name, sizeof name);
+        if (FM2KCapture::WriteRememberedFrame(name)) {
+            s_cap_done[s_cap_pending] = true;
+            CaptureMaybeSignalDone();
+        }
+    }
+    s_cap_pending = -1;
+    if (here >= 0 && !s_cap_done[here]) {
+        s_cap_pending = here;
+        s_cap_settle_left = s_cap_settle;
+    }
+
+    for (int i = 0; i < kCapCount; ++i) if (!s_cap_done[i]) return;
+    const char* dir = std::getenv("FM2K_CAPTURE_DIR");
+    FILE* f = std::fopen((std::string(dir ? dir : ".") + "/.capture_done").c_str(), "wb");
+    if (f) std::fclose(f);
+}
+
+}  // namespace
+
 void CheckGameModeTransition() {
     if constexpr (FM2K::kIsFM95) {
         // FM95: CSS↔battle transitions do NOT move the game_mode scalar (title,
@@ -208,6 +541,9 @@ void CheckGameModeTransition() {
             const int prev = s_last_phase;
             s_last_phase = phase;
             SharedMem_PublishSessionKind((uint8_t)phase);
+            // Leaving battle hides the HUD score box again (no publisher
+            // on FM95 yet, so this is only ever a no-op reset here).
+            if (phase != 2) SharedMem_ClearHudScores();
             if (g_spectator_mode) return;
             if (phase == 2 && prev != 2 &&
                 !g_battle_entry_signaled && !Netplay_IsActive()) {
@@ -271,39 +607,37 @@ void CheckGameModeTransition() {
             kind = 2;                                    // battle
         SharedMem_PublishSessionKind(kind);
 
-        // Auto-capture banner pipeline. Drives one screenshot at each
-        // mode-boundary the launcher's capture-runner cares about,
-        // then writes a "DONE" sentinel file the launcher polls
-        // before terminating the game. No-op when FM2K_AUTO_CAPTURE
-        // wasn't set (FM2KCapture::IsActive() short-circuits).
+        // HUD score box lives exactly as long as the battle does. Without
+        // this the last match's score would sit over the CSS and the title
+        // screen until the next round 1 overwrote it. round_events.cpp
+        // publishes it; this is the only place that takes it away.
+        if (kind != 2) SharedMem_ClearHudScores();
+
+        // Auto-capture banner pipeline. A mode boundary ARMS a shot; the
+        // tick below takes it. No-op when FM2K_AUTO_CAPTURE wasn't set.
+        //
+        // WHY ARMING AND CAPTURING ARE SEPARATE. This used to take the shot
+        // right here, on the transition frame, and latch the "done" flag
+        // regardless of the return value. Both halves were wrong and they
+        // compounded: the transition frame is the WORST moment to photograph
+        // a state -- the title has not drawn, the CSS portraits are not
+        // blitted, and early on the game window does not exist yet, so the
+        // capture dropped the frame -- and latching on failure made that
+        // permanent. Measured: battle captured fine (late, window up) while
+        // title and css_initial never appeared at all, on every game.
         if (FM2KCapture::IsActive()) {
-            static bool s_captured_title = false;
-            static bool s_captured_css   = false;
-            static bool s_captured_battle = false;
-            if (!s_captured_title && current_mode == 1000) {
-                FM2KCapture::SaveScreenshot("title.png");
-                s_captured_title = true;
-            }
-            if (!s_captured_css && current_mode == 2000) {
-                FM2KCapture::SaveScreenshot("css_initial.png");
-                s_captured_css = true;
-            }
-            if (!s_captured_battle && current_mode >= 3000
-                && current_mode < 4000) {
-                FM2KCapture::SaveScreenshot("battle.png");
-                s_captured_battle = true;
-                // All three core captures done -- touch a sentinel so
-                // the launcher's capture-runner sees "ready to kill".
-                // Empty zero-byte file; the launcher polls for its
-                // existence on a 250 ms cadence.
-                FILE* f = std::fopen(
-                    (std::string(std::getenv("FM2K_CAPTURE_DIR") ?
-                                 std::getenv("FM2K_CAPTURE_DIR") : ".")
-                     + "/.capture_done").c_str(), "wb");
-                if (f) std::fclose(f);
-            }
+            CaptureTraceMode(g_last_game_mode, current_mode);
         }
 
+    }
+
+    // Per-frame: take an armed shot once it has settled. Outside the
+    // transition branch on purpose -- see CaptureTick.
+    if (FM2KCapture::IsActive()) {
+        CaptureTick(current_mode);
+    }
+
+    if (current_mode != g_last_game_mode) {
         // Whenever the game crosses any CSS↔battle boundary, kick off a
         // 300-frame (3 second @ 100 Hz) state dump so we can diff
         // working games (WonderfulWorld) vs broken ones (SFZ, StudioS

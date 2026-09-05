@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <cstddef>
+#include <cstring>
 #include "../audio/sound_rollback.h"  // DesiredState, MAX_CHANNELS
 #include "../core/globals.h"          // FM2K::kIsFM95, ADDR_*, sizes
 
@@ -37,9 +38,12 @@ constexpr uintptr_t CHAR_SLOT_BASE = 0x4D1D90;    // g_character_data_base (corr
 // SAVE STATE DATA
 //   FM2K: sizeof(SaveStateData) ~1MB RESERVED (all 8 char slots + 1024 object
 //         slots + afterimage), but the per-frame SAVE only memcpys ACTIVE slots
-//         (~2 char + ~10 obj in 1v1) => ~105us/save measured (see the profiler
-//         in savestate_fm2k_save.cpp). The ~1MB is the reserved struct = the
-//         one-time spectator-join/replay TRANSMISSION blob, NOT per-frame cost.
+//         (~2 char + ~10 obj in 1v1) plus 3,216 B of the afterimage slice (the
+//         rest of it is render-only -- see the WaveCAddrs note below) => 30us
+//         save / 44us load measured 2026-09-04 (profiler in
+//         savestate_fm2k_save.cpp carries the full before/after breakdown).
+//         The ~1MB is the reserved struct = the one-time spectator-join/replay
+//         TRANSMISSION blob, NOT per-frame cost.
 //   FM95: ~50KB per slot (object pool + input rings + minimal scalars).
 //         FM95 doesn't have FM2K's afterimage_pool / input_tracking_state /
 //         palette flash arithmetic regions -- fewer subsystems to mirror.
@@ -207,6 +211,78 @@ namespace WaveCAddrs {
     constexpr uintptr_t OBJECT_NODE_POOL       = 0x4CFA20;
     constexpr size_t    OBJECT_NODE_POOL_SZ    = 0x2000;
 #endif
+
+// ----------------------------------------------------------------------------
+// WHAT THE "afterimage pool" SLICE ACTUALLY IS (read out of the engine, 2026-09-04;
+// artifacts/resim_cost_2026-09-04.md carries the disassembly).
+//
+// AFTERIMAGE_POOL..AFTERIMAGE_POOL_SZ is NOT one object. It is two:
+//
+//   [0x447930, 0x447F80)  AFTERIMAGE_HEAD_SZ = 1,616 B of UNRELATED globals that
+//                         merely precede the array: input tracking @0x447EE0,
+//                         screen dims @0x447F2C/0x447F30, shake @0x447DA9,
+//                         palette-flash-1 @0x447D7D, g_last_frame_time @0x447DD4,
+//                         stage sound bookkeeping @0x44795C. All sim/OS state;
+//                         this half stays fully saved (minus the existing carve-outs).
+//
+//   [0x447F80, 0x46F6C0)  the afterimage (trail) array proper: exactly
+//                         AFTERIMAGE_ENTRY_COUNT entries of AFTERIMAGE_ENTRY_STRIDE.
+//                         Per entry: +0x00 active, +0x04 write cursor, +0x08 config
+//                         ptr, +0x0C countdown, then samples[100] x 16 B
+//                         (x, y, flags, sprite ptr).
+//
+// The entry allocator at game 0x413AE8 walks base 0x447F80 by 0x650 until 0x46F6C0
+// and errors past index 100; the sampler at 0x412271 and the consumer at 0x40CDC2
+// both index off the folded base 0x447930 = 0x447F80 - 0x650 with a 1-based index.
+//
+// SIM vs RENDER: the 16-byte entry HEADER is read-modify-written by the sim (the
+// script interpreter @0x411A80 decrements the countdown, advances the cursor and
+// appends a sample). The 1,600-byte SAMPLE payload is written by the sim and read
+// by exactly one function, sprite_rendering_engine @0x40CC30, which is called from
+// exactly one site, render_game+0x41 @0x404E11. Every absolute reference into the
+// slice in .text was enumerated to establish that; no sample byte reaches sim state.
+//
+// Consequence: 160,000 of the 163,216 bytes are pure render state. Save and restore
+// the head plus the 100 entry headers (3,216 B) and skip the samples. The mirror
+// buffers keep the full AFTERIMAGE_POOL_SZ layout so every offset, CRC and byte-scan
+// in the diagnostics still lines up; the sample bytes in a mirror are simply never
+// written, so they stay at their zero-init value and hash deterministically.
+#if defined(ENGINE_FM95)
+    constexpr uintptr_t AFTERIMAGE_ENTRY_BASE   = 0;
+    constexpr size_t    AFTERIMAGE_ENTRY_STRIDE = 0;
+    constexpr size_t    AFTERIMAGE_ENTRY_COUNT  = 0;
+    constexpr size_t    AFTERIMAGE_ENTRY_HDR_SZ = 0;
+    constexpr size_t    AFTERIMAGE_HEAD_SZ      = 0;
+#else
+    constexpr uintptr_t AFTERIMAGE_ENTRY_BASE   = 0x447F80;
+    constexpr size_t    AFTERIMAGE_ENTRY_STRIDE = 0x650;   // 1616
+    constexpr size_t    AFTERIMAGE_ENTRY_COUNT  = 100;
+    constexpr size_t    AFTERIMAGE_ENTRY_HDR_SZ = 0x10;    // active/cursor/cfg/countdown
+    constexpr size_t    AFTERIMAGE_HEAD_SZ      = AFTERIMAGE_ENTRY_BASE - AFTERIMAGE_POOL;
+    static_assert(AFTERIMAGE_HEAD_SZ == AFTERIMAGE_ENTRY_STRIDE,
+                  "head slice is one stride short of the array base");
+    static_assert(AFTERIMAGE_ENTRY_BASE + AFTERIMAGE_ENTRY_STRIDE * AFTERIMAGE_ENTRY_COUNT
+                      == AFTERIMAGE_POOL + AFTERIMAGE_POOL_SZ,
+                  "entry array must end exactly where the saved slice ends");
+#endif
+
+// Capture / restore the sim-owned 16-byte header of every afterimage entry.
+// `mirror` is a buffer laid out like the whole slice (AFTERIMAGE_POOL_SZ), so the
+// caller's existing offsets keep working; only the headers are touched.
+inline void AfterimageCaptureEntryHdrs(uint8_t* mirror) {
+    for (size_t i = 0; i < AFTERIMAGE_ENTRY_COUNT; ++i) {
+        const size_t off = AFTERIMAGE_HEAD_SZ + i * AFTERIMAGE_ENTRY_STRIDE;
+        std::memcpy(mirror + off, (const void*)(AFTERIMAGE_POOL + off),
+                         AFTERIMAGE_ENTRY_HDR_SZ);
+    }
+}
+inline void AfterimageRestoreEntryHdrs(const uint8_t* mirror) {
+    for (size_t i = 0; i < AFTERIMAGE_ENTRY_COUNT; ++i) {
+        const size_t off = AFTERIMAGE_HEAD_SZ + i * AFTERIMAGE_ENTRY_STRIDE;
+        std::memcpy((void*)(AFTERIMAGE_POOL + off), mirror + off,
+                         AFTERIMAGE_ENTRY_HDR_SZ);
+    }
+}
 }
 
 // ============================================================================
@@ -281,9 +357,14 @@ bool           SaveState_LoadFromBytes(const uint8_t* bytes, size_t n);
 // which is what produced the rng-region forward/replay DIFFs in
 // FM2K_P*_desync_f*.log.
 //
-// Call from RenderFrameWithSnapshot AFTER original_render_game returns,
-// passing the current live rng. Cheap (single uint32 write into the slot).
-// No-op if no Save has run yet (e.g. CSS pre-battle).
+// NOT CALLED. This and its reader below are compiled in and deliberately
+// left unwired: the Phase F restore they were written for STILL desynced
+// cross-peer at battle frame ~873, and netplay_battle_events.cpp records
+// that measurement next to the disabled call site. Kept because the
+// reasoning above is the only written record of how render-side rng
+// interacts with rollback -- not because anything reaches it. If you wire
+// it up, call it from RenderFrameWithSnapshot AFTER original_render_game
+// returns, passing the current live rng.
 void SaveState_PatchPostRenderRng(uint32_t rng);
 
 // Read the POST-render RNG that the forward pass captured for a given
@@ -292,11 +373,13 @@ void SaveState_PatchPostRenderRng(uint32_t rng);
 // frame number alongside the rng so a wrap-around or a load to a frame
 // that was never rendered doesn't replay a stale value).
 //
-// Used by Netplay_ProcessBattleInputPhase to re-establish the right
-// starting RNG at the head of each replay AdvanceEvent -- without this,
-// intermediate frames in a multi-frame rollback batch run their sim
-// from POST-sim-prev (replay) instead of POST-render-prev (forward),
-// and the render-side game_rand delta accumulates as divergence.
+// NOT CALLED either -- see the note above. It WOULD be used by
+// Netplay_ProcessBattleInputPhase to re-establish the right starting RNG at
+// the head of each replay AdvanceEvent: without that, intermediate frames in
+// a multi-frame rollback batch run their sim from POST-sim-prev (replay)
+// instead of POST-render-prev (forward), and the render-side game_rand delta
+// accumulates as divergence. That fix did not hold, which is why the call is
+// gone and only the helper remains.
 bool SaveState_GetPostRenderRng(int frame, uint32_t* out_rng);
 
 // Per-region diagnostic checksums for desync investigation
@@ -318,6 +401,15 @@ struct RegionChecksums {
     // players would see identical gameplay, only the internal memory layout
     // diverges due to per-process residue.
     uint32_t gameplay_fingerprint;
+
+    // WHAT GOES ON THE WIRE. The fingerprint above is for comparisons INSIDE
+    // one process (forward save vs replay save, and the seam ring's
+    // input-correction test), which is why it may hash inputs and per-peer
+    // state. The peer comparison is a different question and needs a
+    // different value: only fields the two machines are actually required to
+    // agree on at the same netplay frame. Hashing anything else kills live
+    // matches for no reason -- see docs/dev/desync_false_positive_2026-09-03.md.
+    uint32_t wire_fingerprint;
 
     // Raw scalar inputs going into the fingerprint hash. Captured every save
     // (not gated by the full-CRC throttle) so a desync dump can show exactly

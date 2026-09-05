@@ -25,28 +25,134 @@
 // deadline, then busy-wait the remainder using QueryPerformanceCounter.
 // Burns a fraction of a millisecond of CPU at the tail of each frame in
 // exchange for actual-100-FPS pacing.
+// PACING TELEMETRY. The brake below decides every frame, a hundred times a
+// second, and the heartbeat that reports on the match emits every ten
+// seconds. Sampling a per-frame decision at a tenth of a hertz is why a
+// player's "it stutters" has never been answerable from a log. These
+// counters are the whole fix for that: they accumulate per frame and the
+// heartbeat drains them, so one line can say "in this window I braked 180
+// frames, 41 ms in total, worst single frame 0.5 ms".
+namespace {
+std::atomic<uint32_t> g_pace_braked{0};      // frames where the brake applied
+std::atomic<uint32_t> g_pace_total{0};       // frames paced at all
+std::atomic<uint32_t> g_pace_us_sum{0};      // microseconds added, summed
+std::atomic<uint32_t> g_pace_us_max{0};      // worst single frame
+std::atomic<int32_t>  g_pace_fa_max_milli{0};// worst frames_ahead, in 1/1000
+// LAST frame's decision, kept alongside the window counters above rather than
+// derived from them. The counters are DRAINED by the [BEAT] heartbeat every
+// ten seconds; a per-frame reader that used them would steal the heartbeat's
+// window and blank the only pacing telemetry we had. These two are plain
+// last-value stores of the same numbers the brake already computed -- one
+// extra store per frame, no second computation, nothing duplicated.
+std::atomic<uint32_t> g_pace_last_us{0};
+std::atomic<int32_t>  g_pace_last_fa_milli{0};
+}  // namespace
+
+// Non-destructive peek for the per-frame timing ring (frame_timing.cpp).
+uint32_t Pacing_LastAddedUs()     { return g_pace_last_us.load(std::memory_order_relaxed); }
+float    Pacing_LastFramesAhead() { return (float)g_pace_last_fa_milli.load(std::memory_order_relaxed) / 1000.0f; }
+
+void Pacing_TakeStats(PacingStats* out) {
+    if (!out) return;
+    out->braked_frames = g_pace_braked.exchange(0, std::memory_order_relaxed);
+    out->total_frames  = g_pace_total.exchange(0, std::memory_order_relaxed);
+    out->added_us_sum  = g_pace_us_sum.exchange(0, std::memory_order_relaxed);
+    out->added_us_max  = g_pace_us_max.exchange(0, std::memory_order_relaxed);
+    out->frames_ahead_max =
+        (float)g_pace_fa_max_milli.exchange(0, std::memory_order_relaxed) / 1000.0f;
+}
+
+// Sleep until at least `target_ms` have elapsed since `start_qpc`. QPC-based
+// for sub-ms accuracy: SDL_Delay/Sleep on Windows overshoots by 1-2 ms even
+// with timeBeginPeriod(1) active, which caps the frame loop at ~90 FPS on a
+// 10 ms target. Strategy: coarse SDL_Delay until within 2 ms of the
+// deadline, then busy-wait the remainder using QueryPerformanceCounter.
+// Burns a fraction of a millisecond of CPU at the tail of each frame in
+// exchange for actual-100-FPS pacing.
 void SleepToTarget(uint64_t start_qpc, uint32_t target_ms,
                           float frames_ahead) {
     const uint64_t freq = SDL_GetPerformanceFrequency();
     uint64_t target_ticks_count = (freq * target_ms) / 1000;
-    // GekkoNet drift correction. Gekko emits no pacing of its own
-    // (UpdateSession always advances; there is no Wait/Advise event), so
-    // this wall-clock slow-down of the AHEAD peer is the ONLY lever that
-    // lets the lagging peer catch up and shrink local_adv. Scale the brake
-    // with how far ahead we are so a multi-frame start gap bleeds off in
-    // ~25-35 frames instead of ~60, while a steady-state wobble keeps about
-    // the old gentle nudge. Cap +3.0ms/frame (>=77fps floor) -- MUST stay
-    // under one 10ms frame so we never invert the rift or stall a confirmed
-    // advance. Matches the canonical pattern in
-    // vendored/GekkoNet/Examples/OnlineSession/OnlineSession.cpp.
-    // Without this the host's frame loop holds rigid 10 ms while the
-    // client falls 7-8 frames behind permanently -- the symptom of
-    // "host says rb=300, client says rb=0, ahead pinned at +-8.5".
-    if (frames_ahead > 0.5f) {
-        float extra_ms = frames_ahead * 0.5f;
-        if (extra_ms > 3.0f) extra_ms = 3.0f;
-        target_ticks_count += (uint64_t)((double)freq * (double)extra_ms / 1000.0);
+
+    // THE DRIFT BRAKE, as a FRACTION OF THE FRAME PERIOD rather than a
+    // count of milliseconds. Gekko emits no pacing of its own (UpdateSession
+    // always advances; there is no Wait/Advise event), so slowing the peer
+    // that is AHEAD is the only lever that lets the other one catch up.
+    //
+    // WHY A PERCENTAGE. Upstream's examples all do
+    // `delay = frames_ahead > .5f ? period * 1.016 : period`, and that form
+    // is frame-rate invariant where a millisecond count is not. The
+    // convergence rate in FRAMES is what the percentage fixes: at 1.6% it
+    // takes ~62 frames to shed one frame of advantage whether the period is
+    // 16.67 ms at 60 Hz or 10 ms at 100 Hz. Expressed in milliseconds
+    // instead, the same nudge would be over half again as strong at 100 Hz
+    // as upstream intended, which is the mistake this replaces: the old
+    // brake was `frames_ahead * 0.5 ms` capped at 3 ms, i.e. up to 30% of a
+    // frame, roughly nineteen times upstream's correction.
+    //
+    // WHY NOT SIMPLY 1.6% FLAT. A documented failure says flat is not
+    // enough here: the host held rigid 10 ms while the client trailed 7-8
+    // frames permanently, FA pinned near +-8.5. So the fraction RAMPS with
+    // how far ahead we are, from upstream's 1.6% up to kBrakeMaxFrac. At
+    // 100 Hz the cap is half a millisecond -- 95 FPS rather than 100, which
+    // is imperceptible per frame -- and it bleeds an 8-frame gap off in
+    // about 1.6 seconds. The old 3 ms cap did it in a quarter of a second
+    // and cost 30% of the frame rate to do it, which is the trade nobody
+    // measured and players felt.
+    // AND A DEADBAND, measured from two field matches at 138-261 ms ping.
+    // Braking ONE peer slows BOTH: the other can only advance as fast as
+    // inputs arrive, so it inherits the braked rate. In those logs, every
+    // window where neither peer was braked ran at exactly 100.0 fps, and
+    // every window where either was braked pulled BOTH down to roughly the
+    // braked rate -- including windows with literally zero rollbacks, which
+    // rules out rollback cost and the prediction wall.
+    //
+    // That makes a small correction expensive and, below about two frames,
+    // useless as well. Frame advantage is (our average lead minus the
+    // peer's reported lead) / 2, and the peer's half arrives a half round
+    // trip stale, so at these pings BOTH peers routinely read positive at
+    // the same time -- six of nine windows in one match. Braking both
+    // cannot change the difference between them. It only costs the session
+    // frame rate. So do nothing until the reading is big enough to be a
+    // real rift rather than the noise floor of the measurement.
+    constexpr float kBrakeDeadband = 2.0f;   // frames ahead before we act
+    constexpr float kBrakeMinFrac = 0.016f;  // upstream's constant
+    constexpr float kBrakeMaxFrac = 0.05f;   // 5% == 95 FPS at a 10 ms period
+    constexpr float kBrakeFullAt  = 8.0f;    // frames ahead at which we cap
+    uint32_t added_us = 0;
+    if (frames_ahead > kBrakeDeadband && target_ms > 0) {
+        float frac = kBrakeMinFrac +
+                     (kBrakeMaxFrac - kBrakeMinFrac) *
+                     ((frames_ahead - kBrakeDeadband) / (kBrakeFullAt - kBrakeDeadband));
+        if (frac > kBrakeMaxFrac) frac = kBrakeMaxFrac;
+        const uint64_t extra_ticks =
+            (uint64_t)((double)target_ticks_count * (double)frac);
+        target_ticks_count += extra_ticks;
+        added_us = (uint32_t)((extra_ticks * 1000000ull) / freq);
     }
+
+    // Telemetry, taken whether or not the brake fired, so the heartbeat can
+    // report a rate rather than a bare count.
+    g_pace_last_us.store(added_us, std::memory_order_relaxed);
+    g_pace_last_fa_milli.store((int32_t)(frames_ahead * 1000.0f),
+                               std::memory_order_relaxed);
+    g_pace_total.fetch_add(1, std::memory_order_relaxed);
+    if (added_us) {
+        g_pace_braked.fetch_add(1, std::memory_order_relaxed);
+        g_pace_us_sum.fetch_add(added_us, std::memory_order_relaxed);
+        uint32_t prev = g_pace_us_max.load(std::memory_order_relaxed);
+        while (added_us > prev &&
+               !g_pace_us_max.compare_exchange_weak(prev, added_us,
+                                                    std::memory_order_relaxed)) {}
+    }
+    if (frames_ahead > 0.0f) {
+        const int32_t fa_milli = (int32_t)(frames_ahead * 1000.0f);
+        int32_t prev_fa = g_pace_fa_max_milli.load(std::memory_order_relaxed);
+        while (fa_milli > prev_fa &&
+               !g_pace_fa_max_milli.compare_exchange_weak(prev_fa, fa_milli,
+                                                          std::memory_order_relaxed)) {}
+    }
+
     const uint64_t target_ticks = start_qpc + target_ticks_count;
     for (;;) {
         uint64_t now = SDL_GetPerformanceCounter();

@@ -17,52 +17,6 @@
 #include <vector>
 #include <windows.h>
 
-bool FM2KGameInstance::SaveState(void* buffer, size_t buffer_size) {
-    if (!buffer || buffer_size == 0) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-            "Invalid buffer for state save");
-        return false;
-    }
-
-    // DLL handles state saving directly
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "State save requested");
-    return true;
-}
-
-bool FM2KGameInstance::LoadState(const void* buffer, size_t buffer_size) {
-    if (!buffer || buffer_size == 0) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-            "Invalid buffer for state load");
-        return false;
-    }
-
-    // DLL handles state loading directly
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "State load requested");
-    return true;
-}
-
-bool FM2KGameInstance::AdvanceFrame() {
-    if (!process_handle_) {
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "No valid process handle");
-        return false;
-    }
-
-    // For GekkoNet integration, frame advancement is handled by the hook
-    // The game runs naturally and the hook coordinates with GekkoNet
-    // No need to call remote functions - the hook does this automatically
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "AdvanceFrame called - letting hook handle frame advancement");
-
-    // Direct hooks - no IPC events to process
-
-    return true;
-}
-
-void FM2KGameInstance::InjectInputs(uint32_t p1_input, uint32_t p2_input) {
-    // DLL handles input injection directly
-    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, 
-        "Input injection requested: P1=0x%04X, P2=0x%04X", p1_input, p2_input);
-}
-
 void FM2KGameInstance::ProcessDLLEvents() {
     // Process SDL events (for UI)
     SDL_Event event;
@@ -136,62 +90,6 @@ void FM2KGameInstance::HandleDLLEvent(const SDL_Event& event) {
 
 
 
-// Helper function to execute a function in the game process
-void FM2KGameInstance::InitializeSharedMemory() {
-    // Create unique shared memory name using process ID
-    std::string shared_memory_name = "FM2K_SharedMem_" + std::to_string(process_id_);
-
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "LAUNCHER: Opening shared memory with name: %s (PID=%lu)", shared_memory_name.c_str(), process_id_);
-
-    // Retry opening shared memory for up to 2 seconds (hook DLL needs time to initialize)
-    for (int attempt = 0; attempt < 40; attempt++) {
-        shared_memory_handle_ = OpenFileMappingA(
-            FILE_MAP_READ,
-            FALSE,
-            shared_memory_name.c_str()
-        );
-
-        if (shared_memory_handle_ != nullptr) {
-            shared_memory_data_ = MapViewOfFile(
-                shared_memory_handle_,
-                FILE_MAP_READ,
-                0,
-                0,
-                sizeof(FM2KSharedMemData)
-            );
-
-            if (shared_memory_data_) {
-                // Validate magic number
-                FM2KSharedMemData* shared_data = static_cast<FM2KSharedMemData*>(shared_memory_data_);
-                if (shared_data->magic != FM2K_SHARED_MEM_MAGIC) {
-                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Shared memory magic mismatch: 0x%08X (expected 0x%08X)",
-                                shared_data->magic, FM2K_SHARED_MEM_MAGIC);
-                    UnmapViewOfFile(shared_memory_data_);
-                    shared_memory_data_ = nullptr;
-                    CloseHandle(shared_memory_handle_);
-                    shared_memory_handle_ = nullptr;
-                    return;
-                }
-
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Shared memory opened successfully on attempt %d (version=%u)",
-                           attempt + 1, shared_data->version);
-                last_processed_frame_ = 0;
-                return;
-            } else {
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to map shared memory view");
-                CloseHandle(shared_memory_handle_);
-                shared_memory_handle_ = nullptr;
-                return;
-            }
-        }
-
-        // Wait 50ms before next attempt
-        SDL_Delay(50);
-    }
-
-    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Failed to open shared memory after 40 attempts (2 seconds)");
-}
-
 bool FM2KGameInstance::TryAttachSharedMemory() {
     if (shared_memory_data_) return true;
     if (process_id_ == 0) return false;
@@ -232,11 +130,6 @@ void FM2KGameInstance::CleanupSharedMemory() {
         CloseHandle(shared_memory_handle_);
         shared_memory_handle_ = nullptr;
     }
-}
-
-void FM2KGameInstance::PollInputs() {
-    // DLL handles input polling and GekkoNet directly
-    // No need for shared memory polling from launcher
 }
 
 // Debug state management functions
@@ -310,13 +203,6 @@ bool FM2KGameInstance::GetSlotStatus(uint32_t slot, SlotStatus& status) {
     return false;
 }
 
-// Set client role for LocalNetworkAdapter (HOST = 0, GUEST = 1)
-bool FM2KGameInstance::SetClientRole(uint8_t player_index, bool is_host) {
-    // Removed - hook reads config from env vars
-    (void)player_index; (void)is_host;
-    return false;
-}
-
 // Debug and testing configuration
 bool FM2KGameInstance::SetProductionMode(bool enabled) {
     // Removed - hook reads config from env vars
@@ -334,10 +220,6 @@ bool FM2KGameInstance::SetMinimalGameStateTesting(bool enabled) {
     // Removed - hook reads config from env vars
     (void)enabled;
     return false;
-}
-
-void FM2KGameInstance::ApplyDeferredSettings() {
-    // Removed - hook reads config from env vars
 }
 
 // Environment variable configuration for OnlineSession-style networking

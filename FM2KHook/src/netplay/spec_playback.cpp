@@ -933,7 +933,3 @@ uint16_t SpectatorNode_GetCurrentP1Input() { return g_state.pb_current_p1; }
 uint16_t SpectatorNode_GetCurrentP2Input() { return g_state.pb_current_p2; }
 size_t   SpectatorNode_PendingFrameCount() { return g_state.pb_queue.size(); }
 
-void SpectatorNode_ResetCurrentInputs() {
-    g_state.pb_current_p1 = 0;
-    g_state.pb_current_p2 = 0;
-}

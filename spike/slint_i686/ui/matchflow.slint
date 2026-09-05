@@ -1,0 +1,339 @@
+// matchflow.slint -- the challenge lifecycle, as a modal over the shell.
+//
+// Structure follows MatchFlow in the design project's app.jsx: six stages,
+// each an overlay inset from the chrome with its own accent colour, so the
+// stage is legible from across the room before any text is read. Orange for
+// something asking you to decide, cyan for negotiation in progress, amber
+// for the game coming up, magenta for a fault.
+//
+// WHY A MODAL AND NOT A PANEL. Every stage here is a state the user cannot
+// usefully ignore -- a challenge expires, a handshake either completes or
+// fails, a desync has to be answered. Rendering these inline would let them
+// scroll out of view while the timer runs.
+//
+// Field names mirror the launcher's own fm2k::HubUser (nick, rtt_ms, tier)
+// rather than inventing a shape, so wiring this to the real hub client is a
+// binding exercise and not a translation.
+import { Nerv, Type, Space, Chrome, Radius } from "theme.slint";
+
+export enum MatchStage { none, incoming, outgoing, handshake, booting, post, desync }
+
+component Field inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    in property <color> tint: Nerv.ink2;
+    spacing: 8px;
+    Text { text: label; font-size: Type.body_sm; color: Nerv.faint; width: 96px; }
+    Text { text: value; font-size: Type.body; color: tint; }
+}
+
+component Action inherits Rectangle {
+    in property <string> label;
+    in property <color> tint;
+    in property <bool> primary: false;
+    callback clicked();
+    height: 30px;
+    background: primary
+        ? (ta.pressed ? tint.with-alpha(0.40) : tint.with-alpha(0.18))
+        : (ta.pressed ? Nerv.line : Nerv.bg2);
+    border-radius: Radius.sm;
+    border-width: 1px;
+    border-color: primary ? tint : Nerv.line;
+    Text {
+        text: label;
+        font-size: Type.body;
+        color: primary ? tint : Nerv.ink2;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: 100%; height: 100%;
+    }
+    ta := TouchArea { clicked => { root.clicked(); } }
+}
+
+export component MatchFlow inherits Rectangle {
+    in property <MatchStage> stage: MatchStage.none;
+    in property <string> nick;
+    in property <int> rtt;
+    in property <string> game;
+    // Counted down by the host; the panel only displays it. A timer that
+    // lives in the UI would keep running while the hub had already expired
+    // the challenge, and the two would disagree on screen.
+    in property <int> seconds_left: 20;
+    in property <int> sync_pct: 0;
+    in property <string> detail;
+
+    // Post-match. Frame stats are things we ACTUALLY measure -- GekkoNet
+    // already reports rollbacks, RTT, jitter and drops, and the desync
+    // detector reports the last column -- so these are bindings waiting for
+    // a session rather than invented numbers. Score and streak likewise come
+    // from the match result the hub already records.
+    in property <int> score_self;
+    in property <int> score_opp;
+    in property <string> format: "--";
+    in property <int> rollbacks;
+    in property <string> avg_rtt: "--";
+    in property <string> jitter: "--";
+    in property <int> drops;
+    in property <string> desync_state: "none";
+    in property <string> streak: "--";
+
+    callback accept();
+    callback decline();
+    callback cancel();
+    callback rematch();
+    callback quit();
+
+    // How much of the bottom edge the shell already owns -- the lobby chat
+    // composer, mainly. The card sits ABOVE it: covering the box you type
+    // in is the exact thing this redesign is meant to stop.
+    in property <length> bottom_inset;
+
+    // EVERY stage is a corner card now, including outgoing -- which used
+    // to have a component of its own for exactly this reason. One shape
+    // for the whole flow, so a challenge arriving and a challenge sent do
+    // not look like different features.
+    visible: stage != MatchStage.none;
+
+    function accent() -> color {
+        return stage == MatchStage.outgoing || stage == MatchStage.handshake ? Nerv.phos
+             : stage == MatchStage.booting ? Nerv.amber
+             : stage == MatchStage.desync ? Nerv.red
+             : Nerv.acc;
+    }
+    // NO per-stage height. Hand-picked numbers were guesses, and every one
+    // that guessed low pushed the button row out through the bottom border.
+    // The card measures its own content instead (see col.preferred-height):
+    // a Rectangle with no height would take the PARENT's height here, since
+    // its parent is not a layout, which is the opposite of what we want.
+
+    // NOTE: nothing raises `desync` on the live path yet -- HandleDesyncDetected
+    // lives hook-side and terminates the process, and the spike host does not
+    // read the match outcome it publishes. Stage 6 is reachable only via
+    // `--match 6`. Wiring it means consuming SharedMem_PublishMatchOutcome.
+
+    // handshake and booting ask nothing of you, so they get no button row
+    // -- and without this the card carries 40px of empty chrome.
+    function has_actions() -> bool {
+        return stage != MatchStage.handshake && stage != MatchStage.booting;
+    }
+    function title() -> string {
+        return stage == MatchStage.incoming  ? "INCOMING CHALLENGE"
+             : stage == MatchStage.outgoing  ? "CHALLENGE SENT"
+             : stage == MatchStage.handshake ? "HANDSHAKE"
+             : stage == MatchStage.booting   ? "BOOTING"
+             : stage == MatchStage.post      ? "MATCH COMPLETE"
+             : stage == MatchStage.desync    ? "STATE MISMATCH"
+             : "";
+    }
+
+    // NO SCRIM, AND NOT FULL-BLEED.
+    //
+    // This was a panel covering nearly the whole window over a dimmed
+    // shell. That is the right weight for a decision that stops
+    // everything, and none of these are: a challenge arrives while you are
+    // reading the room, a handshake resolves on its own, a result is
+    // something you look at. Blanking the app to say "someone challenged
+    // you" takes the app away at the exact moment you want to glance at
+    // their record and keep typing.
+    //
+    // So it is a card in the corner, above the status bar and clear of the
+    // roster -- loud enough not to be missed, and it takes nothing away.
+    card := Rectangle {
+        x: parent.width - self.width - Chrome.right_w - Space.m;
+        y: parent.height - self.height - Chrome.status_h - root.bottom_inset - Space.m;
+        width: 380px;
+        height: col.preferred-height;
+        background: Nerv.bg3;
+        border-radius: Radius.md;
+        border-width: 1px;
+        border-color: root.accent();
+
+        col := VerticalLayout {
+            spacing: 0px;
+
+            Rectangle {
+                height: 22px;
+                background: root.accent().with-alpha(0.10);
+                HorizontalLayout {
+                    padding-left: Space.s; padding-right: Space.s;
+                    Text {
+                        text: root.title();
+                        font-size: Type.label; letter-spacing: Type.track;
+                        color: root.accent();
+                        vertical-alignment: center; horizontal-stretch: 1;
+                    }
+                    Text {
+                        // Only the stages that actually expire show a clock.
+                        // An OUTGOING challenge expires too -- the hub
+                        // drops it if the target never answers -- and
+                        // "waiting for a response" with no clock gives no
+                        // sense of whether to keep waiting.
+                        text: root.stage == MatchStage.incoming
+                              || root.stage == MatchStage.outgoing
+                              ? root.seconds_left + "s" : "";
+                        font-size: Type.label;
+                        color: root.seconds_left <= 5 ? Nerv.red : Nerv.ink2;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            Rectangle { height: 1px; background: root.accent(); }
+
+            VerticalLayout {
+                padding: Space.m; spacing: Space.xs; alignment: start;
+
+                // POST names the opponent in its own scoreline ("vs NICK
+                // - FT2"), so repeating it above would say it twice in a
+                // card this size.
+                if root.stage != MatchStage.post: Text {
+                    text: root.nick == "" ? "--" : root.nick;
+                    font-size: Type.body_lg; color: Nerv.ink;
+                }
+                if root.stage != MatchStage.post
+                   && root.stage != MatchStage.desync: Field {
+                    label: "PING";
+                    value: root.rtt > 0 ? root.rtt + "ms" : "--";
+                    tint: root.rtt < 50 ? Nerv.phos : root.rtt < 100 ? Nerv.amber : Nerv.red;
+                }
+                if root.stage != MatchStage.post: Field { label: "GAME"; value: root.game; }
+
+                if root.stage == MatchStage.handshake || root.stage == MatchStage.booting:
+                    VerticalLayout {
+                        spacing: 4px;
+                        Field {
+                            label: "SYNC";
+                            value: root.sync_pct + "%";
+                            tint: root.sync_pct >= 99 ? Nerv.phos : Nerv.amber;
+                        }
+                        Rectangle {
+                            height: 4px;
+                            background: Nerv.line;
+                            Rectangle {
+                                x: 0; height: parent.height;
+                                width: parent.width * root.sync_pct / 100;
+                                background: root.accent();
+                            }
+                        }
+                    }
+
+                // ── post-match: two columns, per the blueprint ──
+                if root.stage == MatchStage.post: HorizontalLayout {
+                    spacing: Space.m;
+
+                    VerticalLayout {
+                        horizontal-stretch: 1; spacing: 4px; alignment: start;
+                        Text { text: "FINAL"; font-size: Type.label;
+                               letter-spacing: Type.track; color: Nerv.faint; }
+                        // alignment: start, or the layout distributes its
+                        // free space BETWEEN the digits and the scoreline
+                        // reads as three separate numbers instead of one.
+                        HorizontalLayout {
+                            spacing: 4px;
+                            alignment: start;
+                            Text {
+                                text: root.score_self;
+                                font-size: Type.chrome_lg;
+                                color: root.score_self >= root.score_opp ? Nerv.ink : Nerv.dim;
+                            }
+                            Text { text: ":"; font-size: Type.chrome_lg; color: Nerv.faint; }
+                            Text {
+                                text: root.score_opp;
+                                font-size: Type.chrome_lg;
+                                // The loser's score recedes. Accenting it
+                                // put the emphasis on whoever did worse.
+                                color: root.score_opp > root.score_self ? Nerv.ink : Nerv.ink3;
+                            }
+                        }
+                        Text {
+                            text: "vs " + root.nick + " - " + root.format;
+                            font-size: Type.body_sm; color: Nerv.dim;
+                        }
+                        Rectangle { height: 1px; background: Nerv.line; }
+                        Field { label: "STREAK"; value: root.streak; }
+                    }
+
+                    // Frame stats get their own bordered box because they are
+                    // the half a player actually interrogates after a bad
+                    // match -- "was that me or the connection".
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        border-radius: Radius.md;
+                        border-width: 1px; border-color: Nerv.line;
+                        background: transparent;
+                        VerticalLayout {
+                            padding: Space.s; spacing: 2px; alignment: start;
+                            Text { text: "FRAME STATS"; font-size: Type.label;
+                                   letter-spacing: Type.track; color: Nerv.faint; }
+                            Rectangle { height: 1px; background: Nerv.line; }
+                            Field { label: "ROLLBACKS"; value: root.rollbacks; }
+                            Field { label: "AVG RTT"; value: root.avg_rtt; }
+                            Field { label: "JITTER"; value: root.jitter; }
+                            Field { label: "DROPS"; value: root.drops;
+                                    tint: root.drops > 0 ? Nerv.amber : Nerv.ink2; }
+                            Field { label: "DESYNC"; value: root.desync_state;
+                                    tint: root.desync_state == "none" ? Nerv.phos : Nerv.red; }
+                        }
+                    }
+                }
+
+                if root.stage == MatchStage.desync: Text {
+                    text: "The two games stopped agreeing on the same state. "
+                        + "They cannot be reconciled, so the match ended here "
+                        + "and diagnostics were written for upload.";
+                    font-size: Type.body_sm; color: Nerv.ink2; wrap: word-wrap;
+                }
+
+                if root.detail != "" && root.stage != MatchStage.desync: Text {
+                    text: root.detail;
+                    font-size: Type.body_sm; color: Nerv.dim; wrap: word-wrap;
+                }
+            }
+
+            if root.has_actions(): Rectangle { height: 1px; background: Nerv.line; }
+            if root.has_actions(): Rectangle {
+                height: 40px;
+                background: transparent;
+                HorizontalLayout {
+                    padding: Space.s; spacing: Space.s; alignment: end;
+
+                    if root.stage == MatchStage.incoming: Action {
+                        width: 88px; label: "DECLINE"; tint: Nerv.ink2;
+                        clicked => { root.decline(); }
+                    }
+                    if root.stage == MatchStage.incoming: Action {
+                        width: 104px; label: "ACCEPT"; tint: Nerv.acc; primary: true;
+                        clicked => { root.accept(); }
+                    }
+                    if root.stage == MatchStage.outgoing: Action {
+                        width: 104px; label: "CANCEL"; tint: Nerv.ink2;
+                        clicked => { root.cancel(); }
+                    }
+                    if root.stage == MatchStage.post: Action {
+                        width: 104px; label: "LOBBY"; tint: Nerv.ink2;
+                        clicked => { root.quit(); }
+                    }
+                    if root.stage == MatchStage.post: Action {
+                        width: 104px; label: "REMATCH"; tint: Nerv.acc; primary: true;
+                        clicked => { root.rematch(); }
+                    }
+                    // ONE BUTTON, AND IT ONLY CLOSES THE CARD.
+                    //
+                    // This used to offer ABORT and RESYNC. Neither exists.
+                    // Two diverged simulations cannot be reconciled -- that
+                    // is what a desync IS -- so there is nothing for RESYNC
+                    // to do. And ABORT is not a choice either: by the time
+                    // this card can be seen, HandleDesyncDetected has
+                    // already dumped diagnostics and called TerminateProcess
+                    // (netplay_desync.cpp). The match is over either way.
+                    //
+                    // So this is a notification, and the only honest control
+                    // on a notification is one that dismisses it.
+                    if root.stage == MatchStage.desync: Action {
+                        width: 104px; label: "DISMISS"; tint: Nerv.ink2;
+                        clicked => { root.quit(); }
+                    }
+                }
+            }
+        }
+    }
+}

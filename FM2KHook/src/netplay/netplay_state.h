@@ -5,46 +5,6 @@
 #include <cstdint>
 
 // =============================================================================
-// STATE MACHINE
-// =============================================================================
-
-enum class NetplayState : uint8_t {
-    DISCONNECTED,       // No connection
-    CONNECTING,         // UDP handshake in progress
-    SYNCED,             // Initial sync complete (version, player assignment)
-
-    CSS_LOBBY,          // In CSS, syncing cursors, neither locked
-    CSS_LOCAL_READY,    // Local player locked, waiting for remote
-    CSS_REMOTE_READY,   // Remote player locked, waiting for local
-    CSS_BOTH_READY,     // Both locked, preparing GekkoNet session
-
-    BATTLE_INIT,        // Creating GekkoNet session
-    BATTLE_SYNCING,     // GekkoNet handshake in progress
-    BATTLE_RUNNING,     // Full rollback active
-    BATTLE_PAUSED,      // Game paused during battle
-    BATTLE_END,         // Match ended, cleanup
-};
-
-// Convert state to string for logging
-inline const char* NetplayStateToString(NetplayState state) {
-    switch (state) {
-        case NetplayState::DISCONNECTED:    return "DISCONNECTED";
-        case NetplayState::CONNECTING:      return "CONNECTING";
-        case NetplayState::SYNCED:          return "SYNCED";
-        case NetplayState::CSS_LOBBY:       return "CSS_LOBBY";
-        case NetplayState::CSS_LOCAL_READY: return "CSS_LOCAL_READY";
-        case NetplayState::CSS_REMOTE_READY:return "CSS_REMOTE_READY";
-        case NetplayState::CSS_BOTH_READY:  return "CSS_BOTH_READY";
-        case NetplayState::BATTLE_INIT:     return "BATTLE_INIT";
-        case NetplayState::BATTLE_SYNCING:  return "BATTLE_SYNCING";
-        case NetplayState::BATTLE_RUNNING:  return "BATTLE_RUNNING";
-        case NetplayState::BATTLE_PAUSED:   return "BATTLE_PAUSED";
-        case NetplayState::BATTLE_END:      return "BATTLE_END";
-        default:                            return "UNKNOWN";
-    }
-}
-
-// =============================================================================
 // CONTROL CHANNEL MESSAGES
 // =============================================================================
 
@@ -121,33 +81,6 @@ enum class CtrlMsg : uint8_t {
     // build so no back-compat handling is needed.
     SPEC_SNAPSHOT_REQ,
 };
-
-// Convert message type to string for logging
-inline const char* CtrlMsgToString(CtrlMsg msg) {
-    switch (msg) {
-        case CtrlMsg::PING:         return "PING";
-        case CtrlMsg::PONG:         return "PONG";
-        case CtrlMsg::HELLO:        return "HELLO";
-        case CtrlMsg::HELLO_ACK:    return "HELLO_ACK";
-        case CtrlMsg::DISCONNECT:   return "DISCONNECT";
-        case CtrlMsg::BATTLE_READY: return "BATTLE_READY";
-        case CtrlMsg::BATTLE_ACK:   return "BATTLE_ACK";
-        case CtrlMsg::BATTLE_ENTERING: return "BATTLE_ENTERING";
-        case CtrlMsg::BATTLE_START: return "BATTLE_START";
-        case CtrlMsg::BATTLE_END:   return "BATTLE_END";
-        case CtrlMsg::CHAT:              return "CHAT";
-        case CtrlMsg::SPEC_JOIN_REQ:     return "SPEC_JOIN_REQ";
-        case CtrlMsg::SPEC_JOIN_ACK:     return "SPEC_JOIN_ACK";
-        case CtrlMsg::SPEC_JOIN_REDIRECT:return "SPEC_JOIN_REDIRECT";
-        case CtrlMsg::SPEC_HEARTBEAT:    return "SPEC_HEARTBEAT";
-        case CtrlMsg::SPEC_LEAVE:        return "SPEC_LEAVE";
-        case CtrlMsg::HOST_CONFIG:       return "HOST_CONFIG";
-        case CtrlMsg::DELAY_PROPOSAL:    return "DELAY_PROPOSAL";
-        case CtrlMsg::SPEC_SESSION_END:  return "SPEC_SESSION_END";
-        case CtrlMsg::SPEC_SNAPSHOT_REQ: return "SPEC_SNAPSHOT_REQ";
-        default:                         return "UNKNOWN";
-    }
-}
 
 // =============================================================================
 // PACKET STRUCTURES
@@ -341,34 +274,6 @@ struct CtrlPacket {
 // every other member's field offsets are unchanged, so a peer running an
 // older build reads the prefix it knows and ignores the tail.
 static_assert(sizeof(CtrlPacket) <= 64, "CtrlPacket too large");
-
-// =============================================================================
-// CSS STATE TRACKING
-// =============================================================================
-
-struct CSSState {
-    // Cursor positions for both players
-    uint8_t cursor_x[2];
-    uint8_t cursor_y[2];
-
-    // Selected character slot (0xFF = none)
-    uint8_t selected_char[2];
-
-    // Color/palette selection
-    uint8_t selected_color[2];
-
-    // Lock status (true = character confirmed)
-    bool locked[2];
-
-    // Initialize to default state
-    void Reset() {
-        cursor_x[0] = cursor_x[1] = 0;
-        cursor_y[0] = cursor_y[1] = 0;
-        selected_char[0] = selected_char[1] = 0xFF;
-        selected_color[0] = selected_color[1] = 0;
-        locked[0] = locked[1] = false;
-    }
-};
 
 // =============================================================================
 // PROTOCOL CONSTANTS

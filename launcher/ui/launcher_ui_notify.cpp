@@ -11,6 +11,7 @@
 #include "version_local.h"
 #include "auto_upload_secret.h"
 #include "FM2K_UploadQueue.h"
+#include "FM2K_ReplayUpload.h"
 #include "FM2KHook/src/ui/input_binder.h"
 #include "FM2KHook/src/ui/shared_mem.h"
 #include "FM2KHook/src/util/pii_scrub.h"
@@ -258,5 +259,37 @@ void LauncherUI::NotifyHubMatchEnded() {
     hub_state_->client.MatchEnded();
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "Hub: signaled match_ended (game terminated)");
+
+    // Offer the recording to the hub so everyone can watch it. HUB
+    // MATCHES ONLY -- we are inside the connected branch, and
+    // current_match_game_id is only set by MatchStart, so an offline or
+    // direct-connect game never reaches here. Nothing is uploaded yet;
+    // this only arms it, because the hook finalises the session file
+    // after the match ends.
+    auto& hs = *hub_state_;
+    if (!hs.current_match_game_id.empty()) {
+        fm2k::replay_upload::Config rc;
+        // The game dir is the selected game's exe folder -- the same
+        // resolution the diagnostics uploader does, and the folder the
+        // hook writes replays/ and sessions/ into.
+        for (const auto& g : games_) {
+            std::filesystem::path exe = fm2k::utf8path::Utf8ToWide(g.exe_path);
+            if (exe.stem().string() == hs.current_match_game_id ||
+                exe.parent_path().filename().string() == hs.current_match_game_id) {
+                rc.game_dir = exe.parent_path().string();
+                break;
+            }
+        }
+        if (rc.game_dir.empty()) return;
+        rc.game_id    = hs.current_match_game_id;
+        // Same host the lobby is on, so a self-hosted hub receives its own
+        // replays rather than posting them to production.
+        rc.upload_url = std::string("https://") +
+                        (hub_host_[0] ? hub_host_ : "hub.2dfm.org") +
+                        "/replay/upload";
+        rc.p1_nick    = hs.my_nick;
+        rc.p2_nick    = hs.current_match_peer_nick;
+        fm2k::replay_upload::OnMatchEnded(rc);
+    }
 }
 

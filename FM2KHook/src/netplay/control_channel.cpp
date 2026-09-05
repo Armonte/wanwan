@@ -254,6 +254,42 @@ bool NetSocket_Init(uint16_t local_port, const char* remote_addr) {
         return false;
     }
 
+    // SIO_UDP_CONNRESET off -- THE WINDOWS UDP TRAP, and it cost a player-
+    // facing hang. On Windows a datagram sent to a port nobody is listening
+    // on comes back as ICMP port-unreachable, and Winsock reports that on
+    // this socket as a FAILED recvfrom with WSAECONNRESET -- even though the
+    // socket is unconnected and the error has nothing to do with whatever is
+    // sitting in the receive queue. Once a peer's NAT mapping dies (a
+    // carrier remap, the classic CGNAT case) we keep sending to the dead
+    // address every frame, so there is an error pending on nearly every
+    // poll, and the drain loop in control_channel_io reads it instead of the
+    // real traffic queued behind it. The peer goes deaf with no timeout and
+    // no diagnostic: character select starves, gekko's session never syncs,
+    // and the match hangs forever. Reproduced 2026-09-04 by remapping the
+    // guest's source address mid-character-select.
+    //
+    // Turning the behaviour off is the documented fix for any UDP socket that
+    // talks to more than one address, which this one does (peer, relay,
+    // STUN, spectators).
+    {
+        // mingw's winsock headers do not always expose this ioctl code,
+        // and it is a stable documented constant, so define it if absent
+        // rather than make the fix depend on which SDK headers we got.
+#ifndef SIO_UDP_CONNRESET
+#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
+#endif
+        DWORD off = 0, bytes = 0;
+        if (WSAIoctl(g_socket, SIO_UDP_CONNRESET, &off, sizeof(off),
+                     nullptr, 0, &bytes, nullptr, nullptr) == SOCKET_ERROR) {
+            // Not fatal: the drain loop also tolerates the error now. Log it
+            // so a platform where this fails is not a silent mystery.
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "NetSocket: could not disable SIO_UDP_CONNRESET (err=%d) -- "
+                "ICMP port-unreachable may still surface as recv errors",
+                WSAGetLastError());
+        }
+    }
+
     // SO_REUSEADDR -- allows rebinding to a port still in TIME_WAIT
     // from a previous run. Without this, restarting the launcher
     // within ~30s of a previous session hits WSAEADDRINUSE (10048).
@@ -448,6 +484,10 @@ SOCKET ControlChannel_GetSocket() {
     return g_socket;
 }
 
+bool ControlChannel_PeerAddrEquals(const sockaddr_storage& addr) {
+    return fm2k::Addr_Equal(g_remote_sockaddr, addr);
+}
+
 void ControlChannel_LatchPeerAddr(const sockaddr_storage& peer) {
     std::string peer_s = fm2k::Addr_ActorString(peer);
     if (!fm2k::Addr_Equal(g_remote_sockaddr, peer)) {
@@ -619,20 +659,12 @@ bool ControlChannel_IsConnected() {
     return g_connected;
 }
 
-uint32_t ControlChannel_GetLastRecvMs() {
-    return GetTimeMs() - g_last_recv_time;
-}
-
 uint32_t ControlChannel_GetRttMs() {
     return g_rtt_ms;
 }
 
 uint32_t ControlChannel_GetWorstRttMs() {
     return g_rtt_worst_ms;
-}
-
-uint32_t ControlChannel_GetRttSampleCount() {
-    return g_rtt_sample_count;
 }
 
 void ControlChannel_ResetWorstRttMs() {

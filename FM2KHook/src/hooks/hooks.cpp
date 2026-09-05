@@ -8,6 +8,7 @@
 #include "css_fastsound.h"    // FM2K_FPK_CSS_FASTSOUND: lazy DSound buffers (CSS dip fix)
 #include "per_game_patches.h" // damage multiplier MinHook + team-size override
 #include "render_simd.h"      // FM2K_BLIT_SIMD: blit + case -10 blur reimplementation
+#include "scene_frame_guard.h" // destroyed-object draw suppression + [FRAMEIDX] detector
 #include "globals.h"
 
 #include <cstdlib>
@@ -30,7 +31,7 @@
 #include "../audio/sound_rollback.h"        // Mike Z desired/actual sound layer
 #include "../netplay/spectator_node.h"      // spectator playback queue accessors
 #include "../ui/input_binder.h"             // FM2KInputBinder::Sample_Win32 + Bindings
-#include "../ui/screenshot.h"               // FM2KCapture::SaveScreenshot for the auto-banner pipeline
+#include "../ui/screenshot.h"               // FM2KCapture::RememberFrame for the auto-banner pipeline
 #include "../ui/fc_hud.h"                   // IsChatInputActive -- gate local input during typing
 #include "../vfs/fpk_reader.h"              // FM2K_FPK_VFS: inflate a slim .fpk -> original asset bytes
 #include <MinHook.h>
@@ -485,6 +486,7 @@ bool InitializeHooks() {
 }
 
 void ShutdownHooks() {
+    SceneFrameGuard::ReportSummary();
     MH_DisableHook(MH_ALL_HOOKS);
     MH_Uninitialize();
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Hooks: Shutdown complete");

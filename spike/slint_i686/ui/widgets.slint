@@ -1,0 +1,77 @@
+// widgets.slint -- controls the stock widget set gets visibly wrong here.
+//
+// std-widgets' LineEdit paints its own light background and a blue focus
+// ring from the Fluent style. Against this palette that is a bright grey
+// slab with a stray accent colour in it -- the search box was the single
+// loudest thing on the browse screen, and the chat compose box the same.
+// Restyling per-instance was not an option: the fill is baked into the
+// widget, not exposed as a property.
+import { Nerv, Type, Radius } from "theme.slint";
+
+export component NervInput inherits Rectangle {
+    in property <string> placeholder;
+    in property <bool> enabled: true;
+    in-out property <string> text <=> ti.text;
+    callback accepted(string);
+    callback edited(string);
+
+    height: 22px;
+    background: Nerv.bg;
+    border-radius: Radius.sm;
+    border-width: 1px;
+    // The focus ring is the accent, matching every other focused thing in
+    // the shell, rather than the widget set's own blue.
+    border-color: ti.has-focus ? Nerv.acc : Nerv.line;
+
+    HorizontalLayout {
+        padding-left: 6px; padding-right: 6px;
+        Rectangle {
+            background: transparent;
+            // Placeholder sits UNDER the input rather than inside it, so
+            // it disappears the moment there is text without the input
+            // having to know what a placeholder is.
+            if ti.text == "": Text {
+                text: root.placeholder;
+                font-size: Type.body;
+                color: Nerv.faint;
+                vertical-alignment: center;
+                x: 0;
+            }
+            ti := TextInput {
+                enabled: root.enabled;
+                font-size: Type.body;
+                color: root.enabled ? Nerv.ink : Nerv.faint;
+                selection-background-color: Nerv.acc;
+                selection-foreground-color: Nerv.bg;
+                single-line: true;
+                vertical-alignment: center;
+                width: 100%; height: 100%;
+                accepted => { root.accepted(self.text); }
+                edited   => { root.edited(self.text); }
+            }
+        }
+    }
+}
+
+// A small bordered button: the accent is an EDGE, never a fill (theme.slint).
+export component EdgeButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> enabled: true;
+    in property <length> min-w: 88px;
+    callback clicked();
+    width: max(min-w, t.preferred-width + 16px);
+    height: 22px;
+    border-radius: Radius.sm;
+    border-width: 1px;
+    border-color: !enabled ? Nerv.faint : ta.has-hover ? Nerv.acc : Nerv.line;
+    background: ta.has-hover && enabled ? Nerv.line : transparent;
+    t := Text {
+        text: label;
+        font-size: Type.body_sm;
+        color: enabled ? Nerv.acc : Nerv.faint;
+        width: 100%; height: 100%;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+    ta := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+

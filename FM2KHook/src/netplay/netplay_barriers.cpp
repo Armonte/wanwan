@@ -516,10 +516,6 @@ bool Netplay_IsBattleSynced() {
     return g_battle_synced;
 }
 
-uint32_t Netplay_GetBattleEntrySwapFrame() {
-    return g_battle_entry_swap_frame;
-}
-
 void Netplay_PollBattleSync() {
     // Poll control channel to receive BATTLE_ENTERING from remote
     ControlChannel_Poll();

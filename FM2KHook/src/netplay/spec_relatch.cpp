@@ -106,8 +106,9 @@
 //    the r12 log: "applied MATCH_START" then "[CHECKSUM] f=0" in the same
 //    millisecond, in that order.
 // 4. SaveState_Save NEVER RUNS ON A VIEWER. The only spectator drain that
-//    saves is Netplay_ProcessSpectatorPhase (netplay_battle_phase.cpp:429) and
-//    that function has no callers at all (recorded at spec_join_viewer.cpp:656);
+//    saved was Netplay_ProcessSpectatorPhase, which had no callers at all and
+//    was deleted 2026-09-04 (see the HandleJoinAck comment in
+//    spec_join_viewer.cpp for the reasoning);
 //    the viewer's fingerprint is recomputed live by SaveState_CalculateFingerprint
 //    (trampoline_spectator.cpp:240). So there is no viewer-side snapshot of
 //    pre-write state for a load to bring back. CORRECTION TO AN EARLIER

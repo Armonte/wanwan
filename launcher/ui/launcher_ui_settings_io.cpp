@@ -200,6 +200,45 @@ void WriteGamePatchesKv(const std::string& path,
     }
 }
 
+// ─── Shipped-distribution defaults ───────────────────────────────────
+//
+// A distribution (e.g. the rollback client we ship bundled with a
+// specific game) needs some patches ON out of the box without forcing
+// the hardcoded default ON for every other FM2K game. So the effective
+// value of a per-game patch is three layers deep:
+//
+//   1. hardcoded default in the caller (conservative, usually off)
+//   2. <exedir>\game_patch_defaults\<game_id>.ini   -- shipped, read-only
+//   3. %APPDATA%\...\game_patches\<game_id>.ini     -- the user, wins
+//
+// Layer 2 ships next to the launcher exactly like locales\ does, uses
+// the same flat key=value format as layer 3, and is never written back
+// to -- toggling a checkbox always writes the user's %APPDATA% copy, so
+// a user who turns a bundled default off keeps it off across updates.
+std::string GamePatchDistDefaultsPath(const std::string& game_id) {
+    if (game_id.empty()) return "";
+    char buf[MAX_PATH];
+    const DWORD n = ::GetModuleFileNameA(nullptr, buf, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return "";
+    char* slash = std::strrchr(buf, '\\');
+    if (!slash) slash = std::strrchr(buf, '/');
+    if (!slash) return "";
+    *slash = '\0';
+    return std::string(buf) + "\\game_patch_defaults\\" + game_id + ".ini";
+}
+
+bool GamePatchDistDefaultBool(const std::string& game_id, const char* key,
+                              bool builtin_default) {
+    const auto kv = ReadGamePatchesKv(GamePatchDistDefaultsPath(game_id));
+    for (const auto& p : kv) {
+        if (p.first == key) {
+            return (p.second == "1" || p.second == "true" ||
+                    p.second == "yes" || p.second == "on");
+        }
+    }
+    return builtin_default;
+}
+
 bool LoadGamePatchBool(const std::string& game_id, const char* key,
                               bool default_val) {
     const auto kv = ReadGamePatchesKv(GamePatchesIniPath(game_id));
@@ -270,6 +309,7 @@ static const char* const kGamePatchEnvVars[] = {
     "FM2K_CPU_VS_CPU_MODE",
     "FM2K_TRAINING_MODE",
     "FM2K_OPTION_MODE_SELECTOR",
+    "FM2K_COMBO_COUNTER_HIT1",
 };
 
 // Clear every per-game patch env var. MUST run before any NON-offline
@@ -284,6 +324,29 @@ static const char* const kGamePatchEnvVars[] = {
 // hook's render fix defaults ON, so clearing keeps the fix active.)
 void NeutralizeGamePatchEnvVars() {
     for (const char* v : kGamePatchEnvVars) {
+        ::SetEnvironmentVariableA(v, nullptr);
+    }
+}
+
+// Offline-only DEVELOPER launch parameters (Session Controls > Developer
+// mode). Set by the Play Offline button, launcher-process-level, so they
+// were inherited by the NEXT online / stress / spectator launch too (audit
+// 2026-09-02, S5). Same discipline as the per-game patches above: one table,
+// cleared before every non-offline spawn. FM2K_EB_DIAG and FM2K_BOOT_TO_BATTLE
+// are deliberately NOT here -- they are applied at launcher start for every
+// path by design (see their LoadDevFlag inits). FM95_TRAMPOLINE is set per
+// instance by the online/stress paths themselves.
+static const char* const kDevOfflineEnvVars[] = {
+    "FM2K_BOOT_TO_CSS_DIRECT",
+    "FM2K_AUTO_TITLE_SKIP",
+    "FM2K_BYPASS_TRAMPOLINE",
+    "FM2K_FORCE_T4_PATCH",
+    "FM2K_SKIP_VS_MODE_PATCH",
+    "FM2K_T4_PROBE",
+};
+
+void NeutralizeDevLaunchEnvVars() {
+    for (const char* v : kDevOfflineEnvVars) {
         ::SetEnvironmentVariableA(v, nullptr);
     }
 }
@@ -338,6 +401,19 @@ void ApplyGamePatchEnvVars(const std::string& game_id) {
     } else {
         ::SetEnvironmentVariableA("FM2K_DAMAGE_MULT_PCT", nullptr);
     }
+
+    // combo_counter_hit1: OPT-IN -- flips the `cmp eax, 1` imm8 at 0x40F820
+    // to 0 so hit_detection_system spawns the combo readout from hit 1 rather
+    // than hit 2. Sim-affecting (the readout is a real g_object_pool object,
+    // and the pool is saved by the rollback state manager), which is exactly
+    // why it lives on this offline-only plane -- see the Neutralize comment
+    // above. Built-in default is off; a bundled distribution turns it on via
+    // <exedir>\game_patch_defaults\<game_id>.ini.
+    const bool combo_counter_hit1 = LoadGamePatchBool(
+        game_id, "combo_counter_hit1",
+        GamePatchDistDefaultBool(game_id, "combo_counter_hit1", false));
+    ::SetEnvironmentVariableA("FM2K_COMBO_COUNTER_HIT1",
+                              combo_counter_hit1 ? "1" : nullptr);
 
     // ---- STUBS (toggles wired through to env vars; hook-side TODO) ----
     // Each of these sets the env var so the hook can pick it up once the

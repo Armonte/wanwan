@@ -95,28 +95,6 @@ void SharedMem_PublishMatchOutcome(FM2KMatchOutcome outcome) {
     g_shared_mem->match_outcome_seq += 1;
 }
 
-void SharedMem_PublishUiStats(int32_t wins, int32_t losses, int32_t draws,
-                              int32_t vs_wins, int32_t vs_losses, int32_t vs_draws,
-                              const char* peer_nick_utf8,
-                              const char* my_nick_utf8) {
-    if (!g_shared_mem) return;
-    g_shared_mem->ui_wins      = wins;
-    g_shared_mem->ui_losses    = losses;
-    g_shared_mem->ui_draws     = draws;
-    g_shared_mem->ui_vs_wins   = vs_wins;
-    g_shared_mem->ui_vs_losses = vs_losses;
-    g_shared_mem->ui_vs_draws  = vs_draws;
-    auto stash = [](char* dst, size_t cap, const char* src) {
-        if (cap == 0) return;
-        if (!src) { dst[0] = '\0'; return; }
-        size_t n = strnlen(src, cap - 1);
-        memcpy(dst, src, n);
-        dst[n] = '\0';
-    };
-    stash(g_shared_mem->ui_peer_nick, sizeof(g_shared_mem->ui_peer_nick), peer_nick_utf8);
-    stash(g_shared_mem->ui_my_nick,   sizeof(g_shared_mem->ui_my_nick),   my_nick_utf8);
-}
-
 void SharedMem_PublishMatchChars(uint32_t p1_char_id, uint32_t p2_char_id,
                                  const char* p1_name_utf8,
                                  const char* p2_name_utf8) {
@@ -175,18 +153,6 @@ void SharedMem_PublishRoundResult(uint8_t  winner_idx,
     g_shared_mem->match_rounds_count = i + 1;
 }
 
-void SharedMem_PublishSpectatorPunchTarget(uint32_t ip_be, uint16_t udp_port) {
-    if (!g_shared_mem) return;
-    g_shared_mem->spectator_punch_ip_be    = ip_be;
-    g_shared_mem->spectator_punch_port     = udp_port;
-    // Bump seq AFTER writing the addr fields so a hook poll racing the
-    // launcher's write reads either the old (seq=N) or new (seq=N+1)
-    // addr cleanly, never half-written. x86 stores are sequentially
-    // consistent so no fence needed here.
-    g_shared_mem->spectator_punch_seq  += 1;
-}
-
-
 void SharedMem_PublishLocalV6(const uint8_t addr[16], uint16_t port_be) {
     if (!g_shared_mem) return;
     if (std::memcmp(g_shared_mem->local_v6_addr, addr, 16) == 0 &&
@@ -218,26 +184,14 @@ void SharedMem_PublishHudScores(uint16_t p1, uint16_t p2) {
     g_shared_mem->hud_score_seq += 1;
 }
 
-void SharedMem_PublishHudSystemMessage(const char* text_utf8, uint32_t ttl_ms) {
+void SharedMem_ClearHudScores(void) {
     if (!g_shared_mem) return;
-    if (!text_utf8 || ttl_ms == 0) {
-        g_shared_mem->hud_system_message[0] = '\0';
-        g_shared_mem->hud_system_message_expiry_tick = 0;
-        // Bump anyway so fc_hud notices the clear.
-        g_shared_mem->hud_system_message_seq += 1;
-        return;
-    }
-    // Truncate-with-null on overflow rather than refusing to publish.
-    char* dst = g_shared_mem->hud_system_message;
-    const size_t cap = sizeof(g_shared_mem->hud_system_message);
-    const size_t n = strnlen(text_utf8, cap - 1);
-    memcpy(dst, text_utf8, n);
-    dst[n] = '\0';
-    // Expiry is computed off `GetTickCount()` because both writers
-    // (launcher and hook) need the same wall-clock-ish reference and
-    // Windows ticks are universally available without a syscall.
-    g_shared_mem->hud_system_message_expiry_tick = GetTickCount() + ttl_ms;
-    g_shared_mem->hud_system_message_seq += 1;
+    g_shared_mem->hud_score_p1  = 0;
+    g_shared_mem->hud_score_p2  = 0;
+    // Back to the "never written" sentinel LAST, so a racing fc_hud read
+    // either still sees the old score or sees the hidden state, never a
+    // 0 - 0 box built out of a half-cleared triple.
+    g_shared_mem->hud_score_seq = 0;
 }
 
 void SharedMem_PublishHudSpectatorCount(uint16_t n) {

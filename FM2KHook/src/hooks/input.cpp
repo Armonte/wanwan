@@ -18,6 +18,7 @@
 #include "../core/globals.h"           // original_get_player_input, g_player_index
 #include "../netplay/savestate.h"      // CHAR_SLOT_BASE, CHAR_SLOT_SIZE
 #include "../ui/input_binder.h"        // FM2KInputBinder::Sample_Win32 + Init/Load
+#include "../netplay/netplay.h"       // Netplay_IsConnected -- CSS START is offline-only
 #include <windows.h>
 #include <cstdio>
 #include <cstdlib>
@@ -72,6 +73,23 @@ static bool IsOurWindowFocused() {
 
     HWND focused = GetForegroundWindow();
     return (focused == our_window);
+}
+
+// START on character select: allowed OFFLINE, masked ONLINE.
+//
+// The engine supports backing out of character select -- game_state_manager
+// tests bit 10 of the input word and writes its state 4 (disassembled at
+// 0x407267: `test $0x4,%ah` / `movl $0x4,0x152(%ecx)`), which returns the
+// local game to the mode select. It has always been there; we masked it
+// unconditionally because taking it ONLINE moves one peer's state machine
+// and not the other's, which desyncs or wedges the session.
+//
+// Offline there is no peer to disagree with, and this is the single most
+// requested local-play fix: today the only way to undo a mis-picked
+// character is to enter the match, pause, quit, and re-select. Online it
+// stays masked until it is a proper both-peers barrier -- see the tracker.
+static inline bool CssStartAllowed() {
+    return !Netplay_IsConnected();
 }
 
 uint16_t Input_CaptureLocal() {
@@ -164,7 +182,8 @@ uint16_t Input_CaptureLocal() {
             // battle (it's pause) or on title (it's confirm), so the
             // mask is gated to mode 2000.
             const uint32_t game_mode = *(uint32_t*)FM2K::ADDR_GAME_MODE;
-            if (game_mode == 2000) bound &= (uint16_t)~0x400u;
+            if (game_mode == 2000 && !CssStartAllowed())
+                bound &= (uint16_t)~0x400u;
             // FN1/FN2 pick palettes 6 and 7, and in 2DFM the button you
             // CONFIRM with is the button that picks your colour -- so an FN
             // press has to confirm as well as select, or it does nothing.
@@ -209,7 +228,7 @@ uint16_t Input_CaptureLocal() {
     uint32_t game_mode = *(uint32_t*)FM2K::ADDR_GAME_MODE;
     // CSS START guard -- mirror of the binder path above. Pressing
     // START on character select bails to title and breaks netplay.
-    if (game_mode == 2000) input &= (uint16_t)~0x400u;
+    if (game_mode == 2000 && !CssStartAllowed()) input &= (uint16_t)~0x400u;
     if (game_mode >= 3000 && game_mode < 4000) {
         constexpr size_t CHAR_ACTIVE_FLAG_OFFSET = 0xDF41;
         constexpr size_t CHAR_STATE_FLAGS_OFFSET = 0x7CA6;
@@ -257,7 +276,7 @@ uint16_t Input_CaptureLocalPlayer(int player) {
     // Mask START on CSS, same as Input_CaptureLocal (pressing it on
     // character-select bails to title and wedges the session).
     const uint32_t game_mode = *(uint32_t*)FM2K::ADDR_GAME_MODE;
-    if (game_mode == 2000) bound &= (uint16_t)~0x400u;
+    if (game_mode == 2000 && !CssStartAllowed()) bound &= (uint16_t)~0x400u;
     // Same FN-confirms rule as Input_CaptureLocal -- both capture paths feed
     // the same session, so they must agree or P2 picks a palette on one side
     // only.

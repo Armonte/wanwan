@@ -126,7 +126,11 @@ static uint16_t Fm95FoldFacingSocd(uint16_t input, int facing_idx) {
         const uint16_t right_bit = (input & 0x002);
         input = (input & ~0x003) | (left_bit << 1) | (right_bit >> 1);
     }
-    if (IsCSSMode(*(uint32_t*)FM2K::ADDR_GAME_MODE)) {
+    // Offline may back out of character select; online may not until it is a
+    // synced both-peers barrier. Same rule as input.cpp's CssStartAllowed --
+    // if these two ever disagree, one path lets START through and the other
+    // does not, which is worse than either choice.
+    if (IsCSSMode(*(uint32_t*)FM2K::ADDR_GAME_MODE) && Netplay_IsConnected()) {
         input &= (uint16_t)~0x400u;
     }
     return Hook_ApplySOCDSlot(input, facing_idx - 1);

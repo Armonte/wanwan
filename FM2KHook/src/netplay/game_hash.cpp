@@ -1,4 +1,5 @@
 #include "game_hash.h"
+#include "content_tag.h"
 
 #include <SDL3/SDL_log.h>
 #include <algorithm>
@@ -117,19 +118,48 @@ uint32_t Compute() {
     // hash output, not the peer side, so two peers can collaborate
     // on testing by both flipping it on. Once the canon-build
     // corruption is fixed the env-var gate goes away.
+    // THE CHECK IS BACK ON, BUT NOT WITH THIS HASH.
+    //
+    // The old manifest hash was disabled for a good reason -- it produced
+    // spurious mismatches between peers whose .player / .kgt / .exe content
+    // was byte-identical -- and it stayed disabled, which cost us a whole
+    // desync class. The 0.2.84 field wave includes a pair (AOB def4fbe4 /
+    // 5e0ac865) where rng is identical on both peers for the entire trace
+    // while HP reads 500/475 on the host and 499/474 on the guest, with
+    // round_timer 0 vs 1: a constant one-point offset on BOTH characters
+    // with identical rng is not a phase shift, it is the two engines
+    // computing max HP from DIFFERENT CHARACTER DATA. Every one of those
+    // logs carries "GameHash: check DISABLED". The detector that exists for
+    // exactly this was switched off in front of it.
+    //
+    // content_tag is the mechanism built later, for the replay work, and
+    // designed against precisely the failure that killed this one: sorted
+    // name|size over every *.player and *.kgt plus EXACTLY ONE exe, the one
+    // the caller names, so installer leftovers and per-machine junk cannot
+    // change a game's identity. It was validated byte-identical between the
+    // launcher and the hook, and invariant under hook updates. A caller that
+    // cannot name the exe gets 0, which disables the gate by construction
+    // rather than guessing.
+    //
+    // FM2K_HASH_CHECK still forces the OLD manifest hash for anyone
+    // diagnosing that path; unset now means "use the content tag", not
+    // "check nothing".
     const char* env_enable = std::getenv("FM2K_HASH_CHECK");
-    const bool hash_enabled = env_enable && env_enable[0] != '\0' &&
+    const bool force_legacy = env_enable && env_enable[0] != '\0' &&
                               env_enable[0] != '0';
-    if (!hash_enabled) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "GameHash: check DISABLED (set FM2K_HASH_CHECK=1 to "
-            "re-enable). Returning 0; peer mismatch check will skip.");
-        s_cached_hash = 0;
-        // Still populate s_describe so the launcher status line and
-        // Hub HELLO log have something readable.
+    if (!force_legacy) {
+        const uint32_t tag = fm2k::content_tag::ComputeLocal();
+        s_cached_hash = tag;
         std::snprintf(s_describe, sizeof(s_describe),
-                      "(hash check disabled)");
-        return 0;
+                      "content tag 0x%08X over *.player + *.kgt + the game exe",
+                      tag);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "GameHash: using the content tag 0x%08X%s", tag,
+            tag == 0 ? " -- 0 means the game exe could not be named, so the "
+                       "peer content check is DISABLED for this session"
+                     : " -- a peer whose characters or exe differ is refused "
+                       "at the handshake instead of desyncing a few frames in");
+        return s_cached_hash;
     }
 
     auto dir = GameDir();

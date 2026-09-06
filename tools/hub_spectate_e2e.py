@@ -585,6 +585,13 @@ def main() -> int:
             "FM2K_HOST_TRACE":             "1",
             "FM2K_SPECTATOR_DEBUG":        "1",
             "FM2K_CINPUT":                 "1",
+            # Split the [CHECKSUM] crc into the regions it folds. Without
+            # this a desync here is a single folded number with no
+            # breakdown -- which is exactly what happened to the live
+            # DESYNC #1 f=194 caught on 2026-09-06: real, reproducible in
+            # this stage, and unattributable. Read with
+            # tools/ck_region_diff.py.
+            "FM2K_CK_REGIONS":             os.environ.get("FM2K_CK_REGIONS", "1"),
             "FM2K_TEST_ROUNDS":            str(args.rounds),
             "FM2K_TEST_ROUND_TIME":        str(args.round_time),
             "FM2K_AUTO_TERMINATE_TOTAL": str(args.total_frames),
@@ -636,6 +643,9 @@ def main() -> int:
                     "FM2K_HUB_AUTO_SPECTATE": NICK_HOST,
                     "FM2K_SPECTATOR_DEBUG": "1",
                     "FM2K_CINPUT": "1",
+                    # Symmetric with the players' -- a term one plane emits
+                    # and the other does not measures nothing.
+                    "FM2K_CK_REGIONS": os.environ.get("FM2K_CK_REGIONS", "1"),
                     "FM2K_TEST_ROUNDS": str(args.rounds),
                     # FM2K_SPEC_HOST_GONE_MS deliberately NOT set (H1,
                     # 2026-08-18): it used to be pinned to 5000, which is BELOW

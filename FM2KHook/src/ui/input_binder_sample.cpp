@@ -3,6 +3,7 @@
 // hook DLL). Static helpers keep internal linkage.
 #include "input_binder.h"
 #include "input_binder_internal.h"
+#include "../core/globals.h"   // ADDR_FRAME_COUNTER -- one pump per engine frame
 #include <SDL3/SDL.h>
 #include <cstring>
 #ifdef _WIN32
@@ -216,8 +217,34 @@ uint16_t Sample_Win32(int player_slot) {
     // we just need to pump events here so the polled state behind
     // SDL_GetGamepadButton stays fresh inside the hooked game process
     // (the game's main loop doesn't call SDL_PollEvent on our behalf).
+    // ONE PUMP PER ENGINE FRAME, not one per call.
+    //
+    // This function is called once per player, so local 2P pumped TWICE a
+    // frame across twice the devices, and the solo-driver paths in
+    // hooks_getinput call Sample_Win32(0) again on top of that. Inside a 10 ms
+    // budget at 100 Hz that is real work, and its cost scales with the user's
+    // HID stack -- this codebase already shipped one fps regression from
+    // polling in the input path (#63, the machine-specific 95 fps one). It is
+    // also why keyboard-only single player feels fine and two pads does not:
+    // the pump is skipped entirely when no pad is open.
+    //
+    // Pumping once per frame is not just cheaper, it is more correct: every
+    // caller within a frame now reads the SAME device state instead of a
+    // slightly different one depending on call order.
+    //
+    // Keyed on the engine frame counter rather than a latch some caller has
+    // to remember to clear, so it is self-correcting and cannot wedge into
+    // "never pump again". The binder UI does its own explicit pumps, so a
+    // context where the counter is frozen is already covered.
     if (g_initialized && !g_gamepad_handles.empty()) {
-        SDL_PumpEvents();
+        static uint32_t s_last_pump_frame = 0xFFFFFFFFu;
+        bool pump = true;
+        if constexpr (FM2K::ADDR_FRAME_COUNTER != 0) {
+            const uint32_t f = *(const uint32_t*)FM2K::ADDR_FRAME_COUNTER;
+            pump = (f != s_last_pump_frame);
+            if (pump) s_last_pump_frame = f;
+        }
+        if (pump) SDL_PumpEvents();
     }
 
     // Device resolution rules (ODK's "buttons go to both players" bug):

@@ -278,6 +278,10 @@ static bool SpectatorSimOneFrame() {
                     "[CHECKSUM] f=%u crc=0x%08X tv=2 top=0x%08X bind=0x%08X nobj=%u",
                     bf, spec_fp, spec_top.digest, spec_top.binding,
                     spec_top.active_count);
+                // Per-slot detail stamped with the SAME bf the line above
+                // uses, so it aligns against the host's records exactly the
+                // way the harness already aligns these two [CHECKSUM] lines.
+                ParityPool::EmitTopoDetail(bf);
             }
             // [SPEC-FP] every 30 battle frames (~3 lines/sec). Routed
             // through SDL_LOG_CATEGORY_CUSTOM so LogOutputFunction puts

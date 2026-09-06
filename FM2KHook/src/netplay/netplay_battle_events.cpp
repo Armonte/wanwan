@@ -160,6 +160,7 @@ void Netplay_HandleSaveEvent(GekkoGameEvent* update) {
                     rc.rng, rc.game_state, rc.object_pool, rc.char_dynamic,
                     rc.input_tracking, rc.effect_sys1, rc.effect_sys2,
                     rc.shake_effects);
+                ParityPool::EmitTopoDetail((uint32_t)frame);
                 return;
             }
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
@@ -175,6 +176,9 @@ void Netplay_HandleSaveEvent(GekkoGameEvent* update) {
                 frame, SaveState_GetRegionChecksums().gameplay_fingerprint,
                 host_top.digest, host_top.binding,
                 host_top.active_count);
+            // Per-slot detail on the SAME frame identity as the line above,
+            // which is what makes a bind= mismatch diffable at all.
+            ParityPool::EmitTopoDetail((uint32_t)frame);
         }
     }
 }

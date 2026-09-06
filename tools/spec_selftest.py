@@ -3354,7 +3354,7 @@ def main():
                          # input tracking / effects / shake) so a divergence
                          # names itself instead of only saying "state
                          # differs". Read with tools/ck_region_diff.py.
-                         "FM2K_CK_REGIONS"):
+                         "FM2K_CK_REGIONS", "FM2K_POOLDET"):
         _v = os.environ.get(_passthrough)
         if _v:
             common_env[_passthrough] = _v
@@ -3715,7 +3715,7 @@ def main():
         # host emits and the viewer does not measures one plane against
         # nothing (the same trap the FM2K_CSS_WIN comment above describes).
         for _passthrough in ("FM2K_FRAMEIDX_DETECT", "FM2K_RENDER_DEAD_OBJECTS",
-                             "FM2K_CK_REGIONS"):
+                             "FM2K_CK_REGIONS", "FM2K_POOLDET"):
             _v = os.environ.get(_passthrough)
             if _v:
                 env[_passthrough] = _v

@@ -209,6 +209,21 @@ Scan ScanPool(bool want_legacy_fp, char* active_list, size_t list_cap);
  * (FM2K_POOLSET=1); nothing calls it otherwise. */
 size_t DumpTopoDetail(char* out, size_t cap);
 
+/* Emit the per-slot detail as [POOLDET] lines stamped with `frame`.
+ *
+ * MUST be called from the same site that emits this plane's [CHECKSUM]
+ * line, passing the SAME frame value -- that is the entire point. The
+ * [POOLTOPO] variant is stamped from the parity recorder with counters that
+ * are process-local (recorder sequence, engine frame counter, and a netplay
+ * frame the spectator does not drive), so it can never be diffed host against
+ * spectator; aligning by any of them reports ~100% of frames differing and
+ * makes bind= look permanently red. The harness already aligns [CHECKSUM]
+ * across planes, so inheriting its identity makes the per-slot records
+ * comparable for the first time.
+ *
+ * Dark unless FM2K_POOLDET=1: the payload is up to 8 KB per frame. */
+void EmitTopoDetail(uint32_t frame);
+
 /* False under ENGINE_FM95 or when FM2K_CK_TOPOLOGY is set to 0. Callers do
  * not need to check this -- ComputeTopology() already honours it -- it is
  * exposed so a diagnostic can say "off" rather than print a zero. */

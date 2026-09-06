@@ -4,6 +4,7 @@
 #include "input_binder.h"
 #include "input_binder_internal.h"
 #include "../core/globals.h"   // ADDR_FRAME_COUNTER -- one pump per engine frame
+#include "input_pump.h"          // the pump-once-per-frame decision, unit-tested
 #include <SDL3/SDL.h>
 #include <cstring>
 #ifdef _WIN32
@@ -237,14 +238,13 @@ uint16_t Sample_Win32(int player_slot) {
     // "never pump again". The binder UI does its own explicit pumps, so a
     // context where the counter is frozen is already covered.
     if (g_initialized && !g_gamepad_handles.empty()) {
-        static uint32_t s_last_pump_frame = 0xFFFFFFFFu;
-        bool pump = true;
-        if constexpr (FM2K::ADDR_FRAME_COUNTER != 0) {
-            const uint32_t f = *(const uint32_t*)FM2K::ADDR_FRAME_COUNTER;
-            pump = (f != s_last_pump_frame);
-            if (pump) s_last_pump_frame = f;
+        static fm2k::inpump::PumpState s_pump;
+        constexpr bool kHaveCounter = (FM2K::ADDR_FRAME_COUNTER != 0);
+        const uint32_t f = kHaveCounter
+            ? *(const uint32_t*)FM2K::ADDR_FRAME_COUNTER : 0u;
+        if (fm2k::inpump::ShouldPump(s_pump, f, kHaveCounter)) {
+            SDL_PumpEvents();
         }
-        if (pump) SDL_PumpEvents();
     }
 
     // Device resolution rules (ODK's "buttons go to both players" bug):

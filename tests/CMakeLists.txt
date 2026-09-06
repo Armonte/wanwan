@@ -45,6 +45,11 @@ target_compile_options(delay_math_test PRIVATE -Wall -Wextra -Wpedantic)
 add_executable(alt_colors_test alt_colors_test.cpp)
 target_compile_options(alt_colors_test PRIVATE -Wall -Wextra -Wpedantic)
 
+# The SDL pump throttle. Only observable with two physical pads connected,
+# so a live run cannot test it -- this is the only thing that does.
+add_executable(input_pump_test input_pump_test.cpp)
+target_compile_options(input_pump_test PRIVATE -Wall -Wextra -Wpedantic)
+
 # Input binder device routing + bind capture. The two-instance gate never
 # opens a physical device, so "two controllers plugged in" -- the whole
 # subject of these rules -- is unreachable there and only this checks it.
@@ -72,5 +77,6 @@ enable_testing()
 add_test(NAME fm2k_tests COMMAND fm2k_tests)
 add_test(NAME delay_math_test COMMAND delay_math_test)
 add_test(NAME alt_colors_test COMMAND alt_colors_test)
+add_test(NAME input_pump_test COMMAND input_pump_test)
 add_test(NAME input_route_test COMMAND input_route_test)
 add_test(NAME reliable_channel_test COMMAND reliable_channel_test)

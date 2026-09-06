@@ -3348,7 +3348,13 @@ def main():
     # the kill switch that restores the vanilla "draw destroyed objects"
     # behaviour for A/B. Both dark unless the caller exports them.
     for _passthrough in ("FM2K_FRAMEIDX_DETECT", "FM2K_RENDER_DEAD_OBJECTS",
-                         "FM2K_TITLE_FORCE_MODE_INDEX"):
+                         "FM2K_TITLE_FORCE_MODE_INDEX",
+                         # Splits the [CHECKSUM] crc into the regions it folds
+                         # (rng / game state / object pool / char dynamic /
+                         # input tracking / effects / shake) so a divergence
+                         # names itself instead of only saying "state
+                         # differs". Read with tools/ck_region_diff.py.
+                         "FM2K_CK_REGIONS"):
         _v = os.environ.get(_passthrough)
         if _v:
             common_env[_passthrough] = _v
@@ -3704,7 +3710,12 @@ def main():
             env["FM2K_CSS_FALL_DELTA"] = _css_fall_delta
         # 0x40DD62 levers, same passthrough as common_env: the title demo the
         # spectators boot through is the same one that crashes the players.
-        for _passthrough in ("FM2K_FRAMEIDX_DETECT", "FM2K_RENDER_DEAD_OBJECTS"):
+        # FM2K_CK_REGIONS must be here too, and symmetric with the host's:
+        # the whole point is a host-vs-spectator comparison, so a term the
+        # host emits and the viewer does not measures one plane against
+        # nothing (the same trap the FM2K_CSS_WIN comment above describes).
+        for _passthrough in ("FM2K_FRAMEIDX_DETECT", "FM2K_RENDER_DEAD_OBJECTS",
+                             "FM2K_CK_REGIONS"):
             _v = os.environ.get(_passthrough)
             if _v:
                 env[_passthrough] = _v

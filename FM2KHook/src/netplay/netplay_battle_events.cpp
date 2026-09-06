@@ -135,6 +135,33 @@ void Netplay_HandleSaveEvent(GekkoGameEvent* update) {
             // the harness skips rather than re-gate red), and a digest of 0
             // remains the documented "not computed" sentinel.
             const ParityPool::Topology host_top = ParityPool::ComputeTopology();
+            // FM2K_CK_REGIONS: split the crc into the regions it folds, so a
+            // host-vs-spectator divergence NAMES ITSELF instead of just
+            // saying "state differs". crc is deliberately narrow (rng, HP,
+            // timers, ring inputs), and knowing WHICH of those moved first
+            // is the whole difference between a draw-cadence bug and
+            // something else entirely. Off by default: this line is already
+            // per-frame under FM2K_CINPUT and the extra fields make it much
+            // longer. Appended at the END so the harness regex, which is a
+            // prefix match with optional trailing groups, keeps parsing.
+            static int s_regions = -1;
+            if (s_regions < 0) {
+                const char* rv = std::getenv("FM2K_CK_REGIONS");
+                s_regions = (rv && rv[0] == '1') ? 1 : 0;
+            }
+            if (s_regions == 1) {
+                const auto& rc = SaveState_GetRegionChecksums();
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "[CHECKSUM] f=%d crc=0x%08X tv=2 top=0x%08X bind=0x%08X "
+                    "nobj=%u rrng=0x%08X rgs=0x%08X rop=0x%08X rcd=0x%08X "
+                    "rit=0x%08X re1=0x%08X re2=0x%08X rsh=0x%08X",
+                    frame, rc.gameplay_fingerprint,
+                    host_top.digest, host_top.binding, host_top.active_count,
+                    rc.rng, rc.game_state, rc.object_pool, rc.char_dynamic,
+                    rc.input_tracking, rc.effect_sys1, rc.effect_sys2,
+                    rc.shake_effects);
+                return;
+            }
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 // THE FENCEPOST LOGS THE FULL FINGERPRINT, NOT THE WIRE
                 // VALUE. These are two different comparisons and they must

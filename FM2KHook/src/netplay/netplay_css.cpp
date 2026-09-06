@@ -308,6 +308,22 @@ bool Netplay_ProcessCSS() {
         g_local_css_ready = true;
         ControlChannel_SendBattleReady();
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "CSS: Entered, signaling remote...");
+        // Realign the cursors HERE, before the marker below snapshots them.
+        //
+        // A rematch does not reset them, so each peer carries however much of
+        // the previous session's cursor its own frame timing left behind, and
+        // the two sims disagree from frame 0 (see the rendezvous below, which
+        // is where this was first fixed). Doing it only there was not enough:
+        // AppendCssEntered runs on THIS line and publishes the cursor to
+        // spectators, so a reset that happens afterwards ships viewers the
+        // stale value and desyncs them from a host that then zeroes it --
+        // measured, both spectators diverging on the rematch session only.
+        //
+        // Zeroing twice costs nothing and guarantees the peers, the marker
+        // and the viewers all describe the same start state.
+        if constexpr (!FM2K::kIsFM95) {
+            std::memset((void*)0x424E50, 0, 0x10);  // g_p1/p2_cursor_pos {x,y}
+        }
         // Phase F seam mirror: mark the seam stream so viewers know where
         // the results-screen inputs end and the CSS dance begins. The marker
         // captures the host's CSS start state (cursor + selected) so a
@@ -428,6 +444,29 @@ bool Netplay_ProcessCSS() {
         if constexpr (!FM2K::kIsFM95) {
             std::memset((void*)0x541F80, 0, 0x20);   // g_input_repeat_state[8]
             std::memset((void*)0x4D1C40, 0, 0x20);   // g_input_repeat_timer[8]
+            // THE CURSORS ARE THE SAME CLASS OF DIVERGENT INITIAL CONDITION,
+            // and they were missing from this realignment.
+            //
+            // A FIRST character-select starts both peers at (0,0)/(0,0)
+            // sel=0/0 -- measured. A REMATCH does not reset them at all, so
+            // each peer carries however much of the previous session's cursor
+            // its own frame timing left behind. Under load those differ, and
+            // the two sims then disagree from frame 0 of the new session:
+            //
+            //   host  cur=(0,0)/(8,1) sel=0/17
+            //   guest cur=(0,0)/(8,0) sel=0/8
+            //
+            // Byte-identical values across two independent reproductions,
+            // with no input on either side -- an initial-condition split, not
+            // a sim divergence. Every later transition inherits the offset
+            // (356 transitions on both peers, agreeing for 202 then never
+            // re-aligning), which the harness reports as CSS NONDETERMINISM.
+            //
+            // Reproduced only with the machine deliberately loaded: 1 in 3
+            // loaded runs, 0 in 22 on a quiet one. Load does not cause it --
+            // it changes how many frames each peer carries through the mode
+            // transition, which is what makes the residue differ.
+            std::memset((void*)0x424E50, 0, 0x10);   // g_p1/p2_cursor_pos {x,y}
         }
         // Restart the harness-autoplay browse window for this CSS phase
         // (authoritative per-session reset; the in-function gap heuristic

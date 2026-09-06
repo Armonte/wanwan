@@ -19,14 +19,22 @@ import re
 import sys
 from collections import OrderedDict
 
+# conf= is optional so older logs still parse, but WITHOUT it a
+# player-vs-player comparison is not trustworthy: gekko saves speculatively
+# during runahead, so the same frame number can be a speculative save on one
+# peer and a confirmed one on the other. With it, only rows where f <= conf
+# are kept and both planes are compared at the same simulation state.
 PAT = re.compile(
-    r"\[CHECKSUM\] f=(-?\d+) crc=0x([0-9A-Fa-f]+).*?"
+    r"\[CHECKSUM\] f=(-?\d+) crc=0x([0-9A-Fa-f]+).*?(?:conf=(-?\d+) )?.*?"
     r"rrng=0x([0-9A-Fa-f]+) rgs=0x([0-9A-Fa-f]+) rop=0x([0-9A-Fa-f]+) "
     r"rcd=0x([0-9A-Fa-f]+) rit=0x([0-9A-Fa-f]+) re1=0x([0-9A-Fa-f]+) "
     r"re2=0x([0-9A-Fa-f]+) rsh=0x([0-9A-Fa-f]+)")
 
 TERMS = ["crc", "rng", "game_state", "object_pool", "char_dynamic",
          "input_tracking", "effect_sys1", "effect_sys2", "shake"]
+
+
+saw_conf = [False]
 
 
 def load(path):
@@ -37,7 +45,11 @@ def load(path):
             if not m:
                 continue
             f = int(m.group(1))
-            rows[f] = tuple(int(m.group(i), 16) for i in range(2, 11))
+            conf = int(m.group(3)) if m.group(3) is not None else None
+            if conf is not None and f > conf:
+                continue        # speculative save -- not the confirmed state
+            rows[f] = tuple(int(m.group(i), 16) for i in range(4, 13))
+            saw_conf[0] = saw_conf[0] or (conf is not None)
     return rows
 
 
@@ -80,7 +92,11 @@ def main():
         for i, t in enumerate(TERMS):
             if first[t] is None and hv[i] != sv[i]:
                 first[t] = (f, hv[i], sv[i])
-    print(f"compared {compared} aligned frames\n")
+    print(f"compared {compared} aligned frames"
+          + ("" if saw_conf[0] else
+             "  [WARNING: no conf= in these logs -- speculative saves are "
+             "mixed in and a player-vs-player verdict here is NOT trustworthy]")
+          + "\n")
 
     order = sorted((v[0], t) for t, v in first.items() if v)
     if not order:

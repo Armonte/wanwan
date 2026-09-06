@@ -151,12 +151,50 @@ void Netplay_HandleSaveEvent(GekkoGameEvent* update) {
             }
             if (s_regions == 1) {
                 const auto& rc = SaveState_GetRegionChecksums();
+                // conf= IS WHAT MAKES THIS LINE COMPARABLE BETWEEN PLAYERS.
+                //
+                // This is emitted from the gekko SAVE event, and gekko saves
+                // SPECULATIVELY during runahead before re-saving the confirmed
+                // state. So at the same frame number one peer's line can be a
+                // speculative save and the other's a confirmed one, and
+                // diffing them reports a divergence that is not one -- a run
+                // with NO desync shows the same shape as a failing one, which
+                // is exactly how this cost an attribution. Taking the LAST
+                // line per frame does not fix it either, because runahead can
+                // save speculatively AFTER the confirmed save.
+                //
+                // With gekko's confirmed frame on the line, a consumer keeps
+                // only rows where f <= conf and is then comparing the same
+                // simulation state on both planes.
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    // THE WIRE FIELDS, RAW. These four ARE the cross-peer
+                    // term: wire_fingerprint hashes exactly rng, p1_hp,
+                    // p2_hp and round_number, and that is what the two
+                    // machines are required to agree on. Everything else on
+                    // this line is a host-vs-SPECTATOR instrument and is not
+                    // valid between players -- the source says so at the
+                    // emit site, and a clean run proves it (crc differs
+                    // peer-to-peer at f=1 with zero desyncs). Logging the
+                    // raw four means a player desync names its own field
+                    // instead of being a hash nobody can decompose.
+                    // ORDER IS LOAD-BEARING. The harness matches
+                    // "f=<n> crc=0x..." with those two ADJACENT, then a run
+                    // of optional trailing groups. Putting conf= between them
+                    // made the host emit lines the harness could not parse at
+                    // all, which took the player-vs-player full-state gate
+                    // INACTIVE -- it failed loudly, as designed, but the gate
+                    // was blind for several runs before that. Everything new
+                    // goes on the END.
                     "[CHECKSUM] f=%d crc=0x%08X tv=2 top=0x%08X bind=0x%08X "
-                    "nobj=%u rrng=0x%08X rgs=0x%08X rop=0x%08X rcd=0x%08X "
+                    "nobj=%u conf=%d wire=0x%08X wrng=0x%08X whp1=%u whp2=%u wrnd=%u "
+                    "rrng=0x%08X rgs=0x%08X rop=0x%08X rcd=0x%08X "
                     "rit=0x%08X re1=0x%08X re2=0x%08X rsh=0x%08X",
                     frame, rc.gameplay_fingerprint,
                     host_top.digest, host_top.binding, host_top.active_count,
+                    g_session ? gekko_confirmed_frame(g_session) : -1,
+                    rc.wire_fingerprint,
+                    *(const uint32_t*)0x41FB1C, *(const uint32_t*)0x4DFC85,
+                    *(const uint32_t*)0x4EDCC4, *(const uint32_t*)0x470044,
                     rc.rng, rc.game_state, rc.object_pool, rc.char_dynamic,
                     rc.input_tracking, rc.effect_sys1, rc.effect_sys2,
                     rc.shake_effects);

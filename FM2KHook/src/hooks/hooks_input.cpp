@@ -205,6 +205,28 @@ void Hook_AutoplayCssResetDwell() {
 // downstream failure traced here. All cadence/state below derives from
 // g_input_buffer_index (0x447EE0), never call counters, so the value is
 // stable within a tick and replay-deterministic.
+// FN bit for the palette the harness asked this player to confirm with, or
+// 0. Reads FM2K_TEST_AUTO_CSS=p1char,p1color,p2char,p2color,stage -- the
+// same variable the pulse path already keys on, so both peers agree.
+static uint16_t AutoplayCssFnBit(int player_id) {
+    static int s_col[2] = {-2, -2};
+    if (s_col[0] == -2) {
+        s_col[0] = s_col[1] = -1;
+        if (const char* v = std::getenv("FM2K_TEST_AUTO_CSS")) {
+            int f[5] = {0, 0, 0, 0, 0};
+            if (std::sscanf(v, "%d,%d,%d,%d,%d",
+                            &f[0], &f[1], &f[2], &f[3], &f[4]) == 5) {
+                s_col[0] = f[1];
+                s_col[1] = f[3];
+            }
+        }
+    }
+    const int c = s_col[player_id & 1];
+    if (c == 6) return 0x1000u;
+    if (c == 7) return 0x2000u;
+    return 0u;
+}
+
 uint16_t Hook_ComputeAutoplayCssInput(int player_id) {
     static int s_dwell = -1;
     if (s_dwell < 0) {
@@ -293,6 +315,18 @@ uint16_t Hook_ComputeAutoplayCssInput(int player_id) {
     // lock-in.
     const uint32_t k = in_css % 30u;
     if (k == 0u) {
+        // TEST HOOK: confirm with a SPECIFIC palette when the harness asks
+        // for one of the two that no attack button can reach.
+        //
+        // Without this the gate could never exercise FN1/FN2 in netplay at
+        // all: CssAutoConfirm's colour pinning is disabled for 2-peer runs
+        // (it raced per-peer), and the confirm below is a hashed attack
+        // button, so colours 6 and 7 were unreachable by any test. Both
+        // peers read the SAME env and the same player_id, so the input
+        // stays identical on both sides and lockstep is undisturbed --
+        // which is precisely the property under test.
+        const uint16_t fn = AutoplayCssFnBit(player_id);
+        if (fn) return (uint16_t)(0x010u | fn);   // 0x10 confirms, FN picks
         uint32_t h = (in_css / 64u + 1u) * 0x85EBCA6Bu
                    ^ ((uint32_t)player_id << 8) ^ salt;
         h = (h ^ (h >> 13)) * 0xC2B2AE35u;

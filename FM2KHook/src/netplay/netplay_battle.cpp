@@ -413,6 +413,30 @@ bool Netplay_StartBattle() {
         "0<->%d, local_delay=%d)",
         prediction_window, runahead, runahead_pref, local_delay);
 
+    // [BATTLE-INIT] the engine's own evidence that it finished initialising
+    // this battle, sampled at the instant we start GekkoNet -- i.e. exactly
+    // the state gekko frame 0 will be taken from.
+    //
+    // This is the missing measurement for the 0.2.84 entry-seam class: one
+    // peer's rng is still the synced seed at frame 1-2 while the other has
+    // drawn, and one field trace shows p2_hp=1 on the guest at frame 1 --
+    // an engine that had not finished initialising when the other's frame 1
+    // was hashed. Character select is byte-identical right up to entry, so
+    // the divergence is born HERE. The sim does not tick while we wait at
+    // the battle barrier, so whatever state each engine arrives with is the
+    // state gekko starts from; if the two peers print different lines, the
+    // seam is reproduced without needing it to desync first.
+    if constexpr (!FM2K::kIsFM95) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "[BATTLE-INIT] at gekko start: p1_hp=%u/%u p2_hp=%u/%u "
+            "act=%u/%u rng=0x%08X mode=%u",
+            *(const uint32_t*)0x4DFC85u, *(const uint32_t*)0x4DFC91u,
+            *(const uint32_t*)0x4EDCC4u, *(const uint32_t*)0x4EDCD0u,
+            (unsigned)*(const uint8_t*)0x4DFCD1u,
+            (unsigned)*(const uint8_t*)(0x4DFCD1u + 57407u),
+            *(const uint32_t*)FM2K::ADDR_RANDOM_SEED,
+            *(const uint32_t*)FM2K::ADDR_GAME_MODE);
+    }
     *(uint32_t*)FM2K::ADDR_RANDOM_SEED = Netplay_TestBattleSeed();
     SpectatorNode_AppendPinRng(Netplay_TestBattleSeed());
     SaveState_Init();

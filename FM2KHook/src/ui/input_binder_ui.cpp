@@ -4,12 +4,14 @@
 // All model/state access goes through input_binder_internal.h.
 #include "input_binder.h"
 #include "input_binder_internal.h"
+#include "input_route.h"          // PickPadCapture -- armed-snapshot capture
 #include <SDL3/SDL.h>
 #include <imgui.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace FM2KInputBinder {
 namespace {
@@ -26,6 +28,13 @@ struct CaptureCtx {
     // makes setting up a session take "a lot longer" -- with two pads it is
     // dozens of clicks before anyone can play.
     bool sequence      = false;
+    // Every pad's state at the instant this bind armed, in SDL list order.
+    // A source that was ALREADY asserted then is not a press: it is a stick
+    // parked off-centre, or the other player resting on their pad. Needed
+    // because the arm gate deliberately uses a looser axis threshold than
+    // the capture (so drift cannot make arming impossible), which leaves a
+    // band where a resting axis arms cleanly and is then captured instantly.
+    std::vector<fm2k::inputroute::PadState> armed_pads;
 };
 
 // Controls the walk covers, in the order a player expects to be asked:
@@ -118,7 +127,33 @@ bool AnyInputHeld() {
 // key as a built-in cancel -- ESC is bindable now (Pokemon CC and other
 // 2DFM games map it to pause). The Cancel button next to the row is
 // the explicit out-of-capture path.
-bool PollCapture(Binding& out, bool& cancelled) {
+// Every opened pad's live state, in SDL list order -- the input the pure
+// capture rule works on, and the thing we freeze when a bind arms.
+std::vector<fm2k::inputroute::PadState> SnapshotPadStates() {
+    std::vector<fm2k::inputroute::PadState> out;
+    out.reserve(g_gamepad_ids.size());
+    for (size_t i = 0; i < g_gamepad_ids.size(); ++i) {
+        fm2k::inputroute::PadState s;
+        s.jid = (uint32_t)g_gamepad_ids[i];
+        SDL_Gamepad* gp = GamepadAt((int)i);
+        s.buttons.assign(SDL_GAMEPAD_BUTTON_COUNT, 0);
+        s.axes.assign(SDL_GAMEPAD_AXIS_COUNT, 0);
+        if (gp) {
+            for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b) {
+                s.buttons[(size_t)b] =
+                    SDL_GetGamepadButton(gp, (SDL_GamepadButton)b) ? 1 : 0;
+            }
+            for (int a = 0; a < SDL_GAMEPAD_AXIS_COUNT; ++a) {
+                s.axes[(size_t)a] =
+                    (int)SDL_GetGamepadAxis(gp, (SDL_GamepadAxis)a);
+            }
+        }
+        out.push_back(std::move(s));
+    }
+    return out;
+}
+
+bool PollCapture(int player_slot, Binding& out, bool& cancelled) {
     cancelled = false;
     SDL_PumpEvents();  // refresh polled state before reading
     int nkeys = 0;
@@ -136,47 +171,47 @@ bool PollCapture(Binding& out, bool& cancelled) {
         }
     }
 
-    // Gamepads. Diagnostic-first: dump every non-zero button/axis
-    // we see from any opened gamepad on each poll. If the user clicks
-    // Bind and reports "no input registered", the launcher log will
-    // tell us whether SDL is seeing the press at all (gamepad isn't
-    // really opened) or if our threshold logic is the gate.
+    // Gamepads. Two rules, both of which only matter once a SECOND pad is
+    // on the table (see input_route.h and tests/input_route_test.cpp):
+    //   * a source already asserted when the bind armed is NOT a press --
+    //     that is deadzone drift, or the other player resting on their pad;
+    //   * this player's own pad is scanned first, so a simultaneous press
+    //     on the other pad cannot take the bind off list order alone. It is
+    //     a preference, not a lock: rebinding onto a new device still works.
+    const fm2k::inputroute::Capture cap = fm2k::inputroute::PickPadCapture(
+        SnapshotPadStates(), g_capture.armed_pads,
+        ResolvedPadListIndex(player_slot), kAxisSampleThreshold);
+
+    // Diagnostic-first, kept from the original scan: if the user clicks Bind
+    // and reports "no input registered", the log says whether SDL saw the
+    // press at all.
     static uint32_t s_diag_emitted = 0;
-    for (size_t i = 0; i < g_gamepad_ids.size(); ++i) {
-        SDL_Gamepad* gp = GamepadAt((int)i);
-        if (!gp) continue;
-        for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b) {
-            if (SDL_GetGamepadButton(gp, (SDL_GamepadButton)b)) {
-                if (s_diag_emitted < 60) {
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                        "InputBinder: poll saw gamepad %zu button %d held",
-                        i, b);
-                    ++s_diag_emitted;
-                }
-                out.source = Binding::Source::GAMEPAD_BUTTON;
-                out.code = b;
-                out.axis_dir = 0;
-                out.gamepad_index = (int)i;
-                return true;
-            }
-        }
-        for (int a = 0; a < SDL_GAMEPAD_AXIS_COUNT; ++a) {
-            Sint16 v = SDL_GetGamepadAxis(gp, (SDL_GamepadAxis)a);
-            if (v > kAxisSampleThreshold || v < -kAxisSampleThreshold) {
-                if (s_diag_emitted < 60) {
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                        "InputBinder: poll saw gamepad %zu axis %d v=%d "
-                        "(threshold=%d)",
-                        i, a, (int)v, (int)kAxisSampleThreshold);
-                    ++s_diag_emitted;
-                }
-                out.source = Binding::Source::GAMEPAD_AXIS;
-                out.code = a;
-                out.axis_dir = (v > 0) ? 1 : -1;
-                out.gamepad_index = (int)i;
-                return true;
-            }
-        }
+    if (cap.kind != fm2k::inputroute::Capture::Kind::NONE &&
+        s_diag_emitted < 60) {
+        ++s_diag_emitted;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "InputBinder: poll captured gamepad %d %s %d dir=%d",
+            cap.pad_index,
+            cap.kind == fm2k::inputroute::Capture::Kind::PAD_BUTTON
+                ? "button" : "axis",
+            cap.code, cap.axis_dir);
+    }
+
+    switch (cap.kind) {
+        case fm2k::inputroute::Capture::Kind::PAD_BUTTON:
+            out.source = Binding::Source::GAMEPAD_BUTTON;
+            out.code = cap.code;
+            out.axis_dir = 0;
+            out.gamepad_index = cap.pad_index;
+            return true;
+        case fm2k::inputroute::Capture::Kind::PAD_AXIS:
+            out.source = Binding::Source::GAMEPAD_AXIS;
+            out.code = cap.code;
+            out.axis_dir = cap.axis_dir;
+            out.gamepad_index = cap.pad_index;
+            return true;
+        case fm2k::inputroute::Capture::Kind::NONE:
+            break;
     }
     return false;
 }
@@ -589,6 +624,9 @@ bool RenderBody(int player_slot) {
             // started the capture isn't read back.
             if (!AnyInputHeld()) {
                 g_capture.armed = true;
+                // Freeze what every pad is doing right now. Anything already
+                // asserted here can never become a binding -- see PollCapture.
+                g_capture.armed_pads = SnapshotPadStates();
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "InputBinder: armed for player=%d bit=%d -- waiting for press",
                     g_capture.player, g_capture.bit);
@@ -596,7 +634,7 @@ bool RenderBody(int player_slot) {
         } else {
             Binding cap{};
             bool cancel = false;
-            if (PollCapture(cap, cancel)) {
+            if (PollCapture(player_slot, cap, cancel)) {
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "InputBinder: captured src=%d code=%d axis_dir=%d gp=%d "
                     "for player=%d bit=%d",

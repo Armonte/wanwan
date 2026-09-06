@@ -45,6 +45,12 @@ target_compile_options(delay_math_test PRIVATE -Wall -Wextra -Wpedantic)
 add_executable(alt_colors_test alt_colors_test.cpp)
 target_compile_options(alt_colors_test PRIVATE -Wall -Wextra -Wpedantic)
 
+# Input binder device routing + bind capture. The two-instance gate never
+# opens a physical device, so "two controllers plugged in" -- the whole
+# subject of these rules -- is unreachable there and only this checks it.
+add_executable(input_route_test input_route_test.cpp)
+target_compile_options(input_route_test PRIVATE -Wall -Wextra -Wpedantic)
+
 # ReliableChannel ordering + FEC reconstruction, no game / no Windows.
 # Its body is guarded by RC_STANDALONE_TEST.
 add_executable(reliable_channel_test
@@ -66,4 +72,5 @@ enable_testing()
 add_test(NAME fm2k_tests COMMAND fm2k_tests)
 add_test(NAME delay_math_test COMMAND delay_math_test)
 add_test(NAME alt_colors_test COMMAND alt_colors_test)
+add_test(NAME input_route_test COMMAND input_route_test)
 add_test(NAME reliable_channel_test COMMAND reliable_channel_test)

@@ -3,8 +3,10 @@
 // core lifecycle + the ui device dropdown can both call them.
 #include "input_binder.h"
 #include "input_binder_internal.h"
+#include "input_route.h"          // pure identity/claim resolver + route model
 #include <SDL3/SDL.h>
 #include <algorithm>
+#include <string>
 #include <vector>
 
 namespace FM2KInputBinder {
@@ -171,45 +173,119 @@ std::string DeviceIdentityOfJid(SDL_JoystickID jid) {
     return id;
 }
 
+// Snapshot the connected pads in SDL list order, as the pure resolver wants
+// them. Only pads we actually hold a handle for are listed: an unopened id
+// can neither be sampled nor claimed, and both passes below already required
+// a handle.
+static std::vector<fm2k::inputroute::Pad> SnapshotPads() {
+    std::vector<fm2k::inputroute::Pad> pads;
+    pads.reserve(g_gamepad_ids.size());
+    for (SDL_JoystickID jid : g_gamepad_ids) {
+        if (g_gamepad_handles.find(jid) == g_gamepad_handles.end()) continue;
+        pads.push_back({(uint32_t)jid, DeviceIdentityOfJid(jid)});
+    }
+    return pads;
+}
+
+// The routing-relevant part of a player's profile: does it bind a gamepad at
+// all, and -- for identity-less legacy profiles -- which SDL list index do
+// its gamepad rows name. Every profile the binder UI writes stamps ONE index
+// across all of a player's gamepad rows (FillPrimaryAsGamepad /
+// FillAltAsStickDirections), so the first such row is representative; a
+// hand-edited ini that mixes indices is reported by its first row.
+static fm2k::inputroute::PlayerProfile ProfileOf(int p) {
+    fm2k::inputroute::PlayerProfile out;
+    out.device_id = g_players[p].device_id;
+    for (size_t i = 0; i < (size_t)Bit::COUNT && !out.has_gamepad_binding; ++i) {
+        for (const Binding* arr : { g_players[p].bits + 0,
+                                    g_players[p].bits_alt + 0 }) {
+            const Binding& b = arr[i];
+            if (b.source == Binding::Source::GAMEPAD_BUTTON ||
+                b.source == Binding::Source::GAMEPAD_AXIS) {
+                out.has_gamepad_binding = true;
+                out.legacy_index = b.gamepad_index;
+                break;
+            }
+        }
+    }
+    return out;
+}
+
+// Report which PHYSICAL pad each player's gamepad bindings ended up on, and
+// shout when both landed on the same one.
+//
+// The binder's rule is one device per player, and identity routing enforces
+// it -- but a profile with no device_id (written before identity existed, or
+// whose rows were captured without ever opening the device dropdown) still
+// routes by raw SDL list index, which is a POSITION, not a device. Two such
+// players can name the same index, and then one person's pad drives both
+// characters while the other person's pad does nothing. That state is
+// invisible from inside the game, so it has to be visible in the log:
+// "my inputs are being eaten with two controllers plugged in" is otherwise
+// unanswerable. Change-triggered, so this costs one comparison per refresh.
+static void LogRouteTable(const std::vector<fm2k::inputroute::Pad>& pads) {
+    using namespace fm2k::inputroute;
+    const PlayerProfile players[kPlayers] = { ProfileOf(0), ProfileOf(1) };
+    Route routes[kPlayers];
+    for (int p = 0; p < kPlayers; ++p) {
+        routes[p] = RouteForPlayer(pads, players[p],
+                                   (uint32_t)g_player_pad_jid[p]);
+    }
+
+    static uint32_t s_last_jid[kPlayers] = {0xFFFFFFFFu, 0xFFFFFFFFu};
+    static size_t   s_last_pad_count = (size_t)-1;
+    if (s_last_jid[0] == routes[0].jid && s_last_jid[1] == routes[1].jid &&
+        s_last_pad_count == pads.size()) {
+        return;
+    }
+    s_last_jid[0] = routes[0].jid;
+    s_last_jid[1] = routes[1].jid;
+    s_last_pad_count = pads.size();
+
+    auto name_of = [](uint32_t jid) -> const char* {
+        auto it = g_gamepad_handles.find((SDL_JoystickID)jid);
+        if (it == g_gamepad_handles.end() || !it->second) return "?";
+        const char* n = SDL_GetGamepadName(it->second);
+        return n ? n : "?";
+    };
+    for (int p = 0; p < kPlayers; ++p) {
+        if (!players[p].has_gamepad_binding) continue;
+        const char* via = routes[p].via == Via::IDENTITY   ? "device id"
+                        : routes[p].via == Via::LIST_INDEX ? "list index"
+                                                           : "nothing";
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "InputBinder: P%d gamepad route -- %s (jid=%u '%s') via %s "
+            "[%zu pad(s) connected]",
+            p + 1, routes[p].jid ? "resolved" : "UNRESOLVED",
+            (unsigned)routes[p].jid, name_of(routes[p].jid), via,
+            pads.size());
+    }
+    if (RoutesCollide(routes[0], routes[1])) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "InputBinder: BOTH PLAYERS ARE READING THE SAME CONTROLLER "
+            "(jid=%u '%s'). One pad drives both characters and the other "
+            "pad is dead. Open Input Settings and pick each player's device "
+            "from the dropdown to pin them to their own controller.",
+            (unsigned)routes[0].jid, name_of(routes[0].jid));
+    }
+}
+
 void ResolvePlayerPads() {
     SDL_JoystickID prev[kPlayers];
     for (int p = 0; p < kPlayers; ++p) prev[p] = g_player_pad_jid[p];
 
-    std::unordered_set<SDL_JoystickID> claimed;
-
-    // Pass 1 -- keep still-valid resolutions. Instance ids are stable
-    // while connected, so a player never hops devices mid-session just
-    // because the list reordered around them.
+    // Identity resolution (sticky-then-claim) lives in input_route.h so
+    // tests/input_route_test.cpp can exercise it with two pads on the table
+    // -- a configuration the two-instance gate structurally cannot reach.
+    const std::vector<fm2k::inputroute::Pad> pads = SnapshotPads();
+    const fm2k::inputroute::PlayerProfile profiles[kPlayers] = {
+        ProfileOf(0), ProfileOf(1)
+    };
+    uint32_t sticky[kPlayers];
+    for (int p = 0; p < kPlayers; ++p) sticky[p] = (uint32_t)g_player_pad_jid[p];
+    fm2k::inputroute::ResolveIdentities(pads, profiles, sticky);
     for (int p = 0; p < kPlayers; ++p) {
-        const SDL_JoystickID jid = g_player_pad_jid[p];
-        if (jid != 0 &&
-            g_gamepad_handles.find(jid) != g_gamepad_handles.end() &&
-            !g_players[p].device_id.empty() &&
-            DeviceIdentityOfJid(jid) == g_players[p].device_id) {
-            claimed.insert(jid);
-        } else {
-            g_player_pad_jid[p] = 0;
-        }
-    }
-
-    // Pass 2 -- resolve the rest by identity, in player order (P1 gets
-    // first pick when both players are configured for the same model
-    // and only one unit is attached). List order breaks ties between
-    // identical unclaimed units. A configured-but-absent device stays
-    // UNRESOLVED: that player's gamepad bindings go silent instead of
-    // borrowing another player's pad.
-    for (int p = 0; p < kPlayers; ++p) {
-        if (g_player_pad_jid[p] != 0) continue;
-        const std::string& want = g_players[p].device_id;
-        if (want.empty()) continue;  // legacy index routing -- no identity
-        for (SDL_JoystickID jid : g_gamepad_ids) {
-            if (claimed.count(jid)) continue;
-            if (DeviceIdentityOfJid(jid) == want) {
-                g_player_pad_jid[p] = jid;
-                claimed.insert(jid);
-                break;
-            }
-        }
+        g_player_pad_jid[p] = (SDL_JoystickID)sticky[p];
     }
 
     // Log transitions only (this runs every RefreshGamepads tick).
@@ -229,6 +305,8 @@ void ResolvePlayerPads() {
                 p + 1, g_players[p].device_name.c_str());
         }
     }
+
+    LogRouteTable(pads);
 }
 
 SDL_Gamepad* ResolvedPadForPlayer(int player_slot) {

@@ -21,6 +21,8 @@ echo "=== delay_math_test ==="
 
 echo "=== alt_colors_test ==="
 ./alt_colors_test || rc=$?
+echo "=== input_route_test ==="
+./input_route_test || rc=$?
 echo "=== reliable_channel_test ==="
 ./reliable_channel_test || rc=$?
 

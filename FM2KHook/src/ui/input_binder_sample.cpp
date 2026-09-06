@@ -197,6 +197,10 @@ static bool ProcessIsForeground() {
 //     enter our queue. NEVER use GetAsyncKeyState here: it reads the
 //     physical keyboard desktop-wide, which is how the binder used to
 //     keep playing the game while the user typed into Discord.
+int ConnectedPadCount() {
+    return (int)g_gamepad_handles.size();
+}
+
 uint16_t Sample_Win32(int player_slot) {
 #ifndef _WIN32
     (void)player_slot;

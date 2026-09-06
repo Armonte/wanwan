@@ -2,6 +2,7 @@
 // Nothing here writes game memory and nothing here changes shipping behaviour.
 // See frame_timing.h for the question it exists to answer.
 #include "frame_timing.h"
+#include "../ui/input_binder.h"   // ConnectedPadCount -- stamps the capture condition
 
 #include <SDL3/SDL_log.h>
 #include <SDL3/SDL_timer.h>
@@ -437,11 +438,18 @@ void FrameTiming_Dump(int player_index, const char* reason) {
     static char iobuf[1 << 20];
     std::setvbuf(f, iobuf, _IOFBF, sizeof(iobuf));
 
+    // pads= is what makes the "inputs feel eaten with two controllers" report
+    // testable. Input is polled once per frame, so frame_us IS the input
+    // sampling interval and any tap shorter than it is invisible -- but a
+    // capture only settles the question if it records how many pads were
+    // plugged in when it was taken. Without this the two runs of an A/B are
+    // indistinguishable after the fact.
     std::fprintf(f, "# frametiming player=%d reason=%s rows=%zu dropped=%zu "
-                    "frames=%u matches=%u qpc_freq=%llu budget_us=%u\n",
+                    "frames=%u matches=%u qpc_freq=%llu budget_us=%u pads=%d\n",
                  player_index + 1, reason ? reason : "", g_count, g_dropped,
                  (unsigned)g_seq, (unsigned)g_match + 1u,
-                 (unsigned long long)freq, kBudgetUs);
+                 (unsigned long long)freq, kBudgetUs,
+                 FM2KInputBinder::ConnectedPadCount());
     std::fprintf(f, "# times are MICROSECONDS. frame = THIS frame's own wall "
                     "clock (its start to the next frame's start); work = frame "
                     "start -> just before the pacing sleep; sleep = measured "

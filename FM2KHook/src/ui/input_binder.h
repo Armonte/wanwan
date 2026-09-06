@@ -139,6 +139,12 @@ bool RenderBody(int player_slot);
 uint16_t Sample(int player_slot);
 uint16_t Sample_Win32(int player_slot);
 
+// How many gamepads are currently open. Recorded in the frame-timing header
+// so a CSV says which CONDITION it was captured under -- "inputs feel eaten
+// with two controllers" is only testable if a capture can prove how many
+// pads were plugged in when it was taken.
+int ConnectedPadCount();
+
 // Persistence.
 // - Save() writes to the currently-active profile (default or per-game).
 // - Load() reads the per-game profile if SetGameProfile() has been called

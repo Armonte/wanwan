@@ -542,10 +542,17 @@ size_t DumpTopoDetail(char* out, size_t cap) {
          * whether both planes hold in-pool pointers (creator really differs) or
          * one holds a heap value (different framing entirely). Printed as hex,
          * never hashed -- see the process-independence contract in parity_pool.h. */
+        // owner (+0x004) IS HASHED INTO bind= BUT WAS NOT PRINTED HERE, so
+        // the per-slot dump could not explain a bind= mismatch -- every
+        // printed field could match while the digest still differed. That
+        // gap is why a whole triage round blamed the parent pointer; with
+        // owner visible, raw= is identical on both planes and the parent
+        // theory is simply wrong.
+        const uint32_t owner = Read32(a + kOffOwner);
         lp += static_cast<size_t>(std::snprintf(out + lp, cap - lp,
-                                                "%u:%u:%u:%u:%08X:%u ",
-                                                (unsigned)i, player, kind, parent,
-                                                raw, s_slot_created[i]));
+                                                "%u:%u:%u:%u:%u:%08X:%u ",
+                                                (unsigned)i, owner, player, kind,
+                                                parent, raw, s_slot_created[i]));
         ++emitted;
     }
     s_topo_scanned = true;
@@ -741,8 +748,41 @@ void Capture() {
                     while (n > 0 && topo_detail[td_off + n - 1] != ' ') --n;
                     if (n == 0) n = kChunk;   // one pathological record > kChunk
                 }
+                // f= IS THE ONLY FIELD THAT MAKES THIS LINE COMPARABLE.
+                // seq= is frames_written, a per-process recorder counter
+                // driven by THIS process's rollback schedule, so it does not
+                // align across host and spectator -- which is why the per-slot
+                // dump existed for a whole triage round without anyone being
+                // able to diff it (aligning by seq shows 99% of frames
+                // "differing" because it is comparing unrelated frames).
+                // The engine frame counter is the same identity the
+                // [CHECKSUM] line carries, so the harness's off-N alignment
+                // applies here unchanged.
+                // THIS LINE STILL CANNOT BE COMPARED ACROSS PROCESSES, and
+                // that -- not any engine bug -- is why the bind= advisory has
+                // never been resolved. Measured 2026-09-06, all three
+                // candidate identities fail for host-vs-spectator:
+                //   seq= is frames_written, this process's recorder counter,
+                //        driven by its own rollback schedule
+                //   f=   is the engine frame counter, on its own boot timeline
+                //   bf=  g_netplay_frame, which the spectator does not drive
+                //        (it yielded ONE aligned frame out of ~1200)
+                // Aligning by any of them makes ~100% of frames "differ",
+                // which is the false signal that makes bind= look permanently
+                // red and which cost a triage round chasing the parent
+                // pointer (raw= is in fact IDENTICAL on both planes).
+                //
+                // THE FIX is to emit this detail from the SAME site as
+                // [CHECKSUM] (netplay_battle_events for the host,
+                // trampoline_spectator for the viewer) so it inherits the
+                // frame identity the harness already aligns successfully --
+                // that alignment demonstrably works, since top=/nobj= compare
+                // cleanly today. Until then treat bind= as UNMEASURED, not as
+                // a finding: between the two PLAYERS, where alignment does
+                // work, bind= is 1999 frames IDENTICAL.
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                    "[POOLTOPO] seq=%u p=%u d=%.*s",
+                    "[POOLTOPO] f=%u seq=%u p=%u d=%.*s",
+                    Read32(ADDR_FRAME_COUNTER),
                     g_active_recorder->frames_written, td_part,
                     (int)n, topo_detail + td_off);
                 td_off += n; ++td_part;

@@ -5,6 +5,7 @@
 #include "round_events.h"     // C3.5 -- vs_round_function detour install
 #include "seam_free_probe.h"  // [ENDSEAM-FREE] ClearCharacterSlot telemetry
 #include "css_autoconfirm.h"  // CSS lock-and-confirm for offline replay playback
+#include "alt_colors.h"       // FN1/FN2 -> palettes 6 and 7
 #include "css_fastsound.h"    // FM2K_FPK_CSS_FASTSOUND: lazy DSound buffers (CSS dip fix)
 #include "per_game_patches.h" // damage multiplier MinHook + team-size override
 #include "render_simd.h"      // FM2K_BLIT_SIMD: blit + case -10 blur reimplementation
@@ -358,6 +359,14 @@ bool InitializeHooks() {
     // host's full input stream and don't need this. FM95 builds compile to a
     // no-op (its CSS state machine is structured differently -- separate
     // hand-off).
+    // FN1/FN2 select the two palettes the engine can already hold but no
+    // button could ever ask for. Not fatal if it fails -- everyone just
+    // keeps the six colours they had.
+    if (!AltColors::Install()) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "Hooks: AltColors::Install failed -- palettes 6 and 7 stay "
+            "unreachable, everything else is unaffected");
+    }
     if (!CssAutoConfirm_Install()) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
             "Hooks: CssAutoConfirm_Install failed -- offline replay will fall "

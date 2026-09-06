@@ -20,7 +20,25 @@ struct CaptureCtx {
     int  bit           = -1;
     bool alt           = false;  // false = primary slot, true = alt slot
     bool armed         = false;  // wait for all buttons released first
+    // "Bind all": walk every control in order instead of making the user
+    // click Bind, press, click Bind, press, for each of eleven controls per
+    // player. Reported by a local organiser on 2026-09-05 as the thing that
+    // makes setting up a session take "a lot longer" -- with two pads it is
+    // dozens of clicks before anyone can play.
+    bool sequence      = false;
 };
+
+// Controls the walk covers, in the order a player expects to be asked:
+// directions, then attack buttons, then START. The meta-bits (OPTION, FN1,
+// FN2) are deliberately NOT in the walk -- they are hook features rather
+// than game controls, and asking for them in the middle of setting up a pad
+// is confusing.
+constexpr int kSeqLast = (int)Bit::START;
+
+// Next control in the walk, or -1 when it is finished.
+inline int NextSeqBit(int cur) {
+    return (cur < 0 || cur >= kSeqLast) ? -1 : cur + 1;
+}
 CaptureCtx g_capture;
 
 std::string BindingLabel(const Binding& b) {
@@ -391,6 +409,33 @@ bool RenderBody(int player_slot) {
         if ((Bit)i == Bit::START) start_missing = true;
     }
 
+    // Bind everything in one pass. Starts at LEFT and walks to START,
+    // re-prompting after each press, so setting up a pad is one click and
+    // eleven presses instead of eleven clicks and eleven presses.
+    if (g_capture.active && g_capture.sequence) {
+        if (ImGui::Button("Stop binding")) {
+            g_capture = CaptureCtx{};
+        }
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f),
+                           "Binding %s (%d of %d)", kBitNames[g_capture.bit],
+                           g_capture.bit + 1, kSeqLast + 1);
+    } else if (ImGui::Button("Bind all")) {
+        g_capture.active   = true;
+        g_capture.armed    = false;
+        g_capture.player   = player_slot;
+        g_capture.bit      = 0;
+        g_capture.alt      = false;
+        g_capture.sequence = true;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "InputBinder: bind-all started for player=%d", player_slot);
+    }
+    if (!(g_capture.active && g_capture.sequence)) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(asks for each control in turn)");
+    }
+    ImGui::Spacing();
+
     if (ImGui::Button("Save")) {
         if (Save()) changed = true;
     }
@@ -569,11 +614,27 @@ bool RenderBody(int player_slot) {
                     }
                     changed = true;
                 }
-                g_capture.active = false;
-                g_capture.armed = false;
-                g_capture.player = -1;
-                g_capture.bit = -1;
-                g_capture.alt = false;
+                const bool walking = g_capture.sequence && !cancel;
+                const int  next     = walking ? NextSeqBit(g_capture.bit) : -1;
+                if (next >= 0) {
+                    // Straight on to the next control. Re-arm so the key
+                    // just pressed is not immediately read as the next one.
+                    g_capture.bit   = next;
+                    g_capture.armed = false;
+                } else {
+                    if (g_capture.sequence) {
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                            cancel ? "InputBinder: bind-all cancelled at bit=%d"
+                                   : "InputBinder: bind-all finished (bit=%d)",
+                            g_capture.bit);
+                    }
+                    g_capture.active = false;
+                    g_capture.armed = false;
+                    g_capture.player = -1;
+                    g_capture.bit = -1;
+                    g_capture.alt = false;
+                    g_capture.sequence = false;
+                }
             }
         }
     }
@@ -606,7 +667,13 @@ bool RenderBody(int player_slot) {
                                  g_capture.alt == alt_slot;
 
             ImGui::TableSetColumnIndex(col_label);
-            if (waiting) {
+            if (waiting && g_capture.sequence) {
+                ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f),
+                                   "Press a key/button for %s  (%d of %d --"
+                                   " Cancel to stop)",
+                                   kBitNames[g_capture.bit],
+                                   g_capture.bit + 1, kSeqLast + 1);
+            } else if (waiting) {
                 ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.2f, 1.0f),
                                    "Press a key/button... (Cancel to abort)");
             } else if (conflict) {

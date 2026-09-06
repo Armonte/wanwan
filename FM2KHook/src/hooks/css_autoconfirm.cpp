@@ -66,11 +66,22 @@ constexpr uintptr_t ADDR_P2_TEAM_SLOT_COUNT = 0x004700F0;  // g_p1_round_state -
 //   color 3 → 0x80  (bit 7)
 //   color 4 → 0x100 (bit 8)
 //   color 5 → 0x200 (bit 9)
+//   color 6 → 0x1000 (FN1)   -- palettes the engine can hold but no attack
+//   color 7 → 0x2000 (FN2)      button could ever ask for; see alt_colors.cpp
 //
 // We still OVERWRITE the 0x3F0 bits rather than OR -- pb_queue's leaked
 // battle-input bits could otherwise set a different attack button and shift
 // AssignPlayerColor's bit ladder onto the wrong color.
 inline uint32_t ColorBitForSlot(uint8_t color) {
+    // 6 and 7 ride the meta-bits rather than the attack ladder. Without this
+    // the harness could not ASK for the two new palettes, and a feature the
+    // tests cannot request is a feature the tests cannot check.
+    // The engine only treats a frame as a CONFIRM when `input_changes &
+    // 0x3F0` is non-zero, so the meta-bit must ride ALONGSIDE bit 4 rather
+    // than replace it: 0x10 confirms, the FN bit picks the palette (and
+    // wins, because the ladder in alt_colors.cpp tests FN after A).
+    if (color == 6u) return 0x10u | 0x1000u;
+    if (color == 7u) return 0x10u | 0x2000u;
     if (color == 0u || color > 5u) return 0x10u;
     return 0x10u << color;  // 0x20, 0x40, 0x80, 0x100, 0x200
 }
@@ -334,13 +345,13 @@ void ApplyTeamDupeLock() {
 
     for (uint32_t i = 0; i < p1_n; ++i) {
         if (p1_hist[i] == (uint32_t)selected[0]) {
-            in_changes[0] &= ~0x3F0u;  // suppress confirm
+            in_changes[0] &= ~(0x3F0u | 0x3000u);  // suppress confirm
             break;
         }
     }
     for (uint32_t i = 0; i < p2_n; ++i) {
         if (p2_hist[i] == (uint32_t)selected[1]) {
-            in_changes[1] &= ~0x3F0u;
+            in_changes[1] &= ~(0x3F0u | 0x3000u);
             break;
         }
     }
@@ -392,7 +403,7 @@ char __cdecl Hook_GameStateManager() {
             *(uint32_t*)ADDR_P2_ACTION_STATE = 0;
             uint32_t* in_changes = (uint32_t*)ADDR_INPUT_CHANGES;
             in_changes[0] &= ~0x3F0u;
-            in_changes[1] &= ~0x3F0u;
+            in_changes[1] &= ~(0x3F0u | 0x3000u);
             // The hold does NOT stamp the slot colour fields. The
             // superseded long-hold display path carried the finished
             // match's palettes into the held portraits; the lean masks
@@ -583,7 +594,7 @@ char __cdecl Hook_GameStateManager() {
                         if (!engine_writes) selected[0] = -1;
                         in_changes[0] &= ~0x3F0u;
                     } else {
-                        in_changes[0] = (in_changes[0] & ~0x3F0u) | p1_bit;
+                        in_changes[0] = (in_changes[0] & ~(0x3F0u | 0x3000u)) | p1_bit;
                     }
                 }
                 if (p2_act == 0u) {
@@ -599,9 +610,9 @@ char __cdecl Hook_GameStateManager() {
                             }
                         }
                         if (!engine_writes) selected[1] = -1;
-                        in_changes[1] &= ~0x3F0u;
+                        in_changes[1] &= ~(0x3F0u | 0x3000u);
                     } else {
-                        in_changes[1] = (in_changes[1] & ~0x3F0u) | p2_bit;
+                        in_changes[1] = (in_changes[1] & ~(0x3F0u | 0x3000u)) | p2_bit;
                     }
                 }
 

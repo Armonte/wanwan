@@ -40,6 +40,11 @@ target_compile_options(fm2k_tests PRIVATE
 add_executable(delay_math_test delay_math_test.cpp)
 target_compile_options(delay_math_test PRIVATE -Wall -Wextra -Wpedantic)
 
+# The palette picker. The two-instance harness cannot reach this (its
+# auto-CSS is pulse-only by design), so this is the only thing that checks it.
+add_executable(alt_colors_test alt_colors_test.cpp)
+target_compile_options(alt_colors_test PRIVATE -Wall -Wextra -Wpedantic)
+
 # ReliableChannel ordering + FEC reconstruction, no game / no Windows.
 # Its body is guarded by RC_STANDALONE_TEST.
 add_executable(reliable_channel_test
@@ -60,4 +65,5 @@ target_include_directories(reliable_channel_test PRIVATE
 enable_testing()
 add_test(NAME fm2k_tests COMMAND fm2k_tests)
 add_test(NAME delay_math_test COMMAND delay_math_test)
+add_test(NAME alt_colors_test COMMAND alt_colors_test)
 add_test(NAME reliable_channel_test COMMAND reliable_channel_test)

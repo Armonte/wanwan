@@ -889,7 +889,35 @@ int __cdecl Hook_GetPlayerInput(int player_id, int input_type) {
             // Strip meta-bits (OPTION/FN1/FN2) before passing to engine so
             // they don't leak into game state. Hook-side features that
             // consume those bits did so above (or read via Sample directly).
-            bound &= FM2KInputBinder::kEngineInputMask;
+            //
+            // ONE EXCEPTION, and it is narrow on purpose: FN1/FN2 pass
+            // through during CHARACTER SELECT, because that is where
+            // AssignPlayerColor reads the input word and it is the only
+            // place those bits mean anything (they pick palettes 6 and 7 --
+            // see hooks/alt_colors.cpp). Battle still gets them stripped, so
+            // nothing new enters the input word the fight is simulated from.
+            //
+            // This only makes the LOCAL path match what netplay already
+            // does: Netplay_GetCSSInput is handed to the engine unmasked and
+            // has been for as long as CSS lockstep has existed, so the
+            // engine tolerating these bits at CSS is shipped behaviour, not
+            // a new assumption.
+            {
+                const uint16_t css_meta =
+                    (game_mode == 2000u)
+                        ? (uint16_t)(bound & (uint16_t)0x3000u) : (uint16_t)0u;
+                bound &= FM2KInputBinder::kEngineInputMask;
+                bound |= css_meta;
+                // In 2DFM the button you CONFIRM with is the button that
+                // picks your colour -- there is no separate colour control.
+                // So an FN press has to confirm as well as select, or the
+                // player taps F1, nothing happens, and they confirm with A
+                // and get palette 0. The engine only counts a frame as a
+                // confirm when `input_changes & 0x3F0` is non-zero, so ride
+                // bit 4 (A) alongside: A confirms, FN picks, and FN wins
+                // because the ladder tests it last (alt_colors.cpp).
+                if (css_meta) bound |= 0x0010u;
+            }
             return capture_and_return((int)bound);
         }
     }

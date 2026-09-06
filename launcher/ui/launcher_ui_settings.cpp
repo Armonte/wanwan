@@ -485,12 +485,17 @@ void LauncherUI::RenderDiscordAuthWindow() {
 // next to the launcher and pushed over the control channel via the hook
 // DLL's Netplay_BroadcastHostConfig.
 void LauncherUI::RenderHostConfigBody() {
+    // The tab used to be called "Host Config", which cost a local organiser
+    // real time on 2026-09-05: everything here applies to OFFLINE play too,
+    // but the name reads as online-hosting setup, so nobody running a local
+    // session ever opened it and random stage looked like it did not exist.
     ImGui::TextWrapped(
-        "Per-game match settings. Edits here override the game's "
-        "default game.ini for THIS launcher; the host's resolved values "
-        "get pushed to the client + spectators on challenge (#54). "
-        "HitJudge / GameInformation are force-zeroed online -- saved "
-        "to disk for offline practice but never applied to a hub match.");
+        "Per-game match settings, applied to LOCAL and online play alike. "
+        "Edits here override the game's default game.ini for THIS launcher; "
+        "the host's resolved values get pushed to the client + spectators on "
+        "challenge (#54). HitJudge / GameInformation are force-zeroed online "
+        "-- saved to disk for offline practice but never applied to a hub "
+        "match.");
     ImGui::Separator();
 
     if (selected_game_index_ < 0 ||
@@ -682,7 +687,7 @@ void LauncherUI::RenderHostConfigBody() {
     }
     if (random_stage_enable_) {
         ImGui::SameLine();
-        ImGui::TextDisabled("(rolls a fresh stage each match)");
+        ImGui::TextDisabled("(rolls a fresh stage each match, offline too)");
         ImGui::SetNextItemWidth(80);
         if (ImGui::InputInt("Min stage", &random_stage_min_, 0)) {
             if (random_stage_min_ < 0) random_stage_min_ = 0;

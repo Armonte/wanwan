@@ -18,6 +18,9 @@ echo "=== fm2k_tests (doctest) ==="
 ./fm2k_tests --reporters=console || rc=$?
 echo "=== delay_math_test ==="
 ./delay_math_test || rc=$?
+
+echo "=== alt_colors_test ==="
+./alt_colors_test || rc=$?
 echo "=== reliable_channel_test ==="
 ./reliable_channel_test || rc=$?
 

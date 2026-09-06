@@ -442,28 +442,28 @@ Scan ScanPool(bool want_legacy_fp, char* active_list, size_t list_cap) {
         bind = Mix(bind, owner);
         bind = Mix(bind, player);
         bind = Mix(bind, kind);
-        // An UNOWNED object's parent link is a BACK-POINTER, and its value
-        // depends on which child registered first -- not on anything the two
-        // processes are required to agree about.
+        // THE PARENT LINK IS NOT HASHED AT ALL, deliberately.
         //
-        // Measured 2026-09-06 with an alignable per-slot dump ([POOLDET],
-        // stamped with the [CHECKSUM] frame): across 1192 aligned frames the
-        // ONLY difference between host and spectator was one slot, every
-        // frame. Slots 1 and 2 (player 1 and player 0) both point at slot 51
-        // as their parent; slot 51, which carries the no-owner sentinel
-        // player == 0xFFFF, points BACK at one of them -- slot 2 on the host,
-        // slot 1 on the spectator. Both are in-pool pointers, so the creator
-        // genuinely differs; it just does not mean anything. owner, player,
-        // kind, the slot set, crc, top= and nobj= were identical throughout,
-        // and between the two PLAYERS bind= is identical for whole matches.
+        // It is a BACK-POINTER whose value depends on which child registered
+        // first, which is not something two processes are required to agree
+        // about. Measured 2026-09-06 with an alignable per-slot dump: across
+        // ~1200 frames it was the ONLY difference between host and spectator.
+        // Slots 1 and 2 (player 1 and player 0) both point at slot 51 as
+        // their parent; slot 51 points BACK at one of them -- slot 2 on the
+        // host, slot 1 on the spectator, both in-pool, stable all match.
         //
-        // Hashing it made bind= red on ~100% of host-vs-spectator frames,
-        // which is worse than useless: an always-red term "precedes" every
-        // failure and explains none, and it cost a triage round chasing it.
-        // Neutralise it for unowned objects so the term measures ownership
-        // divergence that actually matters.
-        constexpr uint32_t kNoPlayer = 0xFFFFu;
-        bind = Mix(bind, (player == kNoPlayer) ? kParentNone : parent);
+        // A first attempt neutralised it only for objects carrying the
+        // no-owner sentinel (player == 0xFFFF). That was treating a symptom:
+        // on the FIRST frame the same object still reads player == 0, so the
+        // carve-out did not fire and one frame stayed red. Rather than widen
+        // an ad-hoc predicate until the number reaches zero, drop the field.
+        //
+        // Nothing is lost that we ever had. This term was red on ~100% of
+        // frames while it included the link, so it never detected anything;
+        // ownership topology is still covered by owner / player / kind here
+        // and by top=, which carries slot index, type and population and
+        // compares clean today.
+        (void)parent;
 
         if (want_legacy_fp) {
             legacy_mix(static_cast<uint32_t>(i));

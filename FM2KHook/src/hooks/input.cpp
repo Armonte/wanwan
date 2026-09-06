@@ -165,6 +165,19 @@ uint16_t Input_CaptureLocal() {
             // mask is gated to mode 2000.
             const uint32_t game_mode = *(uint32_t*)FM2K::ADDR_GAME_MODE;
             if (game_mode == 2000) bound &= (uint16_t)~0x400u;
+            // FN1/FN2 pick palettes 6 and 7, and in 2DFM the button you
+            // CONFIRM with is the button that picks your colour -- so an FN
+            // press has to confirm as well as select, or it does nothing.
+            // The engine only counts a frame as a confirm when
+            // `input_changes & 0x3F0` is non-zero, so ride bit 4 alongside.
+            //
+            // THIS is the copy that matters online. In netplay CSS the
+            // engine consumes Netplay_GetCSSInput for BOTH players and the
+            // local binder path is deliberately skipped, so the same rule
+            // living only there worked offline and silently did nothing in
+            // a real match. Applied here it goes into the value this peer
+            // sends to gekko, so both sides see it and lockstep is intact.
+            if (game_mode == 2000 && (bound & 0x3000u)) bound |= 0x0010u;
             // Per-player SOCD, applied here at capture with THIS device's
             // mode -- before the value reaches gekko, the replay or the
             // spectator stream. See Hook_ApplySOCDSlot.
@@ -245,5 +258,9 @@ uint16_t Input_CaptureLocalPlayer(int player) {
     // character-select bails to title and wedges the session).
     const uint32_t game_mode = *(uint32_t*)FM2K::ADDR_GAME_MODE;
     if (game_mode == 2000) bound &= (uint16_t)~0x400u;
+    // Same FN-confirms rule as Input_CaptureLocal -- both capture paths feed
+    // the same session, so they must agree or P2 picks a palette on one side
+    // only.
+    if (game_mode == 2000 && (bound & 0x3000u)) bound |= 0x0010u;
     return Hook_ApplySOCDSlot(bound, player);
 }

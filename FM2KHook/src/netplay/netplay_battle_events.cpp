@@ -161,6 +161,7 @@ void Netplay_HandleSaveEvent(GekkoGameEvent* update) {
                     rc.input_tracking, rc.effect_sys1, rc.effect_sys2,
                     rc.shake_effects);
                 ParityPool::EmitTopoDetail((uint32_t)frame);
+                SaveState_LogRegionSubranges(frame);
                 return;
             }
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,

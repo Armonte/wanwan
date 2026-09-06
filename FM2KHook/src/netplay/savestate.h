@@ -383,6 +383,12 @@ void SaveState_PatchPostRenderRng(uint32_t rng);
 bool SaveState_GetPostRenderRng(int frame, uint32_t* out_rng);
 
 // Per-region diagnostic checksums for desync investigation
+// Per-slot / per-chunk breakdown of char_dynamic and object_pool around
+// battle entry. See the implementation for why: the region split narrowed a
+// real desync to those two regions at f=-1, this names the slot and the
+// bytes. Dark unless FM2K_CK_SUBRANGE=1.
+void SaveState_LogRegionSubranges(int frame);
+
 struct RegionChecksums {
     uint32_t rng;
     uint32_t game_state;

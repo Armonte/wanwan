@@ -357,6 +357,65 @@ uint32_t SaveState_CalculateFullChecksum() {
     return g_region_checksums.combined;
 }
 
+// Sub-range breakdown of the two regions that diverge BEFORE battle frame 0.
+//
+// The region split (FM2K_CK_REGIONS) narrowed a real player-vs-player desync
+// from "crc differs at f=194" to "object_pool and char_dynamic differ at
+// f=-1", with top=/bind=/nobj= identical -- same objects, same slots, same
+// ownership, different CONTENTS. This narrows it the rest of the way:
+// per-slot for char_dynamic (which character), chunked for the object pool
+// (which objects).
+//
+// Deliberately bounded to the frames around battle entry, because the answer
+// is at f=-1 and this walks ~450 KB per call. Dark unless FM2K_CK_SUBRANGE=1.
+void SaveState_LogRegionSubranges(int frame) {
+    if constexpr (!FM2K::kIsFM2K) {
+        (void)frame;
+        return;
+    } else {
+        static int s_on = -1;
+        if (s_on < 0) {
+            const char* v = std::getenv("FM2K_CK_SUBRANGE");
+            s_on = (v && v[0] == '1') ? 1 : 0;
+        }
+        if (s_on != 1 || frame > 2) return;
+
+        for (size_t i = 0; i < NUM_CHAR_SLOTS; ++i) {
+            const uintptr_t slot_base = CHAR_SLOT_BASE + (i * CHAR_SLOT_SIZE);
+            if (*(uint8_t*)slot_base == 0) continue;   // slot not loaded
+            // Eighths of the slot, so a differing slot immediately says
+            // WHERE in the character record rather than just "somewhere".
+            const size_t step = CHAR_SLOT_DYNAMIC_SIZE / 8u;
+            char line[256];
+            int n = std::snprintf(line, sizeof(line),
+                                  "[CKSUB] f=%d cd slot=%zu", frame, i);
+            for (size_t k = 0; k < 8 && n > 0 && n < (int)sizeof(line); ++k) {
+                const size_t len = (k == 7)
+                    ? (CHAR_SLOT_DYNAMIC_SIZE - step * 7u) : step;
+                n += std::snprintf(line + n, sizeof(line) - (size_t)n, " %zu:0x%08X",
+                                   k, Fletcher32((uint8_t*)(slot_base +
+                                       CHAR_SLOT_DYNAMIC_OFFSET + step * k), len));
+            }
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "%s", line);
+        }
+
+        // Object pool in 16 chunks.
+        {
+            const size_t step = SIZE_OBJECT_POOL / 16u;
+            char line[320];
+            int n = std::snprintf(line, sizeof(line), "[CKSUB] f=%d op", frame);
+            for (size_t k = 0; k < 16 && n > 0 && n < (int)sizeof(line); ++k) {
+                const size_t len = (k == 15)
+                    ? (SIZE_OBJECT_POOL - step * 15u) : step;
+                n += std::snprintf(line + n, sizeof(line) - (size_t)n, " %zu:0x%08X",
+                                   k, Fletcher32((uint8_t*)(ADDR_OBJECT_POOL +
+                                                            step * k), len));
+            }
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "%s", line);
+        }
+    }
+}
+
 bool SaveState_TestRoundtrip() {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "=== SAVESTATE ROUNDTRIP TEST ===");
 
@@ -748,5 +807,13 @@ void SaveState_DumpDesyncDiagnostic(int frame, uint32_t local_crc, uint32_t remo
         "Desync diagnostic written to %s", filename);
 }
 
-#endif  // engine guard
+#else   // ENGINE_FM95
 
+#include "savestate.h"
+
+// FM95 builds compile this whole TU out, but the [CHECKSUM] emit site is
+// shared, so the symbol still has to exist. The sub-range breakdown is
+// FM2K-only by construction -- every address it walks is a FM2K literal.
+void SaveState_LogRegionSubranges(int) {}
+
+#endif  // engine guard

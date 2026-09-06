@@ -592,6 +592,9 @@ def main() -> int:
             # this stage, and unattributable. Read with
             # tools/ck_region_diff.py.
             "FM2K_CK_REGIONS":             os.environ.get("FM2K_CK_REGIONS", "1"),
+            # Per-slot / per-chunk breakdown of the two regions that diverge
+            # before frame 0. Off by default: it walks ~450 KB per call.
+            "FM2K_CK_SUBRANGE":            os.environ.get("FM2K_CK_SUBRANGE", ""),
             "FM2K_TEST_ROUNDS":            str(args.rounds),
             "FM2K_TEST_ROUND_TIME":        str(args.round_time),
             "FM2K_AUTO_TERMINATE_TOTAL": str(args.total_frames),
@@ -646,6 +649,7 @@ def main() -> int:
                     # Symmetric with the players' -- a term one plane emits
                     # and the other does not measures nothing.
                     "FM2K_CK_REGIONS": os.environ.get("FM2K_CK_REGIONS", "1"),
+                    "FM2K_CK_SUBRANGE": os.environ.get("FM2K_CK_SUBRANGE", ""),
                     "FM2K_TEST_ROUNDS": str(args.rounds),
                     # FM2K_SPEC_HOST_GONE_MS deliberately NOT set (H1,
                     # 2026-08-18): it used to be pinned to 5000, which is BELOW

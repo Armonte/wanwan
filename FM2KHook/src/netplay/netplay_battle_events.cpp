@@ -28,7 +28,8 @@
 #include "../hooks/facing_trace.h"  // Phase 4b [FACING] ring dump on the same path
 #include "../hooks/seam_free_probe.h"   // [ENDSEAM-FREE] per-tick window sampling
 #include "../parity/parity_recorder.h"  // ParityRecorder::Capture/Close
-#include "../parity/parity_pool.h"      // player-slot resolution + pool-topology fencepost term
+#include "../parity/parity_pool.h"
+#include "desync_ring.h"      // cross-peer ring, dumped on desync (never per frame)      // player-slot resolution + pool-topology fencepost term
 #include <SDL3/SDL_log.h>
 #include <windows.h>
 #include <cstdlib>
@@ -56,6 +57,13 @@ static bool RingTraceOn() { return RingTraceMax() > 0; }
 
 void Netplay_HandleSaveEvent(GekkoGameEvent* update) {
     int frame = update->data.save.frame;
+    // A few stores, no formatting, no I/O. This is the cross-peer evidence;
+    // it is written out only if GekkoNet reports a desync. Logging it per
+    // frame instead made a timing-sensitive desync stop reproducing in 12
+    // runs -- hook logging is synchronous, so a bigger line every frame is
+    // more time every frame. See desync_ring.h.
+    fm2k::desync_ring::Note(frame,
+        g_session ? gekko_confirmed_frame(g_session) : -1);
     // [PHASE-F-DIAG] log save event details BEFORE Save (rng_seed
     // is read from live engine state; should match the AdvEvent
     // EXIT log's rng if no mutation happened in between).
@@ -186,15 +194,11 @@ void Netplay_HandleSaveEvent(GekkoGameEvent* update) {
                     // was blind for several runs before that. Everything new
                     // goes on the END.
                     "[CHECKSUM] f=%d crc=0x%08X tv=2 top=0x%08X bind=0x%08X "
-                    "nobj=%u conf=%d wire=0x%08X wrng=0x%08X whp1=%u whp2=%u wrnd=%u "
+                    "nobj=%u "
                     "rrng=0x%08X rgs=0x%08X rop=0x%08X rcd=0x%08X "
                     "rit=0x%08X re1=0x%08X re2=0x%08X rsh=0x%08X",
                     frame, rc.gameplay_fingerprint,
                     host_top.digest, host_top.binding, host_top.active_count,
-                    g_session ? gekko_confirmed_frame(g_session) : -1,
-                    rc.wire_fingerprint,
-                    *(const uint32_t*)0x41FB1C, *(const uint32_t*)0x4DFC85,
-                    *(const uint32_t*)0x4EDCC4, *(const uint32_t*)0x470044,
                     rc.rng, rc.game_state, rc.object_pool, rc.char_dynamic,
                     rc.input_tracking, rc.effect_sys1, rc.effect_sys2,
                     rc.shake_effects);

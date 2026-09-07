@@ -15,6 +15,8 @@ namespace {
 // without the buffer itself being a memory event (4096 * 60 B = 240 KB).
 constexpr size_t kCapacity = 4096;
 
+constexpr int kSpawnPtrCount = 10;   // char_slot spawn_slot_ptrs, see below
+
 struct Entry {
     int32_t  frame;
     int32_t  confirmed;
@@ -66,6 +68,8 @@ struct Entry {
     uint32_t sysin;      // g_system_input_state -- the rising-edge word
     uint32_t in0, in1;   // this frame's P1/P2 pad words
     uint32_t prev0, prev1;
+    uint32_t spawn0[kSpawnPtrCount];   // char slot 0's child handles
+    uint32_t spawn1[kSpawnPtrCount];   // char slot 1's
 };
 
 Entry  g_ring[kCapacity];
@@ -100,6 +104,22 @@ constexpr uintptr_t kSlotInput1    = 0x4259C4;   // g_story_char_config[665] (P2
 constexpr uintptr_t kPrevInput0    = 0x447F00;   // g_prev_input[0]
 constexpr uintptr_t kPrevInput1    = 0x447F04;   // g_prev_input[1]
 
+// SPAWN HANDLES -- the parent-to-child pointers a script uses to retire the
+// objects it spawned. character_state_machine @0x412A8E reads
+// spawn_slot_ptrs[index] (char_slot + 0xDFBF), scans the pool for the object
+// AT THAT ADDRESS, and sets its type to 1 (retire) when the opcode's label
+// operand is zero, then nulls the handle.
+//
+// This is where the divergence has to live. Across all 98 live objects the
+// FIRST difference of any kind between the two peers is the type flip itself
+// at f=96 -- every script, cursor and wait matches right up to it, characters
+// included. So nothing in the object pool diverged first; the state that did
+// is in the CHARACTER SLOT, and this array is the only thing there that can
+// retire a pool object without touching its script.
+constexpr uintptr_t kCharSlot0     = 0x4D1D80;
+constexpr size_t    kCharSlotSize  = 57407;
+constexpr ptrdiff_t kOffSpawnPtrs  = 0xDFBF;   // 10 pointers, unaligned
+
 }  // namespace
 
 void Note(int32_t frame, int32_t confirmed_frame) {
@@ -123,6 +143,12 @@ void Note(int32_t frame, int32_t confirmed_frame) {
         e.in1   = *(const uint32_t*)kSlotInput1;
         e.prev0 = *(const uint32_t*)kPrevInput0;
         e.prev1 = *(const uint32_t*)kPrevInput1;
+        // memcpy, not a uint32_t* read: +0xDFBF is not 4-byte aligned.
+        std::memcpy(e.spawn0, (const void*)(kCharSlot0 + kOffSpawnPtrs),
+                    sizeof(e.spawn0));
+        std::memcpy(e.spawn1,
+                    (const void*)(kCharSlot0 + kCharSlotSize + kOffSpawnPtrs),
+                    sizeof(e.spawn1));
         e.pool = fm2k::pool_delta_trace::Note(e.pool_bits, e.pool_types,
                                               e.pool_scripts, e.pool_cursors,
                                               e.pool_waits, &e.pool_live);
@@ -185,7 +211,7 @@ void Dump(const char* reason, int32_t desync_frame) {
                         "columns are cumulative draws per exact game_rand call site; "
                         "difference consecutive rows to see which site drew.\n");
         std::fprintf(f, "frame,confirmed,rng,p1_hp,p2_hp,round,gp_calls,render_calls,"
-                        "sysin,in0,in1,prev0,prev1,"
+                        "sysin,in0,in1,prev0,prev1,spawn0,spawn1,"
                         "site_camera,site_hitdet,site_csm,site_scriptrand,site_ai,site_other,"
                         "objs,pool,pool_live,pool_bits,pool_types,pool_scripts,"
                         "pool_cursors,pool_waits\n");
@@ -202,6 +228,12 @@ void Dump(const char* reason, int32_t desync_frame) {
                          e.site[kGpSiteCameraManager], e.site[kGpSiteHitDetection],
                          e.site[kGpSiteCharStateMachine], e.site[kGpSiteScriptRandBranch],
                          e.site[kGpSiteAiInput], e.site[kGpSiteOther], e.objs, e.pool);
+            std::fputc(',', f);
+            for (int i = 0; i < kSpawnPtrCount; ++i)
+                std::fprintf(f, "%08X", e.spawn0[i]);
+            std::fputc(',', f);
+            for (int i = 0; i < kSpawnPtrCount; ++i)
+                std::fprintf(f, "%08X", e.spawn1[i]);
             std::fprintf(f, ",%d,", e.pool_live);
             for (int w = 0; w < fm2k::pool_delta_trace::kBitmapWords; ++w)
                 std::fprintf(f, "%08X", e.pool_bits[w]);

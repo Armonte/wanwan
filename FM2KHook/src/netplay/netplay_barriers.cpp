@@ -467,9 +467,11 @@ static void RederiveBattleEntryLatches(bool true_agreement) {
                         "%u at the battle-entry barrier (cfg_speed=%u "
                         "frame_mult=%u, agreed cfg=0x%08X). The engine latched "
                         "these before HOST_CONFIG landed; without this the "
-                        "peers move every object at different rates, which the "
-                        "fingerprint cannot see because it carries no "
-                        "positions.",
+                        "peers move every object at different rates. Since "
+                        "2026-09-07 the wire fingerprint carries positions, so "
+                        "that divergence is now DETECTED -- but detection kills "
+                        "the match, so correcting it here is what keeps the "
+                        "match alive rather than merely diagnosable.",
                         cur_move, want_move, cur_accel, want_accel,
                         gs, mult, Netplay_MatchSettingsDigest());
                 } else {

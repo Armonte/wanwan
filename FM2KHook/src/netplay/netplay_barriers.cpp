@@ -406,6 +406,79 @@ static void RederiveBattleEntryLatches(bool true_agreement) {
                 "disagree. Expect a stage-driven divergence this match.",
                 latch_stage, src_stage);
         }
+
+        // GAME-SPEED SCALARS -- the same stale-latch bug, root-caused
+        // 2026-09-07. ResetObjectsAndCalculateSpeed @0x406450 DERIVES two
+        // movement scalars from g_cfg_game_speed and everything that moves
+        // uses the derived values thereafter:
+        //     frame_mult = (gs <= 10) ? 5*gs + 50 : 10*gs
+        //     g_frame_speed_scale      (0x541F78) = 0x10000 / frame_mult
+        //     g_char_physics_table[12] (0x445700) = 3932160 / frame_mult^2
+        // It runs ONCE. HOST_CONFIG #1 carries speed=0 before the host knows
+        // the real value, so a guest that latched from it moves every object
+        // at exactly TWICE the rate while g_cfg_game_speed later reads the
+        // correct 10 -- which is why the [CFG] line looks right on both peers
+        // and why this hid for so long.
+        //
+        // MEASURED on a captured desync (docs/dev/desync_campaign_state.md):
+        //     P1 gs_src=10 move=655  accel=393
+        //     P2 gs_src=10 move=1310 accel=1572      (exactly 2x and 4x)
+        // and the two objects that later diverge move +-14.992 on P1 versus
+        // +-29.984 on P2 at f=72.
+        //
+        // WHY IT BECOMES A DESYNC: positions are NOT in the desync fingerprint
+        // (SaveState_CalculateFingerprint has no position fields), so the
+        // drift is unreported until a drifting object crosses the
+        // out-of-bounds cull at 0x4124C9, retires ~23 frames early, and the
+        // object pool diverges permanently. The rng divergence ~100 frames
+        // later is the first thing GekkoNet ever sees.
+        //
+        // frame_mult itself (0x445704) is deliberately NOT rewritten here:
+        // FixGameSpeedDesync pins it to 100 (dllmain.cpp) to keep script wait
+        // timers on a fixed clock, and that pin must stand.
+        {
+            constexpr uintptr_t kCfgGameSpeed    = 0x430104;  // source
+            constexpr uintptr_t kFrameSpeedScale = 0x541F78;  // latch
+            constexpr uintptr_t kAccelScalar     = 0x445700;  // latch
+            // gs is wire-supplied (HOST_CONFIG game_speed), and 0 is exactly
+            // the value that causes this bug, so refuse rather than derive
+            // from it. Fail-closed is pre-fix behaviour, and loud.
+            constexpr uint32_t kMaxPlausibleSpeed = 99;
+            const uint32_t gs = *(const uint32_t*)kCfgGameSpeed;
+            const uint32_t cur_move  = *(const uint32_t*)kFrameSpeedScale;
+            const uint32_t cur_accel = *(const uint32_t*)kAccelScalar;
+            if (gs == 0u || gs > kMaxPlausibleSpeed) {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                    "[SPEED-RELATCH] REFUSED -- agreed cfg_speed=%u is not a "
+                    "plausible game speed (1..%u). Leaving move=%u accel=%u "
+                    "alone. speed=0 is the wire value that causes the "
+                    "double-rate object drift, so this line means the HOST "
+                    "announced a bad speed, not that the re-derive is wrong.",
+                    gs, kMaxPlausibleSpeed, cur_move, cur_accel);
+            } else {
+                const uint32_t mult = (gs <= 10u) ? (5u * gs + 50u) : (10u * gs);
+                const uint32_t want_move  = 0x10000u / mult;
+                const uint32_t want_accel = 3932160u / (mult * mult);
+                if (cur_move != want_move || cur_accel != want_accel) {
+                    *(uint32_t*)kFrameSpeedScale = want_move;
+                    *(uint32_t*)kAccelScalar     = want_accel;
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "[SPEED-RELATCH] CORRECTED move %u -> %u, accel %u -> "
+                        "%u at the battle-entry barrier (cfg_speed=%u "
+                        "frame_mult=%u, agreed cfg=0x%08X). The engine latched "
+                        "these before HOST_CONFIG landed; without this the "
+                        "peers move every object at different rates, which the "
+                        "fingerprint cannot see because it carries no "
+                        "positions.",
+                        cur_move, want_move, cur_accel, want_accel,
+                        gs, mult, Netplay_MatchSettingsDigest());
+                } else {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "[SPEED-RELATCH] ok cfg_speed=%u move=%u accel=%u "
+                        "(no correction needed)", gs, cur_move, cur_accel);
+                }
+            }
+        }
     } else {
         (void)true_agreement;  // FM95: none of these globals are mapped
     }

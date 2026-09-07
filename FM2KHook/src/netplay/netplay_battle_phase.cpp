@@ -14,7 +14,8 @@
 #include "netplay.h"
 #include "netplay_internal.h"
 #include "desync_ring.h"
-#include "scriptrand_trace.h"  // shared file-scope state, externed for the split netplay_*.cpp TUs
+#include "scriptrand_trace.h"
+#include "pool_delta_trace.h"
 #include "../hooks/hooks.h"   // Hook_ApplySOCD_Public for SOCD-pre-apply on spec capture
 #include "../hooks/css_autoconfirm.h"  // CssAutoConfirm_OnReplayMatchStart (TEST_CSS_CHAR pin)
 #include "control_channel.h"
@@ -201,6 +202,8 @@ static void HandleBattleSessionEvents() {
                 fm2k::desync_ring::Dump("GekkoDesyncDetected",
                                         (int32_t)event->data.desynced.frame);
                 fm2k::scriptrand_trace::Dump("GekkoDesyncDetected",
+                                        (int32_t)event->data.desynced.frame);
+                fm2k::pool_delta_trace::Dump("GekkoDesyncDetected",
                                         (int32_t)event->data.desynced.frame);
                 HandleDesyncDetected(
                     event->data.desynced.frame,

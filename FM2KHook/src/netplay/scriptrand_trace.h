@@ -24,17 +24,24 @@
 // stack scanning, no frame-pointer walk, no heuristics.
 namespace fm2k::scriptrand_trace {
 
-// Called from Hook_GameRand's gameplay branch when the call site is the script
-// random branch. Records {frame, object slot, script_id, script cursor, kind}
-// into an in-memory ring and folds the same tuple into a cumulative hash.
-void Note(uint32_t frame);
-
-// Cumulative FNV-1a over every tuple Note() has seen. This is the CROSS-PEER
-// term: two peers running the same sim must reach the same script instructions
-// in the same order, so this hash must match frame for frame. It is recorded
-// per row in the desync ring, which turns "the seeds diverged" into "the two
-// peers stopped agreeing about which script instruction ran".
-uint32_t ContextHash();
+// Called from Hook_GameRand's gameplay branch, AFTER the draw, when the call
+// site is the script random branch. Records {frame, object slot, kind, owning
+// player slot, script_id, script cursor, drawn value}.
+//
+// The VALUE is the point. Two peers that entered a frame with the same seed
+// and made the same earlier draws necessarily roll the SAME number here, so if
+// one takes the branch and the other does not, the difference is in the branch
+// operands ([edi+1] modulus and [edi+3] threshold, read from the script blob)
+// or in which instruction edi actually points at -- not in the randomness.
+// Recording the value is what tells those apart.
+//
+// NO CUMULATIVE HASH. An earlier version folded every draw into a running
+// hash and carried it in the desync ring. That term is invalid between peers
+// by construction: a peer that speculates and rolls back folds each replayed
+// draw again, so the host folded 16365 draws where the guest folded 1475 and
+// the hash "diverged" at frame 4 of a divergence that really begins at 194.
+// Compare the per-frame draw SEQUENCES instead (tools/scriptrand_diff.py).
+void Note(uint32_t frame, uint32_t value);
 
 // Write the ring next to the desync ring. Called from the desync handler.
 void Dump(const char* reason, int32_t desync_frame);

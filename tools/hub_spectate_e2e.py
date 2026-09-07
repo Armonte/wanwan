@@ -626,6 +626,19 @@ def main() -> int:
         ring_dump_at = os.environ.get("FM2K_DESYNCRING_DUMP_AT")
         if ring_dump_at is not None:
             play_env["FM2K_DESYNCRING_DUMP_AT"] = ring_dump_at
+        # Network impairment + rollback depth. The surviving player-vs-player
+        # desync appears in roughly 1 run in 14 on a clean loopback, which is
+        # far too rare to iterate on, and the peer that diverges is the one
+        # doing the deep rollbacks. These knobs exist in the hook already; the
+        # hubspec path just never forwarded them. FM2K_NET_SEED keeps the
+        # impairment itself deterministic, so a run that reproduces stays
+        # reproducible.
+        for knob in ("FM2K_LOCAL_DELAY", "FM2K_PREDICTION_WINDOW",
+                     "FM2K_NET_DELAY_MS", "FM2K_NET_JITTER_MS",
+                     "FM2K_NET_LOSS", "FM2K_NET_SEED"):
+            v = os.environ.get(knob)
+            if v is not None:
+                play_env[knob] = v
         p1_pty = OUT_DIR / "p1_parity.pty"
         sp_pty = OUT_DIR / "spec_parity.pty"
         for f in (p1_pty, sp_pty):

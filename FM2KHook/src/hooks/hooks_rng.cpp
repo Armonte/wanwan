@@ -153,6 +153,7 @@ uint32_t __cdecl Hook_GameRand() {
     // Gameplay-seed draw (render isolation NOT active). Count for the
     // per-frame [FULLFP] gp= tally used by the mid-join spectate desync hunt.
     ++g_gameplay_rand_calls;
+    bool note_script_draw = false;
     // Seam-ring cumulative tally. Separate counter because the one above is
     // reset per frame by parity_recorder; the ring needs a monotonic value it
     // can difference between rows. See seam_trace.cpp.
@@ -203,11 +204,11 @@ uint32_t __cdecl Hook_GameRand() {
         }
         ++g_gp_rand_by_site[s];
         // Every gameplay draw measured so far is this one site, so record WHICH
-        // script object and instruction is drawing. g_css_object_ptr is valid
-        // here: update_game_state publishes it before each dispatch.
-        if (s == kGpSiteScriptRandBranch) {
-            fm2k::scriptrand_trace::Note(g_netplay_frame);
-        }
+        // script object and instruction is drawing, and WHAT it rolled. The
+        // note happens after the draw (below) because the value is the point.
+        // g_css_object_ptr is still valid there: update_game_state publishes it
+        // before each dispatch and nothing in game_rand touches it.
+        note_script_draw = (s == kGpSiteScriptRandBranch);
     }
     // RNG CALL-SITE RING. Armed only by FM2K_SEAM_RNGSITE=1 and only inside a
     // ~30-frame window, so an unarmed build pays one cached-bool test here.
@@ -256,7 +257,9 @@ uint32_t __cdecl Hook_GameRand() {
     }
     RngTrace_ResolveOnce();
     if (!g_rng_trace_enabled) {
-        return original_game_rand ? original_game_rand() : 0;
+        const uint32_t r = original_game_rand ? original_game_rand() : 0;
+        if (note_script_draw) fm2k::scriptrand_trace::Note(g_netplay_frame, r);
+        return r;
     }
     // Read direct caller (0x004139A8 wrapper). For the caller-OF-caller
     // (which would identify the actual game function), walk the frame

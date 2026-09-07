@@ -189,7 +189,7 @@ def report_pair(pa, pb):
     # says the two sims stopped running the same script instructions, which is
     # what produces the extra draw that moves rng. objs is next. rng is the
     # symptom GekkoNet reports.
-    fields = ["sr_hash", "objs", "rng", "p1_hp", "p2_hp", "round"]
+    fields = ["pool", "objs", "rng", "p1_hp", "p2_hp", "round"]
     fields = [f for f in fields if f in a[common[0]] and f in b[common[0]]]
     first = {}
     for f in common:

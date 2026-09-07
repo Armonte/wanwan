@@ -29,7 +29,9 @@
 #include "../hooks/seam_free_probe.h"   // [ENDSEAM-FREE] per-tick window sampling
 #include "../parity/parity_recorder.h"  // ParityRecorder::Capture/Close
 #include "../parity/parity_pool.h"
-#include "desync_ring.h"      // cross-peer ring, dumped on desync (never per frame)      // player-slot resolution + pool-topology fencepost term
+#include "desync_ring.h"
+#include "scriptrand_trace.h"
+#include "pool_delta_trace.h"   // which script object drew each gameplay random
 #include <SDL3/SDL_log.h>
 #include <windows.h>
 #include <cstdlib>
@@ -81,6 +83,8 @@ void Netplay_HandleSaveEvent(GekkoGameEvent* update) {
         if (s_dump_at >= 0 && confirmed >= s_dump_at) {
             s_dump_at = -1;   // once per process
             fm2k::desync_ring::Dump("BaselineDumpNoDesync", confirmed);
+            fm2k::scriptrand_trace::Dump("BaselineDumpNoDesync", confirmed);
+            fm2k::pool_delta_trace::Dump("BaselineDumpNoDesync", confirmed);
         }
     }
     // [PHASE-F-DIAG] log save event details BEFORE Save (rng_seed

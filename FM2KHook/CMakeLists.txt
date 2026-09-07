@@ -67,6 +67,7 @@ set(FM2KHOOK_SOURCES
     src/netplay/netplay_heartbeat.cpp  # [BEAT] diagnostic heartbeat (split from netplay.cpp)
     src/netplay/desync_ring.cpp
     src/netplay/scriptrand_trace.cpp
+    src/netplay/pool_delta_trace.cpp
     src/netplay/netplay_desync.cpp   # HandleDesyncDetected (split from netplay)
     src/netplay/netplay_chat.cpp     # chat ring (split from netplay)
     src/netplay/netplay_control.cpp  # HOST_CONFIG packets + OnControlMessage dispatch (split from netplay)

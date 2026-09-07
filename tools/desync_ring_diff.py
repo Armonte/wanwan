@@ -220,6 +220,27 @@ def report_pair(pa, pb):
         print("   seeds are not within 8192 draws of each other -- not a "
               "simple draw-count difference")
 
+    # WHICH SLOTS the two pools disagree about. `pool` (the digest) says only
+    # THAT they differ; pool_bits is the live-slot bitmap itself, so this names
+    # the objects. This is the earliest divergence in every capture so far --
+    # earlier than the rng by about a hundred frames -- so it is where the
+    # cause lives.
+    if "pool_bits" in a[fd] and "pool_bits" in b[fd]:
+        def slots(row):
+            bits = row["pool_bits"]
+            out = set()
+            for w in range(len(bits) // 8):
+                word = int(bits[w * 8:(w + 1) * 8], 16)
+                for bit in range(32):
+                    if word & (1 << bit):
+                        out.add(w * 32 + bit)
+            return out
+        sa, sb = slots(a[fd]), slots(b[fd])
+        only_a, only_b = sorted(sa - sb), sorted(sb - sa)
+        print(f"   live object slots at f={fd}: A has {len(sa)}, B has {len(sb)}")
+        print(f"      only on A: {only_a}")
+        print(f"      only on B: {only_b}")
+
     # WHICH SITES DRAW AT ALL. This is the valid cross-peer statement: a site
     # whose cumulative total is zero on both peers cannot be responsible.
     # Per-frame site DELTAS are NOT comparable across peers -- the columns are

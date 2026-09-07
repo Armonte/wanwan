@@ -15,22 +15,28 @@
 // The count says THAT the pool diverged. This says WHICH SLOT.
 //
 // Each call rebuilds a 1024-bit live-slot bitmap (object type at +0x000 is
-// non-zero) and records only the CHANGES against the previous call. Spawns and
-// despawns are rare, so the ring stays tiny while carrying the exact history.
-// The scan is 1024 strided reads over the 391 KB pool -- the same walk
-// update_game_state already performs every frame, so the lines are hot.
+// non-zero). The scan is 1024 strided reads over the 391 KB pool -- the same
+// walk update_game_state already performs every frame, so the lines are hot.
+//
+// NO SPAWN/DESPAWN EVENT RING. The first version diffed each call against the
+// PREVIOUS call and recorded the changes. That is invalid under rollback: the
+// host saves speculatively at frame N+k, rewinds to N and re-simulates, so
+// objects appear to spawn and despawn repeatedly when nothing happened. It
+// reported slots 88 and 89 "spawning" on eight consecutive frames. Consecutive
+// calls are simply not adjacent in simulation time.
+//
+// What IS valid is a SNAPSHOT per row: the bitmap and its digest are recomputed
+// from the restored pool on every re-simulation, so the last row for a
+// confirmed frame describes that frame's agreed state and compares directly
+// against the peer's. Same distinction as the deleted cumulative hash in
+// scriptrand_trace.h.
 namespace fm2k::pool_delta_trace {
 
-// Called once per gekko Save, alongside the desync ring. Returns a digest of
-// the CURRENT live set: FNV-1a over (slot, type) for every live slot.
-//
-// The digest is a SNAPSHOT, not a running total, which is what makes it valid
-// between peers: a re-simulated frame recomputes it from the restored pool, so
-// rollback cannot make it drift the way a cumulative hash does. (That mistake
-// is documented in scriptrand_trace.h.)
-uint32_t Note(uint32_t frame);
+constexpr int kBitmapWords = 32;   // 1024 slots
 
-// Write the spawn/despawn history. Called from the desync handler.
-void Dump(const char* reason, int32_t desync_frame);
+// Called once per gekko Save, alongside the desync ring. Fills `out_bitmap`
+// with the live-slot bitmap and returns an FNV-1a digest over (slot, type) for
+// every live slot.
+uint32_t Note(uint32_t bitmap_out[kBitmapWords]);
 
 }  // namespace fm2k::pool_delta_trace

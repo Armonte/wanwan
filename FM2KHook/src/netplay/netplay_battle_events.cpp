@@ -84,7 +84,6 @@ void Netplay_HandleSaveEvent(GekkoGameEvent* update) {
             s_dump_at = -1;   // once per process
             fm2k::desync_ring::Dump("BaselineDumpNoDesync", confirmed);
             fm2k::scriptrand_trace::Dump("BaselineDumpNoDesync", confirmed);
-            fm2k::pool_delta_trace::Dump("BaselineDumpNoDesync", confirmed);
         }
     }
     // [PHASE-F-DIAG] log save event details BEFORE Save (rng_seed
@@ -834,7 +833,6 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
             // rollback-determinism bug, reproducible without the netplay
             // lottery (the live desync appears in ~1 run in 14).
             fm2k::scriptrand_trace::Dump("harness auto-terminate", -1);
-            fm2k::pool_delta_trace::Dump("harness auto-terminate", -1);
             FacingTrace_Dump("harness auto-terminate");  // Phase 4b [FACING] ring
             // Per-frame timing ring. Legal here for exactly the reason the two
             // above are: TerminateProcess is a few statements away, so the

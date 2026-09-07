@@ -51,6 +51,10 @@ struct Entry {
     // a re-simulated frame recomputes it from the restored pool and it stays
     // comparable between peers -- unlike a cumulative hash, which cannot be.
     uint32_t pool;
+    // The live-slot bitmap itself, not just its digest. The digest says THAT
+    // the pools differ; this says WHICH SLOTS, which is the whole question
+    // once the pool is known to be the earliest divergence. 128 B/row.
+    uint32_t pool_bits[fm2k::pool_delta_trace::kBitmapWords];
 };
 
 Entry  g_ring[kCapacity];
@@ -87,7 +91,7 @@ void Note(int32_t frame, int32_t confirmed_frame) {
         e.render_calls = g_render_rand_calls;
         for (int i = 0; i < kGpRandSiteCount; ++i) e.site[i] = g_gp_rand_by_site[i];
         e.objs = *(const uint32_t*)kObjsUpdated;
-        e.pool = fm2k::pool_delta_trace::Note((uint32_t)frame);
+        e.pool = fm2k::pool_delta_trace::Note(e.pool_bits);
         g_next = (g_next + 1) % kCapacity;
         if (g_count < kCapacity) ++g_count;
     }
@@ -148,18 +152,21 @@ void Dump(const char* reason, int32_t desync_frame) {
                         "difference consecutive rows to see which site drew.\n");
         std::fprintf(f, "frame,confirmed,rng,p1_hp,p2_hp,round,gp_calls,render_calls,"
                         "site_camera,site_hitdet,site_csm,site_scriptrand,site_ai,site_other,"
-                        "objs,pool\n");
+                        "objs,pool,pool_bits\n");
 
         // Oldest first.
         const size_t start = (g_count == kCapacity) ? g_next : 0;
         for (size_t i = 0; i < g_count; ++i) {
             const Entry& e = g_ring[(start + i) % kCapacity];
-            std::fprintf(f, "%d,%d,0x%08X,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,0x%08X\n",
+            std::fprintf(f, "%d,%d,0x%08X,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,0x%08X",
                          e.frame, e.confirmed, e.rng, e.p1_hp, e.p2_hp,
                          e.round, e.gp_calls, e.render_calls,
                          e.site[kGpSiteCameraManager], e.site[kGpSiteHitDetection],
                          e.site[kGpSiteCharStateMachine], e.site[kGpSiteScriptRandBranch],
                          e.site[kGpSiteAiInput], e.site[kGpSiteOther], e.objs, e.pool);
+            for (int w = 0; w < fm2k::pool_delta_trace::kBitmapWords; ++w)
+                std::fprintf(f, "%s%08X", w ? "" : ",", e.pool_bits[w]);
+            std::fputc('\n', f);
         }
         std::fclose(f);
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,

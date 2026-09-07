@@ -12,15 +12,22 @@ constexpr uintptr_t kObjectPool = 0x004701E0;
 constexpr size_t    kObjStride  = 382;
 constexpr size_t    kObjCount   = 1024;
 constexpr ptrdiff_t kOffScriptId = 0x030;
+constexpr ptrdiff_t kOffCursor   = 0x02C;
+constexpr ptrdiff_t kOffWait     = 0x03C;
 
 }  // namespace
 
 uint32_t Note(uint32_t bitmap_out[kBitmapWords],
               uint8_t types_out[kMaxLiveTypes],
               uint16_t scripts_out[kMaxLiveTypes],
+              uint32_t cursors_out[kMaxLiveTypes],
+              uint16_t waits_out[kMaxLiveTypes],
               int* live_out) {
     for (int w = 0; w < kBitmapWords; ++w) bitmap_out[w] = 0;
-    for (int i = 0; i < kMaxLiveTypes; ++i) { types_out[i] = 0; scripts_out[i] = 0; }
+    for (int i = 0; i < kMaxLiveTypes; ++i) {
+        types_out[i] = 0; scripts_out[i] = 0;
+        cursors_out[i] = 0; waits_out[i] = 0;
+    }
     if (live_out) *live_out = 0;
     if constexpr (FM2K::kIsFM95) {
         return 0;
@@ -34,8 +41,10 @@ uint32_t Note(uint32_t bitmap_out[kBitmapWords],
             bitmap_out[i >> 5] |= (1u << (i & 31));
             if (live < kMaxLiveTypes) {
                 types_out[live]   = (uint8_t)type;
-                scripts_out[live] = (uint16_t)*(const uint32_t*)
-                                        (kObjectPool + i * kObjStride + kOffScriptId);
+                const uintptr_t o = kObjectPool + i * kObjStride;
+                scripts_out[live] = (uint16_t)*(const uint32_t*)(o + kOffScriptId);
+                cursors_out[live] = *(const uint32_t*)(o + kOffCursor);
+                waits_out[live]   = (uint16_t)*(const uint32_t*)(o + kOffWait);
             }
             ++live;
             const uint32_t mix[2] = { (uint32_t)i, type };

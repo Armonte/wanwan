@@ -51,9 +51,16 @@ constexpr int kMaxLiveTypes = 192;
 // `scripts_out` carries each live slot's script_id (obj +0x030). Knowing the
 // TYPE says an object retired early; knowing the SCRIPT says which script
 // decided to, which is what can actually be read back in the game data.
+// `cursors_out` carries each live slot's script cursor (obj +0x02C) and
+// `waits_out` its wait timer (obj +0x03C). Together these say whether an
+// object that retires early got there by RUNNING ITS SCRIPT FASTER (cursor
+// ahead of the peer's for frames beforehand) or by being deactivated from
+// outside (cursors identical right up to the frame its type flips).
 uint32_t Note(uint32_t bitmap_out[kBitmapWords],
               uint8_t types_out[kMaxLiveTypes],
               uint16_t scripts_out[kMaxLiveTypes],
+              uint32_t cursors_out[kMaxLiveTypes],
+              uint16_t waits_out[kMaxLiveTypes],
               int* live_out);
 
 }  // namespace fm2k::pool_delta_trace

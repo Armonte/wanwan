@@ -60,6 +60,8 @@ struct Entry {
     // slot holding a different TYPE on the two peers.
     uint8_t  pool_types[fm2k::pool_delta_trace::kMaxLiveTypes];
     uint16_t pool_scripts[fm2k::pool_delta_trace::kMaxLiveTypes];
+    uint32_t pool_cursors[fm2k::pool_delta_trace::kMaxLiveTypes];
+    uint16_t pool_waits[fm2k::pool_delta_trace::kMaxLiveTypes];
     int32_t  pool_live;
     uint32_t sysin;      // g_system_input_state -- the rising-edge word
     uint32_t in0, in1;   // this frame's P1/P2 pad words
@@ -122,7 +124,8 @@ void Note(int32_t frame, int32_t confirmed_frame) {
         e.prev0 = *(const uint32_t*)kPrevInput0;
         e.prev1 = *(const uint32_t*)kPrevInput1;
         e.pool = fm2k::pool_delta_trace::Note(e.pool_bits, e.pool_types,
-                                              e.pool_scripts, &e.pool_live);
+                                              e.pool_scripts, e.pool_cursors,
+                                              e.pool_waits, &e.pool_live);
         g_next = (g_next + 1) % kCapacity;
         if (g_count < kCapacity) ++g_count;
     }
@@ -184,7 +187,8 @@ void Dump(const char* reason, int32_t desync_frame) {
         std::fprintf(f, "frame,confirmed,rng,p1_hp,p2_hp,round,gp_calls,render_calls,"
                         "sysin,in0,in1,prev0,prev1,"
                         "site_camera,site_hitdet,site_csm,site_scriptrand,site_ai,site_other,"
-                        "objs,pool,pool_live,pool_bits,pool_types,pool_scripts\n");
+                        "objs,pool,pool_live,pool_bits,pool_types,pool_scripts,"
+                        "pool_cursors,pool_waits\n");
 
         // Oldest first.
         const size_t start = (g_count == kCapacity) ? g_next : 0;
@@ -209,6 +213,12 @@ void Dump(const char* reason, int32_t desync_frame) {
             std::fputc(',', f);
             for (int i = 0; i < nt; ++i)
                 std::fprintf(f, "%04X", e.pool_scripts[i]);
+            std::fputc(',', f);
+            for (int i = 0; i < nt; ++i)
+                std::fprintf(f, "%08X", e.pool_cursors[i]);
+            std::fputc(',', f);
+            for (int i = 0; i < nt; ++i)
+                std::fprintf(f, "%04X", e.pool_waits[i]);
             std::fputc('\n', f);
         }
         std::fclose(f);

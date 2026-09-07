@@ -1,6 +1,7 @@
 #include "desync_ring.h"
 
 #include "../core/globals.h"
+#include "scriptrand_trace.h"
 
 #include <SDL3/SDL_log.h>
 #include <cstdio>
@@ -11,7 +12,7 @@ namespace fm2k::desync_ring {
 namespace {
 
 // ~40 s at 100 Hz. Enough to cover a whole match's approach to a desync
-// without the buffer itself being a memory event (4096 * 24 B = 96 KB).
+// without the buffer itself being a memory event (4096 * 60 B = 240 KB).
 constexpr size_t kCapacity = 4096;
 
 struct Entry {
@@ -21,14 +22,17 @@ struct Entry {
     uint32_t p1_hp;
     uint32_t p2_hp;
     uint32_t round;
-    // The DRAW COUNTS, because the divergence measured on 2026-09-06 is rng
-    // ONLY -- hp and round still agree at the diverging frame, so the sims
-    // had not visibly diverged; one peer simply drew a different number of
-    // gameplay randoms. These two say whether the extra draw was made on the
-    // gameplay stream or diverted to the render stream (render draws are
-    // isolated behind g_render_rng_seed, but only while g_in_render_rng is
-    // set -- a draw on a render path that misses that flag advances the
-    // GAMEPLAY seed, and render frequency legitimately differs per peer).
+    // The DRAW COUNTS. The divergence measured on 2026-09-06 is rng ONLY --
+    // hp and round still agree at the diverging frame -- and stepping the LCG
+    // from one peer's seed to the other's shows it is EXACTLY ONE extra
+    // gameplay draw.
+    //
+    // These were originally here to test whether a render draw was escaping
+    // onto the gameplay seed. That hypothesis is REFUTED: the LCG-derived draw
+    // count matches gp_calls exactly (0 mismatches / 246 frames on a peer that
+    // never speculated), and the three render-only call sites are reachable
+    // only from render_game, which always runs inside g_in_render_rng. They are
+    // kept because they still cross-check the seed walk for free.
     uint32_t gp_calls;
     uint32_t render_calls;
     // Cumulative gameplay draws split by EXACT game_rand call site (globals.h).
@@ -36,6 +40,20 @@ struct Entry {
     // identical, so the only remaining question is which site drew it. Six
     // counters answer that outright; gp_calls above only says that it happened.
     uint32_t site[kGpRandSiteCount];
+    // Live objects dispatched this frame. The engine already computes this for
+    // free: update_game_state @0x404CD0 zeroes 0x4246FC at the top and bumps it
+    // once per object it hands to update_game_object. It matters because the
+    // script VM random branch -- the source of every gameplay draw -- runs
+    // inside those dispatched objects, so one peer holding one extra live
+    // object is the most direct way to get one extra draw. One load per row.
+    uint32_t objs;
+    // Cumulative hash of (object slot, script_id, script cursor) over every
+    // script random-branch draw. Two peers running the same sim must reach the
+    // same script instructions in the same order, so this must match frame for
+    // frame -- and when it stops matching it says the sims diverged in SCRIPT
+    // EXECUTION, upstream of the seed. Deliberately excludes the frame number
+    // so rollback re-simulation cannot make it differ for benign reasons.
+    uint32_t sr_hash;
 };
 
 Entry  g_ring[kCapacity];
@@ -50,6 +68,9 @@ constexpr uintptr_t kRng   = 0x41FB1C;
 constexpr uintptr_t kP1Hp  = 0x4DFC85;
 constexpr uintptr_t kP2Hp  = 0x4EDCC4;
 constexpr uintptr_t kRound = 0x470044;
+// update_game_state's per-frame live-object counter (IDA:
+// g_objects_updated_this_frame).
+constexpr uintptr_t kObjsUpdated = 0x4246FC;
 
 }  // namespace
 
@@ -68,6 +89,8 @@ void Note(int32_t frame, int32_t confirmed_frame) {
         e.gp_calls     = g_gameplay_rand_calls;
         e.render_calls = g_render_rand_calls;
         for (int i = 0; i < kGpRandSiteCount; ++i) e.site[i] = g_gp_rand_by_site[i];
+        e.objs = *(const uint32_t*)kObjsUpdated;
+        e.sr_hash = fm2k::scriptrand_trace::ContextHash();
         g_next = (g_next + 1) % kCapacity;
         if (g_count < kCapacity) ++g_count;
     }
@@ -127,18 +150,20 @@ void Dump(const char* reason, int32_t desync_frame) {
                         "columns are cumulative draws per exact game_rand call site; "
                         "difference consecutive rows to see which site drew.\n");
         std::fprintf(f, "frame,confirmed,rng,p1_hp,p2_hp,round,gp_calls,render_calls,"
-                        "site_camera,site_hitdet,site_csm,site_scriptrand,site_ai,site_other\n");
+                        "site_camera,site_hitdet,site_csm,site_scriptrand,site_ai,site_other,"
+                        "objs,sr_hash\n");
 
         // Oldest first.
         const size_t start = (g_count == kCapacity) ? g_next : 0;
         for (size_t i = 0; i < g_count; ++i) {
             const Entry& e = g_ring[(start + i) % kCapacity];
-            std::fprintf(f, "%d,%d,0x%08X,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+            std::fprintf(f, "%d,%d,0x%08X,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,0x%08X\n",
                          e.frame, e.confirmed, e.rng, e.p1_hp, e.p2_hp,
                          e.round, e.gp_calls, e.render_calls,
                          e.site[kGpSiteCameraManager], e.site[kGpSiteHitDetection],
                          e.site[kGpSiteCharStateMachine], e.site[kGpSiteScriptRandBranch],
-                         e.site[kGpSiteAiInput], e.site[kGpSiteOther]);
+                         e.site[kGpSiteAiInput], e.site[kGpSiteOther], e.objs,
+                         e.sr_hash);
         }
         std::fclose(f);
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,

@@ -13,7 +13,8 @@
 // netplay_battle_events.cpp (Netplay_HandleSaveEvent/LoadEvent/AdvanceEvent).
 #include "netplay.h"
 #include "netplay_internal.h"
-#include "desync_ring.h"  // shared file-scope state, externed for the split netplay_*.cpp TUs
+#include "desync_ring.h"
+#include "scriptrand_trace.h"  // shared file-scope state, externed for the split netplay_*.cpp TUs
 #include "../hooks/hooks.h"   // Hook_ApplySOCD_Public for SOCD-pre-apply on spec capture
 #include "../hooks/css_autoconfirm.h"  // CssAutoConfirm_OnReplayMatchStart (TEST_CSS_CHAR pin)
 #include "control_channel.h"
@@ -198,6 +199,8 @@ static void HandleBattleSessionEvents() {
                 // Write the cross-peer ring NOW, while the frames leading
                 // into the divergence are still in it.
                 fm2k::desync_ring::Dump("GekkoDesyncDetected",
+                                        (int32_t)event->data.desynced.frame);
+                fm2k::scriptrand_trace::Dump("GekkoDesyncDetected",
                                         (int32_t)event->data.desynced.frame);
                 HandleDesyncDetected(
                     event->data.desynced.frame,

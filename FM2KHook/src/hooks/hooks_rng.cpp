@@ -60,6 +60,7 @@ extern uint32_t g_netplay_frame;
 // We want: round-to-nearest-even, all exceptions masked, no FZ/DAZ, flags clear.
 // Value 0x1F80 is the x86 default but we pin it explicitly to ensure both
 #include "hooks_internal.h"
+#include "../netplay/scriptrand_trace.h"
 #include "../netplay/seam_trace.h"
 
 // RNG-call trace -- gated on FM2K_RNG_TRACE=1 env var. Each call records
@@ -201,6 +202,12 @@ uint32_t __cdecl Hook_GameRand() {
             default:                                        s = kGpSiteOther;            break;
         }
         ++g_gp_rand_by_site[s];
+        // Every gameplay draw measured so far is this one site, so record WHICH
+        // script object and instruction is drawing. g_css_object_ptr is valid
+        // here: update_game_state publishes it before each dispatch.
+        if (s == kGpSiteScriptRandBranch) {
+            fm2k::scriptrand_trace::Note(g_netplay_frame);
+        }
     }
     // RNG CALL-SITE RING. Armed only by FM2K_SEAM_RNGSITE=1 and only inside a
     // ~30-frame window, so an unarmed build pays one cached-bool test here.

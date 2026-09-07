@@ -181,7 +181,16 @@ def report_pair(pa, pb):
     print(f"   confirmed frames in common: {len(common)} "
           f"({common[0]}..{common[-1]})")
 
-    fields = ["rng", "p1_hp", "p2_hp", "round"]
+    # objs (live objects dispatched that frame) is checked FIRST in spirit: the
+    # script VM random branch is where every gameplay draw comes from, and it
+    # runs inside dispatched objects, so an object-count difference is a more
+    # upstream cause than the rng difference it produces.
+    # sr_hash (script-execution context hash) is the most upstream term: it
+    # says the two sims stopped running the same script instructions, which is
+    # what produces the extra draw that moves rng. objs is next. rng is the
+    # symptom GekkoNet reports.
+    fields = ["sr_hash", "objs", "rng", "p1_hp", "p2_hp", "round"]
+    fields = [f for f in fields if f in a[common[0]] and f in b[common[0]]]
     first = {}
     for f in common:
         for k in fields:
@@ -211,12 +220,20 @@ def report_pair(pa, pb):
         print("   seeds are not within 8192 draws of each other -- not a "
               "simple draw-count difference")
 
-    da, db = site_deltas(ca).get(fd), site_deltas(cb).get(fd)
-    if da and db:
-        print("   draws at that frame, by exact call site:")
-        for s in SITES:
-            mark = "   <-- DIVERGES" if da[s] != db[s] else ""
-            print(f"      {s:16s} A={da[s]:3d}  B={db[s]:3d}{mark}")
+    # WHICH SITES DRAW AT ALL. This is the valid cross-peer statement: a site
+    # whose cumulative total is zero on both peers cannot be responsible.
+    # Per-frame site DELTAS are NOT comparable across peers -- the columns are
+    # cumulative and a peer that speculates or rolls back accumulates draws the
+    # restored seed never shows, so the host can read 54 where the guest reads
+    # 6 on a frame whose real difference is a single draw. Use the seed walk
+    # above for the count and this for the location.
+    if SITES[0] in ca[0] and SITES[0] in cb[0]:
+        print("   sites that drew at all (cumulative over the capture):")
+        for site in SITES:
+            ta = int(ca[-1][site]) - int(ca[0][site])
+            tb = int(cb[-1][site]) - int(cb[0][site])
+            note = "" if (ta or tb) else "   (never draws -- excluded)"
+            print(f"      {site:16s} A={ta:7d}  B={tb:7d}{note}")
     else:
         print("   (no site_* columns in one or both files -- rebuild the hook "
               "and re-capture to name the call site)")

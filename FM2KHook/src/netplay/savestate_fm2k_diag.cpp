@@ -87,32 +87,63 @@ const RegionChecksums& SaveState_GetRegionChecksums() {
 // Several comments elsewhere used to call this an "HP/pos/rng/timer" hash; they
 // were wrong and have been corrected. This is GDC tooling gap #1.
 //
-// WHY POSITIONS ARE NOT ADDED HERE (deliberate, 2026-08-08):
-//   * This value is SESSION-KILLING. A mismatch reaches HandleDesyncDetected,
-//     which dumps and then TerminateProcess()es BOTH peers' games. Every field
-//     added here becomes a new way for a live match to die.
-//   * The comparison itself is safe against rollback transients -- gekko's
-//     SendSessionHealthCheck only ever exchanges the checksum of
-//     `current - prediction_window - 1`, a CONFIRMED frame -- so the risk is
-//     not "benign prediction noise". The risk is a field that is legitimately
-//     NOT part of the rolled-back contract. Positions live in the object pool,
-//     which is exactly where that hazard is known to exist today:
-//     trampoline_render.cpp does not revert render-written object-pool state,
-//     and savestate_fm2k_load.cpp skips slot +68..+84 on restore. Promoting a
-//     region with a live, unresolved "is this actually rolled back" question
-//     into the kill-the-match term is the wrong order of operations.
-//   * It would not have caught the bug that prompted this review: in the
-//     analysed capture the positions were IDENTICAL on both peers at the
-//     divergent frame (the divergence was a settings mismatch stamped at
-//     RSS_BATTLE_INIT, now gated at the battle-entry barrier).
-//   * The coverage gap is already being closed OUT OF BAND and non-fatally:
-//     the [CHECKSUM] line in netplay_battle_events.cpp emits a
-//     process-independent pool-topology term (top=/nobj=) alongside the
-//     checksum, deliberately NOT folded into it.
-// REVISIT WHEN: the topology/POOLSET term has soaked across a large corpus
-// with zero cross-peer differences on confirmed frames, and the render-written
-// object-pool question in savestate_fm2k_load.cpp is settled. Then positions
-// can be promoted with evidence instead of hope.
+// POSITIONS ARE NOW IN THE WIRE TERM (2026-09-07). This block used to explain
+// why they were not, and that reasoning has been overtaken by evidence. The
+// original objections, and what changed:
+//
+//   * "It would not have caught the bug that prompted this review." True of
+//     THAT bug. Not true of the next one: the game-speed stale-latch desync
+//     (see docs/dev/desync_campaign_state.md) was a guest moving every object
+//     at exactly 2x for a whole match, and POSITION WAS THE EARLIEST
+//     DIVERGENCE -- f=72, against an rng divergence at f=194 that was the only
+//     thing GekkoNet ever reported. 120 frames of a completely diverged
+//     simulation went unreported because this term carries no positions.
+//
+//   * "Positions live in the object pool, which is where the render-written
+//     hazard is." The concrete instance of that hazard is the per-object COLOR
+//     override at +68..+84, written by ProcessColorInterpolation during render
+//     and deliberately skipped on restore (savestate_fm2k_load.cpp). Positions
+//     are at +0x08/+0x0C, are written by the sim, and are not in that region.
+//
+//   * "Revisit when the term has soaked with zero cross-peer differences on
+//     confirmed frames." Measured, on the same instrument that found the bug:
+//     a PASSING run shows 0 of 119 confirmed frames with any position
+//     difference, while the failing run shows 53 of 119. Positions are a valid
+//     cross-peer term -- they agree exactly when the match is healthy.
+//
+// The "every field added here is a new way for a live match to die" warning
+// stands and is the reason this is soaked before it ships. A position-only
+// mismatch is diagnosable: the desync ring records every live object's
+// position, so the dump names the exact slot.
+//
+// WIRE COMPATIBILITY: this changes the value peers compare. Builds either side
+// of this change will report a desync against each other immediately. It is a
+// hard version break, not a rolling upgrade.
+// Digest of every live object's position. Walks the pool once: the type field
+// gates, and only live slots contribute. The slot index is folded in so that
+// two peers holding the same positions in DIFFERENT slots do not hash equal.
+static uint32_t LiveObjectPositionsDigest() {
+    constexpr uintptr_t kObjectPool = 0x004701E0;
+    constexpr size_t    kObjStride  = 382;
+    constexpr size_t    kObjCount   = 1024;
+    constexpr ptrdiff_t kOffType    = 0x000;
+    constexpr ptrdiff_t kOffPosX    = 0x008;
+    constexpr ptrdiff_t kOffPosY    = 0x00C;
+
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < kObjCount; ++i) {
+        const uintptr_t o = kObjectPool + i * kObjStride;
+        const uint32_t type = *(const uint32_t*)(o + kOffType);
+        if (!type) continue;
+        const uint32_t mix[3] = { (uint32_t)i,
+                                  *(const uint32_t*)(o + kOffPosX),
+                                  *(const uint32_t*)(o + kOffPosY) };
+        const uint8_t* p = (const uint8_t*)mix;
+        for (size_t b = 0; b < sizeof(mix); ++b) { h ^= p[b]; h *= 16777619u; }
+    }
+    return h;
+}
+
 uint32_t SaveState_CalculateFingerprint() {
     g_region_checksums.rng = *(uint32_t*)ADDR_RNG_SEED;
 
@@ -196,11 +227,13 @@ uint32_t SaveState_CalculateFingerprint() {
         uint32_t p1_hp;
         uint32_t p2_hp;
         uint32_t round_number;
+        uint32_t positions;   // see LiveObjectPositionsDigest + the note above
     } wire = {
         *(uint32_t*)0x41FB1C,
         *(uint32_t*)0x4DFC85,
         *(uint32_t*)0x4EDCC4,
         *(uint32_t*)0x470044,
+        LiveObjectPositionsDigest(),
     };
     g_region_checksums.wire_fingerprint =
         Fletcher32((const uint8_t*)&wire, sizeof(wire));

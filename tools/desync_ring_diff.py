@@ -232,6 +232,47 @@ def report_pair(pa, pb):
     # says the two sims stopped running the same script instructions, which is
     # what produces the extra draw that moves rng. objs is next. rng is the
     # symptom GekkoNet reports.
+    # POSITIONS FIRST. They are now part of the wire fingerprint, and in the
+    # game-speed stale-latch desync they diverged at f=72 against an rng
+    # divergence at f=194 -- i.e. they are the earliest signal by ~120 frames.
+    # Synthesised from pool_bits + pool_xs/pool_ys so it slots into the same
+    # first-divergence ordering as the scalar fields.
+    def posmap(row):
+        bits = row.get("pool_bits", "")
+        if not bits:
+            return None
+        slots = []
+        for w in range(len(bits) // 8):
+            word = int(bits[w * 8:(w + 1) * 8], 16)
+            for bit in range(32):
+                if word & (1 << bit):
+                    slots.append(w * 32 + bit)
+        hx, hy = row.get("pool_xs", ""), row.get("pool_ys", "")
+        xs = [hx[i * 8:i * 8 + 8] for i in range(len(hx) // 8)]
+        ys = [hy[i * 8:i * 8 + 8] for i in range(len(hy) // 8)]
+        return {s_: (xs[i], ys[i]) for i, s_ in enumerate(slots)
+                if i < len(xs) and i < len(ys)}
+
+    if "pool_xs" in a[common[0]] and "pool_xs" in b[common[0]]:
+        for f in common:
+            pa_, pb_ = posmap(a[f]), posmap(b[f])
+            if pa_ is not None and pa_ != pb_:
+                if all(posmap(a[g]) == posmap(b[g]) for g in common if g > f):
+                    continue
+                print(f"   positions first diverge (and never re-agree) at f={f}:")
+                for s_ in sorted(set(pa_) | set(pb_)):
+                    if pa_.get(s_) != pb_.get(s_):
+                        va, vb = pa_.get(s_), pb_.get(s_)
+                        def show(v):
+                            if not v:
+                                return "absent"
+                            x = int(v[0], 16); y = int(v[1], 16)
+                            x -= (1 << 32) if x >> 31 else 0
+                            y -= (1 << 32) if y >> 31 else 0
+                            return f"({x/65536:.3f},{y/65536:.3f})"
+                        print(f"      slot {s_:4d}: A={show(va)} B={show(vb)}")
+                break
+
     fields = ["pool", "objs", "rng", "p1_hp", "p2_hp", "round"]
     fields = [f for f in fields if f in a[common[0]] and f in b[common[0]]]
     first = {}

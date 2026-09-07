@@ -167,9 +167,52 @@ def report_one(path):
         print("   (no site_* columns -- capture predates exact site attribution)")
 
 
+def sanity_check(path, rows):
+    """Catch a header/emit column shift by checking values against their meaning.
+
+    The ring's CSV header has drifted out of step with the emit order twice,
+    and both times the shifted columns produced a confident WRONG answer -- the
+    worst one read the always-zero call-site counters as the spawn handles and
+    concluded those handles never differ. A column count check would not have
+    caught it (the counts matched), so check what the values MEAN instead.
+    """
+    if not rows:
+        return
+    r = rows[len(rows) // 2]
+    bad = []
+    if "spawn0" in r:
+        for k in ("spawn0", "spawn1"):
+            h = r[k]
+            vals = [int(h[i * 8:i * 8 + 8], 16) for i in range(len(h) // 8)]
+            # Each handle is either null or a pointer into the object pool.
+            if any(v and not (0x4701E0 <= v < 0x4701E0 + 382 * 1024) for v in vals):
+                bad.append(f"{k} holds values that are neither null nor "
+                           f"object-pool pointers")
+    if "gs_src" in r and int(r["gs_src"]) > 100:
+        bad.append(f"gs_src={r['gs_src']} is not a plausible game speed")
+    if "pool_live" in r and not (0 < int(r["pool_live"]) <= 1024):
+        bad.append(f"pool_live={r['pool_live']} is out of range")
+    # The strongest invariant, and the one that actually catches a shift:
+    # `objs` is the engine's own count of objects it dispatched this frame and
+    # `pool_live` is our count of non-zero-type slots. They describe the same
+    # population and must be close. A shifted header sends these wildly apart
+    # (a real capture read 393 against 1).
+    if "objs" in r and "pool_live" in r:
+        o, pl = int(r["objs"]), int(r["pool_live"])
+        if pl and abs(o - pl) > max(8, pl // 4):
+            bad.append(f"objs={o} disagrees with pool_live={pl}; these count "
+                       f"the same objects, so the columns are shifted")
+    if bad:
+        print(f"!! {path}: COLUMNS LOOK MISALIGNED -- do not trust this file:")
+        for b in bad:
+            print(f"     {b}")
+
+
 def report_pair(pa, pb):
-    ha, _, ca, _ = load(pa)
-    hb, _, cb, _ = load(pb)
+    ha, ra, ca, _ = load(pa)
+    hb, rb, cb, _ = load(pb)
+    sanity_check(pa, ra)
+    sanity_check(pb, rb)
     print(f"== A {pa}\n   {ha}")
     print(f"== B {pb}\n   {hb}")
     a = {int(r["frame"]): r for r in ca}

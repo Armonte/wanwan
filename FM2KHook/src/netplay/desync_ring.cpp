@@ -230,11 +230,19 @@ void Dump(const char* reason, int32_t desync_frame) {
                         "it reaches the next -- no peer file needed. The site_* "
                         "columns are cumulative draws per exact game_rand call site; "
                         "difference consecutive rows to see which site drew.\n");
+        // COLUMN ORDER MUST MATCH THE EMIT ORDER BELOW EXACTLY. This has been
+        // wrong twice: once when sysin.. was added and again when spawn*/gs_*
+        // were, and both times the shifted columns produced a confident wrong
+        // answer (the second read the always-zero site counters as the spawn
+        // handles and "proved" they never differ). The emit is one fprintf
+        // followed by appended groups, so the groups go at the END, in the
+        // order they are appended -- never interleaved into the middle here.
         std::fprintf(f, "frame,confirmed,rng,p1_hp,p2_hp,round,gp_calls,render_calls,"
-                        "sysin,in0,in1,prev0,prev1,spawn0,spawn1,"
-                        "gs_src,gs_move,gs_accel,gs_pic,"
+                        "sysin,in0,in1,prev0,prev1,"
                         "site_camera,site_hitdet,site_csm,site_scriptrand,site_ai,site_other,"
-                        "objs,pool,pool_live,pool_bits,pool_types,pool_scripts,"
+                        "objs,pool,"
+                        "spawn0,spawn1,gs_src,gs_move,gs_accel,gs_pic,"
+                        "pool_live,pool_bits,pool_types,pool_scripts,"
                         "pool_cursors,pool_waits,pool_xs,pool_ys\n");
 
         // Oldest first.

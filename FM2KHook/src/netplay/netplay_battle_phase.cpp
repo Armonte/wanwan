@@ -203,6 +203,8 @@ static void HandleBattleSessionEvents() {
                                         (int32_t)event->data.desynced.frame);
                 fm2k::scriptrand_trace::Dump("GekkoDesyncDetected",
                                         (int32_t)event->data.desynced.frame);
+                fm2k::pool_delta_trace::DumpRetires("GekkoDesyncDetected",
+                                        (int32_t)event->data.desynced.frame);
                 HandleDesyncDetected(
                     event->data.desynced.frame,
                     event->data.desynced.local_checksum,

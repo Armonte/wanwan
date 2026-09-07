@@ -65,6 +65,7 @@ void Netplay_HandleSaveEvent(GekkoGameEvent* update) {
     // runs -- hook logging is synchronous, so a bigger line every frame is
     // more time every frame. See desync_ring.h.
     const int confirmed = g_session ? gekko_confirmed_frame(g_session) : -1;
+    fm2k::pool_delta_trace::SetRetireFrame((uint32_t)frame);
     fm2k::desync_ring::Note(frame, confirmed);
     // FM2K_DESYNCRING_DUMP_AT=<frame>: dump the ring once at that confirmed
     // frame even when nothing desynced. This exists because the single most
@@ -84,6 +85,7 @@ void Netplay_HandleSaveEvent(GekkoGameEvent* update) {
             s_dump_at = -1;   // once per process
             fm2k::desync_ring::Dump("BaselineDumpNoDesync", confirmed);
             fm2k::scriptrand_trace::Dump("BaselineDumpNoDesync", confirmed);
+            fm2k::pool_delta_trace::DumpRetires("BaselineDumpNoDesync", confirmed);
         }
     }
     // [PHASE-F-DIAG] log save event details BEFORE Save (rng_seed

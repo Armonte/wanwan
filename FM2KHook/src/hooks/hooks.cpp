@@ -11,6 +11,7 @@
 #include "render_simd.h"      // FM2K_BLIT_SIMD: blit + case -10 blur reimplementation
 #include "scene_frame_guard.h" // destroyed-object draw suppression + [FRAMEIDX] detector
 #include "globals.h"
+#include "../netplay/pool_delta_trace.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -326,6 +327,8 @@ bool InitializeHooks() {
     InstallVfsHooks();  // hooks_vfs.cpp (non-fatal hooks)
 
     if (!InstallRngHook()) return false;  // hooks_rng.cpp
+    // Names which script path retires an object (pool_delta_trace.h).
+    fm2k::pool_delta_trace::InstallRetireHook();
 
     // Hook ProcessGameInputs
     if (MH_CreateHook((void*)FM2K::ADDR_PROCESS_INPUTS, (void*)Hook_ProcessGameInputs,

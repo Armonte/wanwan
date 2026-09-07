@@ -63,4 +63,24 @@ uint32_t Note(uint32_t bitmap_out[kBitmapWords],
               uint16_t waits_out[kMaxLiveTypes],
               int* live_out);
 
+// WHO RETIRED THE OBJECT.
+//
+// An object leaves the pool by having its type set to 1. Every in-battle path
+// that does so funnels through ClearObjectReferences @0x40E4A0, which retires
+// the CURRENT object and is called from four sites inside
+// character_state_machine -- one of which is the opcode dispatcher's DEFAULT
+// case, i.e. an unrecognised opcode, which logs "ScriptMainLoopError" to the
+// game's own debug overlay (not to any file we keep) and then destroys the
+// object.
+//
+// Guessing between those four sites from downstream state has failed twice
+// already, so this records the answer directly: the retiring object's slot and
+// the RETURN ADDRESS, which names the call site outright.
+//   0x4124F5 / 0x412510 / 0x412756 -- normal script paths
+//   0x413BCB                       -- the ScriptMainLoopError default case
+bool InstallRetireHook();
+void DumpRetires(const char* reason, int32_t desync_frame);
+// Set by the netplay layer so each retire can be stamped with its frame.
+void SetRetireFrame(uint32_t frame);
+
 }  // namespace fm2k::pool_delta_trace

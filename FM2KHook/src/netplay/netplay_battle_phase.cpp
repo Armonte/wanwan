@@ -198,13 +198,21 @@ static void HandleBattleSessionEvents() {
 
             case GekkoDesyncDetected: {
                 // Write the cross-peer ring NOW, while the frames leading
-                // into the divergence are still in it.
+                // into the divergence are still in it -- but NOT for a phantom
+                // (zero checksum on either side), which HandleDesyncDetected
+                // ignores. Dumping those produced ring files that look exactly
+                // like a real capture for a desync the game correctly shrugged
+                // off, and one of them cost a chunk of a session before the
+                // log line was read.
+                if (!Netplay_IsPhantomDesync(event->data.desynced.local_checksum,
+                                             event->data.desynced.remote_checksum)) {
                 fm2k::desync_ring::Dump("GekkoDesyncDetected",
                                         (int32_t)event->data.desynced.frame);
                 fm2k::scriptrand_trace::Dump("GekkoDesyncDetected",
                                         (int32_t)event->data.desynced.frame);
                 fm2k::pool_delta_trace::DumpRetires("GekkoDesyncDetected",
                                         (int32_t)event->data.desynced.frame);
+                }
                 HandleDesyncDetected(
                     event->data.desynced.frame,
                     event->data.desynced.local_checksum,

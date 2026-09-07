@@ -42,6 +42,16 @@
 //
 // `synthetic` only affects log wording -- the file-write + terminate
 // path is identical.
+// A zero on either side is a gekko health-slot artifact, never a state hash
+// (our save callback always writes a nonzero fingerprint). Shared so the
+// evidence dumps and the kill path apply the SAME test: they were separate,
+// and the dumps fired on ignored phantoms -- a ring file would appear with
+// reason=GekkoDesyncDetected for a desync the game correctly shrugged off,
+// which is indistinguishable from a real capture until you read the log.
+bool Netplay_IsPhantomDesync(uint32_t local_chk, uint32_t remote_chk) {
+    return local_chk == 0 || remote_chk == 0;
+}
+
 void HandleDesyncDetected(int frame, uint32_t local_chk,
                                  uint32_t remote_chk, bool synthetic) {
     // Phantom-checksum guard (2026-06-11 16:31, battle-2 f=1536): gekko's
@@ -53,7 +63,7 @@ void HandleDesyncDetected(int frame, uint32_t local_chk,
     // matched). Our save callback always writes a nonzero fingerprint,
     // so a zero on either side is never a genuine state hash; a real
     // divergence keeps firing with nonzero pairs on subsequent frames.
-    if (!synthetic && (local_chk == 0 || remote_chk == 0)) {
+    if (!synthetic && Netplay_IsPhantomDesync(local_chk, remote_chk)) {
         static uint32_t s_phantom_count = 0;
         if (s_phantom_count++ < 8 || (s_phantom_count & 0x3F) == 0) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,

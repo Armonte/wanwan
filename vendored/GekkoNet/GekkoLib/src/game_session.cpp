@@ -293,6 +293,28 @@ void Gekko::GameSession::SendSessionHealthCheck()
 
     auto sav = _storage.GetState(confirmed);
 
+    // THE SLOT MAY NOT HOLD `confirmed`. StateStorage::GetState is a bare ring
+    // index (`_states[frame % _max_num_states]`) with no validation, so once
+    // the confirmed frame falls further behind than the ring is deep -- which
+    // is exactly what packet loss and high delay cause -- the slot has already
+    // been recycled by a newer frame.
+    //
+    // Upstream only asserts this, and the assert is compiled out of release
+    // builds. The consequence is not benign: we transmit ANOTHER FRAME'S
+    // CHECKSUM labelled as `confirmed`, the peer compares it against its own
+    // (correct) checksum for that frame, and both sides tear down a healthy
+    // session over a desync that never happened.
+    //
+    // The unwritten-slot case shows up as checksum 0 and is filterable
+    // downstream; the recycled-slot case carries a perfectly plausible NON-ZERO
+    // checksum and is not distinguishable after the fact. Skipping is safe: the
+    // health check is advisory, `confirmed` advances every frame, and
+    // _last_sent_healthcheck is deliberately NOT updated here so the next
+    // frame simply tries again with a slot that is still live.
+    if (!sav || sav->frame != confirmed) {
+        return;
+    }
+
     assert(sav->frame == confirmed);
 
     _last_sent_healthcheck = confirmed;

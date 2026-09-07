@@ -173,6 +173,7 @@ uint8_t NextBarrierEpoch();
 bool    Netplay_StartCSSSession();
 void    Netplay_EndCSSSession();
 // desync diagnostics (defined in netplay.cpp), called by the battle-phase TU:
+bool Netplay_IsPhantomDesync(uint32_t local_chk, uint32_t remote_chk);
 void HandleDesyncDetected(int frame, uint32_t local_chk, uint32_t remote_chk, bool synthetic);
 void MaybeFireSyntheticDesync();
 // cross-TU between netplay.cpp and the battle-phase TU:

@@ -32,11 +32,28 @@
 // scriptrand_trace.h.
 namespace fm2k::pool_delta_trace {
 
-constexpr int kBitmapWords = 32;   // 1024 slots
+constexpr int kBitmapWords = 32;    // 1024 slots
+// Live objects sit at ~98 for whole matches, so this holds every one of them
+// with room to spare; the count is reported so a truncation can never pass as
+// agreement.
+constexpr int kMaxLiveTypes = 192;
 
-// Called once per gekko Save, alongside the desync ring. Fills `out_bitmap`
-// with the live-slot bitmap and returns an FNV-1a digest over (slot, type) for
-// every live slot.
-uint32_t Note(uint32_t bitmap_out[kBitmapWords]);
+// Called once per gekko Save, alongside the desync ring. Fills `bitmap_out`
+// with the live-slot bitmap and `types_out` with those slots' object types in
+// ascending slot order, returns an FNV-1a digest over (slot, type) for every
+// live slot, and reports the live count via `live_out`.
+//
+// TYPES, not just liveness. Measured 2026-09-06 22:47: at the first diverging
+// frame the two peers hold the SAME 98 live slots -- nothing spawned on one
+// and not the other -- yet the digest differs. The digest folds (slot, type),
+// so some slot holds a DIFFERENT OBJECT TYPE on the two peers. Liveness alone
+// cannot see that; this can.
+// `scripts_out` carries each live slot's script_id (obj +0x030). Knowing the
+// TYPE says an object retired early; knowing the SCRIPT says which script
+// decided to, which is what can actually be read back in the game data.
+uint32_t Note(uint32_t bitmap_out[kBitmapWords],
+              uint8_t types_out[kMaxLiveTypes],
+              uint16_t scripts_out[kMaxLiveTypes],
+              int* live_out);
 
 }  // namespace fm2k::pool_delta_trace

@@ -240,6 +240,35 @@ def report_pair(pa, pb):
         print(f"   live object slots at f={fd}: A has {len(sa)}, B has {len(sb)}")
         print(f"      only on A: {only_a}")
         print(f"      only on B: {only_b}")
+        # Same live set but a different digest means a slot holds a different
+        # object TYPE. pool_types lists the type of each live slot in ascending
+        # slot order, so zipping it against the bitmap names the slot.
+        if "pool_types" in a[fd] and "pool_types" in b[fd] and not only_a and not only_b:
+            def typemap(row, slotset):
+                hexs = row["pool_types"]
+                types = [int(hexs[i*2:i*2+2], 16) for i in range(len(hexs)//2)]
+                return dict(zip(sorted(slotset), types))
+            ta, tb = typemap(a[fd], sa), typemap(b[fd], sb)
+            def scriptmap(row, slotset):
+                hexs = row.get("pool_scripts", "")
+                if not hexs:
+                    return {}
+                v = [int(hexs[i*4:i*4+4], 16) for i in range(len(hexs)//4)]
+                return dict(zip(sorted(slotset), v))
+            ca_, cb_ = scriptmap(a[fd], sa), scriptmap(b[fd], sb)
+            diffs = [(s, ta[s], tb[s]) for s in sorted(ta)
+                     if s in tb and ta[s] != tb[s]]
+            if diffs:
+                print(f"   the live sets MATCH, but {len(diffs)} slot(s) hold a "
+                      f"different object TYPE:")
+                for s_, x, y in diffs:
+                    extra = ""
+                    if s_ in ca_ and s_ in cb_:
+                        extra = f"   script A={ca_[s_]} B={cb_[s_]}"
+                    print(f"      slot {s_:4d}:  A type={x}  B type={y}{extra}")
+            else:
+                print("   live sets and types both match -- the digest "
+                      "difference is not explained by this row")
 
     # WHICH SITES DRAW AT ALL. This is the valid cross-peer statement: a site
     # whose cumulative total is zero on both peers cannot be responsible.

@@ -826,6 +826,15 @@ void Netplay_HandleAdvanceEvent(GekkoGameEvent* update, bool& has_advance,
             // fprintf cost cannot hitch a live match. NEVER add this to a
             // normal exit path.
             SeamTrace_Dump(g_player_index, "harness auto-terminate");
+            // The script draw trace, on the same terminate path and for the
+            // same reason. This is what makes FM2K_STRESS_MODE useful for the
+            // rng divergence: stress rolls back every check_distance frames on
+            // ONE instance with the SAME inputs, so two simulations of a frame
+            // MUST produce the same draws. A difference between them is a local
+            // rollback-determinism bug, reproducible without the netplay
+            // lottery (the live desync appears in ~1 run in 14).
+            fm2k::scriptrand_trace::Dump("harness auto-terminate", -1);
+            fm2k::pool_delta_trace::Dump("harness auto-terminate", -1);
             FacingTrace_Dump("harness auto-terminate");  // Phase 4b [FACING] ring
             // Per-frame timing ring. Legal here for exactly the reason the two
             // above are: TerminateProcess is a few statements away, so the

@@ -52,14 +52,101 @@ def load_blocks(path):
     return rows, blocks
 
 
+def all_blocks(path):
+    """[(frame, [rows...])] -- EVERY contiguous block, re-simulations included."""
+    rows = []
+    with open(path) as fh:
+        body = [l for l in fh if not l.startswith("#")]
+    for r in csv.DictReader(body):
+        rows.append((int(r["frame"]), r["slot"], r["kind"],
+                     r.get("player", "?"), r["script_id"], r["cursor"],
+                     r.get("value", "?")))
+    out, cur_frame, cur = [], None, []
+    for row in rows:
+        if row[0] != cur_frame:
+            if cur_frame is not None:
+                out.append((cur_frame, cur))
+            cur_frame, cur = row[0], []
+        cur.append(row[1:])
+    if cur_frame is not None:
+        out.append((cur_frame, cur))
+    return out
+
+
+def report_resim(path, context):
+    """Compare successive simulations of the SAME frame within ONE file.
+
+    THIS IS THE STRESS-MODE CHECK. FM2K_STRESS_MODE=1 rolls back every
+    check_distance frames on a single instance with the SAME inputs, so two
+    simulations of one frame must produce identical draws. Any difference is a
+    local rollback-determinism bug -- reproducible without the netplay lottery,
+    where the live desync shows up in about 1 run in 14.
+
+    Do NOT read this mode's output from a live netplay capture: there a frame is
+    legitimately re-simulated because the INPUTS changed, so differing blocks
+    are expected and mean nothing.
+    """
+    blocks = all_blocks(path)
+    # DROP THE FIRST BLOCK. The ring keeps only the last N draws, so the file
+    # almost always begins PART-WAY THROUGH a frame's draws. Treating that
+    # fragment as a complete simulation makes it disagree with every later
+    # replay of the same frame -- which is exactly the false "9 frames
+    # re-simulated differently, rollback determinism bug" this tool reported
+    # before the raw rows were read by hand.
+    truncated = blocks[0][0] if blocks else None
+    blocks = blocks[1:]
+    print(f"== {path}\n   {len(blocks)} simulated frame-blocks "
+          f"(dropped the leading fragment of f={truncated}: ring-wrap, not a "
+          f"whole frame)")
+    seen, bad = {}, []
+    for frame, rows in blocks:
+        if frame in seen:
+            # One entry per FRAME, not per re-simulation: a frame replayed 8
+            # times would otherwise print the same disagreement 8 times.
+            if seen[frame] != rows and not any(b[0] == frame for b in bad):
+                bad.append((frame, seen[frame], rows))
+        else:
+            seen[frame] = rows
+    resimmed = len(blocks) - len(seen)
+    print(f"   {len(seen)} distinct frames, {resimmed} re-simulations")
+    if resimmed == 0:
+        print("   NO re-simulation happened -- this run cannot test rollback "
+              "determinism. Is FM2K_STRESS_MODE=1 set, and is check_distance "
+              "small enough to force a rollback?")
+        return 1
+    if not bad:
+        print(f"   every re-simulated frame reproduced its draws EXACTLY "
+              f"({resimmed} re-sims) -- rollback is deterministic on this path")
+        return 0
+    print(f"   {len(bad)} frame(s) re-simulated DIFFERENTLY -- rollback "
+          f"determinism bug")
+    for frame, first, again in bad[:context]:
+        print(f"\n   f={frame}: first pass drew {len(first)}, re-sim drew {len(again)}")
+        print("     slot,kind,player,script_id,cursor,value")
+        for i in range(max(len(first), len(again))):
+            a = ",".join(first[i]) if i < len(first) else "--"
+            b = ",".join(again[i]) if i < len(again) else "--"
+            mark = "" if a == b else "   <-- differs"
+            print(f"       [{i}] first={a:28s} resim={b:28s}{mark}")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("a")
-    ap.add_argument("b")
+    ap.add_argument("b", nargs="?")
     ap.add_argument("--context", type=int, default=6,
                     help="draws to print around the first disagreement")
+    ap.add_argument("--resim", action="store_true",
+                    help="single-file stress check: compare successive "
+                         "simulations of the same frame (see report_resim)")
     args = ap.parse_args()
+    if args.resim:
+        rc = 0
+        for p in [args.a] + ([args.b] if args.b else []):
+            rc |= report_resim(p, args.context)
+        return rc
 
     ra, ba = load_blocks(args.a)
     rb, bb = load_blocks(args.b)

@@ -27,11 +27,18 @@ OUTBASE="${OUTBASE:-tools/.spec_runs/hunt}"
 # hunt that found nothing.
 mkdir -p "$OUTBASE" || { echo "cannot create $OUTBASE"; exit 2; }
 
-# Clear stale traces so the ones found afterwards are unambiguously from this
-# hunt. They are timestamped, but an operator reading `ls` should not have to
-# work that out.
-rm -f "$LOGDIR"/FM2K_P*_desyncring_*.csv "$LOGDIR"/FM2K_P*_scriptrand_*.csv \
-      "$LOGDIR"/FM2K_P*_pooldelta_*.csv
+# ARCHIVE stale traces, never delete them. An earlier version ran `rm -f` here
+# so that the traces found afterwards were unambiguously from this hunt -- and
+# it destroyed the one capture that had named the diverging object, because the
+# next hunt started before the evidence had been copied anywhere. A desync that
+# appears in 1 run in 14 is far too expensive to throw away for tidiness.
+ARCHIVE="${ARCHIVE:-docs/dev/evidence/hunt_archive}"
+mkdir -p "$ARCHIVE"
+for f in "$LOGDIR"/FM2K_P*_desyncring_*.csv "$LOGDIR"/FM2K_P*_scriptrand_*.csv \
+         "$LOGDIR"/FM2K_P*_pooldelta_*.csv; do
+  [ -e "$f" ] || continue
+  mv -n "$f" "$ARCHIVE/" 2>/dev/null || rm -f "$f"
+done
 
 for i in $(seq 1 "$RUNS"); do
   out="$OUTBASE/$i"

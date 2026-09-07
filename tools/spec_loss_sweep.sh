@@ -47,34 +47,28 @@ for s in $SEEDS; do
     echo "seed=$s ABORT -- no log written; the harness never ran"; exit 2
   fi
 
-  # Classify BY THE HARNESS'S OWN VERDICT, never by keyword.
-  #
-  # An earlier version grepped for /DESYNC|divergen|MISMATCH/ and reported
-  # 6 of 12 seeds as desyncs. Every one of them was a PASS. What it matched was
-  # this advisory line, in full:
-  #
-  #   [harness] PVP match0: crc= 2/599 mismatches (longest run 2, first f=597:
-  #             ...) [advisory -- gekko owns this term; judge by DESYNC #]
-  #
-  # i.e. it matched the words inside the sentence that tells you not to judge
-  # by those words. The cross-peer [CHECKSUM] crc is a known-noisy term between
-  # players (see docs/dev/desync_campaign_state.md) and says nothing on its own.
-  #
-  # NOTE THE DIGIT in `DESYNC #[0-9]`. The advisory above ENDS with the literal
-  # text "judge by DESYNC #]", so a bare "DESYNC #" matches it as well and the
-  # first attempt at this fix was still wrong. The real line is
-  # `[P1] [ERROR] DESYNC #1 f=194: local=... remote=...`.
-  #
-  # The real signals, in priority order: a FREEZE (which also trips the
-  # liveness assertion, so it must be tested before failure), then the gekko
-  # desync line, then OVERALL PASS.
-  if grep -qE "connect never established|join handshake failed" "$log"; then
-    echo "seed=$s FREEZE (join handshake never completed)"; freeze=$((freeze+1))
-    cp -r "$OUT/$s" "$ARCHIVE/seed_${s}_freeze" 2>/dev/null
-  elif grep -qE "DESYNC #[0-9]|OVERALL FAIL|-> FAIL" "$log"; then
+  # Classify BY THE HARNESS'S OWN VERDICT. It already separates the two
+  # failure kinds explicitly, and every attempt to infer them from failure
+  # WORDS has been wrong -- three times:
+  #   1. /DESYNC|divergen|MISMATCH/ matched this advisory:
+  #        "crc= 2/599 mismatches ... [advisory -- gekko owns this term;
+  #         judge by DESYNC #]"
+  #      i.e. the sentence telling you not to judge by those words.
+  #   2. "DESYNC #" still matched it, because that advisory ENDS with
+  #      "DESYNC #]". The real line is `DESYNC #1 f=194: local=...`.
+  #   3. "OVERALL FAIL" matched LIVENESS failures, which the harness states
+  #      are "NOT an engine desync ... the correctness gates ran and said: no
+  #      desync detected".
+  # A liveness freeze also produces OVERALL FAIL, so DESYNC must be tested
+  # with the digit or an actual gate FAIL, and freeze tested on its own text.
+  if grep -qE "DESYNC #[0-9]" "$log" || grep -qE "\-> FAIL" "$log"; then
     echo "seed=$s DESYNC"; desync=$((desync+1))
-    grep -hE "DESYNC #[0-9]|OVERALL FAIL|-> FAIL" "$log" | head -2
+    grep -hE "DESYNC #[0-9]|\-> FAIL" "$log" | head -2
     cp -r "$OUT/$s" "$ARCHIVE/seed_${s}_desync" 2>/dev/null
+  elif grep -qE "assert-spectator-live: FAILED|covered only 0 frames|OVERALL FAIL: --assert-spectator-live|connect never established|join handshake failed" "$log"; then
+    echo "seed=$s FREEZE (spectator joined then received nothing)"; freeze=$((freeze+1))
+    grep -hoE "GATE S[0-9] \([a-z0-9]+\): checked [0-9]+" "$log" | tr '\n' ' '; echo
+    cp -r "$OUT/$s" "$ARCHIVE/seed_${s}_freeze" 2>/dev/null
   elif grep -q "OVERALL PASS" "$log"; then
     echo "seed=$s pass"; pass=$((pass+1))
   else

@@ -62,8 +62,27 @@ void Netplay_HandleSaveEvent(GekkoGameEvent* update) {
     // frame instead made a timing-sensitive desync stop reproducing in 12
     // runs -- hook logging is synchronous, so a bigger line every frame is
     // more time every frame. See desync_ring.h.
-    fm2k::desync_ring::Note(frame,
-        g_session ? gekko_confirmed_frame(g_session) : -1);
+    const int confirmed = g_session ? gekko_confirmed_frame(g_session) : -1;
+    fm2k::desync_ring::Note(frame, confirmed);
+    // FM2K_DESYNCRING_DUMP_AT=<frame>: dump the ring once at that confirmed
+    // frame even when nothing desynced. This exists because the single most
+    // expensive mistake of this campaign was attributing a desync from an
+    // instrument nobody had read on a PASSING run -- three times, from three
+    // different terms that turn out to be chronically red for reasons that
+    // have nothing to do with desync. A term is only usable cross-peer once
+    // both peers have been seen to agree on it while healthy, and without
+    // this there is no way to look.
+    {
+        static int s_dump_at = -2;
+        if (s_dump_at == -2) {
+            const char* v = std::getenv("FM2K_DESYNCRING_DUMP_AT");
+            s_dump_at = (v && v[0]) ? std::atoi(v) : -1;
+        }
+        if (s_dump_at >= 0 && confirmed >= s_dump_at) {
+            s_dump_at = -1;   // once per process
+            fm2k::desync_ring::Dump("BaselineDumpNoDesync", confirmed);
+        }
+    }
     // [PHASE-F-DIAG] log save event details BEFORE Save (rng_seed
     // is read from live engine state; should match the AdvEvent
     // EXIT log's rng if no mutation happened in between).

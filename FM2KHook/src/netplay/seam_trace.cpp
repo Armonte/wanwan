@@ -52,13 +52,14 @@ extern uint32_t g_netplay_frame;
 uint32_t g_seam_rand_total = 0;
 // Cumulative RENDER-stream draws (Hook_GameRand's g_in_render_rng branch).
 uint32_t g_seam_rand_render = 0;
-// Per-caller cumulative split, same 8 buckets as [FULLFP] fn=. KEPT but no
-// longer emitted: every gameplay draw classified into bucket 6 because
-// __builtin_return_address(0) is always the 0x4139A8 wrapper, which lives
-// inside the character_state_machine range -- the classifier needs the
-// caller-OF-caller to say anything, and the frame walk that gets it is only
-// safe on the (slow) rng-trace path. Left in place so the counter and the
-// [FULLFP] view keep sharing one classifier.
+// Per-caller cumulative split, same 8 buckets as [FULLFP] fn=. Nearly every
+// gameplay draw classifies into bucket 6, which was long read as the
+// classifier being broken ("0x4139A8 is a wrapper inside the
+// character_state_machine range"). It is not broken: 0x4139A8 is the return
+// address of the script VM's random-branch opcode at 0x4139A3, one of exactly
+// twelve `call game_rand` sites in the binary. Bucket 6 dominating is a real
+// measurement -- script random branches are where the gameplay rng goes.
+// g_gp_rand_by_site (globals.h) splits that bucket by exact call site.
 uint32_t g_seam_rand_by_fn[8] = {0,0,0,0,0,0,0,0};
 
 namespace {

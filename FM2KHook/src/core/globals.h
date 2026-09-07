@@ -49,6 +49,31 @@ extern uint32_t g_render_rand_calls;  // #63 diag: render-side game_rand calls/f
 extern uint32_t g_gameplay_rand_calls;  // spectate-desync hunt: gameplay-seed game_rand calls/frame
 extern uint32_t g_gp_rand_by_fn[8];     // spectate-desync hunt: gameplay-rand by caller fn
 
+// EXACT gameplay-rand call-site attribution.
+//
+// The binary contains exactly TWELVE `call game_rand` instructions (verified
+// by an IDA instruction scan of .text, 2026-09-06), and game_rand @0x417A22 is
+// the only code that touches the seed at 0x41FB1C. So the return address IS
+// the call site -- no address ranges, no stack walking, no heuristics. The
+// older 8-bucket g_gp_rand_by_fn splits by function-address RANGE, which
+// cannot separate the two sites that both live inside character_state_machine,
+// and those two are the ones that matter.
+//
+// The measured shape of the surviving player-vs-player desync is ONE extra
+// gameplay draw on one peer with hp/round still identical, so naming the site
+// that drew it is the whole attribution.
+enum GpRandSite : int {
+    kGpSiteCameraManager = 0,   // 0x40B3CA / 0x40B3E7 / 0x40B3F8
+    kGpSiteHitDetection,        // 0x40F3DA
+    kGpSiteCharStateMachine,    // 0x411EC1
+    kGpSiteScriptRandBranch,    // 0x4139A8 -- script VM `rand % (n+1) > thr` jump
+    kGpSiteAiInput,             // 0x41135B / 0x4113A0 / 0x4114A4 (CPU-only)
+    kGpSiteOther,               // anything unrecognised -- must stay 0
+    kGpRandSiteCount
+};
+// Cumulative (never reset) so the desync ring can difference two rows.
+extern uint32_t g_gp_rand_by_site[kGpRandSiteCount];
+
 // Render sub-profiler accumulators (FM2K_RENDER_PROFILE=1). Cumulative census
 // of the per-sprite blit, filled by Hook_BlitSpriteWithBlendMode during
 // render_game; RenderFrameWithSnapshot snapshots deltas every 300 frames and

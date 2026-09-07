@@ -37,6 +37,10 @@ uint32_t g_gameplay_rand_calls = 0;
 // Reset + logged per parity Capture() via [FULLFP] fn=. Whichever caller's
 // per-frame count first diverges host-vs-spectator names the leaking function.
 uint32_t g_gp_rand_by_fn[8] = {0};
+// Exact per-call-site tally (see globals.h). Cumulative and never reset: the
+// desync ring differences consecutive rows, and g_gp_rand_by_fn above is
+// already owned and zeroed by parity_recorder, so it cannot be reused here.
+uint32_t g_gp_rand_by_site[kGpRandSiteCount] = {0};
 volatile uint32_t g_sim_step_count = 0;
 
 // Minimal global state

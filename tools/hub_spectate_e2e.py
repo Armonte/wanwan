@@ -618,6 +618,14 @@ def main() -> int:
         css_unload = os.environ.get("FM2K_SPEC_CSS_UNLOAD")
         if css_unload is not None:
             play_env["FM2K_SPEC_CSS_UNLOAD"] = css_unload
+        # Baseline desync-ring dump at a fixed confirmed frame, with no desync
+        # required. This is how the ring's cross-peer terms get validated on a
+        # run that PASSES -- the step this campaign skipped three times, each
+        # time attributing a desync to a term that turns out to differ between
+        # healthy peers anyway. Must reach both players or it proves nothing.
+        ring_dump_at = os.environ.get("FM2K_DESYNCRING_DUMP_AT")
+        if ring_dump_at is not None:
+            play_env["FM2K_DESYNCRING_DUMP_AT"] = ring_dump_at
         p1_pty = OUT_DIR / "p1_parity.pty"
         sp_pty = OUT_DIR / "spec_parity.pty"
         for f in (p1_pty, sp_pty):

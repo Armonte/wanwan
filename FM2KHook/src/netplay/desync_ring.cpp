@@ -31,6 +31,11 @@ struct Entry {
     // GAMEPLAY seed, and render frequency legitimately differs per peer).
     uint32_t gp_calls;
     uint32_t render_calls;
+    // Cumulative gameplay draws split by EXACT game_rand call site (globals.h).
+    // The measured divergence is ONE extra gameplay draw with hp/round still
+    // identical, so the only remaining question is which site drew it. Six
+    // counters answer that outright; gp_calls above only says that it happened.
+    uint32_t site[kGpRandSiteCount];
 };
 
 Entry  g_ring[kCapacity];
@@ -62,6 +67,7 @@ void Note(int32_t frame, int32_t confirmed_frame) {
         e.round     = *(const uint32_t*)kRound;
         e.gp_calls     = g_gameplay_rand_calls;
         e.render_calls = g_render_rand_calls;
+        for (int i = 0; i < kGpRandSiteCount; ++i) e.site[i] = g_gp_rand_by_site[i];
         g_next = (g_next + 1) % kCapacity;
         if (g_count < kCapacity) ++g_count;
     }
@@ -81,10 +87,20 @@ void Dump(const char* reason, int32_t desync_frame) {
         char* slash = std::strrchr(dir, '\\');
         if (slash) *slash = '\0';
 
+        // The filename carries a WALL-CLOCK STAMP, not just a per-process
+        // sequence number. Two peers of one run desync within a second of each
+        // other, while separate runs are minutes apart, so the stamp is what
+        // makes a pair identifiable. Learned the hard way: two captures both
+        // landed as "..._0.csv" from DIFFERENT runs (one peer at 19:50, the
+        // other at 20:16) and could not be diffed at all, because g_dumps is
+        // per-process and says nothing about which run a file belongs to.
+        SYSTEMTIME st = {};
+        GetLocalTime(&st);
         const int player = (int)g_player_index + 1;
         char path[MAX_PATH + 64];
-        std::snprintf(path, sizeof(path), "%s\\logs\\FM2K_P%d_desyncring_%d.csv",
-                      dir, player, g_dumps);
+        std::snprintf(path, sizeof(path),
+                      "%s\\logs\\FM2K_P%d_desyncring_%02d%02d%02d_%d.csv",
+                      dir, player, st.wHour, st.wMinute, st.wSecond, g_dumps);
         ++g_dumps;
 
         std::FILE* f = std::fopen(path, "wb");
@@ -104,15 +120,25 @@ void Dump(const char* reason, int32_t desync_frame) {
                         "first frame where a field differs AND never re-agrees "
                         "is the divergence; a field that differs and then "
                         "matches again is a rollback artifact, not a desync.\n");
-        std::fprintf(f, "frame,confirmed,rng,p1_hp,p2_hp,round,gp_calls,render_calls\n");
+        std::fprintf(f, "# rng is the raw LCG seed (seed = seed*0x343FD + 0x269EC3), "
+                        "so the number of draws between two frames can be recovered "
+                        "from the seed column ALONE by stepping one row's seed until "
+                        "it reaches the next -- no peer file needed. The site_* "
+                        "columns are cumulative draws per exact game_rand call site; "
+                        "difference consecutive rows to see which site drew.\n");
+        std::fprintf(f, "frame,confirmed,rng,p1_hp,p2_hp,round,gp_calls,render_calls,"
+                        "site_camera,site_hitdet,site_csm,site_scriptrand,site_ai,site_other\n");
 
         // Oldest first.
         const size_t start = (g_count == kCapacity) ? g_next : 0;
         for (size_t i = 0; i < g_count; ++i) {
             const Entry& e = g_ring[(start + i) % kCapacity];
-            std::fprintf(f, "%d,%d,0x%08X,%u,%u,%u,%u,%u\n",
+            std::fprintf(f, "%d,%d,0x%08X,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
                          e.frame, e.confirmed, e.rng, e.p1_hp, e.p2_hp,
-                         e.round, e.gp_calls, e.render_calls);
+                         e.round, e.gp_calls, e.render_calls,
+                         e.site[kGpSiteCameraManager], e.site[kGpSiteHitDetection],
+                         e.site[kGpSiteCharStateMachine], e.site[kGpSiteScriptRandBranch],
+                         e.site[kGpSiteAiInput], e.site[kGpSiteOther]);
         }
         std::fclose(f);
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,

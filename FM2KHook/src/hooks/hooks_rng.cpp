@@ -175,13 +175,47 @@ uint32_t __cdecl Hook_GameRand() {
         else                                      b = 7; // other
         ++g_gp_rand_by_fn[b];
         if (SeamTrace_Enabled()) { extern uint32_t g_seam_rand_by_fn[8]; ++g_seam_rand_by_fn[b]; }
+
+        // EXACT call-site tally. `ra` is not a wrapper return -- an IDA scan of
+        // .text found exactly twelve `call game_rand` instructions, so every
+        // possible value of `ra` is enumerated right here. Ranges above cannot
+        // separate the two sites inside character_state_machine; these can, and
+        // the split between them is the attribution we actually need.
+        int s;
+        switch (ra) {
+            case 0x40B3CAu: case 0x40B3E7u: case 0x40B3F8u: s = kGpSiteCameraManager;    break;
+            case 0x40F3DAu:                                 s = kGpSiteHitDetection;     break;
+            case 0x411EC1u:                                 s = kGpSiteCharStateMachine; break;
+            // Script VM random branch: `game_rand() % (operand+1)` compared
+            // against a threshold, then a conditional jump to a script label
+            // (0x4139A3..0x4139BA). Purely a control-flow draw -- it can change
+            // which script path an object takes without moving hp or round,
+            // which is exactly the observed desync shape.
+            case 0x4139A8u:                                 s = kGpSiteScriptRandBranch; break;
+            case 0x41135Bu: case 0x4113A0u: case 0x4114A4u: s = kGpSiteAiInput;          break;
+            // The remaining three sites (ProcessShakeEffect, ProcessColor-
+            // Interpolation, sprite_rendering_engine) are reachable only from
+            // render_game, which always runs inside g_in_render_rng, so they
+            // can never reach this branch. If one ever does, it lands in
+            // kGpSiteOther -- a non-zero count there is itself the bug.
+            default:                                        s = kGpSiteOther;            break;
+        }
+        ++g_gp_rand_by_site[s];
     }
     // RNG CALL-SITE RING. Armed only by FM2K_SEAM_RNGSITE=1 and only inside a
     // ~30-frame window, so an unarmed build pays one cached-bool test here.
-    // Inside the window we do the frame-pointer walk that the bucket
-    // classifier above cannot afford: `ra` is ALWAYS the 0x4139A8 wrapper
-    // (which is why that classifier reports 100% character_state_machine and
-    // tells us nothing), and only the caller-OF-caller names a real function.
+    //
+    // CORRECTION 2026-09-06. This block was built on the belief that `ra` is
+    // "always the 0x4139A8 wrapper", so the direct caller named nothing and
+    // only a stack walk could identify a site. That is WRONG, and it cost this
+    // investigation a lot of time. An IDA instruction scan of .text finds
+    // exactly twelve `call game_rand` instructions; 0x4139A8 is simply the
+    // return address of ONE of them, the script VM's random-branch opcode at
+    // 0x4139A3. So "ra was 0x4139A8 for 64/64 draws" was never a measurement
+    // artifact -- it was the answer: in that window every gameplay draw came
+    // from script random branches. The exact-site tally above supersedes this
+    // ring; it is kept only for the caller-OF-caller context (which SCRIPT is
+    // running), which the return address genuinely cannot supply.
     // ~1000 entries for a whole run -- see docs/dev/seam_ring_intermittent.md.
     if (SeamTrace_RngSiteWanted((int)g_netplay_frame)) {
         const uint32_t ra1 = (uint32_t)(uintptr_t)__builtin_return_address(0);
@@ -189,9 +223,10 @@ uint32_t __cdecl Hook_GameRand() {
         // STACK SCAN, not a frame-pointer walk. The EBP walk returned 0 for
         // all 64 recorded draws: this TU builds at -O2, which omits the frame
         // pointer, so __builtin_frame_address(0) yields nothing walkable.
-        // ra1 is always 0x004139A8 (proven: 64/64) -- the engine funnels every
-        // game_rand through one wrapper, so the direct caller identifies
-        // nothing and the callers ABOVE it are the whole point.
+        // ra1 was 0x004139A8 for all 64 recorded draws, which means those draws
+        // were all the script VM random-branch opcode (see the correction
+        // above), not that the caller is unidentifiable. The callers ABOVE it
+        // still matter, but only to say WHICH script object is branching.
         //
         // Scan the stack for values that look like return addresses into the
         // game's .text and are not the wrapper itself. Heuristic by nature --

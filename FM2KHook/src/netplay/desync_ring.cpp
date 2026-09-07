@@ -61,6 +61,9 @@ struct Entry {
     uint8_t  pool_types[fm2k::pool_delta_trace::kMaxLiveTypes];
     uint16_t pool_scripts[fm2k::pool_delta_trace::kMaxLiveTypes];
     int32_t  pool_live;
+    uint32_t sysin;      // g_system_input_state -- the rising-edge word
+    uint32_t in0, in1;   // this frame's P1/P2 pad words
+    uint32_t prev0, prev1;
 };
 
 Entry  g_ring[kCapacity];
@@ -78,6 +81,22 @@ constexpr uintptr_t kRound = 0x470044;
 // update_game_state's per-frame live-object counter (IDA:
 // g_objects_updated_this_frame).
 constexpr uintptr_t kObjsUpdated = 0x4246FC;
+// THE INPUT-EDGE CHAIN, which is what actually retires the objects.
+// vs_round_function @0x4098C8 does `test ah,4` on g_system_input_state and, on
+// a rising edge of bit 0x0400 (button 7), calls DeactivateObjectsByParam --
+// flipping EVERY type-4 object with the matching script_id from 4 to 1 in one
+// sweep, and clearing the pause flag. That is exactly the observed shape: two
+// objects, both script 941, retiring together on one peer only.
+//
+// g_system_input_state is not a pad word: process_game_inputs computes it as
+// the OR over all 8 slots of current & (prev ^ current), i.e. NEWLY PRESSED
+// bits. So the pad words AND the previous words both matter, and a divergence
+// can come from either.
+constexpr uintptr_t kSysInputState = 0x4280D8;   // g_system_input_state
+constexpr uintptr_t kSlotInput0    = 0x4259C0;   // g_story_char_config[664] (P1 pad)
+constexpr uintptr_t kSlotInput1    = 0x4259C4;   // g_story_char_config[665] (P2 pad)
+constexpr uintptr_t kPrevInput0    = 0x447F00;   // g_prev_input[0]
+constexpr uintptr_t kPrevInput1    = 0x447F04;   // g_prev_input[1]
 
 }  // namespace
 
@@ -97,6 +116,11 @@ void Note(int32_t frame, int32_t confirmed_frame) {
         e.render_calls = g_render_rand_calls;
         for (int i = 0; i < kGpRandSiteCount; ++i) e.site[i] = g_gp_rand_by_site[i];
         e.objs = *(const uint32_t*)kObjsUpdated;
+        e.sysin = *(const uint32_t*)kSysInputState;
+        e.in0   = *(const uint32_t*)kSlotInput0;
+        e.in1   = *(const uint32_t*)kSlotInput1;
+        e.prev0 = *(const uint32_t*)kPrevInput0;
+        e.prev1 = *(const uint32_t*)kPrevInput1;
         e.pool = fm2k::pool_delta_trace::Note(e.pool_bits, e.pool_types,
                                               e.pool_scripts, &e.pool_live);
         g_next = (g_next + 1) % kCapacity;
@@ -158,6 +182,7 @@ void Dump(const char* reason, int32_t desync_frame) {
                         "columns are cumulative draws per exact game_rand call site; "
                         "difference consecutive rows to see which site drew.\n");
         std::fprintf(f, "frame,confirmed,rng,p1_hp,p2_hp,round,gp_calls,render_calls,"
+                        "sysin,in0,in1,prev0,prev1,"
                         "site_camera,site_hitdet,site_csm,site_scriptrand,site_ai,site_other,"
                         "objs,pool,pool_live,pool_bits,pool_types,pool_scripts\n");
 
@@ -165,9 +190,11 @@ void Dump(const char* reason, int32_t desync_frame) {
         const size_t start = (g_count == kCapacity) ? g_next : 0;
         for (size_t i = 0; i < g_count; ++i) {
             const Entry& e = g_ring[(start + i) % kCapacity];
-            std::fprintf(f, "%d,%d,0x%08X,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,0x%08X",
+            std::fprintf(f, "%d,%d,0x%08X,%u,%u,%u,%u,%u,0x%X,0x%X,0x%X,0x%X,0x%X,"
+                         "%u,%u,%u,%u,%u,%u,%u,0x%08X",
                          e.frame, e.confirmed, e.rng, e.p1_hp, e.p2_hp,
-                         e.round, e.gp_calls, e.render_calls,
+                         e.round, e.gp_calls, e.render_calls, e.sysin, e.in0, e.in1,
+                         e.prev0, e.prev1,
                          e.site[kGpSiteCameraManager], e.site[kGpSiteHitDetection],
                          e.site[kGpSiteCharStateMachine], e.site[kGpSiteScriptRandBranch],
                          e.site[kGpSiteAiInput], e.site[kGpSiteOther], e.objs, e.pool);

@@ -244,17 +244,40 @@ void LauncherUI::RenderHubPanel() {
     // it can be toggled LIVE: SetStealth() rides the next hello while
     // disconnected, and sends a live "set_stealth" update while connected (hub
     // flips us in/out of the lobby immediately, no reconnect).
+    // FM2K_STEALTH=1 forces stealth on in the transport regardless of this
+    // toggle (FM2K_HubClient_transport.cpp). Fold it in HERE too, or the
+    // checkbox reads OFF while the hub has the user hidden -- and a hidden
+    // player's match is masked to `idle` with opponent_id stripped for
+    // EVERYONE, so it vanishes from the active-match list and nobody gets a
+    // Spectate button. A player in that state truthfully says "I'm not on
+    // stealth" while being invisible, which is exactly how this reached us as
+    // "spectating is broken".
+    static bool s_stealth_env_forced = false;
     {
         static bool s_stealth_loaded = false;
         if (!s_stealth_loaded) {
             s_stealth_loaded = true;
-            hs.stealth = LoadDevFlagInt("stealth_mode", 0) != 0;
+            const char* env = std::getenv("FM2K_STEALTH");
+            s_stealth_env_forced = (env && env[0] == '1');
+            hs.stealth = s_stealth_env_forced ||
+                         (LoadDevFlagInt("stealth_mode", 0) != 0);
             hs.client.SetStealth(hs.stealth);
         }
     }
+    if (s_stealth_env_forced) ImGui::BeginDisabled();
     if (ImGui::Checkbox("Stealth mode (hide my match + characters from the lobby)", &hs.stealth)) {
         SaveDevFlagInt("stealth_mode", hs.stealth ? 1 : 0);
         hs.client.SetStealth(hs.stealth);  // rides hello if disconnected; live update if connected
+    }
+    if (s_stealth_env_forced) {
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("%s", T("hub_stealth_env_forced"));
+    }
+    // Say it plainly while it is actually costing them something. Stealth
+    // hiding the match is intended; nobody being able to explain why the
+    // Spectate button is missing is not.
+    if (hs.stealth) {
+        ImGui::TextDisabled("%s", T("hub_stealth_match_hidden"));
     }
 
     if (!hs.client.IsConnected()) {

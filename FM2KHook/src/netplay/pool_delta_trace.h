@@ -56,11 +56,21 @@ constexpr int kMaxLiveTypes = 192;
 // object that retires early got there by RUNNING ITS SCRIPT FASTER (cursor
 // ahead of the peer's for frames beforehand) or by being deactivated from
 // outside (cursors identical right up to the frame its type flips).
+// `xs_out` / `ys_out` carry each live slot's position (obj +0x008 / +0x00C,
+// 16.16 fixed point). POSITION IS THE POINT: character_state_machine @0x4124C9
+// culls an object -- retiring it via ClearObjectReferences -- as soon as its
+// position leaves the play field (x outside -50..1330, y outside -50..1010).
+// The GekkoNet desync fingerprint contains NO POSITION FIELDS (see
+// SaveState_CalculateFingerprint), so positions can drift apart between peers
+// completely unnoticed until a drifting object crosses that boundary on one
+// peer a few frames before the other -- which is exactly the observed shape.
 uint32_t Note(uint32_t bitmap_out[kBitmapWords],
               uint8_t types_out[kMaxLiveTypes],
               uint16_t scripts_out[kMaxLiveTypes],
               uint32_t cursors_out[kMaxLiveTypes],
               uint16_t waits_out[kMaxLiveTypes],
+              int32_t xs_out[kMaxLiveTypes],
+              int32_t ys_out[kMaxLiveTypes],
               int* live_out);
 
 // WHO RETIRED THE OBJECT.

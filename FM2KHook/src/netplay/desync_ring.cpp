@@ -70,6 +70,9 @@ struct Entry {
     uint32_t prev0, prev1;
     uint32_t spawn0[kSpawnPtrCount];   // char slot 0's child handles
     uint32_t spawn1[kSpawnPtrCount];   // char slot 1's
+    uint32_t gs_src, gs_move, gs_accel, gs_pic;
+    int32_t  pool_xs[fm2k::pool_delta_trace::kMaxLiveTypes];
+    int32_t  pool_ys[fm2k::pool_delta_trace::kMaxLiveTypes];
 };
 
 Entry  g_ring[kCapacity];
@@ -120,6 +123,18 @@ constexpr uintptr_t kCharSlot0     = 0x4D1D80;
 constexpr size_t    kCharSlotSize  = 57407;
 constexpr ptrdiff_t kOffSpawnPtrs  = 0xDFBF;   // 10 pointers, unaligned
 
+// GAME-SPEED LATCHES, not the source. ResetObjectsAndCalculateSpeed @0x406450
+// DERIVES these from g_cfg_game_speed once, and everything that moves uses the
+// derived values thereafter. The [CFG] log line prints the SOURCE (0x430104),
+// so a peer that latched while the source was still wrong -- HOST_CONFIG #1
+// carries speed=0 before the real value is known -- reports a correct speed
+// while moving objects at the wrong rate. Comparing the latches is the only
+// way to see that.
+constexpr uintptr_t kCfgGameSpeed  = 0x430104;   // source (Editor.TestPlay.GameSpeed)
+constexpr uintptr_t kMoveScalar    = 0x541F78;   // 0x10000 / frame_mult
+constexpr uintptr_t kAccelScalar   = 0x445700;   // 3932160 / frame_mult^2
+constexpr uintptr_t kPicStep       = 0x445704;   // frame_mult (we pin this to 100)
+
 }  // namespace
 
 void Note(int32_t frame, int32_t confirmed_frame) {
@@ -149,9 +164,14 @@ void Note(int32_t frame, int32_t confirmed_frame) {
         std::memcpy(e.spawn1,
                     (const void*)(kCharSlot0 + kCharSlotSize + kOffSpawnPtrs),
                     sizeof(e.spawn1));
+        e.gs_src   = *(const uint32_t*)kCfgGameSpeed;
+        e.gs_move  = *(const uint32_t*)kMoveScalar;
+        e.gs_accel = *(const uint32_t*)kAccelScalar;
+        e.gs_pic   = *(const uint32_t*)kPicStep;
         e.pool = fm2k::pool_delta_trace::Note(e.pool_bits, e.pool_types,
                                               e.pool_scripts, e.pool_cursors,
-                                              e.pool_waits, &e.pool_live);
+                                              e.pool_waits, e.pool_xs, e.pool_ys,
+                                              &e.pool_live);
         g_next = (g_next + 1) % kCapacity;
         if (g_count < kCapacity) ++g_count;
     }
@@ -212,9 +232,10 @@ void Dump(const char* reason, int32_t desync_frame) {
                         "difference consecutive rows to see which site drew.\n");
         std::fprintf(f, "frame,confirmed,rng,p1_hp,p2_hp,round,gp_calls,render_calls,"
                         "sysin,in0,in1,prev0,prev1,spawn0,spawn1,"
+                        "gs_src,gs_move,gs_accel,gs_pic,"
                         "site_camera,site_hitdet,site_csm,site_scriptrand,site_ai,site_other,"
                         "objs,pool,pool_live,pool_bits,pool_types,pool_scripts,"
-                        "pool_cursors,pool_waits\n");
+                        "pool_cursors,pool_waits,pool_xs,pool_ys\n");
 
         // Oldest first.
         const size_t start = (g_count == kCapacity) ? g_next : 0;
@@ -234,6 +255,7 @@ void Dump(const char* reason, int32_t desync_frame) {
             std::fputc(',', f);
             for (int i = 0; i < kSpawnPtrCount; ++i)
                 std::fprintf(f, "%08X", e.spawn1[i]);
+            std::fprintf(f, ",%u,%u,%u,%u", e.gs_src, e.gs_move, e.gs_accel, e.gs_pic);
             std::fprintf(f, ",%d,", e.pool_live);
             for (int w = 0; w < fm2k::pool_delta_trace::kBitmapWords; ++w)
                 std::fprintf(f, "%08X", e.pool_bits[w]);
@@ -251,6 +273,12 @@ void Dump(const char* reason, int32_t desync_frame) {
             std::fputc(',', f);
             for (int i = 0; i < nt; ++i)
                 std::fprintf(f, "%04X", e.pool_waits[i]);
+            std::fputc(',', f);
+            for (int i = 0; i < nt; ++i)
+                std::fprintf(f, "%08X", (uint32_t)e.pool_xs[i]);
+            std::fputc(',', f);
+            for (int i = 0; i < nt; ++i)
+                std::fprintf(f, "%08X", (uint32_t)e.pool_ys[i]);
             std::fputc('\n', f);
         }
         std::fclose(f);

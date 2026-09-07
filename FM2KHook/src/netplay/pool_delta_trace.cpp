@@ -51,6 +51,8 @@ void __cdecl Hook_ClearObjectReferences() {
 constexpr ptrdiff_t kOffScriptId = 0x030;
 constexpr ptrdiff_t kOffCursor   = 0x02C;
 constexpr ptrdiff_t kOffWait     = 0x03C;
+constexpr ptrdiff_t kOffPosX     = 0x008;
+constexpr ptrdiff_t kOffPosY     = 0x00C;
 
 }  // namespace
 
@@ -59,11 +61,14 @@ uint32_t Note(uint32_t bitmap_out[kBitmapWords],
               uint16_t scripts_out[kMaxLiveTypes],
               uint32_t cursors_out[kMaxLiveTypes],
               uint16_t waits_out[kMaxLiveTypes],
+              int32_t xs_out[kMaxLiveTypes],
+              int32_t ys_out[kMaxLiveTypes],
               int* live_out) {
     for (int w = 0; w < kBitmapWords; ++w) bitmap_out[w] = 0;
     for (int i = 0; i < kMaxLiveTypes; ++i) {
         types_out[i] = 0; scripts_out[i] = 0;
         cursors_out[i] = 0; waits_out[i] = 0;
+        xs_out[i] = 0; ys_out[i] = 0;
     }
     if (live_out) *live_out = 0;
     if constexpr (FM2K::kIsFM95) {
@@ -82,6 +87,8 @@ uint32_t Note(uint32_t bitmap_out[kBitmapWords],
                 scripts_out[live] = (uint16_t)*(const uint32_t*)(o + kOffScriptId);
                 cursors_out[live] = *(const uint32_t*)(o + kOffCursor);
                 waits_out[live]   = (uint16_t)*(const uint32_t*)(o + kOffWait);
+                xs_out[live]      = *(const int32_t*)(o + kOffPosX);
+                ys_out[live]      = *(const int32_t*)(o + kOffPosY);
             }
             ++live;
             const uint32_t mix[2] = { (uint32_t)i, type };

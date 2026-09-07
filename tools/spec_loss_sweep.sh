@@ -47,21 +47,38 @@ for s in $SEEDS; do
     echo "seed=$s ABORT -- no log written; the harness never ran"; exit 2
   fi
 
-  # Classify. FREEZE is checked FIRST: a frozen viewer also trips the liveness
-  # assertion, so a naive "did it fail" count reports it as a desync and the
-  # two get conflated -- which is exactly how the 12/40 -> 7/40 "improvement"
-  # above hid five NEW freezes.
+  # Classify BY THE HARNESS'S OWN VERDICT, never by keyword.
+  #
+  # An earlier version grepped for /DESYNC|divergen|MISMATCH/ and reported
+  # 6 of 12 seeds as desyncs. Every one of them was a PASS. What it matched was
+  # this advisory line, in full:
+  #
+  #   [harness] PVP match0: crc= 2/599 mismatches (longest run 2, first f=597:
+  #             ...) [advisory -- gekko owns this term; judge by DESYNC #]
+  #
+  # i.e. it matched the words inside the sentence that tells you not to judge
+  # by those words. The cross-peer [CHECKSUM] crc is a known-noisy term between
+  # players (see docs/dev/desync_campaign_state.md) and says nothing on its own.
+  #
+  # NOTE THE DIGIT in `DESYNC #[0-9]`. The advisory above ENDS with the literal
+  # text "judge by DESYNC #]", so a bare "DESYNC #" matches it as well and the
+  # first attempt at this fix was still wrong. The real line is
+  # `[P1] [ERROR] DESYNC #1 f=194: local=... remote=...`.
+  #
+  # The real signals, in priority order: a FREEZE (which also trips the
+  # liveness assertion, so it must be tested before failure), then the gekko
+  # desync line, then OVERALL PASS.
   if grep -qE "connect never established|join handshake failed" "$log"; then
     echo "seed=$s FREEZE (join handshake never completed)"; freeze=$((freeze+1))
     cp -r "$OUT/$s" "$ARCHIVE/seed_${s}_freeze" 2>/dev/null
-  elif grep -qE "DESYNC|divergen|MISMATCH|not bit-exact" "$log"; then
+  elif grep -qE "DESYNC #[0-9]|OVERALL FAIL|-> FAIL" "$log"; then
     echo "seed=$s DESYNC"; desync=$((desync+1))
-    grep -hE "DESYNC|divergen|first divergence" "$log" | head -2
+    grep -hE "DESYNC #[0-9]|OVERALL FAIL|-> FAIL" "$log" | head -2
     cp -r "$OUT/$s" "$ARCHIVE/seed_${s}_desync" 2>/dev/null
-  elif grep -qE "PASS|OVERALL PASS" "$log"; then
+  elif grep -q "OVERALL PASS" "$log"; then
     echo "seed=$s pass"; pass=$((pass+1))
   else
-    echo "seed=$s OTHER"; other=$((other+1))
+    echo "seed=$s OTHER (no verdict line -- run did not complete)"; other=$((other+1))
     tail -3 "$log"
     cp -r "$OUT/$s" "$ARCHIVE/seed_${s}_other" 2>/dev/null
   fi

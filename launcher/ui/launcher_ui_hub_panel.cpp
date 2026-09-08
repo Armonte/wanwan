@@ -566,6 +566,22 @@ void LauncherUI::RenderHubPanel() {
                       T("hub_players_in_room"), hs.current_room_id.c_str());
     }
     ImGui::SeparatorText(players_header);
+    // CONTROLS, WHERE THE GAME IS. A room IS a game, so this is the moment a
+    // player is thinking about that specific game -- and until now the only
+    // route to bindings was the Settings menu, which is nowhere near here.
+    //
+    // The scope line answers the question BOTH testers asked unprompted
+    // ("are controls set globally?"). The model was never wrong, it was just
+    // invisible: global by default, per-game if you fork it. Saying so at the
+    // point of use is cheaper than any amount of documentation.
+    if (!hs.current_room_id.empty()) {
+        if (ImGui::SmallButton(T("btn_room_controls"))) {
+            show_settings_           = true;
+            settings_focus_bindings_ = true;
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", T("hint_controls_scope"));
+    }
     if (hs.current_room_id.empty()) {
         ImGui::TextDisabled("%s", T("hub_no_room_selected"));
     } else if (hs.users.empty()) {

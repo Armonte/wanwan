@@ -28,7 +28,12 @@ set -u
 cd "$(dirname "$0")/.."
 
 SEEDS="${SEEDS:-1 2 3 4 5 6 7 8}"
-FRAMES="${FRAMES:-600}"
+# 600 was the July default and is NO LONGER ENOUGH: under 0.20 loss the
+# battle-join spectator can still be dialing when the host hits the frame cap
+# and auto-terminates, and every retry then goes to a dead process. That
+# produced 5 of 6 "join handshake freezes" in the 2026-09-07 sweep, all of them
+# test artifacts. HOST-GONE below catches the residue if it recurs.
+FRAMES="${FRAMES:-2400}"
 OUT="${OUT:-tools/.spec_runs/lossweep}"
 ARCHIVE="${ARCHIVE:-docs/dev/evidence/lossweep}"
 mkdir -p "$OUT" "$ARCHIVE" || { echo "cannot create $OUT"; exit 2; }
@@ -61,7 +66,24 @@ for s in $SEEDS; do
   #      desync detected".
   # A liveness freeze also produces OVERALL FAIL, so DESYNC must be tested
   # with the digit or an actual gate FAIL, and freeze tested on its own text.
-  if grep -qE "DESYNC #[0-9]" "$log" || grep -qE "\-> FAIL" "$log"; then
+  # HOST-GONE FIRST. A spectator dialing a host that has already
+  # auto-terminated reports "connect never established / host unreachable",
+  # which is literally true and looks exactly like a join-handshake failure.
+  # Distinguish by TIMESTAMP: if the host's last log line precedes the
+  # spectator's first dial, the harness ran out of frames -- it is not a
+  # transport bug, and it must never again be counted as one.
+  hostlog="$OUT/$s/live_FM2K_P1_Debug.log"
+  host_end=$(tail -1 "$hostlog" 2>/dev/null | grep -oE "^\[[0-9:.]+\]" | tr -d "[]")
+  spec_dial=$(grep -hoE "^\[[0-9:.]+\].*(connecting|reconnecting) to root" \
+                "$OUT/$s"/live_FM2K_S*_Debug.log 2>/dev/null \
+              | grep -oE "^\[[0-9:.]+\]" | tr -d "[]" | sort | head -1)
+  if grep -qhE "connect never established" "$OUT/$s"/live_FM2K_S*_Debug.log 2>/dev/null \
+     && [ -n "$host_end" ] && [ -n "$spec_dial" ] \
+     && [ "$spec_dial" \> "$host_end" ]; then
+    echo "seed=$s HOST-GONE -- host auto-terminated at $host_end, spectator first dialed at $spec_dial (RAISE FRAMES, not a bug)"
+    other=$((other+1))
+    cp -r "$OUT/$s" "$ARCHIVE/seed_${s}_hostgone" 2>/dev/null
+  elif grep -qE "DESYNC #[0-9]" "$log" || grep -qE "\-> FAIL" "$log"; then
     echo "seed=$s DESYNC"; desync=$((desync+1))
     grep -hE "DESYNC #[0-9]|\-> FAIL" "$log" | head -2
     cp -r "$OUT/$s" "$ARCHIVE/seed_${s}_desync" 2>/dev/null

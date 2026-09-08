@@ -322,6 +322,51 @@ def _cinput_series(log_path):
     return out
 
 
+def host_ended_before_viewer_connected(host_log, spec_log):
+    """True when the host process exited before the viewer ever connected.
+
+    The viewer then reports "connect never established / host unreachable",
+    which is LITERALLY TRUE and looks exactly like a join-handshake bug. On
+    2026-09-07 that shape accounted for 5 of 6 apparent "freezes" in a 40-seed
+    loss sweep -- all of them the run simply running out of frames before a
+    late-joining spectator established. Distinguish by TIMESTAMP so nobody
+    chases the transport again.
+    """
+    import re
+    ts = re.compile(r"^\[(\d+):(\d+):(\d+)\.(\d+)\]")
+    def secs(line):
+        m = ts.match(line or "")
+        if not m:
+            return None
+        return (int(m.group(1)) * 3600 + int(m.group(2)) * 60
+                + int(m.group(3)) + int(m.group(4)) / 1000.0)
+    host_end = None
+    try:
+        for ln in open(host_log, errors="ignore"):
+            v = secs(ln)
+            if v is not None:
+                host_end = v
+    except OSError:
+        return False
+    # The LAST dial, not the first: the viewer keeps retrying on a backoff, so
+    # "was it still dialing after the host was gone" is the precise question.
+    # Anchoring on the first attempt plus a slack window missed a real case by
+    # 38 milliseconds.
+    last_dial, got_any = None, False
+    try:
+        for ln in open(spec_log, errors="ignore"):
+            if "to root" in ln:
+                v = secs(ln)
+                if v is not None:
+                    last_dial = v
+            if "total=" in ln and "total=0" not in ln:
+                got_any = True     # it received something: not this shape
+    except OSError:
+        return False
+    return bool(host_end is not None and last_dial is not None
+                and not got_any and host_end < last_dial)
+
+
 def _gap_trend(host_log, spec_log, samples=6):
     """(early_gap, late_gap) medians, or (None, None) if not measurable.
 
@@ -4336,6 +4381,14 @@ def main():
         # Report the TREND alongside the endpoint: a viewer holding steady
         # behind live is working, one losing ground is not, and the single
         # end-of-run gap cannot tell them apart.
+        # Name the budget artifact explicitly, or it reads as a spectator bug.
+        if host_ended_before_viewer_connected(host_p1_log, s["live"]):
+            print(f"[harness] LIVE-EDGE {s['tag']} ({s['phase']}): "
+                  f"HOST ENDED BEFORE THIS VIEWER CONNECTED -- the host hit "
+                  f"--total-frames and exited while the viewer was still "
+                  f"dialing, so every retry went to a dead process. This is a "
+                  f"FRAME BUDGET artifact, not a transport or determinism "
+                  f"problem. Raise --total-frames.")
         trend = ""
         if lv.get("early_gap") is not None:
             trend = (f" trend={lv['early_gap']}->{lv['late_gap']}"

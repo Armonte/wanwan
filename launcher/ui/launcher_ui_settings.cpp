@@ -99,7 +99,12 @@ void LauncherUI::RenderSettingsWindow() {
                            ImGuiTabBarFlags_Reorderable)) {
         // Input Bindings -- single tab with a nested P1/P2 sub-tabbar so
         // the player picker doesn't bloat the top-level tabs.
-        if (ImGui::BeginTabItem(T("input_bindings"))) {
+        ImGuiTabItemFlags bind_tab_flags = ImGuiTabItemFlags_None;
+        if (settings_focus_bindings_) {
+            bind_tab_flags = ImGuiTabItemFlags_SetSelected;
+            settings_focus_bindings_ = false;   // one-shot
+        }
+        if (ImGui::BeginTabItem(T("input_bindings"), nullptr, bind_tab_flags)) {
             if (!input_binder_initialized_) {
                 FM2KInputBinder::Init();
                 input_binder_initialized_ = true;

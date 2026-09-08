@@ -214,6 +214,52 @@ void LauncherUI::RenderGameSelection() {
         }
     }
 
+    // ONBOARDING STEP 2: CONTROLS.
+    //
+    // Step 1 (point us at your games folder) is the pulsing panel above, and
+    // it early-returns because nothing else matters until it is answered.
+    // Once games exist the next thing a new install needs is controls, and
+    // until now nothing said so -- the bindings live behind Settings -> Input
+    // Bindings, which a first-time user has no reason to open.
+    //
+    // Shown only while P1 has NOTHING bound, so it disappears the moment it
+    // has been dealt with and never nags an existing user. Deliberately NOT
+    // the pulsing treatment: that belongs to the one blocking step, and two
+    // competing attention-grabs read as noise (same reasoning as the single
+    // animated border above).
+    if (!games_.empty()) {
+        if (!input_binder_initialized_) {
+            FM2KInputBinder::Init();
+            input_binder_initialized_ = true;
+        }
+        int p1_bound = 0;
+        {
+            const auto& b = FM2KInputBinder::Bindings(0);
+            for (size_t i = 0; i < (size_t)FM2KInputBinder::Bit::COUNT; ++i) {
+                if (b.bits[i].source     != FM2KInputBinder::Binding::Source::NONE ||
+                    b.bits_alt[i].source != FM2KInputBinder::Binding::Source::NONE) {
+                    ++p1_bound;
+                }
+            }
+        }
+        if (p1_bound == 0) {
+            ImGui::Separator();
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.09f, 0.19f, 0.27f, 0.45f));
+            ImGui::BeginChild("##no_controls_prompt", ImVec2(0.0f, 0.0f),
+                              ImGuiChildFlags_Borders
+                              | ImGuiChildFlags_AutoResizeY);
+            ImGui::TextWrapped("%s", T("hint_first_run_controls"));
+            ImGui::Spacing();
+            if (ImGui::Button(T("btn_set_up_controls"),
+                              ImVec2(-FLT_MIN, ImGui::GetFrameHeight() * 1.4f))) {
+                show_settings_            = true;
+                settings_focus_bindings_  = true;
+            }
+            ImGui::EndChild();
+            ImGui::PopStyleColor();
+        }
+    }
+
     ImGui::Separator();
     ImGui::Text("%s", T("panel_available_games"));
     ImGui::Separator();

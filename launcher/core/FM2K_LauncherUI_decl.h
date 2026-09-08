@@ -487,6 +487,10 @@ private:
     // gates Init() to a single call (gamepad subsystem startup) the first
     // time the user opens either binder window.
     bool show_settings_        = false;     // Single tabbed Settings window
+    // One-shot: open Settings ON the Input Bindings tab. Onboarding sends the
+    // user straight there; landing on whichever tab was last used would make
+    // the button feel like it did nothing.
+    bool settings_focus_bindings_ = false;
     bool show_discord_auth_    = false;     // Sign in with Discord -- OAuth flow is its own window
     // Legacy per-section flags kept for any path that still toggles them.
     // The unified Settings window is the user-facing surface now.

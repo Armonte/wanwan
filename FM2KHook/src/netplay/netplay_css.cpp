@@ -586,6 +586,17 @@ bool Netplay_ProcessCSS() {
             local_raw = Hook_ComputeAutoplayCssInput((int)g_player_index);
         }
     }
+    // CSS-DESELECT TEST PRESS -- applied HERE, after the harness overrides.
+    // FM2K_TEST_AUTO_CSS and FM2K_PARITY_AUTOPLAY both REPLACE local_raw
+    // outright, so a press injected back in Input_CaptureLocal is discarded
+    // before it reaches gekko and the test silently measures nothing (it did
+    // exactly that twice). This is the last point before
+    // gekko_add_local_input, so whatever is set here is what the peer and
+    // every spectator actually receive.
+    {
+        extern uint16_t Input_MaybeInjectCssDeselect(uint16_t);
+        local_raw = Input_MaybeInjectCssDeselect(local_raw);
+    }
     // Under rollback, gate local adds on a started session (mirror e5fe11f):
     // pre-sync ticks would misstamp the input timeline. Lockstep adds
     // unconditionally (its stall model tolerates pre-sync adds).

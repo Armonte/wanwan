@@ -122,7 +122,7 @@ static inline bool CssStartAllowed() {
 // deselect straight into sim state would be the one implementation that
 // genuinely desyncs -- so the test must not do that either, or it proves
 // nothing about the shipping path.
-static inline uint16_t MaybeInjectCssDeselect(uint16_t bound) {
+uint16_t Input_MaybeInjectCssDeselect(uint16_t bound) {
     if (*(uint32_t*)FM2K::ADDR_GAME_MODE != 2000u) return bound;
     static const bool s_want = []{
         const char* v = std::getenv("FM2K_TEST_CSS_DESELECT");
@@ -249,7 +249,7 @@ uint16_t Input_CaptureLocal() {
             // Per-player SOCD, applied here at capture with THIS device's
             // mode -- before the value reaches gekko, the replay or the
             // spectator stream. See Hook_ApplySOCDSlot.
-            return MaybeInjectCssDeselect(Hook_ApplySOCDSlot(bound, 0));
+            return Input_MaybeInjectCssDeselect(Hook_ApplySOCDSlot(bound, 0));
         }
     }
 
@@ -297,7 +297,7 @@ uint16_t Input_CaptureLocal() {
     }
 
     // Vanilla-binding path is P1's device by definition: slot 0's mode.
-    return MaybeInjectCssDeselect(Hook_ApplySOCDSlot(input, 0));
+    return Input_MaybeInjectCssDeselect(Hook_ApplySOCDSlot(input, 0));
 }
 
 uint16_t Input_CaptureLocalPlayer(int player) {

@@ -152,6 +152,15 @@ def launch(label, args, env_extra, log_path, timeout, done_when=None):
     env_extra = dict(env_extra)
     env_extra.setdefault("FM2K_TEST_BACKGROUND",
                          os.environ.get("FM2K_TEST_BACKGROUND", "1"))
+    # CSS-deselect e2e. Forwarded through the SAME funnel as
+    # FM2K_TEST_BACKGROUND and for the same reason: every P1/P2/spectator
+    # launch goes through here, so no role can be forgotten. The press is
+    # synthesized into the LOCAL input capture, which is the word gekko syncs,
+    # so it reaches the peer and every viewer as an ordinary confirmed input --
+    # inert on a spectator, which feeds no input into the session.
+    if os.environ.get("FM2K_TEST_CSS_DESELECT"):
+        env_extra.setdefault("FM2K_TEST_CSS_DESELECT",
+                             os.environ["FM2K_TEST_CSS_DESELECT"])
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_f = open(log_path, "w")
     win_args = []

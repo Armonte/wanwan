@@ -18,6 +18,7 @@
 
 #include "../core/globals.h"  // FM2K::ADDR_GAME_MODE, ADDR_*
 #include "per_game_patches.h" // PerGamePatches_GetTeamSizeOverride
+#include "../netplay/netplay.h"  // Netplay_IsConnected -- START at CSS is online-gated
 
 namespace {
 
@@ -362,6 +363,120 @@ void ApplyTeamDupeLock() {
 // every frame after the original to ensure our override sticks.
 constexpr uintptr_t ADDR_G_TEAM_ROUND_SETTING = 0x00470064;
 
+// ---- CSS DESELECT (START at character select) --------------------------
+// RE 2026-09-08. game_state_manager's confirm is exactly three writes:
+//     call CreateProjectileObject      ; confirm sprite replaces the cursor
+//     mov  g_action_state[esi], 1      ; 0x47019C / 0x4701A0
+//     mov  [g_css_object_ptr+166h], eax ; P1 sprite ptr (P2: +16Ah)
+// and the transition is gated on BOTH flags being non-zero, after which
+// g_css_transition_timer counts to 100 and the match starts (0x40772A and
+// 0x407A7C are the two variants of that check).
+//
+// So a deselect is the inverse of those three writes, and it must undo ALL of
+// them: clearing only the flag would strand the confirm sprite in the object
+// pool, which is a cross-peer object-pool divergence -- the exact failure
+// class that cost this project a full campaign (docs/dev/desync_campaign_state).
+//
+// WHY START IS SAFE AS THE TRIGGER. 0x400 is engine-visible, so it is already
+// carried by the synced input word -- no meta bit, no new plumbing. And the
+// engine never reads it at character select: an IDA scan of BOTH CSS handlers
+// (game_state_manager 0x406FC0 and ProcessCharacterSelectHandler 0x407D70)
+// finds ZERO instructions referencing 0x400. Confirm is `& 0x3F0`, which
+// excludes it. Pressing START at CSS is currently inert.
+//
+// WHY IT CANNOT DESYNC. CSS is already lockstep: Netplay_CssHandleAdvance
+// feeds gekko's confirmed inputs into process_game_inputs + update_game_state,
+// and flushes those same inputs to the replay/spectator stream. This runs
+// INSIDE that advance, reads only synced input plus sim state, and writes only
+// savestated sim state -- so both peers and every spectator perform the same
+// deselect on the same frame by construction. Doing it from a local hotkey
+// OUTSIDE the advance is the one implementation that would desync.
+//
+// 1v1 ONLY, deliberately. Team mode locks several characters per side and
+// tracks them in g_p1/p2_round_count + the history arrays; unwinding one slot
+// there is a different problem and is NOT attempted here.
+constexpr uintptr_t ADDR_ACTION_STATE   = 0x0047019C;  // [0]=P1, [1]=P2
+// g_system_input_state -- the OR of EVERY player's rising edges, and the word
+// the engine's back-out actually reads (not the per-player g_input_changes):
+//     0x407262  mov eax, g_system_input_state
+//     0x407267  test ah, 4                 ; START
+//     0x40726F  mov [ecx+152h], 4          ; CSS state 4
+// and state 4 is a full teardown -- ResetObjectsAndCalculateSpeed, retire the
+// CSS object, create_game_object(12) = title_screen_manager. START on
+// character select bails to TITLE. Clearing only the per-player word would not
+// stop it.
+constexpr uintptr_t ADDR_SYS_INPUT_STATE = 0x004280D8;
+// g_system_input_state -- the OR of every player's rising edges. THIS is what
+// the engine's back-out reads, NOT the per-player g_input_changes:
+//     0x407262  mov eax, g_system_input_state
+//     0x407267  test ah, 4              ; START
+//     0x40726F  mov [ecx+152h], 4       ; state 4 = back to mode select
+// so the bit has to be cleared HERE too or the engine leaves character select
+// regardless of what we do to the per-player word.
+constexpr uintptr_t ADDR_CSS_TRANS_TIMER = 0x00424F00; // counts to 100 -> battle
+constexpr uintptr_t ADDR_CSS_OBJ_PTR    = 0x004CFA00;  // g_css_object_ptr
+constexpr ptrdiff_t OFF_CONFIRM_SPRITE_P1 = 0x166;
+constexpr ptrdiff_t OFF_CONFIRM_SPRITE_P2 = 0x16A;
+constexpr uintptr_t ADDR_OBJ_POOL_DESEL = 0x004701E0;
+constexpr size_t    OBJ_STRIDE_DESEL    = 382;
+constexpr size_t    OBJ_COUNT_DESEL     = 1024;
+
+void ApplyCssDeselect() {
+    if (*(const uint32_t*)ADDR_GAME_MODE      != 2000u) return;  // CSS only
+    if (*(const uint32_t*)ADDR_GAME_MODE_FLAG != 1u)    return;  // VS 1v1 only
+
+    uint32_t*       changes = (uint32_t*)ADDR_INPUT_CHANGES;
+    uint32_t*       action  = (uint32_t*)ADDR_ACTION_STATE;
+    uint32_t*       sys     = (uint32_t*)ADDR_SYS_INPUT_STATE;
+    const uintptr_t css_obj = *(const uintptr_t*)ADDR_CSS_OBJ_PTR;
+
+    if ((*sys & 0x400u) == 0) return;              // no START edge this frame
+
+    // THE RULE:
+    //   confirmed + START            -> un-confirm, online AND offline
+    //   unconfirmed + START, offline -> fall through; the engine bails to
+    //                                   title exactly as it always has
+    //   unconfirmed + START, online  -> swallow. LEAVING character select is a
+    //                                   session transition needing a
+    //                                   both-peers barrier, which this is not.
+    bool consumed = false;
+    for (int p = 0; p < 2; ++p) {
+        if ((changes[p] & 0x400u) == 0) continue;  // which player pressed
+        if (action[p] == 0)            continue;   // unconfirmed -> see below
+        changes[p] &= ~0x400u;
+        consumed = true;
+
+        // Retire the confirm sprite the way the engine retires objects
+        // (type = 1 -> DisableCurrentObject frees the slot next frame). The
+        // confirm is three writes -- sprite, flag, pointer -- and undoing only
+        // the flag would strand the sprite in the pool, which is a cross-peer
+        // object-pool divergence, the exact class that cost this project a
+        // whole campaign (docs/dev/desync_campaign_state.md).
+        if (css_obj) {
+            const ptrdiff_t off = (p == 0) ? OFF_CONFIRM_SPRITE_P1
+                                           : OFF_CONFIRM_SPRITE_P2;
+            uintptr_t* slot = (uintptr_t*)(css_obj + off);
+            const uintptr_t obj = *slot;
+            if (obj >= ADDR_OBJ_POOL_DESEL &&
+                obj <  ADDR_OBJ_POOL_DESEL + OBJ_STRIDE_DESEL * OBJ_COUNT_DESEL &&
+                ((obj - ADDR_OBJ_POOL_DESEL) % OBJ_STRIDE_DESEL) == 0) {
+                *(uint32_t*)obj = 1u;
+            }
+            *slot = 0;
+        }
+        action[p] = 0;                             // un-confirm
+        // The both-confirmed countdown must restart, or a deselect at
+        // timer=99 would re-confirm straight into the match.
+        *(uint32_t*)ADDR_CSS_TRANS_TIMER = 0;
+    }
+
+    if (consumed || Netplay_IsConnected()) {
+        *sys       &= ~0x400u;
+        changes[0] &= ~0x400u;
+        changes[1] &= ~0x400u;
+    }
+}
+
 char __cdecl Hook_GameStateManager() {
     // OPTION-cycle title→CSS apply runs FIRST. Must fire BEFORE the
     // original game_state_manager STATE 0 body so CSS init sees the
@@ -373,6 +488,9 @@ char __cdecl Hook_GameStateManager() {
     // path -- they're orthogonal features that both happen to live in the
     // same hook because MinHook only allows one detour per function.
     ApplyTeamDupeLock();
+
+    // START at CSS un-confirms this player (see ApplyCssDeselect).
+    ApplyCssDeselect();
 
     // Team size override -- apply BEFORE original so the natural copy
     // from g_team_round at game_state_manager STATE 0 (init CSS) sees

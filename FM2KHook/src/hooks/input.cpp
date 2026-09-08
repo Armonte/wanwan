@@ -22,6 +22,7 @@
 #include <windows.h>
 #include <cstdio>
 #include <cstdlib>
+#include <SDL3/SDL_log.h>
 #include <cstring>
 #include <string>
 #include <sys/stat.h>
@@ -86,10 +87,24 @@ static bool IsOurWindowFocused() {
 //
 // Offline there is no peer to disagree with, and this is the single most
 // requested local-play fix: today the only way to undo a mis-picked
-// character is to enter the match, pause, quit, and re-select. Online it
-// stays masked until it is a proper both-peers barrier -- see the tracker.
+// character is to enter the match, pause, quit, and re-select.
+//
+// ONLINE IT IS NOW ALLOWED THROUGH, 2026-09-08, because it no longer reaches
+// the engine's back-out at all. CSS is lockstep on gekko-confirmed inputs
+// (Netplay_CssHandleAdvance feeds them to process_game_inputs +
+// update_game_state and flushes the same words to the spectator stream), so
+// letting 0x400 into that word means BOTH peers and every viewer see the press
+// on the same frame. ApplyCssDeselect then swallows the bit from
+// g_system_input_state BEFORE game_state_manager runs, so the state-4 write at
+// 0x40726F never happens; what the player gets is an UN-CONFIRM that stays in
+// character select.
+//
+// The distinction that makes this safe is the one the old comment was reaching
+// for: leaving CSS is a session transition and still needs a both-peers
+// barrier, but un-confirming is ordinary synced sim state, no different from
+// moving the cursor.
 static inline bool CssStartAllowed() {
-    return !Netplay_IsConnected();
+    return true;
 }
 
 uint16_t Input_CaptureLocal() {
@@ -176,14 +191,43 @@ uint16_t Input_CaptureLocal() {
             // the right remote slot). Same convention this file already
             // uses for original_get_player_input(0, 0) below.
             uint16_t bound = FM2KInputBinder::Sample_Win32(0);
-            // Mask out START (0x400) on CSS -- pressing it on the
-            // character-select screen returns the local game to title
-            // and desyncs/wedges netplay. We can't safely strip it in
-            // battle (it's pause) or on title (it's confirm), so the
-            // mask is gated to mode 2000.
+            // START on CSS is admitted (see CssStartAllowed): online it is
+            // consumed by ApplyCssDeselect as an un-confirm and never reaches
+            // the engine's state-4 teardown; offline-and-unconfirmed it still
+            // falls through and bails to title, which is the behaviour local
+            // players asked for.
             const uint32_t game_mode = *(uint32_t*)FM2K::ADDR_GAME_MODE;
             if (game_mode == 2000 && !CssStartAllowed())
                 bound &= (uint16_t)~0x400u;
+            // FM2K_TEST_CSS_DESELECT=1: synthesize ONE START press at
+            // character select, the first frame this client is confirmed.
+            //
+            // It is injected HERE, into the LOCAL capture, on purpose: that is
+            // the word gekko syncs, so the press reaches the peer and every
+            // spectator through the ordinary confirmed-input stream, exactly
+            // as a real player's press would. Poking the deselect straight
+            // into sim state instead would be the one implementation that
+            // genuinely desyncs -- so the test must not do it either, or it
+            // would prove nothing about the shipping path.
+            if (game_mode == 2000) {
+                static const bool s_want = []{
+                    const char* v = std::getenv("FM2K_TEST_CSS_DESELECT");
+                    return v && v[0] == '1' && v[1] == '\0';
+                }();
+                static bool s_fired = false;
+                if (s_want && !s_fired) {
+                    const uint32_t* action = (const uint32_t*)0x0047019C;
+                    const int me = (g_player_index == 1) ? 1 : 0;
+                    if (action[me] != 0) {          // only once we are confirmed
+                        bound |= 0x400u;
+                        s_fired = true;
+                        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                            "[TEST-DESELECT] injecting one START press at CSS "
+                            "(player %d was confirmed) -- rides the synced "
+                            "input word like a real press", me + 1);
+                    }
+                }
+            }
             // FN1/FN2 pick palettes 6 and 7, and in 2DFM the button you
             // CONFIRM with is the button that picks your colour -- so an FN
             // press has to confirm as well as select, or it does nothing.

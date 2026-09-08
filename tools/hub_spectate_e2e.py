@@ -623,6 +623,14 @@ def main() -> int:
         # run that PASSES -- the step this campaign skipped three times, each
         # time attributing a desync to a term that turns out to differ between
         # healthy peers anyway. Must reach both players or it proves nothing.
+        # CSS deselect e2e: one synthesized START press at character select on
+        # whichever player is confirmed. Must reach BOTH players -- the press
+        # is synced, so the peer has to be running the same build path or the
+        # test proves nothing about what a real player would trigger.
+        css_deselect = os.environ.get("FM2K_TEST_CSS_DESELECT")
+        if css_deselect is not None:
+            play_env["FM2K_TEST_CSS_DESELECT"] = css_deselect
+
         ring_dump_at = os.environ.get("FM2K_DESYNCRING_DUMP_AT")
         if ring_dump_at is not None:
             play_env["FM2K_DESYNCRING_DUMP_AT"] = ring_dump_at

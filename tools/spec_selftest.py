@@ -4377,18 +4377,31 @@ def main():
                 f"{ax['host_ran_more_s']:.0f}s before the host")
             live_edge_fail = True
             continue
+        # BUDGET ARTIFACT, NOT A PRODUCT FAILURE -- and it must not be fatal,
+        # or the gate goes red at random and people learn to just re-run it,
+        # which is how a real failure eventually gets waved through.
+        #
+        # The distinction is exact, not a fudge:
+        #   viewer never connected AND the host had already exited -> the
+        #     assert is measuring --total-frames, so skip it
+        #   viewer never connected while the host was STILL ALIVE      -> a real
+        #     failure, and it still fails
+        # Seen for real in gate run 2026-09-08 07:55: viewer dialed at
+        # :28.752, host auto-terminated at :30.790, viewer retried at :32.753
+        # into a dead process. Every stage line said PASS and the gate said RED.
+        if host_ended_before_viewer_connected(host_p1_log, s["live"]):
+            print(f"[harness] LIVE-EDGE {s['tag']} ({s['phase']}): SKIPPED -- "
+                  f"HOST ENDED BEFORE THIS VIEWER CONNECTED. The host hit "
+                  f"--total-frames and exited while the viewer was still "
+                  f"dialing, so every retry went to a dead process. This is a "
+                  f"FRAME BUDGET artifact, not a transport or determinism "
+                  f"problem; raise --total-frames if you want this viewer "
+                  f"actually exercised. NOT counted as a liveness failure.")
+            continue
         verdict = "PASS" if lv["reached"] else "FAIL"
         # Report the TREND alongside the endpoint: a viewer holding steady
         # behind live is working, one losing ground is not, and the single
         # end-of-run gap cannot tell them apart.
-        # Name the budget artifact explicitly, or it reads as a spectator bug.
-        if host_ended_before_viewer_connected(host_p1_log, s["live"]):
-            print(f"[harness] LIVE-EDGE {s['tag']} ({s['phase']}): "
-                  f"HOST ENDED BEFORE THIS VIEWER CONNECTED -- the host hit "
-                  f"--total-frames and exited while the viewer was still "
-                  f"dialing, so every retry went to a dead process. This is a "
-                  f"FRAME BUDGET artifact, not a transport or determinism "
-                  f"problem. Raise --total-frames.")
         trend = ""
         if lv.get("early_gap") is not None:
             trend = (f" trend={lv['early_gap']}->{lv['late_gap']}"

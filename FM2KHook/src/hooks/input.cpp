@@ -107,6 +107,40 @@ static inline bool CssStartAllowed() {
     return true;
 }
 
+// FM2K_TEST_CSS_DESELECT=1: synthesize ONE START press at character select,
+// the first frame this client is confirmed.
+//
+// Applied to EVERY exit of Input_CaptureLocal, not just the binder branch. The
+// first version lived inside `if (s_binder_active)` and never fired in the
+// harness at all -- the gate's games have no binder profile, so that branch is
+// dead there and the run passed while testing nothing. A test that cannot fail
+// is worse than no test.
+//
+// Injected into the LOCAL capture on purpose: that is the word gekko syncs, so
+// the press reaches the peer and every spectator through the ordinary
+// confirmed-input stream, exactly as a real player's press would. Poking the
+// deselect straight into sim state would be the one implementation that
+// genuinely desyncs -- so the test must not do that either, or it proves
+// nothing about the shipping path.
+static inline uint16_t MaybeInjectCssDeselect(uint16_t bound) {
+    if (*(uint32_t*)FM2K::ADDR_GAME_MODE != 2000u) return bound;
+    static const bool s_want = []{
+        const char* v = std::getenv("FM2K_TEST_CSS_DESELECT");
+        return v && v[0] == '1' && v[1] == '\0';
+    }();
+    if (!s_want) return bound;
+    static bool s_fired = false;
+    if (s_fired) return bound;
+    const uint32_t* action = (const uint32_t*)0x0047019C;   // g_action_state
+    const int me = (g_player_index == 1) ? 1 : 0;
+    if (action[me] == 0) return bound;                      // only once confirmed
+    s_fired = true;
+    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+        "[TEST-DESELECT] injecting one START press at CSS (P%d was confirmed) "
+        "-- rides the synced input word like a real press", me + 1);
+    return (uint16_t)(bound | 0x400u);
+}
+
 uint16_t Input_CaptureLocal() {
     // CRITICAL: Only capture input if our window is focused
     // This prevents cross-instance input bleeding
@@ -199,35 +233,6 @@ uint16_t Input_CaptureLocal() {
             const uint32_t game_mode = *(uint32_t*)FM2K::ADDR_GAME_MODE;
             if (game_mode == 2000 && !CssStartAllowed())
                 bound &= (uint16_t)~0x400u;
-            // FM2K_TEST_CSS_DESELECT=1: synthesize ONE START press at
-            // character select, the first frame this client is confirmed.
-            //
-            // It is injected HERE, into the LOCAL capture, on purpose: that is
-            // the word gekko syncs, so the press reaches the peer and every
-            // spectator through the ordinary confirmed-input stream, exactly
-            // as a real player's press would. Poking the deselect straight
-            // into sim state instead would be the one implementation that
-            // genuinely desyncs -- so the test must not do it either, or it
-            // would prove nothing about the shipping path.
-            if (game_mode == 2000) {
-                static const bool s_want = []{
-                    const char* v = std::getenv("FM2K_TEST_CSS_DESELECT");
-                    return v && v[0] == '1' && v[1] == '\0';
-                }();
-                static bool s_fired = false;
-                if (s_want && !s_fired) {
-                    const uint32_t* action = (const uint32_t*)0x0047019C;
-                    const int me = (g_player_index == 1) ? 1 : 0;
-                    if (action[me] != 0) {          // only once we are confirmed
-                        bound |= 0x400u;
-                        s_fired = true;
-                        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                            "[TEST-DESELECT] injecting one START press at CSS "
-                            "(player %d was confirmed) -- rides the synced "
-                            "input word like a real press", me + 1);
-                    }
-                }
-            }
             // FN1/FN2 pick palettes 6 and 7, and in 2DFM the button you
             // CONFIRM with is the button that picks your colour -- so an FN
             // press has to confirm as well as select, or it does nothing.
@@ -244,7 +249,7 @@ uint16_t Input_CaptureLocal() {
             // Per-player SOCD, applied here at capture with THIS device's
             // mode -- before the value reaches gekko, the replay or the
             // spectator stream. See Hook_ApplySOCDSlot.
-            return Hook_ApplySOCDSlot(bound, 0);
+            return MaybeInjectCssDeselect(Hook_ApplySOCDSlot(bound, 0));
         }
     }
 
@@ -292,7 +297,7 @@ uint16_t Input_CaptureLocal() {
     }
 
     // Vanilla-binding path is P1's device by definition: slot 0's mode.
-    return Hook_ApplySOCDSlot(input, 0);
+    return MaybeInjectCssDeselect(Hook_ApplySOCDSlot(input, 0));
 }
 
 uint16_t Input_CaptureLocalPlayer(int player) {

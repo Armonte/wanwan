@@ -55,18 +55,33 @@ OUT_PATH = REPO / "data" / "fm2k_wiki" / "local_inventory.json"
 # silently skipped.
 DEFAULT_ROOTS = [
     "/mnt/d/Games/fm2k",
+    "/mnt/d/Games/fm95",   # 30 installed FM95 games were invisible without this
     "/mnt/c/games/2dfm",
     "/mnt/c/games/fm2k",
 ]
 
-# .kgt signatures observed in the wild (from FM2K_KgtParser.cpp). We
-# don't enforce any specific value — these are just for engine guessing
-# when a directory has a .kgt but no other clues.
+# .kgt signatures, MEASURED over all 150 .kgt in the local library
+# 2026-09-09, not guessed:
+#     2DKGT2K  86    2DKGT2G  34    KGTGAME  30
+# Two corrections to the previous table, which produced NO correct answers:
+#   1. It was keyed on 8 bytes (b"2DKGT2K\x00") but looked up with the full
+#      16-byte signature, so every lookup missed and every game fell through
+#      to the "FM2K" default -- including the 30 FM95 ones. Match on the
+#      7-byte ASCII prefix instead.
+#   2. "2DKGT95" does not exist in the wild; the real FM95 magic is
+#      "KGTGAME", and "2DKGT2G" (a second FM2K variant) was absent entirely.
+# "2DKGT95" is kept only because FM2K_KgtParser.cpp lists it.
 SIG_TO_ENGINE = {
-    b"2DKGT2K\x00":  "FM2K",
-    b"2DKGT2K2\x00": "FM2K",   # 2nd revision header observed in some builds
-    b"2DKGT95\x00":  "FM95",
+    b"2DKGT2K": "FM2K",
+    b"2DKGT2G": "FM2K",
+    b"KGTGAME": "FM95",
+    b"2DKGT95": "FM95",
 }
+
+
+def engine_for_sig(sig: bytes) -> str:
+    """Engine from the 16-byte .kgt signature, matched on its ASCII prefix."""
+    return SIG_TO_ENGINE.get(sig[:7], "FM2K")
 
 
 def hash_exe(p: Path) -> int:
@@ -170,23 +185,31 @@ def discover_local_games(roots: list[Path]) -> list[dict]:
                 stem = kgt.rsplit(".", 1)[0]
                 exe_match = next((e for e in exes
                                   if e.rsplit(".", 1)[0].lower() == stem.lower()), None)
-                if not exe_match:
-                    continue
-                exe_p = d / exe_match
+                # KGT-FIRST. This used to `continue` when no same-stem .exe sat
+                # beside the .kgt, which silently dropped 43 of 150 installed
+                # games (many ship as <Game>.kgt next to a differently-named or
+                # absent launcher exe). The .kgt IS the game; the exe is a
+                # shared ~1.2 MB runtime stub and is optional here.
+                exe_p = (d / exe_match) if exe_match else None
                 kgt_p = d / kgt
-                try:
-                    st = exe_p.stat()
-                except OSError:
-                    continue
+                st = None
+                if exe_p is not None:
+                    try:
+                        st = exe_p.stat()
+                    except OSError:
+                        exe_p = None
                 sig, project = parse_kgt_header(kgt_p)
                 games.append({
-                    "exe_path":      str(exe_p).replace("\\", "/"),
-                    "exe_xxh64":     f"0x{hash_exe(exe_p):016X}",
-                    "exe_size":      st.st_size,
-                    "exe_mtime":     int(st.st_mtime),
+                    # exe_* stay in the schema (atwiki_audit.py and
+                    # atwiki_merge_to_registry.py read them) but are now
+                    # nullable, because a .kgt no longer requires a sibling exe.
+                    "exe_path":      str(exe_p).replace("\\", "/") if exe_p else None,
+                    "exe_xxh64":     f"0x{hash_exe(exe_p):016X}" if exe_p else None,
+                    "exe_size":      st.st_size if st else None,
+                    "exe_mtime":     int(st.st_mtime) if st else None,
                     "kgt_path":      str(kgt_p).replace("\\", "/"),
                     "kgt_signature": sig.decode("ascii", errors="replace").rstrip("\x00"),
-                    "engine_guess":  SIG_TO_ENGINE.get(sig, "FM2K"),
+                    "engine_guess":  engine_for_sig(sig),
                     "project_name":  project,
                 })
     return games
@@ -198,10 +221,14 @@ def join_atwiki(local: list[dict], atwiki: list[dict]) -> None:
         # Try matching in this priority: project_name (best signal),
         # exe basename, dir basename. Pick the highest score across
         # all three.
+        # exe_path is nullable since the kgt-first walk landed, so fall back
+        # to the .kgt for the filename/dirname candidates. The .kgt is always
+        # present -- it is what the walk keys on.
+        anchor = Path(g["exe_path"] or g["kgt_path"])
         candidates = [
             ("project_name", g.get("project_name", "")),
-            ("filename",     Path(g["exe_path"]).stem),
-            ("dirname",      Path(g["exe_path"]).parent.name),
+            ("filename",     anchor.stem),
+            ("dirname",      anchor.parent.name),
         ]
         best = None
         best_score = 0.0

@@ -60,15 +60,24 @@ USER_AGENT = ("Mozilla/5.0 (compatible; fm2k-archive-crawler/1.0; "
               "+https://github.com/Armonte/wanwan)")
 
 # Circuit breaker for CDX outages. CDX has been on/off in early 2026;
-# when it's down, every query stalls until timeout. After this many
-# consecutive failures we stop trying CDX for the rest of the run and
-# rely on the wayback_probe redirect fallback only.
+# when it's down, every query stalls until timeout.
+#
+# THE BREAKER USED TO BE PERMANENT, AND THAT COST US THE WHOLE RUN. On
+# 2026-09-09 it tripped at line 5 of a 336-game resolve -- five slow queries at
+# the very start -- and every game after that was resolved by the weaker
+# probe-only fallback. The run reported "302 unarchivable"; spot-checking those
+# against CDX by hand immediately found sites with 50 snapshots. A transient
+# stall at the start must not decide the outcome for the remaining 99% of the
+# work, so the breaker now COOLS DOWN and re-arms instead of latching off. The
+# 5s timeout that produced those failures was also far too tight for CDX, which
+# routinely takes 10s+.
 CDX_FAILURE_THRESHOLD = 5
+CDX_COOLDOWN_S = 60.0
 _cdx_consec_failures = 0
-_cdx_disabled = False
+_cdx_disabled_until = 0.0
 
 
-def cdx_query(url: str, timeout: float = 5.0) -> list[tuple[str, str]]:
+def cdx_query(url: str, timeout: float = 20.0) -> list[tuple[str, str]]:
     """Query the Wayback CDX index for `url`, returning a list of
     (timestamp, archived_url) for 2xx snapshots, sorted oldest -> newest.
 
@@ -78,11 +87,15 @@ def cdx_query(url: str, timeout: float = 5.0) -> list[tuple[str, str]]:
     consecutive failures we mark CDX as disabled and short-circuit
     subsequent calls. Lets the run fall through to the probe fallback
     immediately during outages instead of paying ~5s per query."""
-    global _cdx_consec_failures, _cdx_disabled
-    if _cdx_disabled:
+    global _cdx_consec_failures, _cdx_disabled_until
+    now = time.time()
+    if now < _cdx_disabled_until:
         return []
+    # No statuscode filter. Requiring 200 threw away pages archived as a 3xx,
+    # which is a common shape for the Geocities-era hosts in this corpus; the
+    # 2xx selection happens below, where a redirect can still be followed.
     q = (f"{CDX_BASE}?url={quote(url, safe=':/?&=')}"
-         f"&output=json&filter=statuscode:200&limit=500")
+         f"&output=json&limit=500")
     req = Request(q, headers={"User-Agent": USER_AGENT})
     try:
         with urlopen(req, timeout=timeout) as r:
@@ -90,9 +103,10 @@ def cdx_query(url: str, timeout: float = 5.0) -> list[tuple[str, str]]:
     except (URLError, HTTPError, TimeoutError):
         _cdx_consec_failures += 1
         if _cdx_consec_failures >= CDX_FAILURE_THRESHOLD:
-            _cdx_disabled = True
-            print(f"  [cdx] disabled after {_cdx_consec_failures} failures — "
-                  f"falling back to probe-only", flush=True)
+            _cdx_disabled_until = time.time() + CDX_COOLDOWN_S
+            _cdx_consec_failures = 0
+            print(f"  [cdx] cooling down {CDX_COOLDOWN_S:.0f}s after "
+                  f"{CDX_FAILURE_THRESHOLD} failures (will re-arm)", flush=True)
         return []
     try:
         data = json.loads(raw)
@@ -100,9 +114,10 @@ def cdx_query(url: str, timeout: float = 5.0) -> list[tuple[str, str]]:
         # CDX returns 503 + HTML during outages — counts as failure.
         _cdx_consec_failures += 1
         if _cdx_consec_failures >= CDX_FAILURE_THRESHOLD:
-            _cdx_disabled = True
-            print(f"  [cdx] disabled after {_cdx_consec_failures} failures — "
-                  f"falling back to probe-only", flush=True)
+            _cdx_disabled_until = time.time() + CDX_COOLDOWN_S
+            _cdx_consec_failures = 0
+            print(f"  [cdx] cooling down {CDX_COOLDOWN_S:.0f}s after "
+                  f"{CDX_FAILURE_THRESHOLD} failures (will re-arm)", flush=True)
         return []
     # Success — reset counter.
     _cdx_consec_failures = 0
@@ -110,13 +125,25 @@ def cdx_query(url: str, timeout: float = 5.0) -> list[tuple[str, str]]:
         return []
     # Header row first; remaining rows are snapshots.
     rows = data[1:]
-    snaps: list[tuple[str, str]] = []
+    # CDX columns: urlkey, timestamp, original, mimetype, statuscode, digest,
+    # length. The query no longer filters statuscode, so filter HERE and keep
+    # the preference explicit: 2xx is a real capture, 3xx is a redirect whose
+    # target is usually also archived and is worth following, 4xx/5xx are
+    # captures of an error page and are worthless. Taking every row (which is
+    # what dropping the query filter naively would do) would record 404 pages
+    # as successful resolutions -- worse than the false negatives it fixes.
+    ok, redirs = [], []
     for row in rows:
         if len(row) < 3:
             continue
         ts, original = row[1], row[2]
+        status = row[4] if len(row) > 4 else ""
         wb_url = f"https://web.archive.org/web/{ts}/{original}"
-        snaps.append((ts, wb_url))
+        if status.startswith("2") or status == "-":
+            ok.append((ts, wb_url))
+        elif status.startswith("3"):
+            redirs.append((ts, wb_url))
+    snaps = ok or redirs
     snaps.sort()  # ascending by timestamp
     return snaps
 

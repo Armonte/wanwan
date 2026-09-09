@@ -216,3 +216,7 @@ tools/.cssrepro*/
 tools/.cssrebind/
 tools/.altcolor/
 tools/.altsurvey/
+
+# manual_2p.sh writes throwaway .bat launchers here (same transient class as
+# .spec_runs above).
+tools/.manual_2p/

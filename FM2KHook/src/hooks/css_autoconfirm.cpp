@@ -418,42 +418,58 @@ constexpr uintptr_t ADDR_CSS_OBJ_PTR    = 0x004CFA00;  // g_css_object_ptr
 constexpr ptrdiff_t OFF_CONFIRM_SPRITE_P1 = 0x166;
 constexpr ptrdiff_t OFF_CONFIRM_SPRITE_P2 = 0x16A;
 constexpr uintptr_t ADDR_OBJ_POOL_DESEL = 0x004701E0;
+// THE INVERSE OF CONFIRM, and nothing else.
+//
+// Confirm is four writes (VS 1v1, 0x407820-0x40787B), and the engine spells out
+// what a deselect has to undo:
+//     0x407829  mov dword ptr [ebp+0], 1   ; retire the CURSOR sprite,
+//                                          ; ebp = [g_css_object_ptr+166h]
+//     0x407841  call CreateProjectileObject; confirm sprite, subtype 0x65, (0,0)
+//     0x40784F  mov [edx+166h], eax        ; +16Ah for P2
+//     0x40787B  mov g_action_state[esi*4], 1
+// So deselect retires the CONFIRM sprite, creates a fresh CURSOR sprite in its
+// place, and clears the flag. Nothing else moves.
+//
+// NOT RetirePlayerSpawnedObjects @0x406520. That was the first attempt, on the
+// theory that the engine's cursor-move-away path (0x407425 / 0x407967 /
+// 0x407C2A) is a deselect. It is not the same operation: it unloads the HOVER
+// PREVIEW -- the splash art that appears when you move onto a character, which
+// on a deselect must stay, because you are still hovering that character. It
+// also strands the state, since the block that would rebuild the preview is
+// gated on the cursor having MOVED:
+//     0x407959  cmp edx, eax        ; g_selected_char_grid[slot] vs cursor grid
+//     0x40795B  jz  loc_407A72      ; equal -> whole block skipped
+// so with the cursor still on the same cell nothing was ever recreated, and a
+// re-confirm spawned nothing at all.
+//
+// The sprite ids are four u16s in a row at 0x445250, read at 0x4071AE (P1
+// cursor), 0x4071D6 (P2 cursor), 0x407834 (P1 confirm), 0x407859 (P2 confirm).
+// We only need the two cursor ids -- the engine makes the confirm ones.
+using CreateProjectileObjectFn = uint32_t* (__cdecl*)(int script_id, int subtype,
+                                                     int spawn_x, int spawn_y);
+constexpr uintptr_t ADDR_CREATE_PROJECTILE_OBJ = 0x00406890;
+// The other half: the engine's cursor-move-away pair, which is what actually
+// clears the character art (census 2026-09-08: those are the kind=1 scr=64/66
+// objects, which is precisely what this matches -- type 4, entity_kind < 2,
+// owned by the player). BOTH writes are required and dropping the second is
+// what broke the last attempt:
+//     0x407967  call RetirePlayerSpawnedObjects
+//     0x407975  mov  g_selected_char_grid[esi*4], -1
+// because the rebuild is gated on the grid entry DISAGREEING with the cursor:
+//     0x407959  cmp edx, eax
+//     0x40795B  jz  loc_407A72     ; equal -> skipped, nothing is ever rebuilt
+// With the -1 the engine re-selects in its very next pass (same g_orig call),
+// reloading nothing -- player_data_file_loader no-ops when the slot already
+// holds this character -- and recreating the hover art at 0x4079E1 / 0x407A0B.
+// Net effect: confirm-time art gone, hover art back, cursor never moved.
+using RetirePlayerSpawnedObjectsFn = int (__cdecl*)(int player_slot_id);
+constexpr uintptr_t ADDR_RETIRE_PLAYER_OBJS    = 0x00406520;
+constexpr uintptr_t ADDR_CURSOR_SPRITE_IDS     = 0x00445250;  // u16[2]: P1, P2
+constexpr int       CSS_SPRITE_SUBTYPE         = 0x65;        // every CSS sprite
 constexpr size_t    OBJ_STRIDE_DESEL    = 382;
 constexpr size_t    OBJ_COUNT_DESEL     = 1024;
 
 void ApplyCssDeselect() {
-    // DIAGNOSTIC (temporary). Two distinct markers so one run separates the
-    // two possibilities that "no log at all" leaves open:
-    //   ENTRY  -> this detour DOES run at CSS; if no EDGE follows, the 0x400
-    //             never reached g_system_input_state
-    //   (none) -> this detour never runs at CSS, i.e. the CSS object is not
-    //             dispatched to game_state_manager and the hook is on the
-    //             wrong function
-    if (*(const uint32_t*)ADDR_GAME_MODE == 2000u) {
-        static bool s_entry = false;
-        if (!s_entry) {
-            s_entry = true;
-            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "[CSS-DESELECT-DIAG] ENTRY at CSS: mode_flag=%u sys=0x%X",
-                *(const uint32_t*)ADDR_GAME_MODE_FLAG,
-                *(const uint32_t*)ADDR_SYS_INPUT_STATE);
-        }
-        // Any button edge at all, a few times, so we can see what DOES arrive.
-        const uint32_t sysv = *(const uint32_t*)ADDR_SYS_INPUT_STATE;
-        if (sysv & 0x7F0u) {
-            static int s_seen = 0;
-            if (s_seen < 6) {
-                ++s_seen;
-                const uint32_t* a = (const uint32_t*)ADDR_ACTION_STATE;
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    "[CSS-DESELECT-DIAG] EDGE sys=0x%X changes=[0x%X,0x%X] "
-                    "action=[%u,%u] mode_flag=%u",
-                    sysv, ((const uint32_t*)ADDR_INPUT_CHANGES)[0],
-                    ((const uint32_t*)ADDR_INPUT_CHANGES)[1], a[0], a[1],
-                    *(const uint32_t*)ADDR_GAME_MODE_FLAG);
-            }
-        }
-    }
     if (*(const uint32_t*)ADDR_GAME_MODE      != 2000u) return;  // CSS only
     if (*(const uint32_t*)ADDR_GAME_MODE_FLAG != 1u)    return;  // VS 1v1 only
 
@@ -478,25 +494,50 @@ void ApplyCssDeselect() {
         changes[p] &= ~0x400u;
         consumed = true;
 
-        // DO NOT TOUCH THE SPRITE POINTER. First attempt retired the confirm
-        // sprite and nulled g_css_object_ptr+0x166 (P1) / +0x16A (P2), and the
-        // game crashed instantly:
-        //     0x4077AC  mov ebp, [ecx+166h]     ; NO null check
-        //     0x4077DB  mov [ebp+8], edx        ; writes sprite pos_x each frame
-        //     -> AV writing 0x00000008, EIP 004077DB, EBP=0
-        // That slot is the player's LIVE cursor sprite, which confirm merely
-        // REPLACES with the confirm graphic ("P1 confirm: replace cursor with
-        // confirmation sprite"), and the VS-1v1 selection loop repositions it
-        // unconditionally every frame. Nulling it faults; retiring it without
-        // nulling would leave the engine writing into a freed slot, which is
-        // worse because it corrupts silently.
-        //
-        // Un-confirming is a STATE change, so change only state. The confirm
-        // graphic stays on screen until the next confirm replaces it -- a
-        // cosmetic wart, not a correctness problem, and it is identical on both
-        // peers so it cannot desync. Swapping the graphic back means creating a
-        // cursor sprite the way CSS init does; that is worth doing, separately,
-        // once the state half is proven.
+        // Put the cursor sprite back where the confirm sprite is, in that
+        // order: create first, and only retire the old one once the new one
+        // exists. g_css_object_ptr+0x166 is dereferenced with NO null check
+        // every single frame --
+        //     0x4077AC  mov ebp, [ecx+166h]
+        //     0x4077DB  mov [ebp+8], edx     ; writes cursor pos_x
+        // -- so a null there is an instant AV (0xC0000005 writing 0x00000008 at
+        // EIP 004077DB, which is exactly how the first version of this crashed).
+        // If the pool is full and creation fails, we keep the confirm sprite
+        // and un-confirm state-only rather than leave that slot dangling. Both
+        // peers run this from the same synced input on the same frame, so the
+        // failing branch is taken by both or neither.
+        // 1. The engine's own cursor-move-away deselect, both halves.
+        ((RetirePlayerSpawnedObjectsFn)ADDR_RETIRE_PLAYER_OBJS)(p);
+        ((int32_t*)ADDR_SELECTED_CHAR)[p] = -1;
+
+        // 2. Swap the confirm sprite back to a cursor sprite. Still required:
+        //    confirm RETIRED the cursor sprite (0x407829) to make room for
+        //    itself, and RetirePlayerSpawnedObjects does not touch either of
+        //    them -- they are entity_kind 2, and it only matches < 2.
+        const uint16_t cursor_id =
+            ((const uint16_t*)ADDR_CURSOR_SPRITE_IDS)[p];
+        uintptr_t* sprite_slot = (uintptr_t*)(css_obj +
+            (p == 0 ? OFF_CONFIRM_SPRITE_P1 : OFF_CONFIRM_SPRITE_P2));
+        uint32_t* fresh_cursor =
+            ((CreateProjectileObjectFn)ADDR_CREATE_PROJECTILE_OBJ)(
+                (int)cursor_id, CSS_SPRITE_SUBTYPE, 0, 0);
+        if (fresh_cursor) {
+            uint32_t* confirm_sprite = (uint32_t*)*sprite_slot;
+            if (confirm_sprite) *confirm_sprite = 1;   // type = 1, retire
+            *sprite_slot = (uintptr_t)fresh_cursor;
+        }
+
+        // This log is the ONLY way a test can tell a deselect from a swallowed
+        // bit -- four earlier runs passed green while testing nothing, because
+        // an eaten 0x400 and a working deselect look identical from outside.
+        // Once per press, not per frame: hook logging is synchronous.
+        // One line per PRESS, never per frame -- hook logging is synchronous.
+        // It stays because it is the only thing that separates a real deselect
+        // from a swallowed 0x400: four earlier harness runs passed green while
+        // testing nothing, and from outside the two are identical.
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "[CSS-DESELECT] P%d un-confirmed by START (cursor %s)",
+                    p + 1, fresh_cursor ? "restored" : "FAILED to spawn");
         action[p] = 0;                             // un-confirm
         // The both-confirmed countdown must restart, or a deselect at
         // timer=99 would re-confirm straight into the match.

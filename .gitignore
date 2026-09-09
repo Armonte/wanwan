@@ -220,3 +220,6 @@ tools/.altsurvey/
 # manual_2p.sh writes throwaway .bat launchers here (same transient class as
 # .spec_runs above).
 tools/.manual_2p/
+
+# Wave-scratch for the game-db scraping campaign (logs + status files).
+tools/.wave1/

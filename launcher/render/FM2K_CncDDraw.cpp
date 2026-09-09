@@ -69,7 +69,23 @@ struct InternalState {
     mutable std::mutex mtx;
 };
 
-InternalState g_st;
+// IMMORTAL ON PURPOSE -- never destroyed, and that is the fix for a crash on
+// EVERY launcher exit that ran this worker.
+//
+// `worker` is a std::thread. ~thread() calls std::terminate() if the thread is
+// still JOINABLE, and a thread that has already FINISHED is still joinable --
+// std::thread does not auto-detach. Nothing joined it at shutdown (JoinWorker
+// below only reaps the previous worker before starting a new one), so static
+// destruction ran ~thread() on a joinable thread and the process died with
+//     [TERMINATE] std::terminate -- uncaught C++ exception: (no active exception)
+// printed immediately after "clean shutdown". Seen in Melan's log 2026-09-08.
+//
+// Joining at shutdown instead would block quit for the length of an in-flight
+// HTTPS request -- on a machine that cannot reach the server (a wrong clock,
+// which is what that log actually was) that is the full timeout, every exit.
+// Leaking one small struct and letting the OS reap the thread costs nothing at
+// process death and cannot hang or touch freed memory.
+InternalState& g_st = *new InternalState();
 
 void SetState(State s) {
     std::lock_guard<std::mutex> lk(g_st.mtx);
@@ -392,9 +408,16 @@ void InstallWorkerImpl(bool force) {
         g_st.snap.local_version  = local;
         g_st.snap.remote_version = remote;
     }
+    // v-PREFIXED ON PURPOSE. A bare "7.1.0.0" is a valid public IPv4 as far as
+    // the log scrubber is concerned, and it used to be masked to <pub-ip>.
+    // The scrubber now skips a dotted quad preceded by a letter, so the v is
+    // what keeps these readable. "(none)" rather than '' so a missing local
+    // install is visible instead of an empty pair of quotes.
+    const std::string local_disp = local.empty() ? std::string("(none)")
+                                                 : ("v" + local);
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "CncDDraw: local='%s' remote='%s' (tag=%s)",
-        local.c_str(), remote.c_str(), tag.c_str());
+        "CncDDraw: local=%s remote=%s (tag=%s)",
+        local_disp.c_str(), ("v" + remote).c_str(), tag.c_str());
 
     // 2. If we already have the right version (and the dll is on disk),
     // we're done. The dll-presence check guards against a partial install

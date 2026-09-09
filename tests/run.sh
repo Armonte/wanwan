@@ -26,6 +26,8 @@ echo "=== input_pump_test ==="
 ./input_pump_test || rc=$?
 echo "=== input_route_test ==="
 ./input_route_test || rc=$?
+echo "=== pii_scrub_test ==="
+./pii_scrub_test || rc=$?
 echo "=== reliable_channel_test ==="
 ./reliable_channel_test || rc=$?
 

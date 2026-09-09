@@ -56,6 +56,9 @@ target_compile_options(input_pump_test PRIVATE -Wall -Wextra -Wpedantic)
 add_executable(input_route_test input_route_test.cpp)
 target_compile_options(input_route_test PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(pii_scrub_test pii_scrub_test.cpp ../FM2KHook/src/util/pii_scrub.cpp)
+target_compile_options(pii_scrub_test PRIVATE -Wall -Wextra -Wpedantic)
+
 # ReliableChannel ordering + FEC reconstruction, no game / no Windows.
 # Its body is guarded by RC_STANDALONE_TEST.
 add_executable(reliable_channel_test
@@ -79,4 +82,5 @@ add_test(NAME delay_math_test COMMAND delay_math_test)
 add_test(NAME alt_colors_test COMMAND alt_colors_test)
 add_test(NAME input_pump_test COMMAND input_pump_test)
 add_test(NAME input_route_test COMMAND input_route_test)
+add_test(NAME pii_scrub_test COMMAND pii_scrub_test)
 add_test(NAME reliable_channel_test COMMAND reliable_channel_test)

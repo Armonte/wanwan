@@ -81,9 +81,20 @@ const std::regex& EmailRe() {
         R"([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})");
     return re;
 }
+// A LEADING BOUNDARY, so four-part VERSION strings survive. Without it this
+// ate the pinned cnc-ddraw version: "tag=v7.1.0.0" logged as "tag=v<pub-ip>"
+// (7.x is public address space, so the octet test passes). A reader then sees
+// a download URL of .../download/v<pub-ip>/cnc-ddraw.zip and goes hunting for
+// a bug that is not there -- it cost exactly that on Melan's log, 2026-09-08.
+// The excluded prefix set is letters/digits/dot/underscore. Digits and dots
+// stop us matching the tail of a longer dotted number; letters and underscore
+// stop "v7.1.0.0" and friends. HYPHEN IS DELIBERATELY NOT EXCLUDED, so a real
+// address in "10.0.0.1-203.0.113.7" is still masked. Real addresses in our
+// logs are always preceded by a space, '=', ':', '/', '(' or a quote, none of
+// which are in the set.
 const std::regex& IPv4Re() {
     static const std::regex re(
-        R"((\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3}))");
+        R"((^|[^0-9A-Za-z._])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3}))");
     return re;
 }
 // Discord snowflakes embedded in our log lines. Always tagged with one
@@ -189,17 +200,18 @@ std::string Scrub(std::string_view in) {
         size_t last = 0;
         for (auto it = begin; it != end; ++it) {
             const auto& m = *it;
-            int a = std::atoi(m[1].str().c_str());
-            int b = std::atoi(m[2].str().c_str());
-            int c = std::atoi(m[3].str().c_str());
-            int d = std::atoi(m[4].str().c_str());
+            int a = std::atoi(m[2].str().c_str());
+            int b = std::atoi(m[3].str().c_str());
+            int c = std::atoi(m[4].str().c_str());
+            int d = std::atoi(m[5].str().c_str());
             out.append(s, last, (size_t)m.position() - last);
+            out += m[1].str();   // the boundary char is not part of the match
             if (a >= 0 && a <= 255 && b >= 0 && b <= 255 &&
                 c >= 0 && c <= 255 && d >= 0 && d <= 255 &&
                 !IsPrivateIPv4(a, b, c, d)) {
                 out += "<pub-ip>";
             } else {
-                out += m[0].str();  // private/loopback/unspecified -- keep raw
+                out += m[0].str().substr(m[1].str().size());  // keep raw
             }
             last = (size_t)m.position() + (size_t)m.length();
         }

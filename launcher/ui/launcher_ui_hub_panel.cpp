@@ -286,6 +286,18 @@ void LauncherUI::RenderHubPanel() {
         // When unchecked, the user can edit their custom nick. Toggling
         // doesn't destroy the custom nick -- it just switches WHICH value
         // gets sent on Connect. Persists immediately.
+        // GUEST LOGIN. The hub accepts a nick-only hello (no hub_token) and
+        // has since 2026-09-02; signing in with Discord is what unlocks online
+        // replays, stats and Patreon perks, NOT the lobby itself -- which is
+        // exactly what hub_signin_optional_hint above already tells the user.
+        // So `signed_in` must not gate Connect, and "Use Discord name" cannot
+        // mean anything until there IS a Discord name: left live it would sit
+        // checked (its default) over a DISABLED nick box, leaving a guest with
+        // no way to type a nick and no way to connect.
+        const auto cached_auth_check = fm2k::discord_auth::LoadCached();
+        const bool signed_in           = cached_auth_check.valid;
+        const bool use_discord_name_eff = s_use_discord_name && signed_in;
+        if (!signed_in) ImGui::BeginDisabled();
         if (ImGui::Checkbox(T("hub_use_discord_name"), &s_use_discord_name)) {
             auto cached_save = fm2k::discord_auth::LoadCached();
             if (cached_save.valid) {
@@ -293,25 +305,26 @@ void LauncherUI::RenderHubPanel() {
                 fm2k::discord_auth::SaveCached(cached_save);
             }
         }
+        if (!signed_in) ImGui::EndDisabled();
         // Display buffer: shows what'll be sent on Connect. When the
         // checkbox is on, that's discord_global_name (read-only). When
         // off, it's the editable custom nick (s_nick). Two separate
         // buffers under the hood so flipping the checkbox doesn't
         // clobber either source-of-truth.
         char display_buf[128];
-        if (s_use_discord_name) {
+        if (use_discord_name_eff) {
             std::snprintf(display_buf, sizeof(display_buf), "%s",
                           s_discord_global_name.c_str());
         } else {
             std::snprintf(display_buf, sizeof(display_buf), "%s", s_nick);
         }
         ImGui::PushItemWidth(-120);
-        if (s_use_discord_name) ImGui::BeginDisabled();
+        if (use_discord_name_eff) ImGui::BeginDisabled();
         if (ImGui::InputText(T("hub_nick"), display_buf, sizeof(display_buf))
-            && !s_use_discord_name) {
+            && !use_discord_name_eff) {
             std::snprintf(s_nick, sizeof(s_nick), "%s", display_buf);
         }
-        if (s_use_discord_name) ImGui::EndDisabled();
+        if (use_discord_name_eff) ImGui::EndDisabled();
         ImGui::PopItemWidth();
         // Show the configured hub host as read-only context. Edit from
         // Settings → Hub Server…
@@ -320,7 +333,6 @@ void LauncherUI::RenderHubPanel() {
         if (ImGui::SmallButton("change")) {
             show_hub_server_ = true;
         }
-        const auto cached_auth_check = fm2k::discord_auth::LoadCached();
         // Adopt the Discord name as soon as the auth cache has one.
         //
         // s_discord_global_name is snapshotted once, on the FIRST hub-panel
@@ -341,14 +353,15 @@ void LauncherUI::RenderHubPanel() {
         // nick_ok: when "Use Discord name" is on, validity depends on whether
         // we know what their Discord name actually is (populated post-OAuth).
         // When off, just whether they typed something.
-        const bool nick_ok = s_use_discord_name
+        const bool nick_ok = use_discord_name_eff
             ? !s_discord_global_name.empty()
             : (s_nick[0] != '\0');
-        const bool signed_in  = cached_auth_check.valid;
-        const bool can_connect = nick_ok && signed_in;
-        const char* button_label =
-            !signed_in ? "(sign in with Discord first)" :
-            !nick_ok   ? "(set a nick first)" : "Connect";
+        // A nick is the ONLY requirement. Not being signed in is a normal way
+        // to play, so it gets its own label rather than a blocked button.
+        const bool can_connect = nick_ok;
+        const char* button_label = !nick_ok  ? T("hub_need_nick")
+                                 : signed_in ? T("hub_connect")
+                                             : T("hub_connect_guest");
         if (!can_connect) ImGui::BeginDisabled();
         if (ImGui::Button(button_label, ImVec2(-1, 0))) {
             // Pick the right nick to send: Discord global_name when the
@@ -356,7 +369,7 @@ void LauncherUI::RenderHubPanel() {
             // persists across the connect (so toggling the checkbox back
             // off restores the user's last custom value).
             const std::string outgoing_nick =
-                s_use_discord_name ? s_discord_global_name : std::string(s_nick);
+                use_discord_name_eff ? s_discord_global_name : std::string(s_nick);
             // Persist nick + checkbox state to discord_auth.json.
             auto cached_save = fm2k::discord_auth::LoadCached();
             if (cached_save.valid) {

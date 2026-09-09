@@ -82,7 +82,53 @@ _GAME_ID_RE = re.compile(r"/win/game/(\d+)")
 # inside each card; capture the surrounding card for context.
 
 
-def crawl_listing(search_term: str) -> list[str]:
+def listing_url(term: str, page: int) -> str:
+    """URL for one listing page.
+
+    TWO SHAPES, and they are not interchangeable:
+      search    https://www.freem.ne.jp/search/<term>?page=N
+      category  https://www.freem.ne.jp/win/category/<N>/page-M
+    A category id is passed as "category:45". Category listings are the
+    curated ones (45 = Fighting games, 75 works); search matches the term
+    ANYWHERE on a page, so it pulls in noise -- an RPG Maker or YU-RIS title
+    whose blurb merely mentions 2D格闘ツクール. Both are useful, for different
+    reasons, so both are supported rather than one replacing the other.
+    """
+    if term.startswith("category:"):
+        cid = term.split(":", 1)[1]
+        base = f"https://www.freem.ne.jp/win/category/{cid}"
+        return base if page <= 1 else f"{base}/page-{page}"
+    return (f"https://www.freem.ne.jp/search/{quote(term)}"
+            + (f"?page={page}" if page > 1 else ""))
+
+
+_REVIEW_BLOCK_RE = re.compile(r'class="game-list-review".{0,4000}?</li>', re.S)
+_DECLARED_TOTAL_RE = re.compile(r'([0-9,]+)\s*作品')
+
+
+def _listing_ids(html: str) -> list[str]:
+    """Game ids from the LISTING ONLY, excluding the recommendation block.
+
+    MEASURED on /win/category/45 (2026-09-09): each page carries 40 game links
+    but only 20 are the category listing -- the other 20 sit inside
+    `class="game-list-review"`, a site-wide recommendation rail that has
+    nothing to do with the category. Taking every /win/game/N link gave 245
+    ids for a category that declares 75 works, and spot-checking those extras
+    found an RPG Maker horror game and a YU-RIS novel. A work list built that
+    way spends the download budget on the wrong games.
+    """
+    review: set[str] = set()
+    for m in _REVIEW_BLOCK_RE.finditer(html):
+        review |= set(_GAME_ID_RE.findall(m.group(0)))
+    out = []
+    for m in _GAME_ID_RE.finditer(html):
+        gid = m.group(1)
+        if gid not in review and gid not in out:
+            out.append(gid)
+    return out
+
+
+def crawl_listing(search_term: str, max_pages: int = 30) -> list[str]:
     """Returns a list of unique game_ids found on the search page +
     all pagination follow-ups. freem paginates via ?page=N.
 
@@ -93,21 +139,28 @@ def crawl_listing(search_term: str) -> list[str]:
     structured tag anchor is present (filters out text-match noise
     like RPG Maker games that mention `2D格闘ツクール` in their blurb)."""
     seen: list[str] = []
+    declared: int | None = None
     page = 1
     while True:
-        url = (f"https://www.freem.ne.jp/search/{quote(search_term)}"
-               + (f"?page={page}" if page > 1 else ""))
+        url = listing_url(search_term, page)
         print(f"  [listing] {url}", flush=True)
         try:
             html = fetch(url)
         except (HTTPError, URLError, TimeoutError) as e:
             print(f"  [listing] fetch failed: {e}")
             break
-        page_ids = []
-        for m in _GAME_ID_RE.finditer(html):
-            gid = m.group(1)
-            if gid not in seen and gid not in page_ids:
-                page_ids.append(gid)
+        # Honour the declared work count. freem renders a DIFFERENT layout for
+        # an out-of-range page rather than an empty one -- category 45 has 4
+        # real pages, and page-5 came back with 82 links from some other block.
+        # Without this the crawl walks straight past the end collecting noise.
+        if declared is None:
+            m_tot = _DECLARED_TOTAL_RE.search(html)
+            if m_tot:
+                declared = int(m_tot.group(1).replace(",", ""))
+                print(f"  [listing] declares {declared} works", flush=True)
+        page_ids = [g for g in _listing_ids(html) if g not in seen]
+        if declared is not None and len(seen) >= declared:
+            break
         if not page_ids:
             # No game refs on this page → past the end.
             break
@@ -117,6 +170,8 @@ def crawl_listing(search_term: str) -> list[str]:
         # Pagination: stop when the page renders fewer than ~20 cards
         # (freem default page size) OR when we've already seen the
         # full set on page 1.
+        if declared is not None and len(seen) >= declared:
+            break
         if len(page_ids) < 5:
             break
         page += 1
@@ -125,7 +180,9 @@ def crawl_listing(search_term: str) -> list[str]:
         # per page, so 30 pages is generous. Stop condition above
         # (len(page_ids) < 5) catches a clean tail; this is just a
         # belt for the case where freem renders 5+ phantom entries.
-        if page > 30:
+        if page > max_pages:
+            print(f"  [listing] hit the {max_pages}-page cap -- recall is "
+                  f"TRUNCATED here, not exhausted. Raise --max-pages.")
             break
     return seen
 
@@ -260,10 +317,18 @@ def main() -> int:
                           "set."))
     ap.add_argument("--force", action="store_true",
                     help="re-fetch detail pages even if already cached")
+    ap.add_argument("--category", action="append", type=int, default=None,
+                    help=("freem category id to crawl, e.g. 45 (Fighting "
+                          "games). Repeatable. Category listings are curated; "
+                          "--search matches the term anywhere on a page and so "
+                          "pulls in unrelated engines."))
+    ap.add_argument("--max-pages", type=int, default=30,
+                    help="listing pagination cap (default 30)")
     ap.add_argument("--throttle", type=float, default=0.4)
     args = ap.parse_args()
 
-    searches = args.search or list(DEFAULT_SEARCHES)
+    searches = list(args.search or ([] if args.category else DEFAULT_SEARCHES))
+    searches += [f"category:{c}" for c in (args.category or [])]
     print(f"crawling {len(searches)} search term(s): {searches}", flush=True)
 
     # Crawl each listing separately so we know WHICH list each gid
@@ -273,7 +338,7 @@ def main() -> int:
     # freem's listing-side engine field is the source of truth).
     by_search: dict[str, set[str]] = {}
     for term in searches:
-        ids = crawl_listing(term)
+        ids = crawl_listing(term, max_pages=args.max_pages)
         by_search[term] = set(ids)
         print(f"  [{term}] {len(ids)} ids")
 

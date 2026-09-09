@@ -156,6 +156,28 @@ def main() -> int:
             n_skip += 1
             continue
         out_path = GAMES_DIR / f"{g['atwiki_id']}.json"
+        # MERGE, NEVER CLOBBER. This phase rebuilds a record from the cached
+        # HTML, but LATER phases enrich the same file: resolve_archives adds
+        # outbound[].archive, fetch_downloads adds downloads[]. A plain
+        # overwrite silently discards both.
+        #
+        # Measured 2026-09-09, the hard way: re-running this phase to recover 40
+        # unparsed pages reset all 336 records and took KNOWN_RECOVERABLE from
+        # 157 to 0, which then made the download-discovery pass report "0
+        # download URLs" across the whole catalogue. Everything had to be
+        # re-resolved against Wayback. Re-parsing must be free.
+        if out_path.exists():
+            try:
+                prev = json.loads(out_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                prev = {}
+            if prev.get("downloads"):
+                record["downloads"] = prev["downloads"]
+            prev_arch = {o.get("url"): o.get("archive")
+                         for o in (prev.get("outbound") or []) if o.get("archive")}
+            for o in record.get("outbound") or []:
+                if o.get("url") in prev_arch:
+                    o["archive"] = prev_arch[o["url"]]
         out_path.write_text(json.dumps(record, ensure_ascii=False, indent=2),
                             encoding="utf-8")
         n_ok += 1

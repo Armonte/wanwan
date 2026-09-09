@@ -129,16 +129,52 @@ uint16_t Input_MaybeInjectCssDeselect(uint16_t bound) {
         return v && v[0] == '1' && v[1] == '\0';
     }();
     if (!s_want) return bound;
-    static bool s_fired = false;
-    if (s_fired) return bound;
+    // TWO STAGES: deselect, then RE-CONFIRM.
+    //
+    // The harness autoplay confirms once and never again, so an un-confirm on
+    // its own leaves character select with nobody confirmed and the run stalls
+    // there -- neither peer reaches battle, and the battle/spectator gates
+    // never execute, which is most of what this test is for. A real player
+    // would simply press confirm again; the test has to do the same or it only
+    // ever proves half the cycle.
+    static int      s_stage = 0;
+    static uint32_t s_press_frame = 0;
+    if (s_stage >= 2) return bound;
+    // WAIT OUT THE CONFIRM LOCKOUT. Netplay_GetCSSInput masks the synced CSS
+    // word with 0x0FF for the first CSS_CONFIRM_LOCKOUT (150) frames, which
+    // passes A-D but strips 0x100/0x200/0x400 -- so a START press before then
+    // is silently deleted between gekko and the engine. That is exactly what
+    // happened for four runs: the press was injected at CSS frame ~116, the
+    // autoplay's 0x20 confirms sailed through the same mask, and the deselect
+    // never saw an edge.
+    {
+        extern uint32_t g_css_frame;
+        if (g_css_frame < 160u) return bound;
+    }
+    extern uint32_t g_css_frame;
     const uint32_t* action = (const uint32_t*)0x0047019C;   // g_action_state
     const int me = (g_player_index == 1) ? 1 : 0;
-    if (action[me] == 0) return bound;                      // only once confirmed
-    s_fired = true;
-    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-        "[TEST-DESELECT] injecting one START press at CSS (P%d was confirmed) "
-        "-- rides the synced input word like a real press", me + 1);
-    return (uint16_t)(bound | 0x400u);
+
+    if (s_stage == 0) {
+        if (action[me] == 0) return bound;                  // only once confirmed
+        s_stage = 1;
+        s_press_frame = g_css_frame;
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "[TEST-DESELECT] START press at CSS frame %u (P%d was confirmed) "
+            "-- rides the synced input word like a real press",
+            g_css_frame, me + 1);
+        return (uint16_t)(bound | 0x400u);
+    }
+    // Stage 1: give the deselect time to land through the CSS input delay,
+    // then confirm again so the match actually starts and the battle-phase
+    // gates run.
+    if (g_css_frame >= s_press_frame + 20u) {
+        s_stage = 2;
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "[TEST-DESELECT] re-confirming at CSS frame %u", g_css_frame);
+        return (uint16_t)(bound | 0x010u);
+    }
+    return bound;
 }
 
 uint16_t Input_CaptureLocal() {

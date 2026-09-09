@@ -422,6 +422,38 @@ constexpr size_t    OBJ_STRIDE_DESEL    = 382;
 constexpr size_t    OBJ_COUNT_DESEL     = 1024;
 
 void ApplyCssDeselect() {
+    // DIAGNOSTIC (temporary). Two distinct markers so one run separates the
+    // two possibilities that "no log at all" leaves open:
+    //   ENTRY  -> this detour DOES run at CSS; if no EDGE follows, the 0x400
+    //             never reached g_system_input_state
+    //   (none) -> this detour never runs at CSS, i.e. the CSS object is not
+    //             dispatched to game_state_manager and the hook is on the
+    //             wrong function
+    if (*(const uint32_t*)ADDR_GAME_MODE == 2000u) {
+        static bool s_entry = false;
+        if (!s_entry) {
+            s_entry = true;
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "[CSS-DESELECT-DIAG] ENTRY at CSS: mode_flag=%u sys=0x%X",
+                *(const uint32_t*)ADDR_GAME_MODE_FLAG,
+                *(const uint32_t*)ADDR_SYS_INPUT_STATE);
+        }
+        // Any button edge at all, a few times, so we can see what DOES arrive.
+        const uint32_t sysv = *(const uint32_t*)ADDR_SYS_INPUT_STATE;
+        if (sysv & 0x7F0u) {
+            static int s_seen = 0;
+            if (s_seen < 6) {
+                ++s_seen;
+                const uint32_t* a = (const uint32_t*)ADDR_ACTION_STATE;
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "[CSS-DESELECT-DIAG] EDGE sys=0x%X changes=[0x%X,0x%X] "
+                    "action=[%u,%u] mode_flag=%u",
+                    sysv, ((const uint32_t*)ADDR_INPUT_CHANGES)[0],
+                    ((const uint32_t*)ADDR_INPUT_CHANGES)[1], a[0], a[1],
+                    *(const uint32_t*)ADDR_GAME_MODE_FLAG);
+            }
+        }
+    }
     if (*(const uint32_t*)ADDR_GAME_MODE      != 2000u) return;  // CSS only
     if (*(const uint32_t*)ADDR_GAME_MODE_FLAG != 1u)    return;  // VS 1v1 only
 
@@ -464,6 +496,13 @@ void ApplyCssDeselect() {
             }
             *slot = 0;
         }
+        // Say it happened. Without this a run where the bit was swallowed with
+        // NO effect is indistinguishable from a real deselect -- both look like
+        // a clean pass, which is how two earlier attempts at this test
+        // "succeeded" while measuring nothing.
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "[CSS-DESELECT] P%d un-confirmed by START (sprite retired, "
+            "transition timer reset)", p + 1);
         action[p] = 0;                             // un-confirm
         // The both-confirmed countdown must restart, or a deselect at
         // timer=99 would re-confirm straight into the match.

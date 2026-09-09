@@ -123,11 +123,21 @@ def main() -> int:
         if not p.exists():
             continue
         d = json.loads(p.read_text(encoding="utf-8"))
-        have = {e.get("url") for e in (d.get("downloads") or [])}
+        # SCHEMA MUST MATCH atwiki_fetch_downloads.py, which is the puller for
+        # these entries and keys on "original_url". Writing {"url": ...} here
+        # crashed it with KeyError: 'original_url' on the third game of the
+        # first real pull -- after two games had already downloaded fine, so it
+        # looked like a network fault rather than a schema mismatch.
+        have = {e.get("original_url") for e in (d.get("downloads") or [])}
         for u in links:
             if u in have:
                 continue
-            d.setdefault("downloads", []).append({"url": u, "source": "live"})
+            d.setdefault("downloads", []).append({
+                "original_url": u,
+                "found_via": "live",
+                "filename": urllib.parse.urlparse(u).path.rsplit("/", 1)[-1],
+                "source": "live",
+            })
             have.add(u)
         p.write_text(json.dumps(d, ensure_ascii=False, indent=2),
                      encoding="utf-8")

@@ -478,31 +478,25 @@ void ApplyCssDeselect() {
         changes[p] &= ~0x400u;
         consumed = true;
 
-        // Retire the confirm sprite the way the engine retires objects
-        // (type = 1 -> DisableCurrentObject frees the slot next frame). The
-        // confirm is three writes -- sprite, flag, pointer -- and undoing only
-        // the flag would strand the sprite in the pool, which is a cross-peer
-        // object-pool divergence, the exact class that cost this project a
-        // whole campaign (docs/dev/desync_campaign_state.md).
-        if (css_obj) {
-            const ptrdiff_t off = (p == 0) ? OFF_CONFIRM_SPRITE_P1
-                                           : OFF_CONFIRM_SPRITE_P2;
-            uintptr_t* slot = (uintptr_t*)(css_obj + off);
-            const uintptr_t obj = *slot;
-            if (obj >= ADDR_OBJ_POOL_DESEL &&
-                obj <  ADDR_OBJ_POOL_DESEL + OBJ_STRIDE_DESEL * OBJ_COUNT_DESEL &&
-                ((obj - ADDR_OBJ_POOL_DESEL) % OBJ_STRIDE_DESEL) == 0) {
-                *(uint32_t*)obj = 1u;
-            }
-            *slot = 0;
-        }
-        // Say it happened. Without this a run where the bit was swallowed with
-        // NO effect is indistinguishable from a real deselect -- both look like
-        // a clean pass, which is how two earlier attempts at this test
-        // "succeeded" while measuring nothing.
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-            "[CSS-DESELECT] P%d un-confirmed by START (sprite retired, "
-            "transition timer reset)", p + 1);
+        // DO NOT TOUCH THE SPRITE POINTER. First attempt retired the confirm
+        // sprite and nulled g_css_object_ptr+0x166 (P1) / +0x16A (P2), and the
+        // game crashed instantly:
+        //     0x4077AC  mov ebp, [ecx+166h]     ; NO null check
+        //     0x4077DB  mov [ebp+8], edx        ; writes sprite pos_x each frame
+        //     -> AV writing 0x00000008, EIP 004077DB, EBP=0
+        // That slot is the player's LIVE cursor sprite, which confirm merely
+        // REPLACES with the confirm graphic ("P1 confirm: replace cursor with
+        // confirmation sprite"), and the VS-1v1 selection loop repositions it
+        // unconditionally every frame. Nulling it faults; retiring it without
+        // nulling would leave the engine writing into a freed slot, which is
+        // worse because it corrupts silently.
+        //
+        // Un-confirming is a STATE change, so change only state. The confirm
+        // graphic stays on screen until the next confirm replaces it -- a
+        // cosmetic wart, not a correctness problem, and it is identical on both
+        // peers so it cannot desync. Swapping the graphic back means creating a
+        // cursor sprite the way CSS init does; that is worth doing, separately,
+        // once the state half is proven.
         action[p] = 0;                             // un-confirm
         // The both-confirmed countdown must restart, or a deselect at
         // timer=99 would re-confirm straight into the match.

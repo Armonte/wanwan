@@ -150,11 +150,24 @@ def same_timestamp_url(homepage_snap_url: str, target_url: str) -> str | None:
     return f"https://web.archive.org/web/{ts}id_/{target_url}"
 
 
+# Snapshot fetches that FAILED, as opposed to pages that genuinely had no
+# download links. Without this the two are indistinguishable: the crawl below
+# does `if not html: return []`, so a refused fetch reports "no downloads here"
+# and the run's summary line looks like a real (empty) result.
+#
+# Measured 2026-09-09: a full 336-game discovery pass ran while Wayback was
+# rate-limiting us and reported "22 download URLs" with no errors at all. 155
+# records had a snapshot to try. That number was meaningless and there was no
+# way to tell from the output.
+FETCH_FAILURES: list[str] = []
+
+
 def fetch_wayback_html(snap_url: str) -> str | None:
     if "id_" not in snap_url:
         snap_url = re.sub(r'/web/(\d+)/', r'/web/\1id_/', snap_url)
     body = fetch_url(snap_url)
     if not body:
+        FETCH_FAILURES.append(snap_url)
         return None
     return body.decode("utf-8", errors="replace")
 
@@ -420,6 +433,11 @@ def main() -> int:
 
     print(f"\nprocessed {n_games} games: {n_url} download URLs"
           + (f", {n_pulled} pulled, {n_failed} failed" if args.pull else ""))
+    if FETCH_FAILURES:
+        print(f"  WARNING: {len(FETCH_FAILURES)} snapshot fetches FAILED "
+              f"(refused / timed out). Those games are UNTESTED, not empty. "
+              f"Re-run when Wayback is not throttling us, or the URL count "
+              f"above understates what is actually recoverable.")
     return 0
 
 

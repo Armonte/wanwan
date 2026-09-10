@@ -405,6 +405,38 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
         uint8_t pkt[2 + MATCH_TOKEN_LEN] = {MAGIC, TAG_CTRL_PUNCH};
         std::memcpy(pkt + 2, g_match_token, MATCH_TOKEN_LEN);
 
+        // SYMMETRIC-NAT PORT PREDICTION.
+        //
+        // A symmetric NAT allocates a DIFFERENT external port per destination,
+        // so the reflexive port STUN taught us is the mapping toward the HUB,
+        // not toward the peer. Punching it can never land, which is why these
+        // pairs fall back to relay 100% of the time however hard we retry.
+        //
+        // Measured on the live hub 2026-09-10: 5.2% of clients classify
+        // symmetric, and because ONE symmetric peer sinks a match they drove
+        // ~74% of all relayed matches (top 3 IPs = 34 of 46 over three days).
+        // Their allocation is SEQUENTIAL and tightly packed -- the same client
+        // shows 49414/49415, 59936/59937, 61511/61512, i.e. the hub mapping
+        // and the peer mapping are adjacent. So the peer's real port is very
+        // likely reflexive+1..+N.
+        //
+        // Kept deliberately small (4). This sprays a few 34-byte packets at
+        // ports on the peer's public IP that we do not know belong to the
+        // peer; a wide sweep would be port-scanning someone else's NAT. Four
+        // is enough for the observed adjacency and no more.
+        constexpr int PORT_PREDICT = 4;
+        auto punch_predicted = [&](SOCKET sk) {
+            if (!punch_reflexive) return;
+            for (int d = 1; d <= PORT_PREDICT; ++d) {
+                sockaddr_in guess = g_punch_peer;
+                const uint16_t base = ntohs(g_punch_peer.sin_port);
+                if (base + d > 65535) break;
+                guess.sin_port = htons(static_cast<uint16_t>(base + d));
+                fm2k::Sendto4or6(sk, reinterpret_cast<const char*>(pkt),
+                                 sizeof(pkt), guess);
+            }
+        };
+
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
             "NAT: burst punch -> %s:%u (%d packets, ~%d ms)",
             ip_str_copy.c_str(), (unsigned)peer_port,
@@ -434,6 +466,10 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
                        reinterpret_cast<const char*>(pkt), sizeof(pkt),
                        g_punch_peer_lan);
             }
+            // Only every 4th iteration: the prediction is a guess, and a
+            // symmetric NAT that is going to answer will do so on the first
+            // packet that hits the right port.
+            if ((i & 3) == 0) punch_predicted(sock);
             if (g_have_v6_peer) {
                 // Native v6 -- direct, no NAT translation (NOT Sendto4or6).
                 // COUNT THE FAILURES. This used to discard the result while the
@@ -503,6 +539,7 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
                             sendto(sock, (const char*)rb, sizeof(rb), 0,
                                    reinterpret_cast<sockaddr*>(&g_punch_peer_v6),
                                    sizeof(g_punch_peer_v6));
+                        if (k == 0) punch_predicted(sock);
                         Sleep(10);
                     }
                     ++rebursts;

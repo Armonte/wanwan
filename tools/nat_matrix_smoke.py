@@ -30,6 +30,7 @@ Usage: python3 tools/nat_matrix_smoke.py [secs_per_scenario] [only_substr]
 """
 import os
 import re
+import pathlib
 import subprocess
 import sys
 import threading
@@ -52,15 +53,59 @@ log_dir = game.parent / "logs"
 SNAP = Path(__file__).parent / ".spec_selftest"
 
 
+def mirrored_networking():
+    """True when WSL shares the Windows network namespace.
+
+    Under networkingMode=mirrored there is no WSL<->Windows router hop:
+    127.0.0.1 IS the same stack on both sides. The default-route address is
+    then some unrelated LAN/VPN gateway, and packets sent there are simply
+    black-holed.
+
+    THIS HAS PRODUCED FALSE VERDICTS TWICE. The rig kept running and printed
+    a confident "FAIL" for a scenario in which it had delivered ZERO packets
+    (out=85, in_ok=0). A harness that cannot reach the peer must say the RIG
+    is broken, not that the GAME failed -- see the assertion in main().
+    """
+    try:
+        cfg = pathlib.Path("/mnt/c/Users") / os.environ.get("USER", "") / ".wslconfig"
+        if not cfg.exists():
+            import glob as _g
+            hits = _g.glob("/mnt/c/Users/*/.wslconfig")
+            cfg = pathlib.Path(hits[0]) if hits else None
+        if cfg and cfg.exists():
+            for ln in cfg.read_text(errors="replace").splitlines():
+                t = ln.split("#", 1)[0].strip().replace(" ", "").lower()
+                if t == "networkingmode=mirrored":
+                    return True
+    except Exception:
+        pass
+    return False
+
+
 def wsl_ip():
+    if mirrored_networking():
+        return "127.0.0.1"
     return subprocess.check_output(["hostname", "-I"], text=True).split()[0]
 
 
 def win_host_ip():
+    if mirrored_networking():
+        return "127.0.0.1"
+    # NOT just "the first default route". This box carries three (LAN, Radmin,
+    # Hamachi); the first one is not necessarily the Windows host, and picking
+    # wrong black-holes the whole run. Prefer the route on the WSL-facing
+    # interface, then fall back to the first.
+    routes = []
     for ln in subprocess.check_output(["ip", "route"], text=True).splitlines():
         if ln.startswith("default"):
-            return ln.split()[2]
-    raise RuntimeError("no default route")
+            parts = ln.split()
+            routes.append((parts[2], parts[4] if len(parts) > 4 else ""))
+    if not routes:
+        raise RuntimeError("no default route")
+    for gw, dev in routes:
+        if dev.startswith("eth0"):
+            return gw
+    return routes[0][0]
 
 
 COMMON = {
@@ -179,6 +224,21 @@ def run_scenario(name, kind, mode, ttl=None, rebind=None):
                 for x in ("=== CRASH", "EXCEPTION_ACCESS"))
     detail = f"nat_stats={nat.stats} ext_port={nat.external_port()}"
     ok = True
+
+    # RIG-BROKEN GUARD, BEFORE ANY GAME VERDICT.
+    # If the proxy forwarded packets outbound but nothing ever came back, the
+    # peers never had a link and NOTHING about the game was tested. Reporting
+    # "FAIL" there blames the product for a harness fault -- it did exactly
+    # that twice on 2026-09-10 (out=85, in_ok=0) under WSL mirrored
+    # networking, where the default-route address is not the Windows host.
+    # A harness that cannot deliver a packet must say so in its own name.
+    _st = nat.stats
+    if _st.get("out", 0) >= 20 and _st.get("in_ok", 0) == 0:
+        print(f"[nat-matrix] {name}: RIG BROKEN -- {_st['out']} packets out, "
+              f"0 in. The peers never had a link, so this scenario tested "
+              f"NOTHING about the game. Check the WSL<->Windows addressing "
+              f"(mirrored networking => 127.0.0.1 both ways), not the netcode.")
+        return False
     if kind == "netplay":
         n1, d1 = beat_progress(p1t)
         n2, d2 = beat_progress(p2t)

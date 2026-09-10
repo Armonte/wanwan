@@ -307,7 +307,19 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
 
     // Global IPv6 candidate (peer's native v6 + local bind port; no NAT remap).
     g_have_v6_peer = false;
-    if (peer_v6_addr && v6_port) {
+    // A PEER ADVERTISING v6 IS NOT ENOUGH -- WE need a global v6 source too.
+    // Without this guard a v4-only host still armed the v6 burst and logged
+    // "burst will also punch direct over v6 (CGNAT bypass)" one line after
+    // logging "no global IPv6 on this host". Every one of those sendto calls
+    // fails (no v6 source on the socket) and the result is discarded, so the
+    // log advertised a working bypass that could not send a single packet.
+    // Seen in a real 2026-09-10 framedrop report: the v6 path is exactly the
+    // CGNAT bypass that pair needed, and nothing said it was unavailable.
+    if (peer_v6_addr && v6_port && !g_have_local_v6) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "NAT: peer advertised an IPv6 candidate but this host has no global "
+            "IPv6 -- v6 punch NOT armed (v4 + relay only)");
+    } else if (peer_v6_addr && v6_port) {
         g_punch_peer_v6 = {};
         g_punch_peer_v6.sin6_family = AF_INET6;
         std::memcpy(&g_punch_peer_v6.sin6_addr, peer_v6_addr, 16);
@@ -333,7 +345,18 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
     // that case left both peers sending HELLO into their own loopback
     // forever. Fall through to the normal punch + relay-wait path so
     // the relay saves us when the loopback assumption is wrong.
-    if (peer_ip_be == htonl(INADDR_LOOPBACK) && !g_relay_configured) {
+    // TEST LEVER (FM2K_TEST_FORCE_PUNCH=1): keep the full punch path even on
+    // loopback. Needed because this dev box runs WSL networkingMode=mirrored,
+    // where the NAT-proxy rig necessarily addresses everything as 127.0.0.1 --
+    // so the shortcut below fires and NO punch code runs at all, which is why
+    // a punch repro produced logs with no "burst punch" line in them. Test
+    // only; never set in production, where the shortcut is correct and saves
+    // ~2.4s per loopback match.
+    static const bool force_punch = [] {
+        const char* v = std::getenv("FM2K_TEST_FORCE_PUNCH");
+        return v && v[0] == '1';
+    }();
+    if (peer_ip_be == htonl(INADDR_LOOPBACK) && !g_relay_configured && !force_punch) {
         SOCKET sock = ControlChannel_GetSocket();
         if (sock != INVALID_SOCKET) {
             uint8_t pkt[2 + MATCH_TOKEN_LEN] = {MAGIC, TAG_CTRL_PUNCH};
@@ -393,7 +416,7 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
                 "(rely on reverse punch / peer-learning / v6 / relay); still "
                 "punching the LAN candidate if present");
         }
-        int sent_ok = 0;
+        int sent_ok = 0, v6_ok = 0, v6_fail = 0;
         for (int i = 0; i < PUNCH_PACKETS; ++i) {
             if (!g_punching.load()) break;  // peer latched, stop early
             if (punch_reflexive) {
@@ -413,16 +436,23 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
             }
             if (g_have_v6_peer) {
                 // Native v6 -- direct, no NAT translation (NOT Sendto4or6).
-                sendto(sock, reinterpret_cast<const char*>(pkt), sizeof(pkt), 0,
+                // COUNT THE FAILURES. This used to discard the result while the
+                // v4 path checked it, so a v6 leg that never sent a byte was
+                // indistinguishable from one that worked.
+                int v6sent = sendto(sock, reinterpret_cast<const char*>(pkt),
+                       sizeof(pkt), 0,
                        reinterpret_cast<sockaddr*>(&g_punch_peer_v6),
                        sizeof(g_punch_peer_v6));
+                if (v6sent == (int)sizeof(pkt)) ++v6_ok; else ++v6_fail;
             }
             Sleep(PUNCH_PERIOD_MS);
         }
 
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-            "NAT: burst complete -- %d/%d sent (%s)",
+            "NAT: burst complete -- %d/%d sent%s (%s)",
             sent_ok, PUNCH_PACKETS,
+            g_have_v6_peer ? (v6_fail ? " [v6 leg FAILED to send]"
+                                      : " [+v6]") : "",
             g_punching.load() ? "no peer ack yet" : "peer-latch fired");
 
         timeEndPeriod(1);
@@ -440,8 +470,48 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
         // direct should always get the chance to win first.
         if (g_relay_configured) {
             // PHASE 1 -- has the direct path proved itself at all?
+            //
+            // RE-BURST WHILE WE WAIT. A simultaneous-open punch only works if
+            // BOTH peers are transmitting during an overlapping window, and
+            // nothing coordinates when each side starts its burst. One 300 ms
+            // burst plus two seconds of silence means that on a high-RTT link
+            // the two windows can miss each other completely: the early side's
+            // packets reach a NAT with no mapping yet and are dropped, and by
+            // the time the late side bursts, the early side has stopped.
+            //
+            // Measured in a real report (2026-09-10): two peers ~300 ms apart,
+            // both sent 30/30, neither authenticated, both fell back to relay
+            // and played the whole match at 300-470 ms. The 2 s we then spend
+            // doing NOTHING is free retry budget -- re-arming the burst every
+            // 500 ms costs a handful of 34-byte packets and gives the windows
+            // four more chances to overlap before we concede to the relay.
+            const uint64_t rebursts_start = GetTickCount64();
+            int rebursts = 0;
             for (int i = 0; i < 200 && !g_peer_authenticated.load(); ++i) {
                 Sleep(10);
+                if (i && (i % 50) == 0 && !PeerAckedUs()) {
+                    uint8_t rb[2 + MATCH_TOKEN_LEN] = {MAGIC, TAG_CTRL_PUNCH};
+                    std::memcpy(rb + 2, g_match_token, MATCH_TOKEN_LEN);
+                    for (int k = 0; k < 8; ++k) {
+                        if (punch_reflexive)
+                            fm2k::Sendto4or6(sock, (const char*)rb, sizeof(rb),
+                                             g_punch_peer);
+                        if (g_have_lan_peer)
+                            fm2k::Sendto4or6(sock, (const char*)rb, sizeof(rb),
+                                             g_punch_peer_lan);
+                        if (g_have_v6_peer)
+                            sendto(sock, (const char*)rb, sizeof(rb), 0,
+                                   reinterpret_cast<sockaddr*>(&g_punch_peer_v6),
+                                   sizeof(g_punch_peer_v6));
+                        Sleep(10);
+                    }
+                    ++rebursts;
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "NAT: re-burst #%d at +%llums -- still no peer ack, "
+                        "retrying the punch instead of idling to the relay",
+                        rebursts,
+                        (unsigned long long)(GetTickCount64() - rebursts_start));
+                }
                 // If gameplay traffic is already flowing BOTH ways, drop
                 // the relay-engage idea entirely. CTRL_PUNCH (0xCD) didn't
                 // ack but 0xCC did -- the path between peers is fine for

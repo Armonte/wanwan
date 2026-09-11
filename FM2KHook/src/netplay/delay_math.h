@@ -53,20 +53,33 @@ inline uint32_t JitterFromWindow(const uint32_t* samples, int n) {
 
 // Upper bound on the AUTO-sized delay. 24 frames = 240 ms at FM2K's 100 Hz.
 //
-// WAS 15 (150 ms), WHICH CAPPED AUTO PLAY AT ~300 ms RTT. Measured 2026-09-10
-// on a 300 ms / 20 ms-jitter link, 2400 frames per point:
-//     delay 15 -> rb_max 16, 7.4% of frames BRAKED    (the shipped ceiling)
-//     delay 17 -> rb_max 11, 6.5%
-//     delay 19 -> rb_max  7, 6.0%
-//     delay 21 -> rb_max  0, 0.5%   <-- braking collapses exactly where
-//     delay 24 -> rb_max  0, 0.9%       prediction reaches ZERO
-//     delay 30 -> rb_max  0, 5.0%   <-- and gets WORSE again past that
-// Braking tracks residual prediction depth, so partial coverage buys almost
-// nothing: 15->19 costs 40 ms of input lag for 1.4 points. The useful setting
-// is the first one where prediction is not needed at all.
+// WAS 15 (150 ms), WHICH CAPPED AUTO PLAY AT ~300 ms RTT.
 //
-// NOT UNCAPPED, deliberately: 30 was worse than 21 on every measure that
-// matters, so "more is better" is false and a ceiling is still required.
+// Measured 2026-09-10 on a 300 ms / 20 ms-jitter link, 2400 frames per point,
+// n=3. TRUST rb_max, NOT THE BRAKE PERCENTAGES -- rb_max is deterministic
+// (identical every run), while braking here is a high-variance MATCH-START
+// transient that reads 0.0% or 22.6% at the SAME setting:
+//
+//     delay 15 -> rb_max 16 (pegged)   startup braking 7.5% (0.0-22.6)
+//     delay 21 -> rb_max  0            startup braking 0.8% (0.0- 2.5)
+//     delay 30 -> rb_max  0            startup braking 8.6% (1.3-16.2)
+//
+// The load-bearing result is rb_max: at 15 the netcode predicts the FULL
+// window on every frame; at 21 it never predicts at all. That is the same
+// quantity a real framedrop report showed pegged at 17 on every beat for a
+// minute, which is why this ceiling mattered in the field.
+//
+// Two cautions for whoever changes this next:
+//   * Braking is concentrated in the FIRST beat. Averaging it over a run
+//     makes the number depend on RUN LENGTH -- that artifact made an auto
+//     run at delay 24 look 10x worse than a manual run at the same delay.
+//     Split startup from steady state before comparing anything.
+//   * n=1 is not enough. A single sample said "delay 15 brakes 7.4%"; the
+//     next run at the same setting braked 0.0%.
+//
+// NOT UNCAPPED: 30 stayed worse than 21 at n=3 on both mean and spread, and
+// was the only setting with non-zero STEADY-STATE braking (1.4%). 24 leaves
+// headroom above the measured optimum without reaching that.
 constexpr int MAX_AUTO_DELAY = 24;
 
 // Delay (frames) to cover a link, from its RTT and optionally its jitter.

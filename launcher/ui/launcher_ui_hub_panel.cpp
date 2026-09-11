@@ -199,11 +199,13 @@ void LauncherUI::RenderHubPanel() {
         // player COULD NOT SELECT THE SETTING THAT FIXES THEIR GAME.
         //
         // Measured 2026-09-10 on a 300 ms / 20 ms-jitter link (the shape of a
-        // real framedrop report), 2400 frames per point: delay 15 braked 7.4%
-        // of frames with rollback pegged at the full prediction window, while
-        // delay 21 braked 0.5% with rollback at zero. 21 frames = 210 ms =
-        // ~12.6 frames at 60 Hz. 26 leaves headroom above that without
-        // reaching 30, which measured WORSE again (5.0%).
+        // real framedrop report), 2400 frames per point, n=3: at delay 15 the
+        // netcode predicted the FULL window on every frame (rb_max 16); at
+        // delay 21 it never predicted at all (rb_max 0), reproducibly. 21
+        // frames = 210 ms = ~12.6 frames at 60 Hz. 26 leaves headroom above
+        // that. Braking percentages from the same runs are NOT quoted here on
+        // purpose -- they are a match-start transient that varied 0.0-22.6% at
+        // one setting, so rb_max is the honest measure.
         const char* delay_items[] = {
             "computed (avg ping)",
             "computed (peak ping)",

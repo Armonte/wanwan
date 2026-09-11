@@ -68,7 +68,42 @@ int main() {
     CHECK(DelayCandidateFromRtt(202) == 11);  // one_way 101 -> ceil -> 11
     CHECK(DelayCandidateFromRtt(250) == 13);  // one_way 125 -> 13  (the bug)
     CHECK(DelayCandidateFromRtt(300) == 15);  // one_way 150 -> 15
-    CHECK(DelayCandidateFromRtt(400) == 15);  // one_way 200 -> 20 -> clamp 15
+
+    // --- jitter headroom (2026-09-10) -------------------------------
+    // jitter_ms defaults to 0, so every case above is unchanged. With a
+    // jitter measurement the candidate gains 2x that headroom, because
+    // braking tracks residual PREDICTION depth and it is the late samples
+    // that force a prediction. Measured on a 300ms/20ms link: braking
+    // collapsed from 7.4% to 0.5% exactly when delay reached 21.
+    CHECK(DelayCandidateFromRtt(300, 0)  == 15);  // no jitter == old answer
+    CHECK(DelayCandidateFromRtt(340, 20) == 21);  // the measured optimum
+    CHECK(DelayCandidateFromRtt(60,  3)  == 4);   // a good link stays low
+    // Ceiling is 24, not unbounded: delay 30 measured WORSE than 21.
+    CHECK(DelayCandidateFromRtt(900, 90) == 24);
+    CHECK(DelayCandidateFromRtt(472, 30) == 24);
+
+    // --- JitterFromWindow: p90 - p50 spread -------------------------
+    {
+        using fm2k::delay::JitterFromWindow;
+        const uint32_t flat[] = {100, 100, 100, 100, 100};
+        CHECK(JitterFromWindow(flat, 5) == 0);     // steady link, no headroom
+        // p90 index is (n-1)*9/10, so a 5-sample window puts p90 at index 3 --
+        // a single outlier at index 4 is DISCARDED, exactly as RttFromWindow's
+        // peak mode discards the worst ~10%. That is the intent: one cold-start
+        // spike must not inflate everyone's delay.
+        const uint32_t wobbly[] = {100, 100, 100, 100, 160};
+        CHECK(JitterFromWindow(wobbly, 5) == 0);   // lone outlier discarded
+        // n=10 puts p50 at index 4 and p90 at index 8.
+        const uint32_t spread[] = {100, 100, 100, 100, 100, 100, 100, 100, 160, 200};
+        CHECK(JitterFromWindow(spread, 10) == 60); // p90 160 - p50 100
+        CHECK(JitterFromWindow(nullptr, 0) == 0);
+        CHECK(JitterFromWindow(flat, 1) == 0);     // too small to judge
+    }
+    // Ceiling raised 15 -> 24 (MAX_AUTO_DELAY) on 2026-09-10: the old clamp
+    // capped AUTO play at ~300 ms RTT, which is why cross-region matches ran
+    // with prediction pegged and ~7% of frames braked. 400 ms now sizes
+    // honestly instead of being clamped down to a value that cannot cover it.
+    CHECK(DelayCandidateFromRtt(400) == 20);  // one_way 200 -> 20 (was clamp 15)
 
     // --- full chain: 10 ms link + cold-start spike --------------------
     // Peak mode: p90 -> 10 ms -> delay 2. Was 250 ms -> delay 13.

@@ -175,7 +175,7 @@ void LauncherUI::RenderHubPanel() {
     // This combo picks how THIS peer's candidate is sized:
     //   index 0 "computed (avg ping)"  -> FM2K_DELAY_MODE=0, mean RTT
     //   index 1 "computed (peak ping)" -> FM2K_DELAY_MODE=1, worst RTT
-    //   index 2..18 manual 0..16       -> FM2K_LOCAL_DELAY=N
+    //   index 2..28 manual 0..26       -> FM2K_LOCAL_DELAY=N
     // FM2K_LOCAL_DELAY is cleared for the two computed modes so the hook
     // computes from RTT. A manual pick runs VERBATIM and PURELY LOCAL -- it is
     // never pulled up to the peer's value. Your manual value is still
@@ -185,17 +185,31 @@ void LauncherUI::RenderHubPanel() {
     // DIFFERENT delays (asymmetric is fine -- inputs are frame-tagged).
     static int s_delay_override = 0;
     {
-        // Manual delay range: 0..16. 0 is opt-in for sub-1ms LAN /
+        // Manual delay range: 0..26. 0 is opt-in for sub-1ms LAN /
         // loopback / hot-seat play -- GekkoNet's prediction-0 mode applies
         // input same frame, but ANY jitter on the link will rollback
         // every frame. Users on actual internet should leave this on
-        // computed. 16 = 160 ms, basically the upper limit of playable
-        // delay-only netcode.
+        // computed.
+        //
+        // THE OLD CEILING WAS 16, justified as "the upper limit of playable
+        // delay-only netcode". That reasoning does not apply here: this is
+        // ROLLBACK, where delay and prediction share the latency-hiding work,
+        // so more delay buys smoothness rather than hitting a playability
+        // wall. The practical effect of the 16 cap was that a cross-region
+        // player COULD NOT SELECT THE SETTING THAT FIXES THEIR GAME.
+        //
+        // Measured 2026-09-10 on a 300 ms / 20 ms-jitter link (the shape of a
+        // real framedrop report), 2400 frames per point: delay 15 braked 7.4%
+        // of frames with rollback pegged at the full prediction window, while
+        // delay 21 braked 0.5% with rollback at zero. 21 frames = 210 ms =
+        // ~12.6 frames at 60 Hz. 26 leaves headroom above that without
+        // reaching 30, which measured WORSE again (5.0%).
         const char* delay_items[] = {
             "computed (avg ping)",
             "computed (peak ping)",
             "0",  "1",  "2",  "3",  "4",  "5",  "6",  "7",  "8",
             "9", "10", "11", "12", "13", "14", "15", "16",
+            "17", "18", "19", "20", "21", "22", "23", "24", "25", "26",
         };
         ImGui::PushItemWidth(-120);
         ImGui::Combo("Delay", &s_delay_override, delay_items,

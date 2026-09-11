@@ -718,7 +718,12 @@ int ControlChannel_GetLocalDelayCandidate() {
     const uint32_t rtt = fm2k::delay::RttFromWindow(
         g_rtt_ring, g_rtt_ring_count,
         g_delay_mode.load(std::memory_order_relaxed));
-    return fm2k::delay::DelayCandidateFromRtt(rtt);
+    // Size with jitter headroom from the SAME window. A link that wobbles
+    // needs more delay than its mean latency implies, because it is the late
+    // samples that force a prediction -- and braking tracks prediction depth.
+    const uint32_t jit = fm2k::delay::JitterFromWindow(
+        g_rtt_ring, g_rtt_ring_count);
+    return fm2k::delay::DelayCandidateFromRtt(rtt, jit);
 }
 
 int ControlChannel_GetRemoteDelayCandidate() {

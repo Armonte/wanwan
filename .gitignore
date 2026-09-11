@@ -223,3 +223,9 @@ tools/.manual_2p/
 
 # Wave-scratch for the game-db scraping campaign (logs + status files).
 tools/.wave1/
+
+# Netcode investigation scratch (delay sweeps, punch/NAT repro, gate runs).
+tools/.delayab/
+tools/.gate/
+tools/.natrepro/
+tools/.punchval/

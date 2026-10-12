@@ -187,7 +187,11 @@ private:
 };
 
 fs::path FreshDir(const char* name) {
-    fs::path d = fs::current_path() / "gameplay_tag_fixtures" / name;
+    // Next to the test binary (tests/build/, gitignored), whatever the cwd.
+    std::error_code ec0;
+    fs::path base = fs::read_symlink("/proc/self/exe", ec0).parent_path();
+    if (ec0 || base.empty()) base = fs::current_path();
+    fs::path d = base / "gameplay_tag_fixtures" / name;
     std::error_code ec;
     fs::remove_all(d, ec);
     fs::create_directories(d);

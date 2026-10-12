@@ -2,12 +2,28 @@
 set -e
 set -x
 
-# Check for required packages
-if ! command -v i686-w64-mingw32-gcc >/dev/null 2>&1; then
-    echo "MinGW-w64 cross compiler not found. Installing required packages..."
-    sudo apt update
-    sudo apt install -y gcc-mingw-w64-i686 g++-mingw-w64-i686 binutils-mingw-w64-i686 ninja-build
+# Toolchain. Default: llvm-mingw, msvcrt variant (one exe for Windows 7 SP1
+# through 11, no redistributable). TOOLCHAIN=gcc keeps the old mingw-w64 GCC
+# build for one release while the switch settles.
+TOOLCHAIN="${TOOLCHAIN:-llvm}"
+LLVM_MINGW="${LLVM_MINGW:-$HOME/tools/llvm-mingw-msvcrt}"
+LLVM_MINGW_TAG="${LLVM_MINGW_TAG:-20261006}"
+if [ "$TOOLCHAIN" = gcc ]; then
+    if ! command -v i686-w64-mingw32-gcc >/dev/null 2>&1; then
+        echo "MinGW-w64 cross compiler not found. Installing required packages..."
+        sudo apt update
+        sudo apt install -y gcc-mingw-w64-i686 g++-mingw-w64-i686 binutils-mingw-w64-i686 ninja-build
+    fi
+elif [ ! -x "$LLVM_MINGW/bin/i686-w64-mingw32-clang" ]; then
+    echo "llvm-mingw (msvcrt) not found at $LLVM_MINGW -- downloading release $LLVM_MINGW_TAG"
+    mkdir -p "$(dirname "$LLVM_MINGW")"
+    pkg="llvm-mingw-${LLVM_MINGW_TAG}-msvcrt-ubuntu-22.04-x86_64"
+    curl -fL "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_TAG}/${pkg}.tar.xz" \
+        | tar -xJ -C "$(dirname "$LLVM_MINGW")"
+    ln -sfn "$(dirname "$LLVM_MINGW")/$pkg" "$LLVM_MINGW"
 fi
+command -v ninja >/dev/null 2>&1 || { sudo apt update; sudo apt install -y ninja-build; }
+export LLVM_MINGW
 
 # Self-heal the submodule deps so a fresh clone (even one that forgot
 # --recursive) builds. GekkoNet and the kgt-parity header are flattened
@@ -32,6 +48,16 @@ fi
 
 cd build # change to build directory
 
+# A compiler switch needs a fresh CMake cache. Reset only the cache (not the
+# objects or the unstripped binaries) when the configured toolchain differs.
+if [ -f CMakeCache.txt ]; then
+    cached="$(grep -m1 '^CMAKE_CXX_COMPILER:' CMakeCache.txt | cut -d= -f2)"
+    case "$TOOLCHAIN:$cached" in
+        gcc:*clang*|llvm:*g++*) echo "toolchain changed ($cached) -- resetting the CMake cache"
+                               rm -rf CMakeCache.txt CMakeFiles ;;
+    esac
+fi
+
 # Load build secrets (FM2K_LOG_UPLOAD_SECRET etc.) into the environment so
 # CMake bakes them at configure time. Without this the crash/desync auto-upload
 # secret bakes empty and EVERY upload is 4xx-rejected (telemetry blackout).
@@ -45,6 +71,15 @@ if [ -f "$HOME/.config/fm2k-release.env" ]; then
 fi
 
 # Force CMake to run
+if [ "$TOOLCHAIN" != gcc ]; then
+cmake .. -G "Ninja" -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+    -D CMAKE_TOOLCHAIN_FILE=../cmake/llvm-mingw-i686.cmake \
+    -D SDL_DISABLE_WINDOWS_VERSION_RESOURCE=ON \
+    -D CMAKE_C_FLAGS="-w" \
+    -D CMAKE_CXX_FLAGS="-w" \
+    -D CMAKE_EXE_LINKER_FLAGS="-static" \
+    -D CMAKE_SHARED_LINKER_FLAGS="-static"
+else
 cmake .. -G "Ninja" -D CMAKE_BUILD_TYPE=RelWithDebInfo \
     -D CMAKE_C_COMPILER=i686-w64-mingw32-gcc \
     -D CMAKE_CXX_COMPILER=i686-w64-mingw32-g++ \
@@ -58,5 +93,6 @@ cmake .. -G "Ninja" -D CMAKE_BUILD_TYPE=RelWithDebInfo \
     -D CMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER \
     -D CMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
     -D CMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY
+fi
 
 echo "CMake configuration completed. Run 'bash go.sh' to build." 

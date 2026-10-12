@@ -20,13 +20,16 @@ ninja || { echo "Build failed!" >&2; exit 1; }
 # symbolication (addr2line / objdump) when diagnosing user logs.
 DIST="$(cd .. && pwd)/dist"
 mkdir -p "$DIST"
+# llvm-strip from llvm-mingw when present (the default toolchain), else binutils.
+STRIP="${LLVM_MINGW:-$HOME/tools/llvm-mingw-msvcrt}/bin/llvm-strip"
+[ -x "$STRIP" ] || STRIP=i686-w64-mingw32-strip
 for f in FM2K_RollbackLauncher.exe FM2KHook.dll FM95Hook.dll FM2KUpdater.exe; do
     if [ ! -f "$f" ]; then
         echo "Expected build output missing: build/$f" >&2
         exit 1
     fi
     cp "$f" "$DIST/"
-    i686-w64-mingw32-strip --strip-debug "$DIST/$f"
+    "$STRIP" --strip-debug "$DIST/$f"
 done
 
 # Locale .ini files. T() reads <exedir>\locales at runtime

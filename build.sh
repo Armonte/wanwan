@@ -13,7 +13,10 @@ if [ ! -f build/build.ninja ]; then
 fi
 
 cd build
-ninja || { echo "Build failed!" >&2; exit 1; }
+# All cores: cg2's /usr/bin/ninja wrapper clamps to PC_NINJA_MAX (default 8) and
+# throttles above load PC_NINJA_LOAD; the pc-build cgroup still caps CPU/memory.
+export PC_NINJA_MAX="${PC_NINJA_MAX:-$(nproc)}" PC_NINJA_LOAD="${PC_NINJA_LOAD:-$(( $(nproc) * 2 ))}"
+ninja -j "$PC_NINJA_MAX" || { echo "Build failed!" >&2; exit 1; }
 
 # Stage stripped binaries into dist/ (repo root). Debug info is ~25 MB/binary;
 # stripping the staged copies keeps the unstripped originals in build/ for
@@ -28,6 +31,10 @@ for f in FM2K_RollbackLauncher.exe FM2KHook.dll FM95Hook.dll FM2KUpdater.exe; do
         echo "Expected build output missing: build/$f" >&2
         exit 1
     fi
+    # Re-stage only when the build output is newer than the staged copy:
+    # stripping and copying ~30 MB over to the repo drive on every no-op build
+    # was most of a no-op build's time.
+    [ "$DIST/$f" -nt "$f" ] && continue
     cp "$f" "$DIST/"
     "$STRIP" --strip-debug "$DIST/$f"
 done
@@ -38,7 +45,7 @@ done
 # translation key with no error anywhere. Staging them here makes dist/ a
 # complete deployable, which go.sh and package_release.sh both rely on.
 mkdir -p "$DIST/locales"
-cp "$(cd .. && pwd)/locales"/*.ini "$DIST/locales/"
+cp -u "$(cd .. && pwd)/locales"/*.ini "$DIST/locales/"
 
 echo "Build OK. Stripped binaries staged in dist/:"
 ls -la "$DIST"/*.exe "$DIST"/*.dll | awk '{printf "  %-36s %s bytes\n", $NF, $5}'

@@ -40,10 +40,23 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
         external/jpeg external/libpng external/libtiff external/zlib
 fi
 
-# Create build directory if it doesn't exist
-if [ ! -d "build" ]; then
-    rm -rf build # remove build directory if it exists
-    mkdir build # create new build directory
+# The build tree lives on WSL's own ext4 disk, not on the repo's drive: on a
+# Windows drive mounted over 9P every stat, object write and link is several
+# times slower. build/ is a symlink to it. An existing in-tree build/ is moved
+# over intact (no recompile). FM2K_BUILD_IN_TREE=1 keeps the old layout.
+if [ "${FM2K_BUILD_IN_TREE:-0}" != 1 ]; then
+    repo_id="$(basename "$PWD")-$(printf '%s' "$PWD" | md5sum | cut -c1-8)"
+    BUILD_DIR="${FM2K_BUILD_DIR:-$HOME/.cache/fm2k-build/$repo_id}"
+    mkdir -p "$(dirname "$BUILD_DIR")"
+    if [ -d build ] && [ ! -L build ]; then
+        if [ -e "$BUILD_DIR" ]; then rm -rf "$BUILD_DIR"; fi
+        echo "moving build/ to $BUILD_DIR"
+        mv build "$BUILD_DIR"
+    fi
+    mkdir -p "$BUILD_DIR"
+    [ -L build ] && [ "$(readlink build)" = "$BUILD_DIR" ] || { rm -f build; ln -s "$BUILD_DIR" build; }
+elif [ ! -d build ]; then
+    mkdir build
 fi
 
 cd build # change to build directory
@@ -71,16 +84,28 @@ if [ -f "$HOME/.config/fm2k-release.env" ]; then
 fi
 
 # Force CMake to run
+# ccache when available (its cache lives on ext4 under ~/.cache/ccache).
+LAUNCHER=""
+command -v ccache >/dev/null 2>&1 && LAUNCHER="-D CMAKE_C_COMPILER_LAUNCHER=ccache -D CMAKE_CXX_COMPILER_LAUNCHER=ccache"
+DEBUG_FLAGS=""
+[ "${DEBUG:-0}" = 1 ] && DEBUG_FLAGS="-D FM2K_DEBUG_FLAGS=-g"
+REPO="$(cd .. && pwd)"
+# Prebuilt third-party libraries (rebuilt only when their inputs change).
+DEPS_ARG=""
 if [ "$TOOLCHAIN" != gcc ]; then
-cmake .. -G "Ninja" -D CMAKE_BUILD_TYPE=RelWithDebInfo \
-    -D CMAKE_TOOLCHAIN_FILE=../cmake/llvm-mingw-i686.cmake \
+    DEPS_PREFIX="$("$REPO/scripts/build_deps.sh" | tail -1)"
+    DEPS_ARG="-D FM2K_DEPS_PREFIX=$DEPS_PREFIX"
+fi
+if [ "$TOOLCHAIN" != gcc ]; then
+cmake "$REPO" -G "Ninja" -D CMAKE_BUILD_TYPE=RelWithDebInfo $LAUNCHER $DEBUG_FLAGS $DEPS_ARG \
+    -D CMAKE_TOOLCHAIN_FILE="$REPO/cmake/llvm-mingw-i686.cmake" \
     -D SDL_DISABLE_WINDOWS_VERSION_RESOURCE=ON \
     -D CMAKE_C_FLAGS="-w" \
     -D CMAKE_CXX_FLAGS="-w" \
     -D CMAKE_EXE_LINKER_FLAGS="-static" \
     -D CMAKE_SHARED_LINKER_FLAGS="-static"
 else
-cmake .. -G "Ninja" -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+cmake "$REPO" -G "Ninja" -D CMAKE_BUILD_TYPE=RelWithDebInfo $LAUNCHER \
     -D CMAKE_C_COMPILER=i686-w64-mingw32-gcc \
     -D CMAKE_CXX_COMPILER=i686-w64-mingw32-g++ \
     -D CMAKE_ASM_COMPILER=i686-w64-mingw32-gcc \

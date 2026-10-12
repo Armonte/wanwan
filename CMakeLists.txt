@@ -25,6 +25,19 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Debug info: line tables are enough to symbolicate crash addresses to file:line
+# (what user crash logs need) and make objects and links several times smaller
+# than full -g. make_build.sh DEBUG=1 passes -DFM2K_DEBUG_FLAGS=-g for full
+# variable/type info. GCC has no line-tables-only mode, so it keeps -g.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    set(FM2K_DEBUG_FLAGS_DEFAULT "-gline-tables-only")
+else()
+    set(FM2K_DEBUG_FLAGS_DEFAULT "-g")
+endif()
+set(FM2K_DEBUG_FLAGS "${FM2K_DEBUG_FLAGS_DEFAULT}" CACHE STRING "Debug-info flags for RelWithDebInfo and the hook targets")
+set(CMAKE_C_FLAGS_RELWITHDEBINFO "-O2 ${FM2K_DEBUG_FLAGS} -DNDEBUG")
+set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 ${FM2K_DEBUG_FLAGS} -DNDEBUG")
+
 # MinGW-specific flags
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -m32")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -m32")
@@ -105,22 +118,33 @@ set(SDL3IMAGE_JXL OFF CACHE BOOL "Disable JXL support" FORCE)
 set(SDL3IMAGE_WEBP OFF CACHE BOOL "Disable WEBP support" FORCE)
 
 # Use vendored SDL3 sources
-FetchContent_Declare(
-    SDL3
-    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendored/SDL
-)
+# Third-party libraries come prebuilt from scripts/build_deps.sh (a prefix on
+# WSL's ext4 disk), which make_build.sh passes as FM2K_DEPS_PREFIX. Without it,
+# fall back to compiling the vendored sources in this graph (slow on a 9P drive:
+# every one of their files is stat'ed on every build).
+if(FM2K_DEPS_PREFIX)
+    list(PREPEND CMAKE_PREFIX_PATH "${FM2K_DEPS_PREFIX}")
+    find_package(SDL3 CONFIG REQUIRED COMPONENTS SDL3-static)
+    find_package(SDL3_image CONFIG REQUIRED)
+    message(STATUS "Using prebuilt deps from ${FM2K_DEPS_PREFIX}")
+else()
+    FetchContent_Declare(
+        SDL3
+        SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendored/SDL
+    )
 
-# Use vendored SDL_image sources
-FetchContent_Declare(
-    SDL3_image
-    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendored/SDL_image
-)
+    # Use vendored SDL_image sources
+    FetchContent_Declare(
+        SDL3_image
+        SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendored/SDL_image
+    )
 
-# Make SDL3 available
-FetchContent_MakeAvailable(SDL3)
+    # Make SDL3 available
+    FetchContent_MakeAvailable(SDL3)
 
-# Make SDL_image available after SDL3
-FetchContent_MakeAvailable(SDL3_image)
+    # Make SDL_image available after SDL3
+    FetchContent_MakeAvailable(SDL3_image)
+endif()
 
 # Include directories
 include_directories(
@@ -179,37 +203,48 @@ target_include_directories(imgui_dx PUBLIC
 )
 target_link_libraries(imgui_dx PUBLIC d3d9 dwmapi)
 
-# GekkoNet library - Build as static
-add_library(GekkoNet STATIC
-    vendored/GekkoNet/GekkoLib/src/gekkonet.cpp
-    vendored/GekkoNet/GekkoLib/src/backend.cpp
-    vendored/GekkoNet/GekkoLib/src/event.cpp
-    vendored/GekkoNet/GekkoLib/src/game_session.cpp
-    vendored/GekkoNet/GekkoLib/src/spectator_session.cpp
-    vendored/GekkoNet/GekkoLib/src/stress_session.cpp
-    vendored/GekkoNet/GekkoLib/src/input.cpp
-    vendored/GekkoNet/GekkoLib/src/net.cpp
-    vendored/GekkoNet/GekkoLib/src/player.cpp
-    vendored/GekkoNet/GekkoLib/src/storage.cpp
-    vendored/GekkoNet/GekkoLib/src/sync.cpp
-)
-
-target_include_directories(GekkoNet PUBLIC
-    vendored/GekkoNet/GekkoLib/include
-    vendored/GekkoNet/GekkoLib/include/private  # b5c6528: internal headers moved here; src does #include "backend.h"
-    vendored/GekkoNet/GekkoLib/thirdparty
-    vendored/GekkoNet/GekkoLib/thirdparty/zpp
-    vendored/GekkoNet/GekkoLib/thirdparty/asio
-)
-
-# Windows-specific configuration for GekkoNet
-if(WIN32)
-    target_link_libraries(GekkoNet PUBLIC ws2_32)
-    target_compile_definitions(GekkoNet PUBLIC
-        _WIN32_WINNT=0x0601  # Target Windows 7 or later
-        WIN32_LEAN_AND_MEAN  # Exclude rarely-used stuff from Windows headers
-        GEKKONET_STATIC      # Static linking
+if(FM2K_DEPS_PREFIX)
+    # GekkoNet prebuilt by scripts/build_deps.sh (cmake/deps/gekkonet): same
+    # sources and defines as below, public header only.
+    add_library(GekkoNet STATIC IMPORTED GLOBAL)
+    set_target_properties(GekkoNet PROPERTIES
+        IMPORTED_LOCATION "${FM2K_DEPS_PREFIX}/lib/libGekkoNet.a"
+        INTERFACE_INCLUDE_DIRECTORIES "${FM2K_DEPS_PREFIX}/include"
+        INTERFACE_COMPILE_DEFINITIONS "_WIN32_WINNT=0x0601;WIN32_LEAN_AND_MEAN;GEKKONET_STATIC"
+        INTERFACE_LINK_LIBRARIES "ws2_32")
+else()
+    # GekkoNet library - Build as static
+    add_library(GekkoNet STATIC
+        vendored/GekkoNet/GekkoLib/src/gekkonet.cpp
+        vendored/GekkoNet/GekkoLib/src/backend.cpp
+        vendored/GekkoNet/GekkoLib/src/event.cpp
+        vendored/GekkoNet/GekkoLib/src/game_session.cpp
+        vendored/GekkoNet/GekkoLib/src/spectator_session.cpp
+        vendored/GekkoNet/GekkoLib/src/stress_session.cpp
+        vendored/GekkoNet/GekkoLib/src/input.cpp
+        vendored/GekkoNet/GekkoLib/src/net.cpp
+        vendored/GekkoNet/GekkoLib/src/player.cpp
+        vendored/GekkoNet/GekkoLib/src/storage.cpp
+        vendored/GekkoNet/GekkoLib/src/sync.cpp
     )
+
+    target_include_directories(GekkoNet PUBLIC
+        vendored/GekkoNet/GekkoLib/include
+        vendored/GekkoNet/GekkoLib/include/private  # b5c6528: internal headers moved here; src does #include "backend.h"
+        vendored/GekkoNet/GekkoLib/thirdparty
+        vendored/GekkoNet/GekkoLib/thirdparty/zpp
+        vendored/GekkoNet/GekkoLib/thirdparty/asio
+    )
+
+    # Windows-specific configuration for GekkoNet
+    if(WIN32)
+        target_link_libraries(GekkoNet PUBLIC ws2_32)
+        target_compile_definitions(GekkoNet PUBLIC
+            _WIN32_WINNT=0x0601  # Target Windows 7 or later
+            WIN32_LEAN_AND_MEAN  # Exclude rarely-used stuff from Windows headers
+            GEKKONET_STATIC      # Static linking
+        )
+    endif()
 endif()
 
 # miniupnpc — UPnP-IGD client (Phase 1 NAT reachability, the "hero" path).

@@ -255,10 +255,10 @@ function(fm2khook_configure_target target_name)
     # Optimized by default; FM2K_HOOK_DEBUG=ON drops the hook to -O0 for
     # step-debugging (never ship that -- it's the 2-4x low-end slowdown).
     if(FM2K_HOOK_DEBUG)
-        target_compile_options(${target_name} PRIVATE -O0 -g -fno-strict-aliasing)
+        target_compile_options(${target_name} PRIVATE -O0 -g -fno-strict-aliasing)  # step-debug: full -g
         message(STATUS "${target_name}: UNOPTIMIZED -O0 step-debug build (FM2K_HOOK_DEBUG=ON)")
     else()
-        target_compile_options(${target_name} PRIVATE -O2 -g -fno-strict-aliasing)
+        target_compile_options(${target_name} PRIVATE -O2 ${FM2K_DEBUG_FLAGS} -fno-strict-aliasing)
     endif()
     set_target_properties(${target_name} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"

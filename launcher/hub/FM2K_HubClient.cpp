@@ -1,4 +1,4 @@
-// FM2K Hub client -- WinHTTP WebSocket transport.
+// FM2K Hub client -- WebSocket transport (launcher/net/ws_client.h).
 //
 // One I/O thread does the WS handshake then spawns a sender thread.
 // The I/O thread itself owns the receive loop. Both push events
@@ -10,21 +10,9 @@
 // hand-rolled extractors are simpler than vendoring a JSON lib.
 // If that catalog grows, swap in nlohmann/json.
 
-// WinHTTP WebSocket APIs (WinHttpWebSocketCompleteUpgrade etc.) are
-// gated on _WIN32_WINNT >= 0x0602 (Windows 8). Project-wide setting
-// is 0x0601 (Win7) for compatibility; bump only this TU.
-#ifdef _WIN32_WINNT
-#  undef _WIN32_WINNT
-#endif
-#define _WIN32_WINNT 0x0602
-#ifdef WINVER
-#  undef WINVER
-#endif
-#define WINVER 0x0602
-
 #include "FM2K_HubClient.h"
 #include "version_local.h"  // fm2k::kAppVersion
-#include <winhttp.h>
+#include "ws_client.h"
 
 #include <SDL3/SDL_log.h>
 
@@ -34,9 +22,6 @@
 #include <cstring>
 #include <string>
 #include <vector>
-
-#pragma comment(lib, "winhttp.lib")
-
 
 namespace fm2k {
 
@@ -48,6 +33,9 @@ HubClient::HubClient() = default;
 
 HubClient::~HubClient() {
     Disconnect();
+    // An I/O thread that ended on its own (failed connect, server close)
+    // leaves running_ false but io_ still joinable; ~thread would terminate.
+    if (io_.joinable()) io_.join();
 }
 
 bool HubClient::Connect(const std::string& host, uint16_t port,
@@ -84,6 +72,7 @@ bool HubClient::Connect(const std::string& host, uint16_t port,
     // pulling in another tuple wrapper.
     hub_token_  = hub_token;
     use_tls_    = secure;
+    ws_ = std::make_unique<net::WsClient>();
     running_.store(true);
     io_ = std::thread(&HubClient::IoThread, this, host, port, path, nick);
     return true;
@@ -92,11 +81,8 @@ bool HubClient::Connect(const std::string& host, uint16_t port,
 void HubClient::Disconnect() {
     if (!running_.exchange(false)) return;
     out_cv_.notify_all();
-    if (ws_ != nullptr) {
-        // Closing the handle interrupts WinHttpWebSocketReceive in the IO thread.
-        WinHttpCloseHandle(ws_);
-        ws_ = nullptr;
-    }
+    // The receive loop polls running_ every 100 ms (and every blocking step
+    // of the connect/handshake does too), sends a close frame, and exits.
     if (io_.joinable()) io_.join();
     CleanupHandles();
     connected_.store(false);

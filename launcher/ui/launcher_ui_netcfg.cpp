@@ -19,7 +19,7 @@
 #include "FM2K_Utf8Path.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#include <wininet.h>
+#include "https_client.h"
 #include <shellapi.h>  // Shell_NotifyIcon for challenge toast
 #include <shobjidl.h>  // IFileOpenDialog (modern native folder picker)
 #include <iostream>
@@ -67,35 +67,33 @@ void LauncherUI::RenderNetworkConfig() {
             static bool ip_resolved = false;
             if (!ip_resolved) {
                 ip_resolved = true;
-                HINTERNET hInternet = InternetOpenA("FM2K", INTERNET_OPEN_TYPE_DIRECT, NULL, NULL, 0);
-                if (hInternet) {
-                    // Try multiple services like CCCaster does
-                    const char* services[] = {
-                        "http://checkip.amazonaws.com",
-                        "http://ipv4.icanhazip.com",
-                        "http://ifcfg.net",
-                    };
-                    for (const char* url : services) {
-                        HINTERNET hUrl = InternetOpenUrlA(hInternet, url, NULL, 0,
-                            INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_RELOAD, 0);
-                        if (hUrl) {
-                            char buf[256] = {};
-                            DWORD bytesRead = 0;
-                            if (InternetReadFile(hUrl, buf, sizeof(buf) - 1, &bytesRead) && bytesRead >= 7) {
-                                buf[bytesRead] = '\0';
-                                // Trim whitespace/newlines
-                                char* p = buf;
-                                while (*p == ' ' || *p == '\r' || *p == '\n') p++;
-                                char* end = p + strlen(p) - 1;
-                                while (end > p && (*end == ' ' || *end == '\r' || *end == '\n')) *end-- = '\0';
-                                strncpy(local_ip, p, sizeof(local_ip) - 1);
-                                InternetCloseHandle(hUrl);
-                                break;
-                            }
-                            InternetCloseHandle(hUrl);
-                        }
+                // Try multiple services like CCCaster does. Direct connection
+                // (no proxy), matching the WinINet INTERNET_OPEN_TYPE_DIRECT
+                // call this replaced.
+                const char* services[] = {
+                    "http://checkip.amazonaws.com",
+                    "http://ipv4.icanhazip.com",
+                    "http://ifcfg.net",
+                };
+                for (const char* url : services) {
+                    fm2k::net::HttpRequest req;
+                    req.url              = url;
+                    req.user_agent       = "FM2K";
+                    req.timeout_ms       = 5000;
+                    req.max_body         = 4096;
+                    req.use_system_proxy = false;
+                    req.log_tag          = "PublicIP";
+                    fm2k::net::HttpResult res;
+                    if (!fm2k::net::HttpFetch(req, res) || res.status != 200 || res.body.size() < 7) {
+                        continue;
                     }
-                    InternetCloseHandle(hInternet);
+                    std::string ip = res.body;
+                    while (!ip.empty() && (ip.back() == ' ' || ip.back() == '\r' || ip.back() == '\n')) ip.pop_back();
+                    size_t lead = ip.find_first_not_of(" \r\n");
+                    ip = (lead == std::string::npos) ? std::string() : ip.substr(lead);
+                    if (ip.size() < 7) continue;
+                    strncpy(local_ip, ip.c_str(), sizeof(local_ip) - 1);
+                    break;
                 }
                 if (strcmp(local_ip, "Resolving...") == 0) {
                     strncpy(local_ip, "Could not resolve", sizeof(local_ip));

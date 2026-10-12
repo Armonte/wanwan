@@ -1,0 +1,14 @@
+mbedTLS 3.6.7 (LTS branch), Apache-2.0 -- see LICENSE.
+
+Source: https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.7/mbedtls-3.6.7.tar.bz2
+sha256(tarball) = a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
+Imported 2026-10-12. Only include/ and library/ are kept (library/Makefile and
+library/CMakeLists.txt removed); no local modifications.
+
+Built by the top-level CMakeLists.txt as the static library mbedtls_fm2k with
+MBEDTLS_CONFIG_FILE="fm2k_mbedtls_config.h" (launcher/net/tls/). That config,
+not this directory, decides what is compiled in.
+
+To update: replace include/ and library/ from a newer 3.6.x release tarball,
+drop library/Makefile + library/CMakeLists.txt, update this file, rebuild, and
+run the hub/HTTPS checks in launcher/net (tools/net_selftest).

@@ -2,13 +2,14 @@
 // See FM2K_DiscordAuth.h for the design.
 
 #include "FM2K_DiscordAuth.h"
+#include "https_client.h"
+#include "net_error_text.h"
 
 #include <SDL3/SDL_log.h>
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
-#include <winhttp.h>
 #include <shellapi.h>
 
 #include <algorithm>
@@ -19,7 +20,6 @@
 #include <sstream>
 #include <vector>
 
-#pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "shell32.lib")
 
 namespace fm2k::discord_auth {
@@ -165,185 +165,40 @@ std::string JsonField(const std::string& src, const std::string& key) {
 }
 
 // ---------------------------------------------------------------------------
-// WinHTTP helpers. We need GET (for /pair/begin and /pair/<code>) only.
-// All requests are short text payloads, so we read into a std::string.
+// HTTP helper. We need GET (for /pair/begin and /pair/<code>) only. All
+// requests are short text payloads, so the body lands in a std::string.
 // ---------------------------------------------------------------------------
 
 struct HttpResp {
     int         status   = 0;
     std::string body;
-    // Win32 error from GetLastError after the failing WinHttp call.
-    // Only meaningful when status == 0. Common WinHTTP codes:
-    //   12002 ERROR_WINHTTP_TIMEOUT
-    //   12007 ERROR_WINHTTP_NAME_NOT_RESOLVED   (DNS)
-    //   12029 ERROR_WINHTTP_CANNOT_CONNECT      (TCP refused / firewalled)
-    //   12030 ERROR_WINHTTP_CONNECTION_ERROR
-    //   12152 ERROR_WINHTTP_INVALID_SERVER_RESPONSE
-    //   12175 ERROR_WINHTTP_SECURE_FAILURE      (TLS issue)
-    DWORD       last_error = 0;
-    const char* failed_at  = "";   // string lit identifying the call site
+    // WinHTTP-equivalent error number (net::LegacyWinHttpCode) when
+    // status == 0: 12002 timeout, 12007 DNS, 12029 cannot connect,
+    // 12030 connection error, 12152 invalid response, 12175 TLS.
+    unsigned long last_error = 0;
+    const char*   failed_at  = "";   // static string naming the failing step
+    net::NetStatus net;              // full cause, for the log + the hint
 };
 
-bool ParseUrl(const std::string& url, bool& https_out, std::wstring& host_out,
-              uint16_t& port_out, std::wstring& path_out) {
-    // Accepts http:// or https://. Path defaults to "/".
-    https_out = false;
-    std::string s = url;
-    if (s.compare(0, 8, "https://") == 0) { https_out = true; s = s.substr(8); }
-    else if (s.compare(0, 7, "http://") == 0) { s = s.substr(7); }
-    else return false;
-    size_t slash = s.find('/');
-    std::string hostport = (slash == std::string::npos) ? s : s.substr(0, slash);
-    std::string path     = (slash == std::string::npos) ? "/" : s.substr(slash);
-    size_t colon = hostport.find(':');
-    std::string host = hostport;
-    uint16_t port = https_out ? 443 : 80;
-    if (colon != std::string::npos) {
-        host = hostport.substr(0, colon);
-        port = (uint16_t)std::atoi(hostport.substr(colon + 1).c_str());
-    }
-    auto widen = [](const std::string& s) {
-        std::wstring w(s.begin(), s.end()); return w;
-    };
-    host_out = widen(host);
-    path_out = widen(path);
-    port_out = port;
-    return true;
-}
-
-// Internal: single attempt at a GET with the given proxy access mode.
-// Returns out.status>0 on success, status==0 with last_error/failed_at
-// populated on any WinHttp failure.
-static HttpResp HttpGetOnce(const std::string& url, int timeout_ms,
-                            DWORD access_type) {
-    HttpResp out;
-    bool         https = false;
-    std::wstring host, path;
-    uint16_t     port = 0;
-    if (!ParseUrl(url, https, host, port, path)) {
-        out.failed_at = "ParseUrl";
-        return out;
-    }
-
-    HINTERNET hSes = WinHttpOpen(L"FM2K_Rollback/0.1",
-        access_type,
-        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!hSes) {
-        out.last_error = GetLastError();
-        out.failed_at  = "WinHttpOpen";
-        return out;
-    }
-    // Windows 8.0 / 7: WinHTTP defaults to TLS 1.0 ONLY and will not negotiate
-    // TLS 1.2, so HTTPS to a modern server (hub.2dfm.org, GitHub) dies at the
-    // handshake even after WinHttpOpen succeeds -- the real wall the Win8.0
-    // guest hit once the AUTOMATIC_PROXY/87 issue was past. Explicitly enable
-    // TLS 1.0/1.1/1.2 on the session. No-op on 8.1+ (they already negotiate
-    // 1.2); required on 8.0/7. Browsers work because they do their own TLS.
-    {
-        DWORD secure_protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1
-                               | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_1
-                               | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
-        WinHttpSetOption(hSes, WINHTTP_OPTION_SECURE_PROTOCOLS,
-                         &secure_protocols, sizeof(secure_protocols));
-    }
-    WinHttpSetTimeouts(hSes, timeout_ms, timeout_ms, timeout_ms, timeout_ms);
-
-    HINTERNET hCon = WinHttpConnect(hSes, host.c_str(), port, 0);
-    if (!hCon) {
-        out.last_error = GetLastError();
-        out.failed_at  = "WinHttpConnect";
-        WinHttpCloseHandle(hSes);
-        return out;
-    }
-
-    DWORD flags = https ? WINHTTP_FLAG_SECURE : 0;
-    HINTERNET hReq = WinHttpOpenRequest(hCon, L"GET", path.c_str(), nullptr,
-        WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
-    if (!hReq) {
-        out.last_error = GetLastError();
-        out.failed_at  = "WinHttpOpenRequest";
-        WinHttpCloseHandle(hCon);
-        WinHttpCloseHandle(hSes);
-        return out;
-    }
-
-    BOOL ok = WinHttpSendRequest(hReq, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-        WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
-    if (!ok) {
-        out.last_error = GetLastError();
-        out.failed_at  = "WinHttpSendRequest";
-        WinHttpCloseHandle(hReq);
-        WinHttpCloseHandle(hCon);
-        WinHttpCloseHandle(hSes);
-        return out;
-    }
-    if (!WinHttpReceiveResponse(hReq, nullptr)) {
-        out.last_error = GetLastError();
-        out.failed_at  = "WinHttpReceiveResponse";
-        WinHttpCloseHandle(hReq);
-        WinHttpCloseHandle(hCon);
-        WinHttpCloseHandle(hSes);
-        return out;
-    }
-
-    DWORD status = 0, sz = sizeof(status);
-    WinHttpQueryHeaders(hReq,
-        WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-        WINHTTP_HEADER_NAME_BY_INDEX, &status, &sz, WINHTTP_NO_HEADER_INDEX);
-    out.status = (int)status;
-
-    std::vector<char> buf;
-    for (;;) {
-        DWORD avail = 0;
-        if (!WinHttpQueryDataAvailable(hReq, &avail) || avail == 0) break;
-        size_t off = buf.size();
-        buf.resize(off + avail);
-        DWORD got = 0;
-        if (!WinHttpReadData(hReq, buf.data() + off, avail, &got)) break;
-        buf.resize(off + got);
-    }
-    out.body.assign(buf.begin(), buf.end());
-
-    WinHttpCloseHandle(hReq);
-    WinHttpCloseHandle(hCon);
-    WinHttpCloseHandle(hSes);
-    return out;
-}
-
-// Public: walks an access-type ladder until one returns an HTTP response.
-//   1. AUTOMATIC_PROXY -- WPAD auto-detect (corporate / managed networks).
-//      BUT this access type only exists on Windows 8.1+; on Windows 8.0 and
-//      earlier WinHttpOpen rejects it with ERROR_INVALID_PARAMETER (87)
-//      BEFORE any network I/O. That 87 is pure noise on old OSes.
-//   2. DEFAULT_PROXY -- honors the system/WinHTTP proxy config. Works on
-//      EVERY Windows version, so this is what saves Win8.0 guests.
-//   3. NO_PROXY -- direct, ignores proxy config (broken/orphaned VPN clients).
-// On total failure we must NOT surface the auto-proxy 87: it masks the real
-// reason (it's just "old OS doesn't know that access type"). Prefer an attempt
-// that got PAST WinHttpOpen -- that carries the genuine network error.
+// The old WinHTTP version walked an AUTOMATIC -> DEFAULT -> NO_PROXY ladder.
+// HttpFetch tries the user's static system proxy first (when one is set)
+// and falls back to a direct connection on its own.
 HttpResp HttpGet(const std::string& url, int timeout_ms = 15000) {
-    auto is_open_param_noise = [](const HttpResp& x) {
-        return x.status == 0 && x.failed_at
-            && std::strcmp(x.failed_at, "WinHttpOpen") == 0
-            && x.last_error == ERROR_INVALID_PARAMETER;  // 87 = pre-8.1 auto-proxy
-    };
-
-    HttpResp r = HttpGetOnce(url, timeout_ms, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY);
-    if (r.status > 0) return r;
-
-    HttpResp rd = HttpGetOnce(url, timeout_ms, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY);
-    if (rd.status > 0) return rd;
-
-    HttpResp rn = HttpGetOnce(url, timeout_ms, WINHTTP_ACCESS_TYPE_NO_PROXY);
-    if (rn.status > 0) return rn;
-
-    // All three failed. Return the most informative error: skip the auto-proxy
-    // 87 noise in favor of a real network-stage failure from a later attempt.
-    if (is_open_param_noise(r)) {
-        if (!is_open_param_noise(rn)) return rn;
-        if (!is_open_param_noise(rd)) return rd;
-    }
-    return r;
+    net::HttpRequest req;
+    req.url        = url;
+    req.user_agent = "FM2K_Rollback/0.1";
+    req.timeout_ms = timeout_ms;
+    req.max_body   = 256 * 1024;
+    req.log_tag    = "DiscordAuth";
+    net::HttpResult res;
+    net::HttpFetch(req, res);
+    HttpResp out;
+    out.status     = res.status;
+    out.body       = std::move(res.body);
+    out.last_error = res.last_error;
+    out.failed_at  = res.failed_at;
+    out.net        = res.net;
+    return out;
 }
 
 }  // namespace
@@ -449,26 +304,18 @@ Pairing* Begin(const std::string& hub_base_url) {
         // Step 1: ask the hub for a pairing code + authorize URL.
         HttpResp begin = HttpGet(p->hub_base_url_ + "/pair/begin");
         if (begin.status != 200) {
-            // Map common WinHttp error codes to actionable hints. Code
-            // list: docs.microsoft.com/en-us/windows/win32/winhttp/error-messages
-            const char* hint = "";
-            switch (begin.last_error) {
-                case 12002: hint = " -- timeout, hub unreachable (firewall / port blocked / VPN)"; break;
-                case 12007: hint = " -- DNS lookup failed for hub host"; break;
-                case 12029: hint = " -- connection refused (firewall / AV web shield / hub down)"; break;
-                case 12030: hint = " -- connection dropped"; break;
-                case 12152: hint = " -- bad response from hub (hub crashed?)"; break;
-                case 12175: hint = " -- TLS handshake failed (clock skew / cert issue)"; break;
-                case 0:     hint = "";  break;  // normal HTTP-level failure
-                default:    hint = " -- WinHttp error";  break;
-            }
-            char buf[256];
+            // Actionable, localised hint for the network failure (empty for
+            // a plain HTTP-level failure such as a 5xx from the hub).
+            const char* hint = net::NetErrorHint(begin.net);
+            std::string hint_s = *hint ? std::string(" -- ") + hint : std::string();
+            if (!begin.net.detail.empty()) hint_s += " [" + begin.net.detail + "]";
+            char buf[1024];
             std::snprintf(buf, sizeof(buf),
                 "Hub didn't respond (http=%d, win32=%lu, at=%s)%s\n"
                 "Workarounds: pause AV web shield, run as admin, try VPN.",
                 begin.status, (unsigned long)begin.last_error,
                 begin.failed_at && *begin.failed_at ? begin.failed_at : "?",
-                hint);
+                hint_s.c_str());
             std::lock_guard<std::mutex> lk(p->mtx_);
             p->error_ = buf;
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,

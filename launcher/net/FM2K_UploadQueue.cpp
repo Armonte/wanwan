@@ -8,7 +8,6 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_log.h>
 #include <windows.h>
-#include <winhttp.h>
 
 #include <cstdint>
 #include <cstdio>

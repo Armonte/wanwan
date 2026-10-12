@@ -22,7 +22,7 @@
 // blocks the calling thread for the duration. Caller (LauncherUI tick)
 // is expected to invoke once per render frame; if more than one
 // manifest is pending, each gets serviced on a separate tick. Network
-// I/O happens on the UI thread but with a 15-second WinHTTP timeout
+// I/O happens on the UI thread but with a 15-second network timeout
 // so a slow VPS can't pin the launcher.
 
 #include <string>

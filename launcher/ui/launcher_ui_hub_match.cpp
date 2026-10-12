@@ -22,7 +22,6 @@
 #include "FM2K_Utf8Path.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#include <wininet.h>
 #include <shellapi.h>  // Shell_NotifyIcon for challenge toast
 #include <shobjidl.h>  // IFileOpenDialog (modern native folder picker)
 #include <iostream>

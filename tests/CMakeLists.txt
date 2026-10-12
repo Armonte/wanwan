@@ -21,11 +21,17 @@ add_executable(fm2k_tests
     test_snapshot_coverage.cpp
     test_gameplay_tag.cpp
     ../FM2KHook/src/netplay/gameplay_tag_core.cpp
+    # Launcher HTTPS / WebSocket client: pure parsing + framing halves.
+    test_http_parse.cpp
+    test_ws_frame.cpp
+    ../launcher/net/http_parse.cpp
+    ../launcher/net/ws_frame.cpp
 )
 
 target_include_directories(fm2k_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/../vendored/doctest
+    ${CMAKE_CURRENT_SOURCE_DIR}/../launcher/net
 )
 
 target_compile_options(fm2k_tests PRIVATE

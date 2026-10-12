@@ -304,6 +304,28 @@ target_compile_definitions(MinHook PRIVATE
     WIN32_LEAN_AND_MEAN  # Exclude rarely-used stuff from Windows headers
 )
 
+# mbedTLS 3.6 LTS (Apache-2.0), vendored at vendored/mbedtls (include/ +
+# library/ of the release tarball, see vendored/mbedtls/README.fm2k). TLS 1.2
+# + 1.3 client for the launcher's HTTPS / WSS stack, which replaced WinHTTP so
+# the launcher runs on a stock Windows 7 SP1. The trimmed configuration is
+# launcher/net/tls/fm2k_mbedtls_config.h; modules it does not enable compile
+# to empty objects, so globbing library/*.c is safe.
+file(GLOB MBEDTLS_SOURCES CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/vendored/mbedtls/library/*.c)
+add_library(mbedtls_fm2k STATIC ${MBEDTLS_SOURCES})
+target_include_directories(mbedtls_fm2k
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/vendored/mbedtls/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/launcher/net/tls   # config + threading_alt.h
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/vendored/mbedtls/library)
+target_compile_definitions(mbedtls_fm2k PUBLIC
+    MBEDTLS_CONFIG_FILE="fm2k_mbedtls_config.h")
+if(WIN32)
+    target_compile_definitions(mbedtls_fm2k PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+    target_link_libraries(mbedtls_fm2k PUBLIC bcrypt)   # BCryptGenRandom entropy
+endif()
+
 # Add FM2KHook subdirectory
 add_subdirectory(FM2KHook)
 
@@ -484,6 +506,18 @@ add_executable(FM2K_RollbackLauncher
     launcher/net/FM2K_UploadQueue.cpp
     launcher/net/FM2K_HttpPost.cpp
     launcher/net/FM2K_ReplayUpload.cpp
+    # Own HTTPS + WebSocket stack over bundled mbedTLS (replaced WinHTTP /
+    # WinINet so the launcher starts and connects on Windows 7 SP1).
+    launcher/net/http_parse.cpp       # URL / response head / chunked parsing (host-tested)
+    launcher/net/ws_frame.cpp         # RFC 6455 framing (host-tested)
+    launcher/net/net_stream.cpp       # TLS stream with deadlines
+    launcher/net/net_stream_socket.cpp  # Winsock connect / proxy CONNECT
+    launcher/net/https_client.cpp     # HttpFetch: GET/POST, redirects, streaming
+    launcher/net/https_proxy.cpp      # static WinINet proxy lookup
+    launcher/net/ws_client.cpp        # WebSocket client (hub transport)
+    launcher/net/net_error_text.cpp   # localised network error hints
+    launcher/net/tls/tls_global.cpp   # mbedTLS / PSA init, threading callbacks
+    launcher/net/tls/ca_store.cpp     # Windows ROOT store + bundled Mozilla roots
     # Stock miniz (public domain) for in-process zip extraction. SDL_image
     # ships its own statically-scoped copy with archive APIs disabled, so
     # this independent copy gives us mz_zip_reader_* without disturbing
@@ -527,10 +561,30 @@ target_link_options(FM2K_RollbackLauncher PRIVATE
 # Add FM2KHook as dependency
 add_dependencies(FM2K_RollbackLauncher FM2KHook fm2k_version libwinpthread_no_rsrc)
 
+# fm2k_net_selftest.exe -- console end-to-end check of the launcher's own
+# HTTPS / WSS stack (CA store, GitHub GET, hub WebSocket). Not part of the
+# default build or of dist/: `ninja -C build fm2k_net_selftest`.
+add_executable(fm2k_net_selftest EXCLUDE_FROM_ALL
+    tools/net_selftest.cpp
+    launcher/net/http_parse.cpp
+    launcher/net/ws_frame.cpp
+    launcher/net/net_stream.cpp
+    launcher/net/net_stream_socket.cpp
+    launcher/net/https_client.cpp
+    launcher/net/https_proxy.cpp
+    launcher/net/ws_client.cpp
+    launcher/net/tls/tls_global.cpp
+    launcher/net/tls/ca_store.cpp)
+target_compile_definitions(fm2k_net_selftest PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601 SDL_STATIC_LIB)
+target_link_libraries(fm2k_net_selftest PRIVATE mbedtls_fm2k SDL3::SDL3-static ws2_32 crypt32)
+target_link_options(fm2k_net_selftest PRIVATE -static -static-libgcc -static-libstdc++)
+
 # FM2KUpdater.exe — companion process spawned by the launcher to
 # perform the actual EXE/DLL replacement after launcher exit. Tiny
 # binary, zero deps beyond Win32. See tools/FM2KUpdater.cpp.
-add_executable(FM2KUpdater tools/FM2KUpdater.cpp updater.rc)
+add_executable(FM2KUpdater tools/FM2KUpdater.cpp vendored/miniz/miniz.c updater.rc)
+target_compile_definitions(FM2KUpdater PRIVATE _WIN32_WINNT=0x0601 WINVER=0x0601)
+target_link_libraries(FM2KUpdater PRIVATE shell32)   # CommandLineToArgvW
 target_link_options(FM2KUpdater PRIVATE
     -static
     -static-libgcc
@@ -561,8 +615,10 @@ target_link_libraries(FM2K_RollbackLauncher PRIVATE
     version
     imm32
     oleaut32
-    wininet
-    winhttp
+    # Bundled TLS for the HTTPS / WSS client, plus crypt32 for reading the
+    # Windows ROOT certificate store (launcher/net/tls/ca_store.cpp).
+    mbedtls_fm2k
+    crypt32
     # bcrypt for FM2K_ReleaseVerify -- CNG verifies the update signature,
     # so there is no third-party crypto to vendor.
     bcrypt
@@ -574,6 +630,10 @@ target_link_libraries(FM2K_RollbackLauncher PRIVATE
 
 # Preprocessor definitions
 target_compile_definitions(FM2K_RollbackLauncher PRIVATE
+    # Windows 7 SP1 is the floor: anything newer must be loaded dynamically
+    # with a fallback, so the SDK must not even declare it here.
+    _WIN32_WINNT=0x0601
+    WINVER=0x0601
     GEKKONET_STATIC
     SDL_STATIC_LIB
     $<$<CONFIG:Debug>:DEBUG>

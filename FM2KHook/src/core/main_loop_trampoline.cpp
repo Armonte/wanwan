@@ -16,6 +16,7 @@
 //                       directly; pacing via a 10 ms sleep.
 #include "main_loop_trampoline.h"
 #include "globals.h"
+#include "dllmain_internal.h"
 #include "../hooks/hooks.h"
 #include "../hooks/wndproc_subclass.h"
 #include "../netplay/netplay.h"
@@ -253,6 +254,7 @@ static DWORD WINAPI PreloadPlayerFiles_Worker(LPVOID) {
 BOOL TrampolineMainLoop() {
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "Trampoline: main loop ACTIVE -- GekkoNet-driven outer loop");
+    Crash_ArmMainThread();  // first code we run on the game's main thread
 
     // Kick off background .player file cache pre-warmer. Runs once;
     // typically completes within a second or two. Subsequent FM2K opens

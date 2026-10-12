@@ -457,6 +457,10 @@ void FM2KGameInstance::NoteExited(DWORD code) const {
     const char* meaning =
         (code == 0)          ? "clean exit" :
         (code == 1)          ? "terminated (usually our own Terminate)" :
+        (code == 3)          ? "abort() -- check the Crash.log for a [TERMINATE] line" :
+        (code == 0xC0000409) ? "FAIL-FAST / stack buffer overrun -- bypasses every handler" :
+        (code == 0xC0000374) ? "HEAP CORRUPTION -- bypasses every handler" :
+        (code == 0xC0000417) ? "CRT invalid parameter (see [TERMINATE] in the Crash.log)" :
         (code == 0xC0000005) ? "ACCESS VIOLATION -- unhandled, the crash handler did not run" :
         (code == 0xC0000094) ? "DIVIDE BY ZERO -- unhandled" :
         (code == 0xC00000FD) ? "STACK OVERFLOW -- unhandled" :

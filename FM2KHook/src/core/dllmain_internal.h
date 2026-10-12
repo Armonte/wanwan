@@ -6,4 +6,6 @@
 // stay file-local to dllmain_logging.cpp.
 void InitFileLogging();
 void InstallCrashHandler();
+// Per-thread stack reserve for the crash handler; call on the game's main thread.
+void Crash_ArmMainThread();
 void ShutdownFileLogging();

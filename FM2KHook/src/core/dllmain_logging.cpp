@@ -39,6 +39,8 @@ extern void NeuterFullscreenTogglesForCncDdraw();
 #include <ctime>
 #include <cctype>
 #include <string>
+#include <csignal>
+#include <exception>
 
 // Quill -- async logging backend. SDL_Log call sites stay unchanged; our
 // SDLCustomLogOutput function (LogOutputFunction below) routes the formatted
@@ -293,6 +295,11 @@ void InitFileLogging() {
 // Without a stack we can only guess at root cause (D3D9 device-lost,
 // rollback catchup explosion, ImGui state mismatch -- all plausible).
 // This handler turns the next incident into a concrete trace.
+// Set by ReportFatal for deaths that never raise an SEH exception
+// (std::terminate, abort, pure call, CRT invalid parameter). Printed as a
+// [TERMINATE] line inside the normal crash block.
+static const char* s_fatal_reason = nullptr;
+
 static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
     FILE* f = g_log_file_fallback;  // shared with normal logging
     if (!f) {
@@ -322,6 +329,7 @@ static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
         st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
         g_player_index + 1,
         (unsigned long)code, addr);
+    if (s_fatal_reason) fprintf(f, "[TERMINATE] %s\n", s_fatal_reason);
 
     if (ep && ep->ContextRecord) {
         const CONTEXT* c = ep->ContextRecord;
@@ -488,6 +496,106 @@ static LONG WINAPI VectoredRenderGuard(EXCEPTION_POINTERS* ep) {
     return EXCEPTION_CONTINUE_EXECUTION;
 }
 
+// ---------------------------------------------------------------------------
+// Deaths that bypass the unhandled-exception filter.
+//
+// std::terminate (a joinable std::thread destroyed, an exception escaping a
+// noexcept/thread function), abort(), a pure virtual call and a CRT invalid
+// parameter all end the process without an SEH exception, so CrashHandler
+// never runs and the log just stops mid-match (mrpringle 2026-10-03). Each
+// path below captures the current context and feeds it through CrashHandler
+// so it gets the same register dump, backtrace and upload manifest, with a
+// [TERMINATE] line naming the path. One report per process: abort() called
+// from the terminate handler would otherwise report twice.
+// ---------------------------------------------------------------------------
+static constexpr DWORD kFatalNonSehCode = 0xE0F2A001;  // ours, never raised
+
+static void ReportFatal(const char* reason) {
+    static volatile LONG s_reported = 0;
+    if (InterlockedExchange(&s_reported, 1) != 0) return;
+    s_fatal_reason = reason;
+    CONTEXT ctx = {};
+    RtlCaptureContext(&ctx);
+    EXCEPTION_RECORD rec = {};
+    rec.ExceptionCode    = kFatalNonSehCode;
+    rec.ExceptionAddress = reinterpret_cast<void*>(ctx.Eip);
+    EXCEPTION_POINTERS ep = { &rec, &ctx };
+    CrashHandler(&ep);
+}
+
+static void OnTerminate() {
+    static char reason[256];
+    std::snprintf(reason, sizeof(reason), "std::terminate (no active exception)");
+    if (std::exception_ptr e = std::current_exception()) {
+        try {
+            std::rethrow_exception(e);
+        } catch (const std::exception& x) {
+            std::snprintf(reason, sizeof(reason), "std::terminate: uncaught %s", x.what());
+        } catch (...) {
+            std::snprintf(reason, sizeof(reason), "std::terminate: uncaught non-std exception");
+        }
+    }
+    ReportFatal(reason);
+    std::abort();
+}
+
+static void __cdecl OnSigabrt(int) {
+    ReportFatal("abort() / SIGABRT");
+}
+
+static void __cdecl OnPurecall() {
+    ReportFatal("pure virtual function call");
+}
+
+// Default CRT behavior for an invalid parameter is a fail-fast; keep the
+// process dying, just report first.
+static void __cdecl OnInvalidParameter(const wchar_t*, const wchar_t*,
+                                       const wchar_t*, unsigned, uintptr_t) {
+    ReportFatal("CRT invalid parameter");
+    TerminateProcess(GetCurrentProcess(), 0xC0000417);  // STATUS_INVALID_CRUNTIME_PARAMETER
+}
+
+// The purecall / invalid-parameter setters are not in every msvcrt.dll, so
+// resolve them at runtime from each CRT already loaded (ours and the game's).
+static void InstallCrtFatalHandlers() {
+    using SetPurecall = void* (__cdecl*)(void (__cdecl*)());
+    using InvalidParamFn = void (__cdecl*)(const wchar_t*, const wchar_t*,
+                                           const wchar_t*, unsigned, uintptr_t);
+    using SetInvalidParam = void* (__cdecl*)(InvalidParamFn);
+    int purecall = 0, invparam = 0;
+    for (const char* name : { "msvcrt.dll", "ucrtbase.dll" }) {
+        HMODULE crt = GetModuleHandleA(name);
+        if (!crt) continue;
+        if (auto f = reinterpret_cast<SetPurecall>(
+                GetProcAddress(crt, "_set_purecall_handler"))) {
+            f(OnPurecall);
+            ++purecall;
+        }
+        if (auto f = reinterpret_cast<SetInvalidParam>(
+                GetProcAddress(crt, "_set_invalid_parameter_handler"))) {
+            f(OnInvalidParameter);
+            ++invparam;
+        }
+    }
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "CrashHandler: fatal hooks -- terminate+SIGABRT on, purecall x%d, invalid-param x%d",
+        purecall, invparam);
+}
+
+void Crash_ArmMainThread() {
+    // A stack overflow leaves the faulting thread almost no stack, so the
+    // filter itself overflows and the process vanishes. Reserve room for
+    // CrashHandler. Per-thread, so it must run ON the game's main thread.
+    using SetGuarantee = BOOL (WINAPI*)(PULONG);
+    auto f = reinterpret_cast<SetGuarantee>(
+        GetProcAddress(GetModuleHandleA("kernel32.dll"), "SetThreadStackGuarantee"));
+    ULONG bytes = 64 * 1024;
+    const bool ok = f && f(&bytes);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "CrashHandler: main-thread stack guarantee %s (tid %lu)",
+        ok ? "64 KB reserved" : "unavailable", (unsigned long)GetCurrentThreadId());
+}
+
 void InstallCrashHandler() {
     // Vectored handlers run BEFORE SEH-style filters and BEFORE the
     // unhandled-exception filter, so they get first crack at recovering
@@ -495,6 +603,9 @@ void InstallCrashHandler() {
     // last-resort dumper for everything we don't recover.
     AddVectoredExceptionHandler(/*FirstHandler=*/1, VectoredRenderGuard);
     SetUnhandledExceptionFilter(CrashHandler);
+    std::set_terminate(OnTerminate);
+    std::signal(SIGABRT, OnSigabrt);
+    InstallCrtFatalHandlers();
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
         "CrashHandler: installed (vectored render-guard + last-resort dumper)");
 }

@@ -8,6 +8,13 @@
  *   0x414340 get_player_input (iTranslateKeyPress)  -> Parity_AutoplayInput when FM2K_PARITY_AUTOPLAY=1
  *   0x404CD0 update_game_state (vProcessEngineObjects) -> original, then Parity_AfterTick
  * The prologue bytes are checked first; on a different exe nothing is patched.
+ *   0x405502 in vHandleDrawing (render_game), the `mov eax, giScreenMode` right after the status
+ *            display and DebugLog_DrawOverlay, where the present branch starts (full screen: Lock the
+ *            back surface + copy_ppvBits_to_lpSurface + Flip; window: render_frame BitBlts the DIB)
+ *            -> frame_hash_record on the frame buffer ppvBits (0x4246cc) when FM2K_FRAME_HASH is set.
+ *            The port calls the same function (platform/frame_hash.c, compiled in here) at the same
+ *            point of its vHandleDrawing, so hash lines, frame numbering and FM2K_FRAME_DUMP bitmaps
+ *            are produced by one piece of code on both sides.
  * No FM2KHook involvement: the game runs as shipped plus these two detours, the IAT patches of the
  * core (GlobalAlloc tracking, the one-instance check, background window) and the locale fix below.
  *
@@ -22,6 +29,7 @@
 #include <string.h>
 #include "parity.h"
 #include "cp932.h"   /* the port's Shift-JIS layer (src/cp932.c), linked in */
+#include "frame_hash.h"  /* the port's FM2K_FRAME_HASH / FM2K_FRAME_DUMP (platform/frame_hash.c), linked in */
 
 #define BSS_ADDR 0x4213c0
 #define BSS_END  0x541fa0
@@ -50,6 +58,35 @@ static int __cdecl hkInput(int iController, int iPlayer)
     if (Parity_AutoplayActive())
         return Parity_AutoplayInput(iController, iPlayer);
     return pfnInputTramp(iController, iPlayer);
+}
+
+/* frame hash at the present: called from the stub below with every register saved */
+void __cdecl Parity_FrameHashHook(void)
+{
+    frame_hash_record(*(void **)0x4246cc,       /* ppvBits: the 640x480 16-bit frame buffer */
+                      *(int *)0x424704,         /* giScreenMode: 0 window (RGB555 DIB), 1 full screen (RGB565) */
+                      *(int *)0x470054);        /* gkgtGameState.iGameStateNumber */
+}
+/* replaces `mov eax, ds:[0x424704]` (5 bytes) at 0x405502 and resumes at 0x405507 */
+__asm__(".globl _Parity_FrameHashStub\n"
+        "_Parity_FrameHashStub:\n"
+        "  pushal\n  pushfl\n  call _Parity_FrameHashHook\n  popfl\n  popal\n"
+        "  movl 0x424704, %eax\n"
+        "  pushl $0x405507\n  ret\n");
+void Parity_FrameHashStub(void);
+
+static void vPatchFrameHash(void)
+{
+    static const unsigned char kAt[5] = { 0xa1, 0x04, 0x47, 0x42, 0x00 };
+    unsigned char *pT = (unsigned char *)0x405502;
+    DWORD dwOld;
+    char szEnv[8];
+    if (!GetEnvironmentVariableA("FM2K_FRAME_HASH", szEnv, sizeof(szEnv)) || memcmp(pT, kAt, 5) != 0) return;
+    VirtualProtect(pT, 5, PAGE_EXECUTE_READWRITE, &dwOld);
+    pT[0] = 0xe9;
+    *(int32_t *)(pT + 1) = (int32_t)((unsigned char *)Parity_FrameHashStub - (pT + 5));
+    VirtualProtect(pT, 5, dwOld, &dwOld);
+    FlushInstructionCache(GetCurrentProcess(), pT, 5);
 }
 
 /* jmp from pTarget to pNew; the nSteal prologue bytes (no relative operands) go to a trampoline */
@@ -134,5 +171,6 @@ BOOL WINAPI DllMain(HINSTANCE hDll, DWORD dwReason, LPVOID pReserved)
     vPatchCp932(host.hGameModule);
     pfnTickTramp = (void (*)(void))pDetour(0x404cd0, kTick, 9, (void *)hkTick);
     pfnInputTramp = (int (__cdecl *)(int, int))pDetour(0x414340, kInput, 5, (void *)hkInput);
+    vPatchFrameHash();
     return TRUE;
 }

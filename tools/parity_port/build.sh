@@ -10,7 +10,7 @@ mkdir -p "$HERE/build"
 INC=()
 while IFS= read -r d; do INC+=("-I$d"); done < <(find "$PORT_DIR/engine" "$PORT_DIR/platform" "$PORT_DIR/shell" "$PORT_DIR/parity" -name '*.h' -printf '%h\n' | sort -u)
 "$CC" -O2 -shared -static-libgcc "${INC[@]}" -I"$PORT_DIR/deps/sdl3/include" -fwrapv -fno-strict-aliasing -Wno-switch \
-    "$HERE/fm2k_parity_dll.c" "$PORT_DIR/parity/parity_core.c" "$PORT_DIR/platform/cp932.c" "$PORT_DIR/platform/ini.c" \
+    "$HERE/fm2k_parity_dll.c" "$PORT_DIR/parity/parity_core.c" "$PORT_DIR/platform/cp932.c" "$PORT_DIR/platform/ini.c" "$PORT_DIR/platform/frame_hash.c" \
     -lwinmm -lgdi32 -o "$HERE/build/fm2k_parity.dll"
 "$CC" -O2 "$HERE/fm2k_parity_inject.c" -o "$HERE/build/fm2k_parity_inject.exe"
 ls -la "$HERE/build"

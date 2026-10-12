@@ -6,8 +6,10 @@ respective authors and is used under its own license -- the project's own LICENS
 (PolyForm Noncommercial + Revocation Addendum) does NOT apply to them. The full
 license text for each lives in its directory under `vendored/`.
 
-All bundled components are under permissive (non-copyleft) licenses; none impose
-copyleft obligations on this project's own code.
+All bundled code is under permissive (non-copyleft) licenses; none impose
+copyleft obligations on this project's own code. The one exception is data: the
+Mozilla CA root set is MPL-2.0, whose file-level terms only cover that generated
+file itself.
 
 | Component | Use | License | Text |
 |---|---|---|---|
@@ -27,6 +29,8 @@ copyleft obligations on this project's own code.
 | xxHash | fast hashing (game-content hash) | BSD-2-Clause | `vendored/xxhash/` |
 | zstd | compression (asset pipeline) | BSD-3-Clause (used under the BSD option) | `vendored/zstd-singlefile/` |
 | Opus | audio codec | BSD-3-Clause | `vendored/opus-i686/` |
+| mbedTLS 3.6 | TLS 1.2/1.3 for the launcher's HTTPS + WebSocket client | Apache-2.0 | `vendored/mbedtls/LICENSE` |
+| Mozilla CA root set | fallback TLS trust anchors (`launcher/net/tls/ca_bundle_mozilla.inc`, generated from curl's cacert.pem by `tools/gen_ca_bundle.py`) | MPL-2.0 (file-level; the generated file is kept as-is and published with the source) | https://www.mozilla.org/MPL/2.0/ |
 | libpng / zlib / libjpeg / libtiff | image codecs inside SDL_image | libpng / zlib / IJG / libtiff (all permissive) | `vendored/SDL_image/external/` |
 
 ## Slint (planned native frontend -- NOT YET SHIPPED)

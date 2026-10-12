@@ -1,6 +1,6 @@
 #pragma once
 
-// Multipart form POST over WinHTTP.
+// Multipart form POST over the launcher HTTPS client (https_client.h).
 //
 // Extracted from FM2K_UploadQueue.cpp so the replay uploader can use the
 // same code rather than a second, drifting copy. The diagnostics uploader
@@ -33,7 +33,7 @@ struct Response {
 // leave it empty: they are deliberately unauthenticated, so that anyone
 // can contribute to a game's replay list.
 //
-// Blocks the calling thread for the duration, with a WinHTTP timeout, so
+// Blocks the calling thread for the duration, with a network timeout, so
 // a slow server cannot pin the caller indefinitely. Returns false when
 // the request never completed; `out.status` carries the HTTP code when it
 // did.

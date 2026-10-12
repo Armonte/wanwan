@@ -3,13 +3,13 @@
 #include "FM2K_CncDDraw.h"
 #include "FM2K_Utf8Path.h"  // WideToUtf8 -- keep the module path UTF-8, not ANSI
 #include "FM2K_DDrawRedirect.h"  // ResolveCncDdrawDir -- THE ONE cnc-ddraw dir resolver
+#include "https_client.h"
 
 #include <SDL3/SDL_log.h>
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
-#include <winhttp.h>
 #include <shellapi.h>
 
 #include <cstdio>
@@ -18,7 +18,6 @@
 #include <filesystem>
 #include <vector>
 
-#pragma comment(lib, "winhttp.lib")
 
 // Stock miniz, vendored at vendored/miniz/. The SDL_image vendor at
 // vendored/SDL_image/src/miniz.h is a separate copy with archive APIs
@@ -100,129 +99,36 @@ void SetFail(const std::string& detail) {
 }
 
 // ---------------------------------------------------------------------------
-// WinHTTP wrappers. Same pattern as FM2K_Updater -- duplicated rather than
-// extracted to a shared header so the two updaters stay independently
-// editable; the surface is small enough that the duplication cost is low.
+// Download helper over net::HttpFetch (the launcher's one HTTPS client).
 // ---------------------------------------------------------------------------
 
-bool ParseHttpsUrl(const std::string& url,
-                   bool& https_out,
-                   std::wstring& host_out,
-                   uint16_t& port_out,
-                   std::wstring& path_out)
-{
-    https_out = false;
-    std::string s = url;
-    if (s.compare(0, 8, "https://") == 0) { https_out = true;  s = s.substr(8); }
-    else if (s.compare(0, 7, "http://") == 0) {                 s = s.substr(7); }
-    else return false;
-    size_t slash = s.find('/');
-    std::string hp   = (slash == std::string::npos) ? s : s.substr(0, slash);
-    std::string path = (slash == std::string::npos) ? "/" : s.substr(slash);
-    size_t colon = hp.find(':');
-    std::string host = hp;
-    uint16_t port = https_out ? 443 : 80;
-    if (colon != std::string::npos) {
-        host = hp.substr(0, colon);
-        port = (uint16_t)std::atoi(hp.c_str() + colon + 1);
-    }
-    auto widen = [](const std::string& s) { return std::wstring(s.begin(), s.end()); };
-    host_out = widen(host);
-    path_out = widen(path);
-    port_out = port;
-    return true;
-}
-
-// Streamed file download with progress. Returns true on success.
+// Streamed file download with progress, following redirects (GitHub
+// release assets 302 to a CDN). Returns true on HTTP 200 + complete body.
 template <class Cb>
 bool HttpDownloadFile(const std::string& url,
                       const std::string& dst_path,
                       Cb on_progress,
                       int timeout_ms = 30000)
 {
-    bool https = false;
-    std::wstring host, path;
-    uint16_t port = 0;
-    if (!ParseHttpsUrl(url, https, host, port, path)) return false;
-
-    HINTERNET hSes = WinHttpOpen(L"FM2K_CncDDraw/0.1",
-        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,  // not AUTOMATIC: that needs Win8.1+ (WinHttpOpen -> 87 on Win8.0); DEFAULT works on every OS + honors system proxy
-        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!hSes) return false;
-    // Win8.0/7: enable TLS 1.2 (WinHTTP defaults to TLS 1.0 there). No-op on 8.1+.
-    { DWORD sp = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_1 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
-      WinHttpSetOption(hSes, WINHTTP_OPTION_SECURE_PROTOCOLS, &sp, sizeof(sp)); }
-    WinHttpSetTimeouts(hSes, timeout_ms, timeout_ms, timeout_ms, timeout_ms);
-
-    HINTERNET hCon = WinHttpConnect(hSes, host.c_str(), port, 0);
-    if (!hCon) { WinHttpCloseHandle(hSes); return false; }
-
-    DWORD flags = https ? WINHTTP_FLAG_SECURE : 0;
-    HINTERNET hReq = WinHttpOpenRequest(hCon, L"GET", path.c_str(), nullptr,
-        WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
-    if (!hReq) { WinHttpCloseHandle(hCon); WinHttpCloseHandle(hSes); return false; }
-
-    DWORD redirect_policy = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
-    WinHttpSetOption(hReq, WINHTTP_OPTION_REDIRECT_POLICY,
-                     &redirect_policy, sizeof(redirect_policy));
-
-    BOOL ok = WinHttpSendRequest(hReq, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-        WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
-    if (ok) ok = WinHttpReceiveResponse(hReq, nullptr);
-    if (!ok) {
-        WinHttpCloseHandle(hReq);
-        WinHttpCloseHandle(hCon);
-        WinHttpCloseHandle(hSes);
-        return false;
-    }
-
-    DWORD status = 0, sz = sizeof(status);
-    WinHttpQueryHeaders(hReq,
-        WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-        WINHTTP_HEADER_NAME_BY_INDEX, &status, &sz, WINHTTP_NO_HEADER_INDEX);
-    if (status != 200) {
-        WinHttpCloseHandle(hReq);
-        WinHttpCloseHandle(hCon);
-        WinHttpCloseHandle(hSes);
-        return false;
-    }
-
-    DWORD content_len = 0;
-    DWORD cl_sz = sizeof(content_len);
-    WinHttpQueryHeaders(hReq,
-        WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
-        WINHTTP_HEADER_NAME_BY_INDEX, &content_len, &cl_sz, WINHTTP_NO_HEADER_INDEX);
-
     FILE* fp = std::fopen(dst_path.c_str(), "wb");
-    if (!fp) {
-        WinHttpCloseHandle(hReq);
-        WinHttpCloseHandle(hCon);
-        WinHttpCloseHandle(hSes);
-        return false;
-    }
-
-    uint32_t received = 0;
-    char     buf[16 * 1024];
-    bool     ok_all = true;
-    for (;;) {
-        if (g_st.cancel.load()) { ok_all = false; break; }
-        DWORD avail = 0;
-        if (!WinHttpQueryDataAvailable(hReq, &avail)) { ok_all = false; break; }
-        if (avail == 0) break;
-        DWORD to_read = (avail > sizeof(buf)) ? sizeof(buf) : avail;
-        DWORD got = 0;
-        if (!WinHttpReadData(hReq, buf, to_read, &got)) { ok_all = false; break; }
-        if (got == 0) break;
-        if (std::fwrite(buf, 1, got, fp) != got) { ok_all = false; break; }
-        received += got;
-        on_progress(received, content_len);
-    }
+    if (!fp) return false;
+    net::HttpRequest req;
+    req.url          = url;
+    req.timeout_ms   = timeout_ms;
+    req.user_agent   = "FM2K_CncDDraw/0.1";
+    req.max_redirects = 8;
+    req.log_tag      = "CncDDraw";
+    req.should_abort = []() { return g_st.cancel.load(); };
+    req.on_body = [fp](const char* data, size_t len) {
+        return std::fwrite(data, 1, len, fp) == len;
+    };
+    req.on_progress = [&on_progress](uint64_t got, uint64_t total) {
+        on_progress((uint32_t)got, (uint32_t)total);
+    };
+    net::HttpResult res;
+    const bool ok = net::HttpFetch(req, res);
     std::fclose(fp);
-
-    WinHttpCloseHandle(hReq);
-    WinHttpCloseHandle(hCon);
-    WinHttpCloseHandle(hSes);
-    return ok_all;
+    return ok && res.status == 200;
 }
 
 // "v6.6.0.4" -> "6.6.0.4". Pass-through for anything that doesn't have

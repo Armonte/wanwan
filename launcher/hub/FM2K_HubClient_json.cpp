@@ -1,4 +1,4 @@
-// FM2K Hub client -- WinHTTP WebSocket transport.
+// FM2K Hub client -- WebSocket transport (launcher/net/ws_client.h).
 //
 // One I/O thread does the WS handshake then spawns a sender thread.
 // The I/O thread itself owns the receive loop. Both push events
@@ -10,21 +10,8 @@
 // hand-rolled extractors are simpler than vendoring a JSON lib.
 // If that catalog grows, swap in nlohmann/json.
 
-// WinHTTP WebSocket APIs (WinHttpWebSocketCompleteUpgrade etc.) are
-// gated on _WIN32_WINNT >= 0x0602 (Windows 8). Project-wide setting
-// is 0x0601 (Win7) for compatibility; bump only this TU.
-#ifdef _WIN32_WINNT
-#  undef _WIN32_WINNT
-#endif
-#define _WIN32_WINNT 0x0602
-#ifdef WINVER
-#  undef WINVER
-#endif
-#define WINVER 0x0602
-
 #include "FM2K_HubClient.h"
 #include "version_local.h"  // fm2k::kAppVersion
-#include <winhttp.h>
 
 #include <SDL3/SDL_log.h>
 
@@ -35,7 +22,6 @@
 #include <string>
 #include <vector>
 
-#pragma comment(lib, "winhttp.lib")
 
 #include "FM2K_HubClient_internal.h"
 
@@ -304,11 +290,4 @@ HubRoom ParseRoom(const std::string& obj) {
     return r;
 }
 
-std::wstring Widen(const std::string& s) {
-    if (s.empty()) return {};
-    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
-    std::wstring w(n, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), w.data(), n);
-    return w;
-}
 }  // namespace fm2k

@@ -18,11 +18,10 @@ int         GetInt(const std::string& s, const std::string& key, int def = 0);
 bool        GetBool(const std::string& s, const std::string& key, bool def = false);
 std::string GetSub(const std::string& s, const std::string& key);
 
-// Object/array extractors + UTF-16 widen (json defines; dispatch + transport use).
+// Object/array extractors (json defines; dispatch uses).
 std::vector<std::string> SplitObjectArray(const std::string& arr);
 std::vector<std::string> SplitStringArray(const std::string& arr);
 HubUser      ParseUser(const std::string& obj);
 HubRoom      ParseRoom(const std::string& obj);
-std::wstring Widen(const std::string& s);
 
 }  // namespace fm2k

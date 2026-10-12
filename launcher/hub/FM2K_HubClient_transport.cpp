@@ -1,33 +1,26 @@
-// FM2K Hub client -- WinHTTP WebSocket transport.
+// FM2K Hub client -- WebSocket transport.
 //
 // One I/O thread does the WS handshake then spawns a sender thread.
 // The I/O thread itself owns the receive loop. Both push events
 // onto a thread-safe inbox; the launcher's UI thread drains via
 // HubClient::Poll() once per frame.
 //
-// JSON encode/decode is deliberately minimal -- the message catalog
-// in docs/FM2K_Matchmaking_Design.md §15.2 is small enough that
-// hand-rolled extractors are simpler than vendoring a JSON lib.
-// If that catalog grows, swap in nlohmann/json.
-
-// WinHTTP WebSocket APIs (WinHttpWebSocketCompleteUpgrade etc.) are
-// gated on _WIN32_WINNT >= 0x0602 (Windows 8). Project-wide setting
-// is 0x0601 (Win7) for compatibility; bump only this TU.
-#ifdef _WIN32_WINNT
-#  undef _WIN32_WINNT
-#endif
-#define _WIN32_WINNT 0x0602
-#ifdef WINVER
-#  undef WINVER
-#endif
-#define WINVER 0x0602
+// The socket is our own RFC 6455 client over bundled TLS (launcher/net/
+// ws_client.h), identical on every Windows version. It replaced the WinHTTP
+// WebSocket API, which needs Windows 8 and stopped the launcher starting on
+// Windows 7. Behaviour kept from the WinHTTP version: direct connection (no
+// proxy), a ping every 30 s while idle (WinHTTP's default keep-alive), the
+// same error/Disconnected event sequence, and no automatic reconnect here
+// (the UI layer decides when to reconnect).
 
 #include "FM2K_HubClient.h"
 #include "version_local.h"  // fm2k::kAppVersion
-#include <winhttp.h>
+#include "net_error_text.h"
+#include "ws_client.h"
 
 #include <SDL3/SDL_log.h>
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -35,87 +28,61 @@
 #include <string>
 #include <vector>
 
-#pragma comment(lib, "winhttp.lib")
-
 #include "FM2K_HubClient_internal.h"
 
 namespace fm2k {
 
 void HubClient::IoThread(std::string host, uint16_t port,
                          std::string path, std::string nick) {
-    auto fail = [&](const char* where) {
-        DWORD err = GetLastError();
-        // Map the most common WinHTTP failure codes to text the user
-        // can act on. "WinHttpSendRequest failed (err=12029)" by
-        // itself is opaque -- the user keeps hitting these and asking
-        // "what's going wrong?". Spelling out the cause + likely fix
-        // surfaces the answer in the UI status_line.
-        const char* hint = "";
-        switch (err) {
-            case 12002: hint = " (timeout -- host unreachable or slow)"; break;
-            case 12007: hint = " (name not resolved -- typo in Host field?)"; break;
-            case 12029: hint = " (cannot connect -- host reached but TCP refused. "
-                               "If hub is local, set Host to 127.0.0.1.)"; break;
-            case 12030: hint = " (connection reset -- hub closed unexpectedly)"; break;
-            case 12152: hint = " (invalid server response -- wrong protocol on port?)"; break;
-            default: break;
-        }
+    net::WsClient& ws = *ws_;
+    auto fail = [&](const char* where, const net::NetStatus& st) {
+        // Spell out the cause + likely fix: "cannot connect" alone is
+        // opaque, and users read this straight off the hub status line.
+        // err= keeps the WinHTTP-era number so old support notes still match.
+        const char* hint = net::NetErrorHint(st);
+        const unsigned long err = net::LegacyWinHttpCode(st.code);
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "HubClient: %s failed (err=%lu)%s",
-                     where, (unsigned long)err, hint);
+                     "HubClient: %s failed (err=%lu) %s%s%s",
+                     where, err, st.Describe().c_str(), *hint ? " -- " : "", hint);
         HubEvent ev;
         ev.kind = HubEvent::Kind::Error;
-        ev.error = std::string(where) + " (err=" + std::to_string(err) + ")" + hint;
+        ev.error = std::string(where) + " (err=" + std::to_string(err) + ")" +
+                   (*hint ? std::string(" (") + hint + ")" : std::string());
         EmitEvent(std::move(ev));
         ev.kind = HubEvent::Kind::Disconnected;
         EmitEvent(std::move(ev));
         running_.store(false);
         connected_.store(false);
+        ws.Close();
     };
 
-    session_ = WinHttpOpen(L"FM2K-Launcher/0.1",
-                           WINHTTP_ACCESS_TYPE_NO_PROXY,
-                           WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!session_) { fail("WinHttpOpen"); return; }
-    // Win8.0/7: enable TLS 1.2 (WinHTTP defaults to TLS 1.0 there, breaking wss://
-    // to a modern hub). No-op on 8.1+. See FM2K_DiscordAuth for the full why.
-    { DWORD sp = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_1 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
-      WinHttpSetOption(session_, WINHTTP_OPTION_SECURE_PROTOCOLS, &sp, sizeof(sp)); }
-
-    std::wstring whost = Widen(host);
-    conn_ = WinHttpConnect(session_, whost.c_str(), port, 0);
-    if (!conn_) { fail("WinHttpConnect"); return; }
-
-    std::wstring wpath = Widen(path.empty() ? "/" : path);
-    DWORD req_flags = use_tls_ ? WINHTTP_FLAG_SECURE : 0;
-    req_ = WinHttpOpenRequest(conn_, L"GET", wpath.c_str(), nullptr,
-                              WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
-                              req_flags);
-    if (!req_) { fail("WinHttpOpenRequest"); return; }
-
-    // Required to upgrade.
-    if (!WinHttpSetOption(req_, WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, nullptr, 0)) {
-        fail("WinHttpSetOption(UPGRADE)"); return;
+    net::WsConnectOptions opt;
+    opt.host       = host;
+    opt.port       = port;
+    opt.path       = path.empty() ? "/" : path;
+    opt.tls        = use_tls_;
+    opt.timeout_ms = 15000;
+    opt.user_agent = std::string("FM2K-Launcher/") + fm2k::kAppVersion;
+    opt.log_tag    = "HubClient";
+    opt.should_abort = [this]() { return !running_.load(); };
+    {
+        net::NetStatus st;
+        if (!ws.Connect(opt, st)) {
+            if (st.code == net::NetError::Aborted) {   // Disconnect() during connect
+                HubEvent ev;
+                ev.kind = HubEvent::Kind::Disconnected;
+                EmitEvent(std::move(ev));
+                connected_.store(false);
+                return;
+            }
+            fail("WebSocket connect", st);
+            return;
+        }
     }
-
-    if (!WinHttpSendRequest(req_, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
-        fail("WinHttpSendRequest"); return;
-    }
-    if (!WinHttpReceiveResponse(req_, nullptr)) {
-        fail("WinHttpReceiveResponse"); return;
-    }
-
-    ws_ = WinHttpWebSocketCompleteUpgrade(req_, 0);
-    if (!ws_) { fail("WinHttpWebSocketCompleteUpgrade"); return; }
-
-    // Request handle no longer needed once we have the WS handle.
-    WinHttpCloseHandle(req_);
-    req_ = nullptr;
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "HubClient: WebSocket upgraded → %s:%u%s",
-                host.c_str(), (unsigned)port, path.c_str());
+                "HubClient: WebSocket upgraded -> %s:%u%s %s",
+                host.c_str(), (unsigned)port, path.c_str(), ws.tls_info().c_str());
 
     // Send hello first. Includes hub_token when the user has signed
     // in with Discord; the hub uses it to validate against the patron
@@ -180,86 +147,93 @@ void HubClient::IoThread(std::string host, uint16_t port,
             hello += ",\"stealth\":true";
         }
         hello += "}";
-        DWORD r = WinHttpWebSocketSend(ws_,
-            WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE,
-            hello.data(), (DWORD)hello.size());
-        if (r != ERROR_SUCCESS) { fail("WinHttpWebSocketSend(hello)"); return; }
+        net::NetStatus st;
+        if (!ws.SendText(hello.data(), hello.size(), st)) { fail("WebSocket send(hello)", st); return; }
     }
 
     // Sender side-thread -- drains outbox, sleeps on cv when empty.
-    // Each OutMsg carries is_binary; we pick the matching WS buffer
-    // type. Same thread for both JSON and binary so MSDN's per-handle
-    // serialization guidance holds.
-    std::thread sender([this]() {
+    // Each OutMsg carries is_binary; we pick the matching frame type.
+    // Same thread for both JSON and binary keeps message order on the
+    // wire. When idle for kKeepAlive it sends a ping, like WinHTTP's
+    // default WebSocket keep-alive, so NATs and proxies keep the flow open.
+    std::thread sender([this, &ws]() {
+        constexpr auto kKeepAlive = std::chrono::seconds(30);
         while (running_.load()) {
             OutMsg msg;
+            bool have = false;
             {
                 std::unique_lock<std::mutex> lk(out_mtx_);
-                out_cv_.wait(lk, [&]() { return !outbox_.empty() || !running_.load(); });
+                out_cv_.wait_for(lk, kKeepAlive,
+                                 [&]() { return !outbox_.empty() || !running_.load(); });
                 if (!running_.load()) return;
-                msg = std::move(outbox_.front());
-                outbox_.pop_front();
-                // Release this frame's share of the spec-relay byte
-                // budget (SendSpecRelayFrame charges it on enqueue).
-                if (msg.is_binary) {
-                    const size_t n = msg.data.size();
-                    spec_relay_queued_bytes_ =
-                        (spec_relay_queued_bytes_ > n)
-                            ? (spec_relay_queued_bytes_ - n) : 0;
+                if (!outbox_.empty()) {
+                    msg = std::move(outbox_.front());
+                    outbox_.pop_front();
+                    have = true;
+                    // Release this frame's share of the spec-relay byte
+                    // budget (SendSpecRelayFrame charges it on enqueue).
+                    if (msg.is_binary) {
+                        const size_t n = msg.data.size();
+                        spec_relay_queued_bytes_ =
+                            (spec_relay_queued_bytes_ > n)
+                                ? (spec_relay_queued_bytes_ - n) : 0;
+                    }
                 }
             }
-            const WINHTTP_WEB_SOCKET_BUFFER_TYPE bt = msg.is_binary
-                ? WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE
-                : WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE;
-            DWORD r = WinHttpWebSocketSend(ws_, bt,
-                msg.data.data(), (DWORD)msg.data.size());
-            if (r != ERROR_SUCCESS) {
-                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                            "HubClient: WS send failed (err=%lu, kind=%s)",
-                            (unsigned long)r, msg.is_binary ? "binary" : "json");
+            net::NetStatus st;
+            const bool ok = !have ? ws.SendPing(st)
+                          : msg.is_binary ? ws.SendBinary(msg.data.data(), msg.data.size(), st)
+                                          : ws.SendText(msg.data.data(), msg.data.size(), st);
+            if (!ok) {
+                if (st.code != net::NetError::Aborted) {
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                                "HubClient: WS send failed (err=%lu, kind=%s) %s",
+                                net::LegacyWinHttpCode(st.code),
+                                !have ? "ping" : msg.is_binary ? "binary" : "json",
+                                st.Describe().c_str());
+                }
                 running_.store(false);
                 break;
             }
         }
     });
 
-    // Receive loop -- assembles fragmented UTF-8 messages and dispatches.
-    // Binary frames (Phase 3 spec hub-relay) get accumulated separately
-    // and emitted as a SpecRelayBinary event when the message completes.
-    std::string assembly;
-    std::vector<uint8_t> binary_assembly;
-    BYTE buf[4096];
+    // Receive loop. The client reassembles fragmented messages and answers
+    // pings itself; text messages go to OnMessage, binary ones (spec
+    // hub-relay) become SpecRelayBinary events. The 100 ms wait bounds how
+    // long Disconnect() waits for this thread.
+    bool user_closed = false;
     while (running_.load()) {
-        DWORD bytes = 0;
-        WINHTTP_WEB_SOCKET_BUFFER_TYPE bt;
-        DWORD r = WinHttpWebSocketReceive(ws_, buf, sizeof(buf), &bytes, &bt);
-        if (r != ERROR_SUCCESS) break;
-
-        if (bt == WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE) break;
-
-        if (bt == WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE ||
-            bt == WINHTTP_WEB_SOCKET_UTF8_FRAGMENT_BUFFER_TYPE) {
-            assembly.append(reinterpret_cast<char*>(buf), bytes);
-            if (bt == WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE) {
-                OnMessage(assembly);
-                assembly.clear();
-            }
-        } else if (bt == WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE ||
-                   bt == WINHTTP_WEB_SOCKET_BINARY_FRAGMENT_BUFFER_TYPE) {
-            binary_assembly.insert(binary_assembly.end(), buf, buf + bytes);
-            if (bt == WINHTTP_WEB_SOCKET_BINARY_MESSAGE_BUFFER_TYPE) {
+        net::WsMessage m;
+        net::NetStatus st;
+        const auto r = ws.Receive(m, 100, st);
+        if (r == net::WsClient::Recv::Timeout) continue;
+        if (r == net::WsClient::Recv::Message) {
+            if (m.binary) {
                 HubEvent ev;
                 ev.kind = HubEvent::Kind::SpecRelayBinary;
-                ev.spec_relay_bytes = std::move(binary_assembly);
+                ev.spec_relay_bytes = std::move(m.data);
                 EmitEvent(std::move(ev));
-                binary_assembly.clear();
+            } else {
+                OnMessage(std::string(m.data.begin(), m.data.end()));
             }
+            continue;
         }
+        if (st.code == net::NetError::Aborted) { user_closed = true; break; }
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "HubClient: WebSocket ended: %s",
+                    st.Describe().c_str());
+        break;
+    }
+    if (!running_.load()) user_closed = true;
+    if (user_closed) {
+        net::NetStatus ignore;
+        ws.SendClose(1000, "client disconnect", ignore);   // best effort
     }
 
     running_.store(false);
     out_cv_.notify_all();
     sender.join();
+    ws.Close();
 
     HubEvent ev;
     ev.kind = HubEvent::Kind::Disconnected;
@@ -268,10 +242,7 @@ void HubClient::IoThread(std::string host, uint16_t port,
 }
 
 void HubClient::CleanupHandles() {
-    if (ws_)      { WinHttpCloseHandle(ws_);      ws_      = nullptr; }
-    if (req_)     { WinHttpCloseHandle(req_);     req_     = nullptr; }
-    if (conn_)    { WinHttpCloseHandle(conn_);    conn_    = nullptr; }
-    if (session_) { WinHttpCloseHandle(session_); session_ = nullptr; }
+    if (ws_) ws_->Close();
 }
 
 // ----- inbound dispatch -----

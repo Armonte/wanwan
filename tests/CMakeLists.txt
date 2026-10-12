@@ -19,11 +19,17 @@ add_executable(fm2k_tests
     test_spectator_protocol_sessionfile.cpp
     test_spectator_queue.cpp
     test_snapshot_coverage.cpp
+    # Launcher HTTPS / WebSocket client: pure parsing + framing halves.
+    test_http_parse.cpp
+    test_ws_frame.cpp
+    ../launcher/net/http_parse.cpp
+    ../launcher/net/ws_frame.cpp
 )
 
 target_include_directories(fm2k_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/../vendored/doctest
+    ${CMAKE_CURRENT_SOURCE_DIR}/../launcher/net
 )
 
 target_compile_options(fm2k_tests PRIVATE

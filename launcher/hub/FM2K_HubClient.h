@@ -4,30 +4,27 @@
 // Phase-1 scaffold; talks the JSON protocol documented in
 // docs/FM2K_Matchmaking_Design.md §15.2. No persistence, no auth.
 //
-// TODO(cross-platform): the implementation in FM2K_HubClient.cpp uses
-// WinHTTP (Windows-only). The public API in this header is platform-
-// agnostic. When we go Linux, swap the .cpp out for a libcurl /
-// libwebsockets / asio-beast backend; the launcher UI and integration
-// surface won't need to change.
+// Transport: our own RFC 6455 client over bundled TLS (launcher/net/
+// ws_client.h), the same code on every Windows version. It replaced
+// WinHttpWebSocket*, which made the launcher fail to start on Windows 7.
+// The public API in this header is platform-agnostic.
 
 #include <windows.h>
-// NOTE: <winhttp.h> is NOT included here. It conflicts with <wininet.h>
-// which is pulled in by FM2K_LauncherUI.cpp (both define INTERNET_SCHEME,
-// URL_COMPONENTS, etc.). The public API only needs HINTERNET, which is
-// already defined in <windows.h>. WinHTTP-specific use is contained in
-// FM2K_HubClient.cpp.
 
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
 namespace fm2k {
+
+namespace net { class WsClient; }
 
 struct HubUser {
     std::string id;
@@ -615,13 +612,10 @@ private:
 
     void CleanupHandles();
 
-    // HINTERNET is a typedef in <winhttp.h>/<wininet.h>, neither of
-    // which we want to expose. Store as opaque void* and cast at the
-    // use sites in FM2K_HubClient.cpp.
-    void* session_ = nullptr;
-    void* conn_    = nullptr;
-    void* req_     = nullptr;
-    void* ws_      = nullptr;
+    // The WebSocket. Created by Connect() before the I/O thread starts and
+    // destroyed only after that thread is joined, so the sender and receive
+    // loops never see it change underneath them.
+    std::unique_ptr<net::WsClient> ws_;
 
     std::thread io_;
     std::atomic<bool> running_{false};
@@ -635,10 +629,8 @@ private:
 
     // Outbox holds both UTF-8 JSON control messages AND binary frames
     // (spec hub-relay, Phase 2c). The sender thread inspects is_binary
-    // to pick WINHTTP_WEB_SOCKET_{UTF8,BINARY}_MESSAGE_BUFFER_TYPE.
-    // Same queue + same thread keeps the cross-message ordering well-
-    // defined (per MSDN, serializing WS sends per handle is recommended
-    // to avoid intermixing on the wire).
+    // to pick a text or binary frame. Same queue + same thread keeps the
+    // cross-message ordering well-defined.
     struct OutMsg {
         std::vector<uint8_t> data;
         bool                 is_binary;

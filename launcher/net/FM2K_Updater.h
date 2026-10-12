@@ -7,7 +7,7 @@
 // On user confirm, hands the zip to FM2KUpdater.exe (separate target),
 // which extracts it after the launcher exits and relaunches.
 //
-// All HTTP via WinHTTP. Async -- work runs on a background thread, the
+// All HTTP via net::HttpFetch (https_client.h). Async -- work runs on a background thread, the
 // UI polls Snapshot() each frame and renders the pill state.
 #pragma once
 

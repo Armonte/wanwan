@@ -145,7 +145,7 @@ bool Process() {
     if (g_inflight.load()) return false;
     p.armed = false;
 
-    // OFF THE UI THREAD. PostMultipart is a synchronous WinHTTP call with
+    // OFF THE UI THREAD. PostMultipart is a synchronous HTTPS call with
     // a 15 second timeout, and this is driven from the launcher's render
     // tick -- doing it inline freezes the window for the whole upload.
     // The diagnostics uploader learned this the expensive way and its

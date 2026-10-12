@@ -72,6 +72,10 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
                 bool punch_reflexive = true,
                 const uint8_t* peer_v6_addr = nullptr, uint16_t v6_port = 0);
 
+// Stop the punch burst and release its thread without joining. For DLL
+// detach only (loader lock held); StartPunch joins a prior burst itself.
+void ShutdownPunch();
+
 // Called once per call to control_channel.cpp::RawReceive when the
 // first byte of an inbound packet is 0xCD. `data`/`len` is the full
 // datagram. `from` is the source sockaddr -- used as the candidate

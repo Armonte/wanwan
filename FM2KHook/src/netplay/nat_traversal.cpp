@@ -276,8 +276,12 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
 
     // Stop any prior burst (e.g. user reconnecting / new match) before
     // launching a fresh one. join() is bounded -- the loop checks
-    // g_punching every iteration.
-    if (g_punching.exchange(false) && g_punch_thread.joinable()) {
+    // g_punching every iteration. Join on joinable() alone: the thread
+    // clears g_punching itself when its burst ends, so gating the join on
+    // the flag left a finished thread joinable, and assigning over it below
+    // (or its static destructor) called std::terminate.
+    g_punching.store(false);
+    if (g_punch_thread.joinable()) {
         g_punch_thread.join();
     }
 
@@ -608,6 +612,16 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
                 "may stay unreachable");
         }
     });
+}
+
+void ShutdownPunch() {
+    // Runs from DLL_PROCESS_DETACH under the loader lock, where joining a live
+    // thread can deadlock (its own detach notification needs that lock). Stop
+    // the burst and detach instead, so ~thread never sees a joinable thread.
+    g_punching.store(false);
+    if (g_punch_thread.joinable()) {
+        g_punch_thread.detach();
+    }
 }
 
 // One authenticated punch to `to`. want_reply asks the receiver to punch

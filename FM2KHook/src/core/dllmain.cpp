@@ -855,6 +855,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         // Shutdown netplay (GekkoNet session if active)
         Netplay_Shutdown();
 
+        // Release the NAT punch thread before its socket goes away.
+        fm2k::nat::ShutdownPunch();
+
         // Shutdown network socket (persistent connection)
         NetSocket_Shutdown();
 

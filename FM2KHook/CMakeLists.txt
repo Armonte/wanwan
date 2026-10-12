@@ -118,6 +118,9 @@ set(FM2KHOOK_SOURCES
     src/netplay/nat_traversal.cpp
     src/netplay/game_hash.cpp
     src/netplay/content_tag.cpp     # ungated install fingerprint for replay provenance (also built into the launcher)
+    src/netplay/gameplay_tag_core.cpp # replay provenance v2: gameplay-region digests (also launcher + unit tests)
+    src/netplay/gameplay_tag.cpp      # v2 Win32 file access + naming rules (also built into the launcher)
+    src/netplay/gameplay_tag_hook.cpp # v2 MATCH_START prewarm + team roster read (hook only)
     src/netplay/upload_queue.cpp
     src/netplay/spec_relay_queue.cpp
     # Audio — Mike Z rollback-safe sound layer

@@ -19,14 +19,18 @@
 //   * "was it recorded by a build   -> producer_version presence/threshold,
 //      that carries the match's        which is the only thing that actually
 //      sim settings"                   predicts a replay desync;
-//   * "were these files recorded    -> game_content_tag vs the tag of the
-//      against this install"           install on disk right now -> refuse.
+//   * "were these files recorded    -> the v2 gameplay tag (gameplay regions
+//      against this install"           of the files the match loaded) vs the
+//                                      same recomputed now; v1 install tag
+//                                      only for files that predate v2 ->
+//                                      badge + "Watch anyway..." confirm
+//                                      (2026-10: cosmetic mods tripped v1).
 // session_id is now used for exactly what it is: a grouping key.
 #include "FM2K_Integration.h"
 #include "launcher_ui_internal.h"  // shared persistence helpers (namespace lui)
 #include "FM2K_Locale.h"
 #include "FM2K_Utf8Path.h"
-#include "FM2KHook/src/netplay/content_tag.h"
+#include "replay_provenance.h"     // one [different game files] verdict (v2, v1 fallback)
 #include <shellapi.h>              // ShellExecuteW -- "open file location"
 #include <algorithm>
 #include <cctype>
@@ -56,6 +60,8 @@ constexpr size_t   OFF_PRODUCER_VER_S = 184;
 constexpr size_t   OFF_CONTENT_TAG    = 200;
 constexpr size_t   OFF_GAME_SPEED     = 204;
 constexpr size_t   OFF_SOCD_PLUS1     = 208;
+// 212..255: the v2 gameplay-tag block, decoded by replay_provenance through
+// gameplay_tag_core.h's kHdrOff* constants.
 
 // The build that started carrying the match's round gameconfig in MATCH_START
 // (884ef58, shipped in 0.2.83). A replay recorded before it re-runs CSS from
@@ -118,6 +124,10 @@ std::filesystem::path GameDirOf(const std::filesystem::path& replay) {
 }  // namespace
 
 bool LauncherUI::ReplayContentMismatch(const ReplayMeta& m) {
+    // Mirrors replay_provenance::Verdict::Mismatch on the cached fields: a v2
+    // tag decides alone, v1 only for files that predate it.
+    if (m.gameplay_tag != 0)
+        return m.local_gameplay_tag != 0 && m.gameplay_tag != m.local_gameplay_tag;
     return m.game_content_tag != 0 && m.local_content_tag != 0 &&
            m.game_content_tag != m.local_content_tag;
 }
@@ -126,10 +136,11 @@ void LauncherUI::ScanReplays() {
     replays_cache_.clear();
     replays_cache_dirty_ = false;
 
-    // One content-tag computation per distinct game folder, not per file: a
-    // session folder holds dozens of .fm2krep for the same install and the tag
-    // is a directory enumeration.
-    std::unordered_map<std::wstring, uint32_t> tag_by_dir;
+    // One tag computation per distinct game folder (v1) / participant set
+    // (v2), not per file: a session folder holds dozens of .fm2krep for the
+    // same install. v2's per-file digests are also cached process-wide by
+    // (path, size, mtime), so a rescan re-reads nothing that did not change.
+    fm2k::replay_provenance::ScanCache prov_cache;
 
     std::error_code ec;
     auto try_load_file = [&](const std::filesystem::path& p) {
@@ -198,24 +209,16 @@ void LauncherUI::ScanReplays() {
         m.socd_mode_plus1 = buf[OFF_SOCD_PLUS1];
 
         // Compare against what is installed NOW, so a re-patched game is
-        // caught before it garbles instead of after. Both the file set and the
-        // exe-naming rule come from content_tag.cpp -- the same code the hook
-        // ran when it stamped the header -- so the two sides cannot disagree
-        // about WHICH files count and produce a false [different game files].
-        // No game exe resolvable => ResolveGameExeName is empty => ComputeForDir
-        // returns 0 => unknown => the gate stays open.
-        if (m.game_content_tag != 0) {
-            const std::filesystem::path gdir = GameDirOf(p);
-            const std::wstring key = gdir.wstring();
-            auto it = tag_by_dir.find(key);
-            if (it == tag_by_dir.end()) {
-                const std::wstring exe_name =
-                    fm2k::content_tag::ResolveGameExeName(key.c_str());
-                const uint32_t tag = fm2k::content_tag::ComputeForDir(
-                    key.c_str(), exe_name.c_str());
-                it = tag_by_dir.emplace(key, tag).first;
-            }
-            m.local_content_tag = it->second;
+        // caught before it garbles instead of after. The verdict, the file
+        // naming and the region policy all come from code the hook also runs
+        // (replay_provenance -> gameplay_tag / content_tag), so the two sides
+        // cannot disagree about WHICH bytes count.
+        {
+            const auto v = fm2k::replay_provenance::Evaluate(buf, GameDirOf(p),
+                                                             &prov_cache);
+            m.local_content_tag  = v.v1_local;
+            m.gameplay_tag       = v.v2_present ? v.v2_file : 0;
+            m.local_gameplay_tag = v.v2_local;
         }
         replays_cache_.push_back(std::move(m));
     };
@@ -537,24 +540,56 @@ void LauncherUI::RenderReplayBrowser() {
                     // "%s" wrapper: this string takes no arguments, so passing
                     // it AS the format would make a stray % in a translation a
                     // crash rather than a typo.
-                    ImGui::SetTooltip("%s", T("replay_badge_content_mismatch_tip"));
+                    ImGui::SetTooltip("%s", r.gameplay_tag != 0
+                        ? T("replay_badge_content_mismatch_tip")
+                        : T("replay_badge_content_mismatch_tip_v1"));
                 }
             }
 
-            // Playback gates. Refusing here (and again in on_replay_play) is
-            // the honest alternative to launching a run that garbles from the
-            // first frame with no message anywhere.
-            const bool blocked = !r.playable || mismatch;
+            // Playback gates. An old-format file cannot be played at all. A
+            // [different game files] row is NOT a hard block any more: the tag
+            // can only say "these bytes differ", and an old (v1) tag says that
+            // for cosmetic files too, so the user gets "Watch anyway..." behind
+            // a confirm that says playback may garble.
             ImGui::SameLine();
-            if (blocked) ImGui::BeginDisabled();
-            if (ImGui::SmallButton(T("replay_btn_watch"))) {
+            if (!r.playable) {
+                ImGui::BeginDisabled();
+                ImGui::SmallButton(T("replay_btn_watch"));
+                ImGui::EndDisabled();
+            } else if (mismatch) {
+                if (ImGui::SmallButton(T("replay_btn_watch_anyway"))) {
+                    ImGui::OpenPopup("##content_override");
+                }
+                if (ImGui::BeginPopup("##content_override")) {
+                    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
+                    ImGui::TextUnformatted(T("replay_override_warn"));
+                    ImGui::PopTextWrapPos();
+                    ImGui::Spacing();
+                    if (ImGui::Button(T("replay_override_confirm"))) {
+                        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                            "ReplayBrowser: user OVERRIDE -- watching %s despite "
+                            "[different game files] (%s tag file 0x%08X, local "
+                            "0x%08X); playback may desync",
+                            r.path.c_str(), r.gameplay_tag ? "v2" : "v1",
+                            r.gameplay_tag ? r.gameplay_tag : r.game_content_tag,
+                            r.gameplay_tag ? r.local_gameplay_tag
+                                           : r.local_content_tag);
+                        ::SetEnvironmentVariableA("FM2K_REPLAY_SEEK_MATCH", nullptr);
+                        if (on_replay_play) on_replay_play(r.path, true);
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button(T("btn_cancel"))) ImGui::CloseCurrentPopup();
+                    ImGui::EndPopup();
+                }
+            } else if (ImGui::SmallButton(T("replay_btn_watch"))) {
                 // Set-or-clear: a prior "From here" click must not leak
                 // its seek into an unrelated watch (same discipline as
                 // the relay-cred envs).
                 ::SetEnvironmentVariableA("FM2K_REPLAY_SEEK_MATCH", nullptr);
-                if (on_replay_play) on_replay_play(r.path);
+                if (on_replay_play) on_replay_play(r.path, false);
             }
-            if (blocked) ImGui::EndDisabled();
+            const bool blocked = !r.playable || mismatch;
 
             if (!blocked && r.is_battle_slice && set_file && r.match_index > 0 &&
                 !ReplayContentMismatch(*set_file)) {
@@ -563,7 +598,7 @@ void LauncherUI::RenderReplayBrowser() {
                     char n[8];
                     std::snprintf(n, sizeof(n), "%u", (unsigned)r.match_index);
                     ::SetEnvironmentVariableA("FM2K_REPLAY_SEEK_MATCH", n);
-                    if (on_replay_play) on_replay_play(set_file->path);
+                    if (on_replay_play) on_replay_play(set_file->path, false);
                 }
             }
             ImGui::PopID();

@@ -141,6 +141,21 @@ uint32_t Compute() {
     // cannot name the exe gets 0, which disables the gate by construction
     // rather than guessing.
     //
+    // FOLLOW-UP (owner decision, not changed here): content_tag is name|size
+    // over EVERY .player/.kgt in the folder, so the replay false positive it
+    // caused (an extra skin file, a palette re-save that moved an RLE size)
+    // applies to this handshake too, against the rule that cosmetic mods never
+    // block netplay. The match-scoped v2 gameplay tag cannot be used at HELLO
+    // (no characters are picked yet), but its roster-wide form can:
+    //     fm2k::gameplay_tag::Participants p; p.whole_roster = true;
+    //     fm2k::gameplay_tag::ComputeLocal(p);
+    // hashes the .kgt + exe + gameplay regions of every roster .player/.stage
+    // and ignores palettes, sprites, sounds and non-roster files. It reads
+    // file contents (seeking past pixels/sounds, cached by path+size+mtime),
+    // so it belongs off the HELLO hot path -- compute it at boot. Peers on
+    // different builds would disagree on the hash kind, so swapping it in
+    // needs a HELLO version bit.
+    //
     // FM2K_HASH_CHECK still forces the OLD manifest hash for anyone
     // diagnosing that path; unset now means "use the content tag", not
     // "check nothing".

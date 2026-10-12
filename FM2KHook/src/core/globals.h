@@ -258,6 +258,8 @@ namespace FM2K {
     // around it). FM95 overrides via LoadStageFile_alt's arg0 instead.
     constexpr uintptr_t ADDR_LOAD_STAGE_FILE      = 0;
     constexpr uintptr_t ADDR_GAME_MODE_FLAG       = 0;
+    constexpr uintptr_t ADDR_P1_TEAM_ROSTER       = 0;
+    constexpr uintptr_t ADDR_P2_TEAM_ROSTER       = 0;
     constexpr uintptr_t ADDR_ACTIVE_STAGE_ID      = 0;
     constexpr uintptr_t ADDR_CHAR_STAGE_PER_ROUND = 0x540337;
     // Stage filename table (256-byte name entries; LoadStageFile does
@@ -452,6 +454,13 @@ namespace FM2K {
     // Selects which branch of vs_round_function case 0/1 runs, i.e. whether
     // the LoadStageFile call reads g_selected_stage or the story table.
     constexpr uintptr_t ADDR_GAME_MODE_FLAG       = 0x470058;
+    // Team-battle rosters (kgtGameState.aiTeamRoster[side*4 + member], 4 x
+    // int32 char indices per side). IDA: written by game_state_manager
+    // @0x407537, read by vs_round_function @0x408A0D / 0x408A20 when it loads
+    // each round's member. Read by the replay gameplay tag (v2) to list every
+    // .player a team match can load.
+    constexpr uintptr_t ADDR_P1_TEAM_ROSTER       = 0x47006C;
+    constexpr uintptr_t ADDR_P2_TEAM_ROSTER       = 0x47007C;
     // g_active_stage_id @ 0x470040 -- the dispatcher copies g_selected_stage
     // into this ONE LINE BEFORE calling LoadStageFile, so a stage override
     // applied at the load seam must write both or they disagree.

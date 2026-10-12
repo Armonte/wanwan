@@ -435,6 +435,7 @@ add_executable(FM2K_RollbackLauncher
     launcher/core/process_manager.cpp  # game-instance spawn/terminate + per-instance config (split from RollbackClient)
     launcher/core/session_control.cpp  # offline/stress/online session start + stop (split from RollbackClient)
     launcher/core/launcher_callbacks.cpp  # ui_->on_* callback wiring / WireUICallbacks (split from RollbackClient)
+    launcher/core/replay_provenance.cpp   # one replay [different game files] verdict for browser + play gate (v2 gameplay tag, v1 fallback)
     launcher/core/launcher_init.cpp  # FM2KLauncher ctor/dtor + Initialize/InitializeSDL/Shutdown (split from RollbackClient)
     launcher/core/launcher_frame.cpp  # HandleEvent/Update/Render + small setters (split from RollbackClient)
     launcher/core/launcher_cli.cpp  # CLI parse + headless probes + replay/stress/offline/direct launch modes (split from RollbackClient)
@@ -507,6 +508,8 @@ add_executable(FM2K_RollbackLauncher
     # binaries, isolated function symbols, no link-time clash.
     FM2KHook/src/netplay/spec_relay_queue.cpp
     FM2KHook/src/netplay/content_tag.cpp  # install fingerprint: launcher recomputes it to gate replay playback
+    FM2KHook/src/netplay/gameplay_tag_core.cpp  # replay provenance v2 (gameplay regions only)
+    FM2KHook/src/netplay/gameplay_tag.cpp       # v2 file access, shared with the hook
     # DLL injection approach - hooks are in FM2KHook DLL
 )
 

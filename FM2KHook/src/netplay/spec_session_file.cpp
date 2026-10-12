@@ -16,6 +16,8 @@
 #include "../hooks/per_game_patches.h" // PerGamePatches_SetRuntimeBtbOverrides
 #include "../ui/shared_mem.h"         // C10: SharedMem_PublishMatchSession / RoundResult
 #include "content_tag.h"              // provenance: cheap install fingerprint
+#include "gameplay_tag.h"             // provenance v2: gameplay-region tag
+#include "gameplay_tag_hook.h"        // team roster read for the v2 participants
 #include "globals.h"                  // FM2K::kIsFM2K -- engine-gated writes
 #include "gekkonet.h"
 #include "version_local.h"            // fm2k::kAppVersion -- producer stamp
@@ -24,6 +26,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <array>
+#include <cstddef>                     // offsetof (v2 block layout pin)
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -123,10 +126,34 @@ struct FM2KSessionFileHeader {
     uint32_t game_speed_pct;     // 0x430104 at write time (0 = not recorded)
     uint8_t  socd_mode_plus1;    // SOCD mode + 1; 0 = not recorded (mode 0 is valid)
     uint8_t  reserved1[3];
-    uint8_t  reserved[44];       // still-unused tail -- all zeros
+    // ---- PROVENANCE v2: gameplay tag (2026-10) ---------------------------
+    // Same append-only argument as the block above: carved from reserved[44],
+    // no offset moves, version stays 2, old readers never look here. Layout
+    // and encode/decode live in gameplay_tag_core.h (kHdrOff*), shared with
+    // the launcher; 0 tag = not recorded.
+    uint32_t gameplay_tag;       // fm2k::gameplay_tag over this file's matches
+    uint8_t  gameplay_flags;     // bit0: tag covers the whole roster
+    uint8_t  gameplay_n_chars;
+    uint8_t  gameplay_n_stages;
+    uint8_t  reserved2;
+    uint8_t  gameplay_ids[28];   // n_chars char ids, then n_stages stage ids
+    uint8_t  reserved[8];        // still-unused tail -- all zeros
 };
 static_assert(sizeof(FM2KSessionFileHeader) == 256,
               "FM2KSessionFileHeader must be 256 bytes");
+static_assert(offsetof(FM2KSessionFileHeader, gameplay_tag) ==
+                  fm2k::gameplay_tag::kHdrOffTag &&
+              offsetof(FM2KSessionFileHeader, gameplay_flags) ==
+                  fm2k::gameplay_tag::kHdrOffFlags &&
+              offsetof(FM2KSessionFileHeader, gameplay_n_chars) ==
+                  fm2k::gameplay_tag::kHdrOffNChars &&
+              offsetof(FM2KSessionFileHeader, gameplay_n_stages) ==
+                  fm2k::gameplay_tag::kHdrOffNStages &&
+              offsetof(FM2KSessionFileHeader, gameplay_ids) ==
+                  fm2k::gameplay_tag::kHdrOffIds &&
+              sizeof(((FM2KSessionFileHeader*)nullptr)->gameplay_ids) ==
+                  fm2k::gameplay_tag::kHdrMaxIds,
+              "v2 gameplay block must match gameplay_tag_core.h");
 #pragma pack(pop)
 
 // Packed build identity of the process WRITING the file. This is the field an
@@ -288,6 +315,29 @@ bool WriteSessionFileImpl(const char* path,
     std::strncpy(hdr.producer_version_s, fm2k::kAppVersion,
                  sizeof(hdr.producer_version_s) - 1);
     hdr.game_content_tag = fm2k::content_tag::ComputeLocal();
+    // v2: the files THIS slice's matches loaded -- every MATCH_START's p1/p2
+    // char and stage (a .fm2kset covers the union), plus the live team
+    // rosters in team mode. Digests come from the cache PrewarmMatch filled at
+    // MATCH_START, so this is stat calls, not file reads. FM2K only.
+    if constexpr (FM2K::kIsFM2K) {
+        fm2k::gameplay_tag::Participants parts;
+        for (size_t i = first; i < last; ++i) {
+            const SessionEvent& ev = events[i];
+            if (ev.type != SessionEventType::MATCH_START ||
+                ev.u.match_start_idx >= headers.size()) continue;
+            const MatchHeader& h = headers[ev.u.match_start_idx];
+            parts.chars.push_back(h[28]);
+            parts.chars.push_back(h[30]);
+            parts.stages.push_back(h[80]);
+        }
+        if (!parts.chars.empty()) {
+            fm2k::gameplay_tag::AddLiveTeamRoster(&parts);
+            parts.Normalize();
+            const uint32_t gtag = fm2k::gameplay_tag::ComputeLocal(parts);
+            fm2k::gameplay_tag::EncodeHeader(reinterpret_cast<uint8_t*>(&hdr),
+                                             gtag, parts);
+        }
+    }
     if constexpr (FM2K::kIsFM2K) {
         hdr.game_speed_pct = *(uint32_t*)0x430104;   // uValue (GameSpeed)
     }
@@ -486,11 +536,11 @@ bool SpectatorNode_LoadSessionFile(const char* path, const SeekTarget& seek) {
     hdr.producer_version_s[sizeof(hdr.producer_version_s) - 1] = '\0';
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
         "SpectatorNode: %s loading v2 (events=%u, %u rounds, session=0x%016llX,"
-        " producer=%s tag=0x%08X speed=%u socd=%d)",
+        " producer=%s tag=0x%08X gameplay=0x%08X speed=%u socd=%d)",
         path, hdr.event_count, hdr.round_count,
         (unsigned long long)hdr.session_id,
         hdr.producer_version_s[0] ? hdr.producer_version_s : "(pre-provenance)",
-        hdr.game_content_tag, hdr.game_speed_pct,
+        hdr.game_content_tag, hdr.gameplay_tag, hdr.game_speed_pct,
         hdr.socd_mode_plus1 ? (int)hdr.socd_mode_plus1 - 1 : -1);
 
     // NOTE ON THE MATCH'S OWN SIM SETTINGS (game speed, SOCD mode).

@@ -18,7 +18,8 @@ SIDE="$1"; NAME="$2"; MAX="${3:-6000}"; RAW="${4:-}"
 GAME_DIR="${GAME_DIR:-/mnt/d/games/fm2k/Project Atsuki/WonderfulWorld}"
 ORIG_EXE="${ORIG_EXE:-WonderfulWorld_ver_0945.exe}"
 PORT_NAME="${PORT_NAME:-WonderfulWorld_port.exe}"
-PORT_EXE="${PORT_EXE:-/mnt/d/dev/fm2k-port-parity/build/KGT2nd_GAME.exe}"
+# the port build under test: the main fm2k-port checkout (the parity worktree's own build goes stale)
+PORT_EXE="${PORT_EXE:-/mnt/d/dev/fm2k-port/build/KGT2nd_GAME.exe}"
 RUNS="${RUNS:-/mnt/d/dev/fm2k-port-parity/parity_runs}"
 OUT="$RUNS/$NAME"; mkdir -p "$OUT"
 win() { wslpath -w "$1"; }

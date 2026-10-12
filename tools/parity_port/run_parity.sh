@@ -11,7 +11,9 @@
 # Runs in background mode (no focus steal, forced window mode), one side at a time, game.ini is
 # restored afterwards, and the side's own image is taskkill'ed at the end (no window or dialog left).
 # Env overrides: GAME_DIR, ORIG_EXE, PORT_NAME, PORT_EXE, RUNS, BATTLE (default 1), STORY
-# (FM2K_PARITY_AUTOPLAY_STORY), CSS_DWELL, TITLE_SKIP, CLOCK (real|lockstep), TIMEOUT (s).
+# (FM2K_PARITY_AUTOPLAY_STORY), CSS_DWELL, TITLE_SKIP, CLOCK (real|lockstep), TIMEOUT (s),
+# FRAME_HASH=1 (port: FM2K_FRAME_HASH -> $RUNS/<run-name>/<side>.framehash), PASS_ENV="VAR ..."
+# (forward those variables as they are set here; paths in them must already be Windows paths).
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SIDE="$1"; NAME="$2"; MAX="${3:-6000}"; RAW="${4:-}"
@@ -42,6 +44,8 @@ PS="$OUT/run_$SIDE.ps1"
   [ -n "${CSS_DWELL:-}" ] && echo "\$env:FM2K_AUTOPLAY_CSS_DWELL='$CSS_DWELL'"
   [ -n "${TITLE_SKIP:-}" ] && echo "\$env:FM2K_AUTO_TITLE_SKIP='$TITLE_SKIP'"
   [ -n "${CLOCK:-}" ] && echo "\$env:FM2K_PARITY_CLOCK='$CLOCK'"
+  [ -n "${FRAME_HASH:-}" ] && echo "\$env:FM2K_FRAME_HASH='$(win "$OUT")\\$SIDE.framehash'"
+  for v in ${PASS_ENV:-}; do echo "\$env:$v='${!v:-}'"; done
   echo "\$env:FM2K_TEST_BACKGROUND='1'"
   echo "\$env:FM2K_PARITY_MAX_FRAMES='$MAX'"
   echo "\$env:FM2K_PARITY_DUMP_PATH='$(win "$OUT")\\$SIDE.fm2kpar'"

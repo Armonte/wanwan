@@ -4,8 +4,8 @@
 # byte-exact ini it routes to (PORT_DIR, default the main fm2k-port checkout).
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-CC="${CC:-/home/teo/tools/llvm-mingw/bin/i686-w64-mingw32-clang}"
-PORT_DIR="${PORT_DIR:-/mnt/d/dev/fm2k-port}"
+CC="${CC:-${LLVM_MINGW_DLL:-$HOME/tools/llvm-mingw}/bin/i686-w64-mingw32-clang}"
+PORT_DIR="${PORT_DIR:-$(cd "$HERE/../../.." && pwd)/fm2k-port}"   # sibling checkout of the port
 mkdir -p "$HERE/build"
 INC=()
 while IFS= read -r d; do INC+=("-I$d"); done < <(find "$PORT_DIR/engine" "$PORT_DIR/platform" "$PORT_DIR/shell" "$PORT_DIR/parity" -name '*.h' -printf '%h\n' | sort -u)

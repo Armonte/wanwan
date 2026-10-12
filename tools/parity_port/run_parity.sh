@@ -18,12 +18,13 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SIDE="$1"; NAME="$2"; MAX="${3:-6000}"; RAW="${4:-}"
-GAME_DIR="${GAME_DIR:-/mnt/d/games/fm2k/Project Atsuki/WonderfulWorld}"
+FM2K_PORT_DIR="${FM2K_PORT_DIR:-$(cd "$(dirname "$0")/../../.." && pwd)/fm2k-port}"   # sibling checkout of the port
+GAME_DIR="${GAME_DIR:-${FM2K_GAMES_DIR:-/mnt/d/games/fm2k}/Project Atsuki/WonderfulWorld}"
 ORIG_EXE="${ORIG_EXE:-WonderfulWorld_ver_0945.exe}"
 PORT_NAME="${PORT_NAME:-WonderfulWorld_port.exe}"
 # the port build under test: the main fm2k-port checkout (the parity worktree's own build goes stale)
-PORT_EXE="${PORT_EXE:-/mnt/d/dev/fm2k-port/build/KGT2nd_GAME.exe}"
-RUNS="${RUNS:-/mnt/d/dev/fm2k-port-parity/parity_runs}"
+PORT_EXE="${PORT_EXE:-$FM2K_PORT_DIR/build/KGT2nd_GAME.exe}"
+RUNS="${RUNS:-$FM2K_PORT_DIR/parity_runs/harness}"   # original-side baselines: $FM2K_PORT_DIR/parity_runs/baseline
 OUT="$RUNS/$NAME"; mkdir -p "$OUT"
 win() { wslpath -w "$1"; }
 

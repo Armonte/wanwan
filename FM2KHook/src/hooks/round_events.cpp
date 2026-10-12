@@ -13,6 +13,7 @@
 
 #include "round_events.h"
 
+#include <cstdlib>
 #include <SDL3/SDL_log.h>
 #include <cstdint>
 #include <windows.h>

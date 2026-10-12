@@ -71,7 +71,15 @@ struct FM2KSessionFileHeader {
     uint32_t game_speed_pct;
     uint8_t  socd_mode_plus1;
     uint8_t  reserved1[3];
-    uint8_t  reserved[44];
+    // v2 gameplay-tag block (gameplay_tag_core.h kHdrOff*), carved from the
+    // old reserved[44]: still 256 bytes, still version 2.
+    uint32_t gameplay_tag;
+    uint8_t  gameplay_flags;
+    uint8_t  gameplay_n_chars;
+    uint8_t  gameplay_n_stages;
+    uint8_t  reserved2;
+    uint8_t  gameplay_ids[28];
+    uint8_t  reserved[8];
 };
 #pragma pack(pop)
 } // namespace mirror_file
@@ -104,7 +112,12 @@ TEST_CASE("FM2KSessionFileHeader field offsets are stable") {
     CHECK(offsetof(H, game_content_tag)   == 200);
     CHECK(offsetof(H, game_speed_pct)     == 204);
     CHECK(offsetof(H, socd_mode_plus1)    == 208);
-    CHECK(offsetof(H, reserved)           == 212);
+    CHECK(offsetof(H, gameplay_tag)       == 212);
+    CHECK(offsetof(H, gameplay_flags)     == 216);
+    CHECK(offsetof(H, gameplay_n_chars)   == 217);
+    CHECK(offsetof(H, gameplay_n_stages)  == 218);
+    CHECK(offsetof(H, gameplay_ids)       == 220);
+    CHECK(offsetof(H, reserved)           == 248);
 }
 
 TEST_CASE("SESSION_FILE_MAGIC is 'FMSS' little-endian (distinct from REPLAY_MAGIC)") {

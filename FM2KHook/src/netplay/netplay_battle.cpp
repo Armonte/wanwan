@@ -11,6 +11,7 @@
 #include "../hooks/css_autoconfirm.h"  // CssAutoConfirm_OnReplayMatchStart (TEST_CSS_CHAR pin)
 #include "control_channel.h"
 #include "content_tag.h"      // install fingerprint stamped into MATCH_START
+#include "gameplay_tag_hook.h" // replay provenance v2: prewarm the per-file digest cache
 #include "game_hash.h"
 #include "input.h"
 #include "savestate.h"
@@ -514,6 +515,10 @@ bool Netplay_StartBattle() {
             *(const uint32_t*)(FM2K::ADDR_CHARSLOT0_COLOR_PICK + FM2K::CHARSLOT_STRIDE));
     }
     const uint8_t mstage_id = static_cast<uint8_t>(mstage_id_applied);
+    // Replay provenance v2: digest this match's .kgt / exe / .player / .stage
+    // gameplay regions NOW (once per match, never per frame) so the writer at
+    // battle end only stats files. See gameplay_tag_core.h.
+    fm2k::gameplay_tag::PrewarmMatch(mp1_char, mp2_char, mstage_id);
     // game_hash was hardcoded 0 here since C6, so h+16 of every MATCH_START
     // ever recorded is zero and no replay could be checked against the install
     // it was recorded on. fm2k::game_hash::Compute() is the wrong source (it

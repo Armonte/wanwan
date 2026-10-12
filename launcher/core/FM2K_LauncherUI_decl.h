@@ -98,7 +98,9 @@ public:
     // resolved from the file's grandparent directory (replays/<f>.fm2krep
     // is always under <game_dir>/replays/) -- matches the same logic the
     // CLI --replay flag uses.
-    std::function<void(const std::string& replay_path)> on_replay_play;
+    // content_override: the user confirmed "Watch anyway" on a
+    // [different game files] row, so the provenance gate is skipped (logged).
+    std::function<void(const std::string& replay_path, bool content_override)> on_replay_play;
     // Fired when the user adds, removes, or otherwise reorders the
     // configured games-root list. The full new list is passed by value so
     // the launcher can persist it atomically; the UI keeps its own copy
@@ -642,6 +644,8 @@ public:
         char        producer_version_s[16];
         uint32_t    game_content_tag;     // install fingerprint at record time, 0 = absent
         uint32_t    local_content_tag;    // same, recomputed now for this file's game dir
+        uint32_t    gameplay_tag;         // v2 gameplay tag at record time, 0 = absent
+        uint32_t    local_gameplay_tag;   // same, recomputed for the replay's participants
         uint32_t    game_speed_pct;       // 0 = not recorded
         uint8_t     socd_mode_plus1;      // 0 = not recorded
     };

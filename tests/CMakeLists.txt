@@ -19,6 +19,8 @@ add_executable(fm2k_tests
     test_spectator_protocol_sessionfile.cpp
     test_spectator_queue.cpp
     test_snapshot_coverage.cpp
+    test_gameplay_tag.cpp
+    ../FM2KHook/src/netplay/gameplay_tag_core.cpp
 )
 
 target_include_directories(fm2k_tests PRIVATE

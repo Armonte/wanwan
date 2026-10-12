@@ -38,8 +38,15 @@ Local patches on top of upstream (what they do)
   4. backend: silently drop magic-mismatched packets during the sync handshake
      (replaces upstream's printf("dropped packet!") spam), counted as
      g_gekko_wire_stats[0].
+  5. Candidate D (5580a1d): gekko_ack_guard_stats() + AdvantageHistory mirrors
+     the remote term from the local one after 250 ms of stale-ack rejection,
+     so a rejected-ack stretch cannot freeze frame-advantage pacing.
+  6. Health check skips a recycled / never-written state slot (f23982d) instead
+     of relying on a compiled-out assert. Incomplete on its own: the check still
+     runs after HandleRollback has only QUEUED its re-saves -- see
+     docs/dev/investigations/2026-10-12_gekkonet_upstream/REPORT.md section 2.3.
 
-Total local delta = 8 files, ~+160/-12 lines (backend.cpp, game_session.cpp,
+Total local delta (patches 1-4) = 8 files, ~+160/-12 lines (backend.cpp, game_session.cpp,
 gekkonet.cpp, spectator_session.cpp, stress_session.cpp, backend.h, gekkonet.h,
 session.h). It is small and surgical -- it applies onto a reformatted/rewritten
 upstream cleanly under a whitespace-insensitive 3-way merge (see below).

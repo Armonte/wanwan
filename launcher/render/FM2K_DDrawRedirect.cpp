@@ -314,9 +314,26 @@ bool ShouldRedirect() {
     // that bundle their own (e.g. Robot Heroes).
     if (const char* off = std::getenv("FM2K_NO_DDRAW_REDIRECT"); off && off[0] == '1')
         return false;
-    if (g_force_redirect) return true;
-    const char* env = std::getenv("FM2K_TEST_IAT_REWRITE");
-    return env && env[0] == '1';
+    bool want = g_force_redirect;
+    if (!want) {
+        const char* env = std::getenv("FM2K_TEST_IAT_REWRITE");
+        want = env && env[0] == '1';
+    }
+    if (!want) return false;
+    // Never rewrite the import unless the DLL it will point at is there. A
+    // launcher without its cnc-ddraw folder (a dev build's dist/, a partial
+    // install) used to patch DDRAW.dll -> 2DFMD.dll anyway, and the game died
+    // at startup with "2DFMD.dll was not found" -- an error that blames the
+    // game. Fall back to the game's own ddraw instead.
+    std::error_code ec;
+    const std::filesystem::path dll = std::filesystem::path(ResolveCncDdrawDir()) / L"2DFMD.dll";
+    if (ResolveCncDdrawDir().empty() || !std::filesystem::is_regular_file(dll, ec)) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+            "DDrawRedirect: %s missing -- not redirecting, the game uses its own ddraw.dll",
+            dll.string().c_str());
+        return false;
+    }
+    return true;
 }
 
 std::wstring ResolveCncDdrawDir() {

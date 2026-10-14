@@ -107,6 +107,51 @@ static void *pDetour(uint32_t uTarget, const unsigned char *pExpect, int nSteal,
     return pTramp;
 }
 
+/* The original's message boxes ("insert the audio CD-ROM", load errors) under the harness: never on
+   screen. Each is logged to <dump>.dialogs.txt with the safest answer (Cancel / No / Ignore / OK)
+   and the run goes on -- what the port's headless mode does (platform/headless.c). */
+static int WINAPI hkMessageBoxA(HWND hWnd, LPCSTR pszText, LPCSTR pszCaption, UINT uType)
+{
+    char szPath[MAX_PATH];
+    int iRet;
+    DWORD dwLen = GetEnvironmentVariableA("FM2K_PARITY_DUMP_PATH", szPath, MAX_PATH - 16);
+    (void)hWnd;
+    switch (uType & MB_TYPEMASK) {
+    case MB_OKCANCEL: case MB_RETRYCANCEL: case MB_YESNOCANCEL: iRet = IDCANCEL; break;
+    case MB_YESNO: iRet = IDNO; break;
+    case MB_ABORTRETRYIGNORE: iRet = IDIGNORE; break;
+    default: iRet = IDOK; break;
+    }
+    if (dwLen && dwLen < MAX_PATH - 16) {
+        HANDLE h;
+        lstrcatA(szPath, ".dialogs.txt");
+        h = CreateFileA(szPath, FILE_APPEND_DATA, FILE_SHARE_READ, NULL, OPEN_ALWAYS, 0, NULL);
+        if (h != INVALID_HANDLE_VALUE) {
+            DWORD dw;
+            char szLine[600];
+            wsprintfA(szLine, "[%.100s] %.400s -> %d\r\n", pszCaption ? pszCaption : "", pszText ? pszText : "", iRet);
+            WriteFile(h, szLine, lstrlenA(szLine), &dw, NULL);
+            CloseHandle(h);
+        }
+    }
+    return iRet;
+}
+
+/* the port's cp932.c (linked in) routes its own message boxes through msgbox_utf8 (str_cp932.c in the
+   port, SDL-based); here they go to the same log as the original's */
+int msgbox_utf8(const char *pszText, const char *pszCaption, UINT uType)
+{
+    return hkMessageBoxA(NULL, pszText, pszCaption, uType);
+}
+
+/* MCI under the harness: the CD audio device is never opened (no disc probe, so no prompt); the
+   original then plays no CD track, exactly like the port without track files */
+static MCIERROR WINAPI hkMciSendCommandA(MCIDEVICEID dev, UINT uMsg, DWORD_PTR dwFlags, DWORD_PTR dwParam)
+{
+    (void)dev; (void)dwFlags; (void)dwParam;
+    return uMsg == MCI_OPEN ? MCIERR_DEVICE_NOT_READY : 0;
+}
+
 static void vPatchCp932(HMODULE hGame)
 {
     HMODULE k = GetModuleHandleA("kernel32.dll"), u = LoadLibraryA("user32.dll");
@@ -120,11 +165,11 @@ static void vPatchCp932(HMODULE hGame)
         { NULL, "GetPrivateProfileStringA", (void *)cp932_GetPrivateProfileStringA },
         { NULL, "WritePrivateProfileStringA", (void *)cp932_WritePrivateProfileStringA },
         { NULL, "TextOutA", (void *)cp932_TextOutA },
-        { NULL, "MessageBoxA", (void *)cp932_MessageBoxA },
+        { NULL, "MessageBoxA", (void *)hkMessageBoxA },
         { NULL, "SetWindowTextA", (void *)cp932_SetWindowTextA },
         { NULL, "SetDlgItemTextA", (void *)cp932_SetDlgItemTextA },
         { NULL, "CreateFontA", (void *)cp932_CreateFontA },
-        { NULL, "mciSendCommandA", (void *)cp932_mciSendCommandA },
+        { NULL, "mciSendCommandA", (void *)hkMciSendCommandA },
     };
     HMODULE aMods[] = { k, k, k, k, k, k, k, g, u, u, u, g, w };
     char szLog[512];

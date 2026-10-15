@@ -19,7 +19,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SIDE="$1"; NAME="$2"; MAX="${3:-6000}"; RAW="${4:-}"
 FM2K_PORT_DIR="${FM2K_PORT_DIR:-$(cd "$(dirname "$0")/../../.." && pwd)/fm2k-port}"   # sibling checkout of the port
-GAME_DIR="${GAME_DIR:-${FM2K_GAMES_DIR:-/mnt/d/games/fm2k}/Project Atsuki/WonderfulWorld}"
+GAME_DIR="${GAME_DIR:-${FM2K_TEST_GAMES_DIR:-/mnt/d/games/fm2k-port-test}/ww_loose}"   # a TEST COPY: the harness copies the port exe and rewrites game.ini there
 ORIG_EXE="${ORIG_EXE:-WonderfulWorld_ver_0945.exe}"
 PORT_NAME="${PORT_NAME:-WonderfulWorld_port.exe}"
 # the port build under test: the main fm2k-port checkout (the parity worktree's own build goes stale)

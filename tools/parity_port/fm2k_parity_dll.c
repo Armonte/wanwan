@@ -15,6 +15,11 @@
  *            The port calls the same function (platform/frame_hash.c, compiled in here) at the same
  *            point of its vHandleDrawing, so hash lines, frame numbering and FM2K_FRAME_DUMP bitmaps
  *            are produced by one piece of code on both sides.
+ *            Also FM2K_LATENCY_LOG=<file>: the port's platform/latency_log.c format (side=orig) -- each input
+ *            read's QPC time and tick, and per present a C line (newest tick, QPC) plus a P line, so
+ *            fm2k-port tools/render/presentmon/bench.sh measures input-to-photon on both sides the same way.
+ *            The original draws a window-mode frame with a GDI BitBlt: PresentMon sees no present of its
+ *            own, so bench.sh joins these lines with dwm.exe's presents (the compositor frame that shows it).
  * No FM2KHook involvement: the game runs as shipped plus these two detours, the IAT patches of the
  * core (GlobalAlloc tracking, the one-instance check, background window) and the locale fix below.
  *
@@ -25,6 +30,7 @@
  * open files and read game.ini through literally the same code.
  */
 #include <windows.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 #include "parity.h"
@@ -47,25 +53,70 @@ static uint32_t uLiveToOrig(uint32_t uLive)
 static void (*pfnTickTramp)(void);
 static int (__cdecl *pfnInputTramp)(int, int);
 
+/* FM2K_LATENCY_LOG (all on the game's one thread): ticks completed, the open file, the frame hash switch */
+static uint32_t guLatTick;
+static HANDLE ghLatLog = INVALID_HANDLE_VALUE;
+static int gbFrameHash;
+
+static void vLatWrite(const char *pszLine)
+{
+    DWORD dw;
+    if (ghLatLog != INVALID_HANDLE_VALUE)
+        WriteFile(ghLatLog, pszLine, lstrlenA(pszLine), &dw, NULL);
+}
+
+static unsigned long long u64Qpc(void)
+{
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return (unsigned long long)t.QuadPart;
+}
+
+static void vLatOpen(void)
+{
+    char szPath[MAX_PATH], szLine[96];
+    LARGE_INTEGER f;
+    DWORD dwLen = GetEnvironmentVariableA("FM2K_LATENCY_LOG", szPath, MAX_PATH);
+    if (!dwLen || dwLen >= MAX_PATH) return;
+    ghLatLog = CreateFileA(szPath, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, 0, NULL);
+    QueryPerformanceFrequency(&f);
+    snprintf(szLine, sizeof(szLine), "# FM2K_LATENCY_LOG 1 side=orig qpc_freq=%llu\n", (unsigned long long)f.QuadPart);
+    vLatWrite(szLine);
+}
+
 static void __cdecl hkTick(void)
 {
     pfnTickTramp();
+    guLatTick++;
     Parity_AfterTick();
 }
 
 static int __cdecl hkInput(int iController, int iPlayer)
 {
-    if (Parity_AutoplayActive())
-        return Parity_AutoplayInput(iController, iPlayer);
-    return pfnInputTramp(iController, iPlayer);
+    int iInput = Parity_AutoplayActive() ? Parity_AutoplayInput(iController, iPlayer) : pfnInputTramp(iController, iPlayer);
+    if (ghLatLog != INVALID_HANDLE_VALUE) {
+        char szLine[96];
+        snprintf(szLine, sizeof(szLine), "I\t%llu\t%u\t%d\t%u\n", u64Qpc(), guLatTick, iController, (unsigned)iInput);
+        vLatWrite(szLine);
+    }
+    return iInput;
 }
 
-/* frame hash at the present: called from the stub below with every register saved */
+/* frame hash / latency stamp at the present: called from the stub below with every register saved */
 void __cdecl Parity_FrameHashHook(void)
 {
-    frame_hash_record(*(void **)0x4246cc,       /* ppvBits: the 640x480 16-bit frame buffer */
-                      *(int *)0x424704,         /* giScreenMode: 0 window (RGB555 DIB), 1 full screen (RGB565) */
-                      *(int *)0x470054);        /* gkgtGameState.iGameStateNumber */
+    if (gbFrameHash)
+        frame_hash_record(*(void **)0x4246cc,       /* ppvBits: the 640x480 16-bit frame buffer */
+                          *(int *)0x424704,         /* giScreenMode: 0 window (RGB555 DIB), 1 full screen (RGB565) */
+                          *(int *)0x470054);        /* gkgtGameState.iGameStateNumber */
+    if (ghLatLog != INVALID_HANDLE_VALUE) {
+        /* the frame is complete here and goes to the screen right after (BitBlt / Flip): one list per
+           frame, its id the QPC time, its newest tick the last one vGameLoop ran */
+        char szLine[128];
+        unsigned long long t = u64Qpc();
+        snprintf(szLine, sizeof(szLine), "C\t%llu\t%u\nP\t%llu\t%llu\t%llu\n", t, guLatTick - 1u, t, t, t);
+        vLatWrite(szLine);
+    }
 }
 /* replaces `mov eax, ds:[0x424704]` (5 bytes) at 0x405502 and resumes at 0x405507 */
 __asm__(".globl _Parity_FrameHashStub\n"
@@ -81,7 +132,8 @@ static void vPatchFrameHash(void)
     unsigned char *pT = (unsigned char *)0x405502;
     DWORD dwOld;
     char szEnv[8];
-    if (!GetEnvironmentVariableA("FM2K_FRAME_HASH", szEnv, sizeof(szEnv)) || memcmp(pT, kAt, 5) != 0) return;
+    gbFrameHash = GetEnvironmentVariableA("FM2K_FRAME_HASH", szEnv, sizeof(szEnv)) != 0;
+    if ((!gbFrameHash && ghLatLog == INVALID_HANDLE_VALUE) || memcmp(pT, kAt, 5) != 0) return;
     VirtualProtect(pT, 5, PAGE_EXECUTE_READWRITE, &dwOld);
     pT[0] = 0xe9;
     *(int32_t *)(pT + 1) = (int32_t)((unsigned char *)Parity_FrameHashStub - (pT + 5));
@@ -216,6 +268,7 @@ BOOL WINAPI DllMain(HINSTANCE hDll, DWORD dwReason, LPVOID pReserved)
     vPatchCp932(host.hGameModule);
     pfnTickTramp = (void (*)(void))pDetour(0x404cd0, kTick, 9, (void *)hkTick);
     pfnInputTramp = (int (__cdecl *)(int, int))pDetour(0x414340, kInput, 5, (void *)hkInput);
+    vLatOpen();
     vPatchFrameHash();
     return TRUE;
 }

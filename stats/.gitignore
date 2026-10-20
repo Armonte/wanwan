@@ -1,0 +1,5 @@
+# Service data: public-id HMAC secret and the profile opt-out list.
+id_secret.txt
+optout.json
+optout.json.tmp
+.venv/

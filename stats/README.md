@@ -64,8 +64,22 @@ permissions enforce that, accidental drift can't escalate.
   either the resolved `.player` filename or the `id N` fallback used
   when the hook couldn't resolve a name.
 - `GET /recent` — last 100 matches across everyone.
-- `GET /api/v1/matches` — JSON feed. Filters: `?user_id=`, `?game_id=`,
-  `?limit=` (capped at 500). Per-IP rate-limited (60 req/min).
+- `GET /api/v1/games`, `/api/v1/g/{game_id}/leaderboard`,
+  `/api/v1/u/{public_id}`, `/api/v1/recent`, `/api/v1/matches` -- JSON
+  API for the launcher (per-game Glicko-2 ratings, profiles, recent
+  matches). Shapes, privacy rules (opaque public ids, opt-out list) and
+  what counts are in [API.md](API.md). Per-IP rate-limited (60 req/min).
+
+Production must set `FM2K_STATS_ID_SECRET` (or `stats/id_secret.txt`) so
+public player ids stay stable across deploys.
+
+## Tests
+
+```bash
+python3 -m venv /path/outside/drvfs/venv   # a venv on /mnt/* is very slow
+/path/outside/drvfs/venv/bin/pip install -r requirements.txt pytest httpx
+/path/outside/drvfs/venv/bin/python -m pytest tests -q
+```
 
 ## Security
 

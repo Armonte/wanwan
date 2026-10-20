@@ -795,21 +795,13 @@ def sessions_page(request: Request, limit: int = 50):
          "char_label": char_label, "format_iso": format_iso})
 
 
-@app.get("/api/v1/matches")
-@limiter.limit("60/minute")
-def api_matches(
-    request: Request,
-    limit: int = Query(50, ge=1, le=API_MATCHES_HARD_LIMIT),
-    user_id: Optional[str] = Query(None, max_length=64),
-    game_id: Optional[str] = Query(None, max_length=64),
-):
-    matches = load_matches()
-    if user_id:
-        matches = [m for m in matches if m["p1_id"] == user_id or m["p2_id"] == user_id]
-    if game_id:
-        matches = [m for m in matches if m["game_id"] == game_id]
-    matches = sorted(matches, key=lambda m: -m["finished_at"])[:limit]
-    return JSONResponse({"matches": matches})
+# JSON API v1 (launcher Statistics tab): ratings, leaderboards, profiles,
+# recent matches, plus the legacy /api/v1/matches feed. See api_v1.py and
+# API.md. Ids there are opaque public ids, never Discord ids.
+import api_v1 as _api_v1     # noqa: E402
+_api_v1.engine_of = lambda gid: game_meta(gid).get("engine")
+app.include_router(_api_v1.build_router(
+    limiter, lambda: MATCHES_PATH, game_friendly_name))
 
 
 @app.exception_handler(404)

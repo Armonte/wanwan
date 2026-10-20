@@ -11,8 +11,9 @@ Security posture:
   - Read-only file access.
   - Jinja2 autoescape enabled by default for *.html templates; no `safe`
     filter or `Markup()` calls.
-  - Discord IDs (p1_dc_id / p2_dc_id) never rendered. They live on disk
-    for ops correlation; the public site reads only `p1_id` / `p2_id`.
+  - Discord IDs never rendered. load_matches() swaps p1_id / p2_id /
+    winner_id for opaque public ids (privacy.py) and drops p1_dc_id /
+    p2_dc_id; players show as name#TAG and link to /u/<public id>.
   - Strict CSP: default-src 'self'; img-src 'self' data:; no inline JS.
   - Per-IP rate limit on /api/v1 endpoints via slowapi.
   - Process should run as an unprivileged user with read-only access to
@@ -37,6 +38,9 @@ from fastapi.templating import Jinja2Templates
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
+
+import privacy
+import ratings
 
 
 # ─── Config ──────────────────────────────────────────────────────────────
@@ -135,13 +139,21 @@ def load_matches() -> list[dict[str, Any]]:
             continue
         if not isinstance(r.get("started_at"), (int, float)):
             continue
-        # Whitelist fields. Notably excludes p1_dc_id / p2_dc_id —
-        # those exist on disk for ops correlation but are not rendered.
+        # Whitelist fields. Notably excludes p1_dc_id / p2_dc_id.
+        # p1_id / p2_id / winner_id on disk are Discord ids (or guest
+        # ids); they are replaced HERE by opaque public ids (privacy.py)
+        # so no raw id ever reaches a template. Every HTML aggregation
+        # below therefore keys by public id.
+        raw1, raw2 = str(r["p1_id"]), str(r["p2_id"])
+        p1, p2 = privacy.public_id(raw1), privacy.public_id(raw2)
+        w = r.get("winner_id") or ""
+        winner = (p1 if w == raw1 else p2 if w == raw2
+                  else privacy.public_id(str(w)) if w else "")
         rec: dict[str, Any] = {
             "id":            r.get("id"),
-            "p1_id":         r.get("p1_id"),
+            "p1_id":         p1,
             "p1_nick":       r.get("p1_nick", "anon"),
-            "p2_id":         r.get("p2_id"),
+            "p2_id":         p2,
             "p2_nick":       r.get("p2_nick", "anon"),
             "p1_char_id":    r.get("p1_char_id"),
             "p2_char_id":    r.get("p2_char_id"),
@@ -150,7 +162,7 @@ def load_matches() -> list[dict[str, Any]]:
             "stage_id":      r.get("stage_id"),
             "stage_name":    r.get("stage_name"),
             "game_id":       r.get("game_id", ""),
-            "winner_id":     r.get("winner_id", ""),
+            "winner_id":     winner,
             "started_at":    r.get("started_at"),
             "finished_at":   r.get("finished_at", r.get("started_at")),
         }
@@ -305,6 +317,30 @@ templates.env.globals["friendly_name"] = game_friendly_name
 templates.env.globals["game_meta"] = game_meta
 templates.env.globals["banner_color"] = banner_color
 templates.env.globals["banner_monogram"] = banner_monogram
+
+
+def who(nick: Optional[str], pid: str) -> str:
+    """Public display identity: name#TAG. Names are never private."""
+    return f"{nick or 'anon'}#{privacy.tag_for(pid or '')}"
+
+
+templates.env.globals["who"] = who
+
+
+def hidden_pids() -> set[str]:
+    """Public ids of opted-out players (their profile renders private)."""
+    return {privacy.public_id(dc) for dc in privacy.hidden_ids()}
+
+
+def user_ratings(pid: str) -> list[dict[str, Any]]:
+    """Per-game Glicko-2 rows (rating, rd, rank, provisional) for a
+    profile, from the same snapshot the JSON API serves. Empty for
+    players with no Discord-linked rated matches."""
+    snap = ratings.snapshot(MATCHES_PATH)
+    dc = snap.by_pid.get(pid)
+    if dc is None:
+        return []
+    return _api_v1.profile(snap, dc).get("games", [])
 
 
 def char_label(name: Optional[str], cid: Optional[int]) -> str:
@@ -678,13 +714,24 @@ def landing(request: Request):
     })
 
 
-@app.get("/u/{user_id}", response_class=HTMLResponse)
-def user_page(request: Request, user_id: str):
-    if not user_id or len(user_id) > 64:
+@app.get("/u/{public_id}", response_class=HTMLResponse)
+def user_page(request: Request, public_id: str):
+    if not public_id or len(public_id) > 64:
         raise HTTPException(status_code=404)
-    data = aggregate_user(user_id)
+    data = aggregate_user(public_id)
     if data["total"] == 0:
+        # Legacy /u/<discord id> links: 301 to the public id. This only
+        # confirms the mapping to someone who already holds the raw id.
+        alt = privacy.public_id(public_id)
+        if alt != public_id and aggregate_user(alt)["total"]:
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(url=f"/u/{alt}", status_code=301)
         raise HTTPException(status_code=404, detail="No matches for this user.")
+    if public_id in hidden_pids():
+        return templates.TemplateResponse("user_private.html",
+            {"request": request, "u": {"user_id": public_id,
+                                       "nick": data["nick"]}})
+    data["ratings"] = user_ratings(public_id)
     return templates.TemplateResponse("user.html",
         {"request": request, "u": data, "char_label": char_label,
          "format_iso": format_iso})

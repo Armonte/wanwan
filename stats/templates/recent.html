@@ -22,7 +22,7 @@
     {% set is_draw = not m.winner_id %}
     <div class="vs-card">
       <div class="side p1 {{ 'win' if p1_won else ('draw' if is_draw else 'loss') }}">
-        <div class="nick"><a href="/u/{{ m.p1_id }}">{{ m.p1_nick }}</a></div>
+        <div class="nick"><a href="/u/{{ m.p1_id }}">{{ who(m.p1_nick, m.p1_id) }}</a></div>
         <div class="char">{{ char_label(m.p1_char_name, m.p1_char_id) }}</div>
         <div class="stat">{{ 'WIN' if p1_won else ('DRAW' if is_draw else 'LOSS') }}</div>
       </div>
@@ -32,7 +32,7 @@
         <div class="when">{{ format_iso(m.finished_at) }}</div>
       </div>
       <div class="side p2 {{ 'win' if (not p1_won and not is_draw) else ('draw' if is_draw else 'loss') }}">
-        <div class="nick"><a href="/u/{{ m.p2_id }}">{{ m.p2_nick }}</a></div>
+        <div class="nick"><a href="/u/{{ m.p2_id }}">{{ who(m.p2_nick, m.p2_id) }}</a></div>
         <div class="char">{{ char_label(m.p2_char_name, m.p2_char_id) }}</div>
         <div class="stat">{{ 'WIN' if (not p1_won and not is_draw) else ('DRAW' if is_draw else 'LOSS') }}</div>
       </div>

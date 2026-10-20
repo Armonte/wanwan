@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}{{ who(u.nick, u.user_id) }} · 2DFM HUB{% endblock %}
+{% block body_class %}page-user{% endblock %}
+{% block content %}
+<section class="hero hero-user">
+  <h1>{{ u.nick }}</h1>
+  <p class="subtitle">// PILOT {{ who(u.nick, u.user_id) }}</p>
+  <p class="lede">// PRIVATE: this player has hidden their profile and stats.</p>
+</section>
+{% endblock %}

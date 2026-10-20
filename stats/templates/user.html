@@ -1,11 +1,11 @@
 {% extends "base.html" %}
-{% block title %}{{ u.nick }} · 2DFM HUB{% endblock %}
+{% block title %}{{ who(u.nick, u.user_id) }} · 2DFM HUB{% endblock %}
 {% block body_class %}page-user{% endblock %}
 {% block content %}
 
 <section class="hero hero-user">
   <h1>{{ u.nick }}</h1>
-  <p class="subtitle">// PILOT_ID {{ u.user_id[:12] if u.user_id|length > 12 else u.user_id }}</p>
+  <p class="subtitle">// PILOT {{ who(u.nick, u.user_id) }}</p>
   {% if u.aliases %}
   <p class="aliases">// ALSO KNOWN AS:
     {% for a in u.aliases %}<span class="alias" title="{{ a.matches }} match{{ 'es' if a.matches != 1 else '' }}">{{ a.nick }}</span>{% if not loop.last %}, {% endif %}{% endfor %}
@@ -31,6 +31,31 @@
     {% if u.total %}{{ '%.1f'|format(100 * u.wins / u.total) }}%{% else %}—{% endif %} win rate
   </p>
 </section>
+
+{% if u.ratings %}
+<section>
+  <div class="sec-head">
+    <h2>Ratings</h2>
+    <span class="count">// GLICKO-2</span>
+  </div>
+  <table class="grid">
+    <thead><tr><th>Game</th><th class="num">Rating</th><th class="num">RD</th><th class="num">Rank</th><th class="num">W</th><th class="num">L</th><th class="num">D</th></tr></thead>
+    <tbody>
+      {% for r in u.ratings %}
+      <tr>
+        <td><a href="/g/{{ r.game_id }}">{{ friendly_name(r.game_id) }}</a></td>
+        <td class="num">{{ '%.0f'|format(r.rating) }}{% if r.provisional %}?{% endif %}</td>
+        <td class="num">{{ '%.0f'|format(r.rd) }}</td>
+        <td class="num">{% if r.rank %}#{{ r.rank }}{% else %}--{% endif %}</td>
+        <td class="num">{{ r.wins }}</td>
+        <td class="num">{{ r.losses }}</td>
+        <td class="num">{{ r.draws }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
 
 <div class="cols-2">
   <section>
@@ -84,7 +109,7 @@
     <tbody>
       {% for r in u.vs_opponents %}
       <tr>
-        <td><a href="/u/{{ r.opp_id }}">{{ r.opp_nick }}</a></td>
+        <td><a href="/u/{{ r.opp_id }}">{{ who(r.opp_nick, r.opp_id) }}</a></td>
         <td class="num">{{ r.wins }}</td>
         <td class="num">{{ r.losses }}</td>
         <td class="num">{{ r.draws }}</td>
@@ -113,7 +138,7 @@
           else ('win' if m.winner_id == u.user_id else 'loss') %}
     <div class="vs-card">
       <div class="side p1 {{ 'win' if result == 'win' else ('draw' if result == 'draw' else 'loss') }}">
-        <div class="nick">{{ u.nick }}</div>
+        <div class="nick">{{ who(u.nick, u.user_id) }}</div>
         <div class="char">{{ my_char }}</div>
         <div class="stat">{{ result|upper }}</div>
       </div>
@@ -123,7 +148,7 @@
         <div class="when">{{ format_iso(m.finished_at) }}</div>
       </div>
       <div class="side p2 {{ 'win' if result == 'loss' else ('draw' if result == 'draw' else 'loss') }}">
-        <div class="nick"><a href="/u/{{ opp_id }}">{{ opp_nick }}</a></div>
+        <div class="nick"><a href="/u/{{ opp_id }}">{{ who(opp_nick, opp_id) }}</a></div>
         <div class="char">{{ opp_char }}</div>
         <div class="stat">{{ ('LOSS' if result == 'win' else ('DRAW' if result == 'draw' else 'WIN')) }}</div>
       </div>

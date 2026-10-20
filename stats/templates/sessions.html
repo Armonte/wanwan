@@ -25,7 +25,7 @@
     {% set is_draw = s.p1_match_wins == s.p2_match_wins %}
     <div class="vs-card">
       <div class="side p1 {{ 'win' if p1_won_session else ('draw' if is_draw else 'loss') }}">
-        <div class="nick"><a href="/u/{{ s.p1_id }}">{{ s.p1_nick }}</a></div>
+        <div class="nick"><a href="/u/{{ s.p1_id }}">{{ who(s.p1_nick, s.p1_id) }}</a></div>
         <div class="stat">{{ s.p1_match_wins }}</div>
       </div>
       <div class="vs">
@@ -35,7 +35,7 @@
         <div class="when">{{ s.matches|length }} match{{ '' if s.matches|length == 1 else 'es' }}</div>
       </div>
       <div class="side p2 {{ 'win' if p2_won_session else ('draw' if is_draw else 'loss') }}">
-        <div class="nick"><a href="/u/{{ s.p2_id }}">{{ s.p2_nick }}</a></div>
+        <div class="nick"><a href="/u/{{ s.p2_id }}">{{ who(s.p2_nick, s.p2_id) }}</a></div>
         <div class="stat">{{ s.p2_match_wins }}</div>
       </div>
     </div>
@@ -52,11 +52,11 @@
           <div class="match-line">
             <span class="match-idx">#{{ m.match_index_in_session or loop.index }}</span>
             <span class="match-p1 {{ 'win' if p1_won else ('draw' if m_draw else 'loss') }}">
-              {{ m.p1_nick }} ({{ char_label(m.p1_char_name, m.p1_char_id) }})
+              {{ who(m.p1_nick, m.p1_id) }} ({{ char_label(m.p1_char_name, m.p1_char_id) }})
             </span>
             <span class="match-vs">vs</span>
             <span class="match-p2 {{ 'win' if (not p1_won and not m_draw) else ('draw' if m_draw else 'loss') }}">
-              {{ m.p2_nick }} ({{ char_label(m.p2_char_name, m.p2_char_id) }})
+              {{ who(m.p2_nick, m.p2_id) }} ({{ char_label(m.p2_char_name, m.p2_char_id) }})
             </span>
             <span class="match-when">{{ format_iso(m.finished_at) }}</span>
           </div>

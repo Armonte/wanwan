@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -12,6 +13,10 @@ A = "100000000000000001"
 B = "100000000000000002"
 C = "100000000000000003"
 H = "100000000000000004"
+
+# Any Discord snowflake (15-21 digits). Public pages and API bodies must
+# never contain one.
+DISCORD_RE = re.compile(r"[0-9]{15,21}")
 
 
 @pytest.fixture(autouse=True)

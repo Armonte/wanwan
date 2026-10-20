@@ -1,10 +1,7 @@
 import json
-import re
 
 import privacy
-from conftest import A, B, C, H
-
-DISCORD_RE = re.compile(r"[0-9]{15,21}")
+from conftest import A, B, C, H, DISCORD_RE
 
 
 def pid(dc):

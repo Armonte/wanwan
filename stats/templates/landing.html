@@ -36,7 +36,7 @@
         {% for p in top_players %}
         <tr>
           <td class="rank">{{ '%02d' % loop.index }}</td>
-          <td><a href="/u/{{ p.user_id }}">{{ p.nick }}</a></td>
+          <td><a href="/u/{{ p.user_id }}">{{ who(p.nick, p.user_id) }}</a></td>
           <td class="num">{{ p.matches }}</td>
         </tr>
         {% endfor %}

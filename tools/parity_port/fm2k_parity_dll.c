@@ -196,6 +196,39 @@ int msgbox_utf8(const char *pszText, const char *pszCaption, UINT uType)
     return hkMessageBoxA(NULL, pszText, pszCaption, uType);
 }
 
+
+/* The original's own crash at 0x40CCAE (sprite_rendering_engine, mov ax,[edx+3]): a destroyed object drawn
+   once more against a frame table freed and reloaded under it reads past the new table and faults when the
+   read straddles the end of a committed page (The Favorite Fighters 2.5 at character select, tick 57).
+   Players never see it: FM2KHook's VectoredRenderGuard skips that draw by jumping to the function's
+   epilogue. The same here, so the original side runs on; draw only, no world state. Each recovery is
+   logged to <dump>.dialogs.txt. */
+static LONG WINAPI lRenderGuard(EXCEPTION_POINTERS *ep)
+{
+    if (!ep || !ep->ExceptionRecord || !ep->ContextRecord
+        || ep->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || ep->ContextRecord->Eip != 0x40ccae)
+        return EXCEPTION_CONTINUE_SEARCH;
+    {
+        static int n;
+        char szPath[MAX_PATH];
+        DWORD dwLen = GetEnvironmentVariableA("FM2K_PARITY_DUMP_PATH", szPath, MAX_PATH - 16);
+        if (++n <= 3 && dwLen && dwLen < MAX_PATH - 16) {
+            HANDLE h;
+            lstrcatA(szPath, ".dialogs.txt");
+            h = CreateFileA(szPath, FILE_APPEND_DATA, FILE_SHARE_READ, NULL, OPEN_ALWAYS, 0, NULL);
+            if (h != INVALID_HANDLE_VALUE) {
+                DWORD dw;
+                char szLine[128];
+                wsprintfA(szLine, "[render guard] AV at 0x40ccae skipped (#%d, edx=0x%08lx)\r\n", n, ep->ContextRecord->Edx);
+                WriteFile(h, szLine, lstrlenA(szLine), &dw, NULL);
+                CloseHandle(h);
+            }
+        }
+    }
+    ep->ContextRecord->Eip = 0x40d7a8;   /* the epilogue */
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
 /* MCI under the harness: the CD audio device is never opened (no disc probe, so no prompt); the
    original then plays no CD track, exactly like the port without track files */
 static MCIERROR WINAPI hkMciSendCommandA(MCIDEVICEID dev, UINT uMsg, DWORD_PTR dwFlags, DWORD_PTR dwParam)
@@ -270,5 +303,6 @@ BOOL WINAPI DllMain(HINSTANCE hDll, DWORD dwReason, LPVOID pReserved)
     pfnInputTramp = (int (__cdecl *)(int, int))pDetour(0x414340, kInput, 5, (void *)hkInput);
     vLatOpen();
     vPatchFrameHash();
+    AddVectoredExceptionHandler(1, lRenderGuard);
     return TRUE;
 }

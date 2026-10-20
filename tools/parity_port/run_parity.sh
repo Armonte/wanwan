@@ -28,6 +28,17 @@ RUNS="${RUNS:-$FM2K_PORT_DIR/parity_runs/harness}"   # original-side baselines: 
 OUT="$RUNS/$NAME"; mkdir -p "$OUT"
 win() { wslpath -w "$1"; }
 
+# THE GAME LIBRARY IS READ-ONLY (owner rule). This harness writes into GAME_DIR (the port exe, game.ini), and on
+# 2026-10-17 a run against the library itself with the port named like the original overwrote two WonderfulWorld exes
+# there (restored 2026-10-20 from their backups). Refuse a GAME_DIR inside FM2K_GAMES_DIR (the library) unless it is
+# the explicit test root, and never let the port take the original's name.
+if [ -n "${FM2K_GAMES_DIR:-}" ]; then
+  gd="$(realpath -m "$GAME_DIR")"; lib="$(realpath -m "$FM2K_GAMES_DIR")"
+  case "$gd/" in "$lib"/*) echo "run_parity: GAME_DIR $GAME_DIR is inside the read-only library $FM2K_GAMES_DIR -- use a test copy" >&2; exit 2 ;; esac
+fi
+case "$GAME_DIR" in */games/fm2k|*/games/fm2k/*) echo "run_parity: GAME_DIR $GAME_DIR looks like the read-only library -- use a test copy" >&2; exit 2 ;; esac
+[ "$PORT_NAME" = "$ORIG_EXE" ] && { echo "run_parity: PORT_NAME equals ORIG_EXE ($ORIG_EXE): the port would overwrite the original" >&2; exit 2; }
+
 cp -f "$GAME_DIR/game.ini" "$OUT/game.ini.before"
 if [ "$SIDE" = port ]; then
   cp -f "$PORT_EXE" "$GAME_DIR/$PORT_NAME"

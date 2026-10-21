@@ -3,7 +3,8 @@
 First slice of the community service (fm2k-port `docs/COMMUNITY_SERVICE.md`, ticket formats in
 `docs/COMMUNITY_TICKET_SPEC.md` v9.1). A player links Discord ONCE; the service issues a signed PCTKT1 ticket that
 peers verify offline, renews it silently, and publishes the root-signed KEYSET and the deny list (bans). Records,
-stats come from signed match receipts (`POST /v1/report`, below); chat and uploads come later.
+stats come from signed match receipts (`POST /v1/report`, below); inputs-only replays of recorded matches go to R2
+(`POST /v1/replay`, below); chat comes later.
 
 Standalone FastAPI app. It does not touch the live hub (`hub/`).
 
@@ -19,6 +20,7 @@ Standalone FastAPI app. It does not touch the live hub (`hub/`).
 | `receipts.py` | RESULT-V1 receipts, PCCHAIN1/PCSLOT1 chains, the rules between receipts, the 7c receipt list (byte-identical to pc-core) |
 | `counting.py` | the counting decision for one match key from its receipts (pure) |
 | `results.py` | `/v1/report`: verification, storage, timing (pending, late, 7-day close, caps), the `results.jsonl` export |
+| `replays.py` | `/v1/replay`: the PCRZ1 / inputs-only .pcrep checks, the abuse caps, the R2 PutObject |
 | `games.py` | the per-game table, imported from fm2k-port's `gen_game_table.py --format tsv` |
 | `admin.py` | server CLI: online key, unsigned KEYSET body, ban, revoke, stats |
 | `sign_keyset.py` | the owner's offline signer (runs where the root keys are; needs only `cryptography`) |
@@ -38,6 +40,7 @@ Public base: `https://2dfm.org/community` (Caddy strips the prefix; the app sees
 | `POST /v1/ticket/refresh` | section 6 headers `X-PC-Ticket`, `X-PC-Time`, `X-PC-Nonce`, `X-PC-Sig` | same as finish |
 | `POST /v1/profile/visibility` | signed, `{"hidden": bool}` | `{hidden}`; republishes `export/hidden.json` |
 | `POST /v1/report` | signed, `application/octet-stream` receipt list (below) | 200 `{status, match_id}`; errors below |
+| `POST /v1/replay?match_id=<id>` | signed (the query is part of the signed path), `application/octet-stream` PCRZ1 (below), at most 1 MiB | 200 `{replay_id, replay_url}`; errors below |
 | `GET /v1/config` | | `{stats_url, replay_base, web_base}` |
 | `GET /v1/keyset` | | the current KEYSET bytes (`application/octet-stream`, `X-PC-Keyset-Serial`) |
 | `GET /v1/deny` | | the PCDENY1 deny list bytes, signed by the ticket key |
@@ -107,7 +110,8 @@ After the 24 h pending window a contradicting report never flips the result: `la
 Export: every state change of a recorded match appends one line to `export/results.jsonl` (fsync per line, latest
 line per `match_id` wins), the shape of `docs/STATS_DESIGN.md` 4.4: `match_id`, `game_id` `"<family>:<catalog id>"`,
 `build`, `status`, `started_at`, `finished_at`, `rounds_to_win`, `p1`/`p2` `{public_id, name, tag (4 digits),
-hidden, char: null}`, `winner` (`p1`/`p2`/`draw`/null), `score`, `left_early`, `flags`, `replay_url: null`. No
+hidden, char: null}`, `winner` (`p1`/`p2`/`draw`/null), `score`, `left_early`, `flags`, `replay_url` (null until a
+replay is stored; the upload appends a new line with it). No
 Discord id, account id, session key, signature or IP. The stats site reads it at `FM2K_RESULTS_PATH`.
 
 Server steps: `admin.py import-games game_table.tsv` (from fm2k-port `tools/community/gen_game_table.py --format
@@ -115,6 +119,63 @@ tsv`; a game/build without a row records nothing), set `FM2K_STATS_ID_SECRET` (p
 `deploy/pc-community-settle.{service,timer}` (hourly `admin.py settle`; reports also settle lazily), point the stats
 site's `FM2K_RESULTS_PATH` at `community/data/export/results.jsonl` and `FM2K_COMMUNITY_HIDDEN_PATH` at `hidden.json`.
 `admin.py reexport` appends every match's current state (after the secret was set late, or a name change).
+
+## Shared replays (`POST /v1/replay`)
+
+Owner rules: inputs-only and compressed, uploaded by default, attached to a RECORDED match, public to anyone, kept
+forever, player names kept as-is (`CH_SESSION_NAMES`). Stored in Cloudflare R2 through the S3 API (boto3).
+
+After `/v1/report` answered a `match_id` with a recorded status, the launcher sends a signed call
+`POST /community/v1/replay?match_id=<12 hex>`. The signed path INCLUDES the query
+(`/community/v1/replay?match_id=<id>`), so the match id cannot be swapped in transit. Body: one PCRZ1 file,
+little-endian:
+
+| Offset | Field | |
+|---|---|---|
+| 0 | `"PCRZ"` | magic |
+| 4 | u16 version | 1 |
+| 6 | u16 header_len | bytes before the payload: 26 + len(game_id) + len(build_id) |
+| 8 | u32 match_index | the receipts' match_index; must equal the match's |
+| 12 | u32 frames | battle frames of the match, 1..`max_match_frames` of the game row |
+| 16 | u32 raw_len | decompressed size, 1..16 MiB |
+| 20 | u32 z_len | header_len + z_len must equal the body length exactly |
+| 24 | u8 n, n bytes | game_id (ASCII, 1..64), equal to the match's (the receipts' catalog id) |
+| | u8 n, n bytes | build_id (ASCII, 1..64), equal to the match's |
+| header_len | z_len bytes | ONE zstd frame (window at most 8 MiB) of an inputs-only `.pcrep` |
+
+The inner `.pcrep` is pc-replay `ReplayFormat.hpp` version 14 (88-byte FileHeader `PCRP`), complete and CRC-clean
+chunk by chunk, with `inputSize` equal to the game row's `input_width`; exactly one `CH_SESSION` before exactly one
+`CH_MATCH_START` of this match index; at most one `CH_MATCH_END` (same index, `frames` equal to the wrapper's; absent
+for a match that ended early) and at most one `CH_SESSION_NAMES`. Allowed chunks: `CH_GEN`, `CH_INPUTS`, `CH_CHECK`,
+`CH_ROUND_END`, `CH_RETRY`, `CH_END`, `CH_TAPE`, `CH_TAPE_MARK`, `CH_TAPE_CHECK`, `CH_TAPE_END`, `CH_SESSION`,
+`CH_MATCH_START`, `CH_MATCH_END`, `CH_SETUP_EXT`, `CH_CSS_LIVE`, `CH_SESSION_NAMES`, `CH_MATCH_CHARS`. Refused:
+`CH_GEN_STATE`, `CH_GEN_STATE_Z` (snapshots), `CH_CHAT`, and any unknown type.
+
+Stored as `replays/v1/<family>/<game_id>/<yyyy-mm of started_at>/<replay_id>.pcrz` (`replay_id` = 16 random hex, no
+account or session data), `Content-Type: application/octet-stream`, `Cache-Control: public, max-age=31536000,
+immutable`, no lifecycle rule. The database keeps the key (`replays` table, schema 6); `replay_url` =
+`COMMUNITY_REPLAY_PUBLIC_BASE + "/" + key`, composed at answer and export time, so moving the public domain needs no
+rewrite.
+
+Limits (nobody can drain the bucket; every check runs before a byte goes to R2, and the ticket, match and cap checks
+run before the body is read):
+
+| Answer | When |
+|---|---|
+| 200 `{"replay_id", "replay_url"}` | stored; or the match already has a replay (first valid upload wins: a re-upload by either player answers the same URL and stores nothing, also past a cap) |
+| 400 `bad_replay` / `bad_match_id` | the file fails any check above (detail says which); the match id is not 12 hex |
+| 403 `not_participant` | the caller is not one of the match's two players |
+| 409 `match_unknown` | no such match, or it is not recorded (`pending`/`final`/`left_early`) yet: retry like `not_disputed` |
+| 409 `replay_busy` + `Retry-After: 30` | the other player's upload of this match is in flight (a reservation older than 5 min is reclaimed) |
+| 413 `body_too_large` | above 1 MiB (`COMMUNITY_REPLAY_MAX_BYTES`, never above 1 MiB), from Content-Length before reading and while streaming |
+| 429 `cap_daily` + `Retry-After` | the account stored `COMMUNITY_REPLAY_ACCOUNT_DAILY` (200) replays this UTC day |
+| 429 `rate_limited` | the per-client window (60 per 10 min) |
+| 502 `replay_store_failed` | R2 refused; nothing is kept, retry later |
+| 503 `replays_paused` + `Retry-After` | the global breaker: `COMMUNITY_REPLAY_DAILY_UPLOADS` (20000) uploads or `COMMUNITY_REPLAY_DAILY_BYTES` (2 GiB) stored this UTC day |
+| 503 `replays_disabled` | any of the four `COMMUNITY_R2_*` or `COMMUNITY_REPLAY_PUBLIC_BASE` is unset |
+
+A stored replay appends a new `results.jsonl` line for its match carrying `replay_url`; the stats site passes it
+through (`ratings.parse_result`, `api_v1.match_obj`).
 
 ## Run locally
 
@@ -176,7 +237,11 @@ Environment variables; any not set are read from `COMMUNITY_CONFIG` (default `co
 | `COMMUNITY_BIND_HOST` | (unset) | dev mode: the uvicorn `--host`, must be loopback |
 | `FM2K_STATS_ID_SECRET` | (unset) | the stats site's id secret: `accounts.public_id`, the results export's player ids |
 | `COMMUNITY_EXPORT_DIR` | `community/data/export` | `hidden.json` and `results.jsonl` for the stats site |
-| `COMMUNITY_STATS_URL`, `COMMUNITY_REPLAY_PUBLIC_BASE`, `COMMUNITY_WEB_BASE` | (unset) | served by `/v1/config` |
+| `COMMUNITY_STATS_URL`, `COMMUNITY_REPLAY_PUBLIC_BASE`, `COMMUNITY_WEB_BASE` | (unset) | served by `/v1/config`; the replay base also composes every `replay_url` |
+| `COMMUNITY_R2_ENDPOINT`, `COMMUNITY_R2_BUCKET`, `COMMUNITY_R2_ACCESS_KEY_ID`, `COMMUNITY_R2_SECRET_ACCESS_KEY` | (unset) | R2 (S3 API) for shared replays; any missing -> `503 replays_disabled` |
+| `COMMUNITY_REPLAY_MAX_BYTES` | `1048576` | one upload (clamped to 1 MiB) |
+| `COMMUNITY_REPLAY_ACCOUNT_DAILY` | `200` | stored replays per account per UTC day |
+| `COMMUNITY_REPLAY_DAILY_UPLOADS`, `COMMUNITY_REPLAY_DAILY_BYTES` | `20000`, `2147483648` | the global daily breaker |
 
 The two root PUBLIC keys are built in (`tickets.py`, from COMMUNITY_SERVICE.md section 7): root A `c9e1bf09...`,
 root B `b597400b...`. The service never reads a root private key.
@@ -262,7 +327,7 @@ the `audit` table.
 ## Known limits of this slice
 
 - Results: no `/v1/tape`, worker or `/v1/verdict` yet, so a game with a worker keeps its disputes until the 7-day void
-  close; no `/v1/replay` (`replay_url` is always null). The spec's "frame gap at most ~1320" check is not enforced (a
+  close. `/v1/replay` does not yet compare the replay's inputs with the receipts' `inputs_chain`. The spec's "frame gap at most ~1320" check is not enforced (a
   report holding a gap is accepted). The opponent of a new match is found only while it still holds the client key
   that signed (a relink before the first report leaves that match unrecordable).
 - Perks records (section 4) are not issued yet; refresh returns only the ticket.

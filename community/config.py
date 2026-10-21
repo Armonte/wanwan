@@ -44,6 +44,15 @@ class Config:
     retired_ticket_keys: str = ""  # comma list of key files of earlier generations (after a rotation)
     fake_discord: bool = False  # LOCAL DEV MODE (fake_discord.py): loopback only, refused anywhere else
     bind_host: str = ""  # the uvicorn --host; fake mode checks it is loopback
+    # shared replays (replays.py): Cloudflare R2 through the S3 API. Any of the four missing -> 503 replays_disabled
+    r2_endpoint: str = ""
+    r2_bucket: str = ""
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
+    replay_max_bytes: int = 1 << 20  # one upload, checked from Content-Length before reading
+    replay_account_daily: int = 200  # stored uploads per account per UTC day (429 cap_daily)
+    replay_daily_uploads: int = 20000  # global circuit breaker per UTC day (503 replays_paused)
+    replay_daily_bytes: int = 2 << 30
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -73,6 +82,14 @@ class Config:
             export_dir=e("COMMUNITY_EXPORT_DIR", os.path.join(DATA, "export")),
             fake_discord=e("COMMUNITY_FAKE_DISCORD", "") == "1",
             bind_host=e("COMMUNITY_BIND_HOST", ""),
+            r2_endpoint=e("COMMUNITY_R2_ENDPOINT", ""),
+            r2_bucket=e("COMMUNITY_R2_BUCKET", ""),
+            r2_access_key_id=e("COMMUNITY_R2_ACCESS_KEY_ID", ""),
+            r2_secret_access_key=e("COMMUNITY_R2_SECRET_ACCESS_KEY", ""),
+            replay_max_bytes=min(int(e("COMMUNITY_REPLAY_MAX_BYTES", str(1 << 20))), 1 << 20),
+            replay_account_daily=int(e("COMMUNITY_REPLAY_ACCOUNT_DAILY", "200")),
+            replay_daily_uploads=int(e("COMMUNITY_REPLAY_DAILY_UPLOADS", "20000")),
+            replay_daily_bytes=int(e("COMMUNITY_REPLAY_DAILY_BYTES", str(2 << 30))),
         )
 
     @property
@@ -81,6 +98,13 @@ class Config:
         launcher signs the host of its own community.url, so old and new launchers both verify until the old host
         is dropped."""
         return [h.strip() for h in self.public_host.split(",") if h.strip()]
+
+    def replays_missing(self) -> list[str]:
+        """What shared replays still need (names only, never values)."""
+        return [n for n, v in (("COMMUNITY_R2_ENDPOINT", self.r2_endpoint), ("COMMUNITY_R2_BUCKET", self.r2_bucket),
+                               ("COMMUNITY_R2_ACCESS_KEY_ID", self.r2_access_key_id),
+                               ("COMMUNITY_R2_SECRET_ACCESS_KEY", self.r2_secret_access_key),
+                               ("COMMUNITY_REPLAY_PUBLIC_BASE", self.replay_public_base)) if not v]
 
     def discord_missing(self) -> list[str]:
         out = []

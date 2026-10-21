@@ -261,7 +261,13 @@ class Results:
                 "rounds_to_win": m["rounds_to_win"], "p1": player(m["acct0"]), "p2": player(m["acct1"]),
                 "winner": winner, "score": None if m["rounds0"] is None else [m["rounds0"], m["rounds1"]],
                 "left_early": {0: "p1", 1: "p2"}.get(m["left_slot"]),
-                "flags": [name for bit, name in FLAG_NAMES if m["flags"] & bit], "replay_url": None}
+                "flags": [name for bit, name in FLAG_NAMES if m["flags"] & bit], "replay_url": self.replay_url(mid)}
+
+    def replay_url(self, mid: int) -> Optional[str]:
+        """The stored replay's public URL, composed from the key and COMMUNITY_REPLAY_PUBLIC_BASE now (never stored)."""
+        base = self.c.cfg.replay_public_base
+        r = self.db.one("SELECT key FROM replays WHERE match = ? AND status = 'stored'", (mid,))
+        return base.rstrip("/") + "/" + r[0] if r and base else None
 
     def export_match(self, mid: int, force: bool = False) -> bool:
         """Append the match's state when it changed since the last line (fsync per line)."""
@@ -288,4 +294,6 @@ class Results:
     def stats(self) -> dict:
         out = {r[0]: r[1] for r in self.db.q("SELECT status, COUNT(*) FROM matches GROUP BY status")}
         out["games"] = self.db.one("SELECT COUNT(*) FROM games")[0]
+        out["replays"], out["replay_bytes"] = self.db.one(
+            "SELECT COUNT(*), COALESCE(SUM(bytes), 0) FROM replays WHERE status = 'stored'")
         return out

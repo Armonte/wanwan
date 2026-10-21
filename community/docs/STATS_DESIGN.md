@@ -14,7 +14,21 @@ Sources read: wanwan `stats/` and `community/` (HEAD of `bleeding`), the droplet
 - Step 3 server half is in (schema 5, not deployed): `receipts.py` (pinned to the pc-core vectors), `counting.py`,
   `results.py`, `games.py`, `POST /v1/report`, `export/results.jsonl`, `admin.py import-games|settle|reexport`, the
   hourly settle timer, and the stats merge (`FM2K_RESULTS_PATH`, `ratings.parse_record` v1 branch). Endpoint, body
-  and answers: `community/README.md` "Match results". Not yet: `/v1/tape`, `/v1/verdict`, `/v1/replay` (steps 5, 7).
+  and answers: `community/README.md` "Match results". Not yet: `/v1/tape`, `/v1/verdict` (step 7).
+- Shared replays server half is in (schema 6, not deployed): `replays.py`, `POST /v1/replay?match_id=` (signed; the
+  query is part of the signed path), R2 via boto3, the `replays` table (key, never URL), `replay_url` in
+  `results.jsonl` (composed from `COMMUNITY_REPLAY_PUBLIC_BASE`), stats passthrough tested. Body and limits:
+  `community/README.md` "Shared replays". Readings taken:
+  - pc-replay has no inputs-only export yet, so the body is a minimal versioned wrapper PCRZ1 (magic, version,
+    match_index, frames, raw_len, z_len, game_id, build_id) around ONE zstd frame of an inputs-only `.pcrep` v14;
+    the server walks every chunk (CRC), refuses `CH_GEN_STATE`/`CH_GEN_STATE_Z`/`CH_CHAT` and unknown types,
+    requires one `CH_SESSION` then one `CH_MATCH_START` of the match's index, `inputSize` = the row's `input_width`;
+  - the endpoint takes the public `match_id` (the `/v1/report` answer), not `match_index` as in 4.3;
+  - abuse limits: 1 MiB per body (clamped), 16 MiB decompressed, 8 MiB zstd window, 200 stored per account per UTC
+    day (429 `cap_daily`), a global breaker of 20000 uploads / 2 GiB per UTC day (503 `replays_paused`), 60 calls
+    per 10 min per client, one object per match (first wins; a re-upload answers the same URL, also past a cap);
+  - a concurrent upload of the same match answers 409 `replay_busy` (Retry-After 30); a failed PutObject releases
+    the reservation (502 `replay_store_failed`); the inputs are not yet compared with the receipts' `inputs_chain`.
 - Readings taken where the spec is silent (all in `counting.py` / `results.py` docstrings):
   - receipts carry no ticket, so a new match's opponent is the account (holding a ticket at `started_unix`) whose
     current client key verifies its started receipt; the match row then stores both signing keys;
@@ -222,7 +236,7 @@ Receipts hold opponents' signatures and session keys: never exported, deleted wi
 | `GET /v1/config` | none | | `{stats_url, replay_base, web_base}` from config (domain discovery, 4.7) |
 | `POST /v1/report` | signed (sec. 6) | receipt list, `application/octet-stream` (7c, `reportBodyCap` checked before reading) | 200 `{status, match_id}`; 409 `closed`/`too_late`; 400 `bad_receipt`; 403 `not_participant`/`self_play`/`anonymous_peer`; 429 `cap_daily` + Retry-After |
 | `POST /v1/tape` | signed | PCTAPE1 (`tapeCap`) | 200 `{queued}`; 409 `not_disputed`; 429 `cap_daily` |
-| `POST /v1/replay?match_index=` | signed | inputs-only replay, zstd (cap 1 MiB) | 200 `{replay_id, replay_url}`; 409 `match_unknown`; 413 |
+| `POST /v1/replay?match_id=` | signed (query in the signed path) | PCRZ1 inputs-only replay, zstd (cap 1 MiB) | 200 `{replay_id, replay_url}`; 400 `bad_replay`; 403 `not_participant`; 409 `match_unknown`/`replay_busy`; 413; 429 `cap_daily`; 503 `replays_paused`/`replays_disabled` |
 | `POST /v1/profile/visibility` | signed | `{"hidden": bool}` | 200 `{hidden}` |
 | `POST /v1/verdict` | worker key | REPLAY-V1 verdict | later (step 7) |
 | `link/finish`, `ticket/refresh` | as today | | + `public_id` |

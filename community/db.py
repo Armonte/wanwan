@@ -155,6 +155,25 @@ MIGRATIONS = [
     CREATE INDEX reports_ts ON reports(account, ts);
     CREATE INDEX tickets_window ON tickets(expires);
     """,
+    # 5 -> 6: shared replays (replays.py, STATS_DESIGN.md 4.6). One per recorded match, first valid upload wins. `key`
+    # is the R2 object key (never the URL: the public base is composed at answer and export time). `uploader` stays
+    # server-side (the per-account daily cap); status uploading = reserved while the PutObject runs, stored = live.
+    """
+    CREATE TABLE replays (
+        match       INTEGER PRIMARY KEY REFERENCES matches(id),
+        replay_id   TEXT NOT NULL UNIQUE,            -- 16 random hex
+        key         TEXT NOT NULL UNIQUE,            -- replays/v1/<family>/<game_id>/<yyyy-mm>/<replay_id>.pcrz
+        uploader    INTEGER NOT NULL REFERENCES accounts(id),
+        bytes       INTEGER NOT NULL,
+        raw_bytes   INTEGER NOT NULL,
+        frames      INTEGER NOT NULL,
+        sha         BLOB NOT NULL,
+        status      TEXT NOT NULL,                   -- uploading stored
+        created     INTEGER NOT NULL
+    );
+    CREATE INDEX replays_day ON replays(created);
+    CREATE INDEX replays_uploader ON replays(uploader, created);
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

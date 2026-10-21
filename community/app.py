@@ -13,6 +13,8 @@ Endpoints (paths as the app sees them; the public URL adds /community):
     POST /v1/profile/visibility       signed {hidden} -> the stats profile opt-out (export/hidden.json)
     POST /v1/report                   signed receipt list (octet-stream, spec 7c) -> {status, match_id}; the result
                                       lands in export/results.jsonl for the stats site
+    POST /v1/replay?match_id=<id>     signed PCRZ1 inputs-only replay (octet-stream, 1 MiB) -> {replay_id, replay_url};
+                                      stored in R2, public, kept forever (replays.py)
     GET  /v1/config                   {stats_url, replay_base, web_base}: where the launcher finds the rest
     GET  /v1/keyset                   the current root-signed KEYSET (PCKEYS1 bytes)
     GET  /v1/deny[?gen=N]             the deny list of one key generation, signed by that ticket key (PCDENY1 bytes);
@@ -37,12 +39,14 @@ from typing import Optional
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
+from starlette.concurrency import run_in_threadpool
 
 import fake_discord
 import games as G
 import names
 import tickets as T
 from config import Config
+from replays import Replays
 from db import SCHEMA_VERSION
 from results import Results
 from service import Community, ServiceError
@@ -152,7 +156,9 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
     app.state.link_limit = RateLimit(app.state.community, "link", 20, 600)
     app.state.refresh_limit = RateLimit(app.state.community, "refresh", 30, 600)
     app.state.report_limit = RateLimit(app.state.community, "report", 120, 600)
+    app.state.replay_limit = RateLimit(app.state.community, "replay", 60, 600)
     app.state.results = Results(app.state.community)
+    app.state.replays = Replays(app.state.community, app.state.results)
     if cfg.fake_discord:
         fake_discord.install(app, cfg)
 
@@ -203,10 +209,11 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
                 raise ServiceError(413, "body_too_large", f"the body is above {cap} bytes")
         return bytes(out)
 
-    async def signed_call(request: Request, limit: "RateLimit", max_body: int = 65536) -> tuple[int, bytes]:
+    async def signed_call(request: Request, limit: "RateLimit", max_body: int = 65536, pre=None) -> tuple[int, bytes]:
         """Section 6: a ticket this service issued and still bound to the account's client key, X-PC-Time within
         5 minutes, a fresh nonce, and the call signature over one of the public hosts. Returns (account row, body).
-        The body is read only after the header and ticket checks, and never above `max_body` (7c)."""
+        The body is read only after the header and ticket checks (and `pre(account row)`, which may refuse), and never
+        above `max_body` (7c). The signed path is the public path plus `?query` when the request has one."""
         c = svc()
         if not limit.allow(client_key(request), float(c.now())):
             raise ServiceError(429, "rate_limited", "too many calls, try again later")
@@ -221,8 +228,12 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
         if abs(ts - c.now()) > 300:
             raise ServiceError(401, "clock_skew", "X-PC-Time is more than 5 minutes off; use X-PC-Server-Time")
         row, t = c.account_for_refresh(ticket)
+        if pre is not None:
+            pre(row)
         body = await read_capped(request, max_body)
         path = cfg.root_path + request.url.path
+        if request.url.query:
+            path += "?" + request.url.query
         digest = T.sha256(body)
         if not any(T.verify_call(t.client_pub, T.call_message(host.encode(), request.method.encode(), path.encode(),
                                                                digest, ts, nonce, T.ticket_id(ticket)), sig)
@@ -238,7 +249,8 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
     async def health():
         c = svc()
         configured = cfg.fake_discord or not cfg.discord_missing()
-        out = {"ok": True, "schema": SCHEMA_VERSION, "discord_configured": configured}
+        out = {"ok": True, "schema": SCHEMA_VERSION, "discord_configured": configured,
+               "replays_configured": not cfg.replays_missing()}
         if cfg.fake_discord:
             out["fake_discord"] = True
         for name, fn in (("ticket_key", lambda: {"key_gen": c.ticket_key().key_gen}),
@@ -351,6 +363,15 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
     async def report(request: Request):
         row, body = await signed_call(request, app.state.report_limit, G.max_report_body(svc().db))
         return app.state.results.report(row, request.state.client_pub, body)
+
+    # ---- shared replays (STATS_DESIGN.md 4.6, replays.py) ----
+    @app.post("/v1/replay")
+    async def replay(request: Request, match_id: str = ""):
+        rp = app.state.replays
+        rp.enabled()  # 503 replays_disabled before anything else
+        row, body = await signed_call(request, app.state.replay_limit, cfg.replay_max_bytes,
+                                      pre=lambda acct: rp.precheck(acct, match_id))
+        return await run_in_threadpool(rp.upload, row, match_id, body)
 
     # ---- discovery: where the stats site and replays live (no domain in launcher code) ----
     @app.get("/v1/config")

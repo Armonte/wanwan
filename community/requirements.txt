@@ -2,5 +2,7 @@ fastapi>=0.110
 uvicorn>=0.29
 httpx>=0.27
 cryptography>=42
+boto3>=1.34  # shared replays: R2 through the S3 API
+zstandard>=0.22  # shared replays: the PCRZ1 payload
 # tests
 pytest>=8

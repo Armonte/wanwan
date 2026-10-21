@@ -30,6 +30,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
+import fake_discord
 import tickets as T
 from config import Config
 from db import SCHEMA_VERSION
@@ -115,12 +116,15 @@ def page(title: str, body: str, status: int = 200) -> HTMLResponse:
 
 def create_app(cfg: Optional[Config] = None, community: Optional[Community] = None) -> FastAPI:
     cfg = cfg or Config.from_env()
+    fake_discord.check_allowed(cfg)  # local dev mode refuses to start off loopback
     app = FastAPI(title="PovertyCaster community", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.cfg = cfg
     app.state.community = community or Community(cfg)
     app.state.discord = DiscordClient(cfg)
     app.state.link_limit = RateLimit(20, 600)
     app.state.refresh_limit = RateLimit(30, 600)
+    if cfg.fake_discord:
+        fake_discord.install(app, cfg)
 
     def svc() -> Community:
         return app.state.community
@@ -153,7 +157,10 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
     @app.get("/health")
     async def health():
         c = svc()
-        out = {"ok": True, "schema": SCHEMA_VERSION, "discord_configured": not cfg.discord_missing()}
+        configured = cfg.fake_discord or not cfg.discord_missing()
+        out = {"ok": True, "schema": SCHEMA_VERSION, "discord_configured": configured}
+        if cfg.fake_discord:
+            out["fake_discord"] = True
         for name, fn in (("ticket_key", lambda: {"key_gen": c.ticket_key().key_gen}),
                          ("keyset", lambda: {"serial": c.keyset()[1].serial}),
                          ("issuing", lambda: {"key_gen": c.signing_key().key_gen})):
@@ -166,7 +173,7 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
     # ---- linking (section 9) ----
     @app.post("/v1/link/start")
     async def link_start(request: Request):
-        missing = cfg.discord_missing()
+        missing = [] if cfg.fake_discord else cfg.discord_missing()
         if missing:
             raise ServiceError(503, "discord_not_configured", "the service is missing " + ", ".join(missing))
         if not app.state.link_limit.allow(client_key(request), time.monotonic()):
@@ -181,7 +188,9 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
         c.db.x("DELETE FROM links WHERE created < ?", (now - LINK_TTL,))
         c.db.x("INSERT INTO links(link_id, state, challenge, client_pub, created, status) VALUES(?,?,?,?,?, 'pending')",
                (link_id, state, challenge, client_pub, now))
-        return {"link_id": link_id, "challenge": b64e(challenge), "sign_in_url": app.state.discord.authorize_url(state),
+        d = app.state.discord
+        url = d.authorize_url(state, str(request.base_url)) if cfg.fake_discord else d.authorize_url(state)
+        return {"link_id": link_id, "challenge": b64e(challenge), "sign_in_url": url,
                 "expires_in": LINK_TTL}
 
     def live_link(link_id: str):

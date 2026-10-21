@@ -39,6 +39,9 @@ class Config:
     root_pubs: tuple[bytes, bytes]
     deny_valid_seconds: int
     deny_refresh_seconds: int
+    fake_discord: bool = False  # LOCAL DEV MODE (fake_discord.py): loopback only, refused anywhere else
+    fake_discord_user: str = "fake-user:Tester"  # ID[:NAME]
+    bind_host: str = ""  # the uvicorn --host; fake mode checks it is loopback
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -62,6 +65,9 @@ class Config:
             root_pubs=roots,
             deny_valid_seconds=int(e("COMMUNITY_DENY_VALID_SECONDS", "86400")),
             deny_refresh_seconds=int(e("COMMUNITY_DENY_REFRESH_SECONDS", "900")),
+            fake_discord=e("COMMUNITY_FAKE_DISCORD", "") == "1",
+            fake_discord_user=e("COMMUNITY_FAKE_DISCORD_USER", "") or "fake-user:Tester",
+            bind_host=e("COMMUNITY_BIND_HOST", ""),
         )
 
     def discord_missing(self) -> list[str]:

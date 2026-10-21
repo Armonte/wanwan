@@ -18,6 +18,7 @@ Standalone FastAPI app. It does not touch the live hub (`hub/`).
 | `db.py` | SQLite schema and migrations-lite (`PRAGMA user_version`) |
 | `admin.py` | server CLI: online key, unsigned KEYSET body, ban, revoke, stats |
 | `sign_keyset.py` | the owner's offline signer (runs where the root keys are; needs only `cryptography`) |
+| `fake_discord.py`, `dev_run_local.sh` | LOCAL DEV MODE: a fake Discord sign-in and throwaway test roots, loopback only |
 | `tests/` | pytest, including the pinned C++ vectors |
 
 ## Endpoints
@@ -72,6 +73,45 @@ cd community
 Without Discord credentials the app still starts: `/health` shows what is missing and `link/start` answers 503
 `discord_not_configured`. Without the ticket key or a KEYSET, issuing answers 503 with what to run.
 
+## Local dev mode (fake Discord, test roots)
+
+End-to-end testing without the real Discord application or the real roots:
+
+```bash
+cd community && ./dev_run_local.sh            # --port N, --keep, --data DIR
+```
+
+It makes a data dir under `~/.cache/pc-community-dev/` (removed on exit unless `--keep`), generates two THROWAWAY test
+roots there (never the real ones), an online ticket key gen 1 and a KEYSET serial 1 signed by test root a, installs it,
+and runs uvicorn on `127.0.0.1:8790` with `COMMUNITY_FAKE_DISCORD=1`, `COMMUNITY_PUBLIC_HOST=127.0.0.1` and an empty
+`COMMUNITY_ROOT_PATH`. That is what a client with `community.url=http://127.0.0.1:8790` signs: pc-core
+`splitBaseUrl` takes the host without its port and the path after it. It prints the base URL and the test root public
+keys.
+
+In fake mode `link/start` needs no Discord credentials; its `sign_in_url` is `http://127.0.0.1:8790/fake/authorize`,
+a page with no external assets whose Continue button lands on the normal `/discord/callback` with the code
+`fake:<id>` (the id is editable, so a second id is a second account; Cancel tests the refusal). Accounts, names,
+tickets, the KEYSET, the deny list, bans and refresh all run for real (`admin.py` works with the same env).
+
+Guards: the app refuses to start in fake mode unless `COMMUNITY_BIND_HOST` and `COMMUNITY_PUBLIC_HOST` are both
+loopback (production signs `2dfm.org`, so it can never come up there), and every request is refused (403
+`fake_discord_local_only`) from a non-loopback peer or with `X-Forwarded-For` (a proxy in front).
+
+**The real launcher refuses this service as is.** PovertyCaster (pc-core `community/Link.cpp`) has no runtime
+override for either of these:
+
+1. Roots: `LinkClient` verifies KEYSETs against `LinkDeps::roots`, which only tests set; pc-ui `CommunityLink` leaves
+   it empty, so `communityRootKeys()` (the two real roots, compiled in) is used and a test-root KEYSET is refused
+   (`bad_signature`), so no ticket is ever accepted. There is no env var or ini key for test roots.
+2. Sign-in URL: `signInUrlAllowed()` requires `https`, so the `http://127.0.0.1` fake authorize URL is never opened in
+   the browser. (`communityUrlOk` already allows `http` for a loopback `community.url`.)
+
+The hook that would be needed, dev builds only (for example behind a CMake option `PC_COMMUNITY_DEV_HOOKS`, off in
+release): an env var such as `PC_COMMUNITY_TEST_ROOTS=hexA,hexB` read in `CommunityLink` and passed as
+`LinkDeps::roots` (only when `community.url` is loopback), and `signInUrlAllowed` accepting `http` when the sign-in
+host equals a loopback community host. Until then, drive the flow with pc-core's own `LinkClient` in a test, or by
+hand (`curl` / a browser for `/fake/authorize`).
+
 ## Configuration
 
 Environment variables; any not set are read from `COMMUNITY_CONFIG` (default `community/data/community.env`,
@@ -91,6 +131,9 @@ Environment variables; any not set are read from `COMMUNITY_CONFIG` (default `co
 | `COMMUNITY_DENY_REFRESH_SECONDS` | `900` | the deny list is re-signed at least this often |
 | `COMMUNITY_CONFUSABLES` | (unset) | path to Unicode `confusables.txt` for the full UTS #39 skeleton |
 | `COMMUNITY_ROOT_PUBKEYS` | (unset) | staging/tests only: `hexA,hexB` instead of the compiled-in roots |
+| `COMMUNITY_FAKE_DISCORD` | (unset) | `1`: LOCAL DEV MODE (below). Refused unless bind and public host are loopback |
+| `COMMUNITY_FAKE_DISCORD_USER` | `fake-user:Tester` | dev mode: the fake Discord user, `ID[:NAME]` |
+| `COMMUNITY_BIND_HOST` | (unset) | dev mode: the uvicorn `--host`, must be loopback |
 
 The two root PUBLIC keys are built in (`tickets.py`, from COMMUNITY_SERVICE.md section 7): root A `c9e1bf09...`,
 root B `b597400b...`. The service never reads a root private key.

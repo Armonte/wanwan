@@ -60,6 +60,19 @@ Owner decision 2026-10-20: only Discord-linked matches count.
   rounds and flagged `"repaired": true`. Schema-1 draws (no `rounds[]`)
   cannot be repaired and stay draws.
 
+### Community results (PovertyCaster)
+
+The community service writes `export/results.jsonl` (append-only, one line per match state change; read from
+`FM2K_RESULTS_PATH`, latest line per `match_id` wins). Shape: `community/docs/STATS_DESIGN.md` 4.4.
+
+- Rated: `status` `pending` (shown and rated at once, final after 24 h), `final` and `left_early` (owner ruling
+  2026-10-21: the leaver loses, the stayer wins; `"left_early": "p1"|"p2"` names the leaver, `disconnect` is true).
+  `disputed`, `void` and `dropped` are not rated; a row flagged `pair_cap` (past 20 per pair per UTC day) is not rated.
+- Players carry a public id, never a Discord id. A public id equal to a legacy player's (`HMAC(secret, discord id)`,
+  the same secret on both services) is that player; any other is a community-only player. Their `tag` is the
+  community's numeric `#1234`; legacy-only players keep the hex tag.
+- Hidden: the service's `hidden.json` (`FM2K_COMMUNITY_HIDDEN_PATH`) when configured, else the latest row's flag.
+
 ## Ratings
 
 Glicko-2 (Glickman 2013), per game id: tau 0.5, new players 1500 / RD 350 /
@@ -70,8 +83,8 @@ there is no inflation for idle calendar time.
 Leaderboard eligibility: RD <= 150 **or** at least 10 rated matches in that
 game. Order: rating desc, then RD asc, then matches desc, then public id.
 
-Ratings are cached by the log's (path, mtime, size); a request after a new
-commit recomputes once.
+Ratings are cached by the log's and the results file's (path, mtime, size); a
+request after a new commit recomputes once.
 
 ## Game ids and families
 
@@ -109,9 +122,14 @@ plus `"private": true` when opted out.
   "disconnect": false,
   "repaired": false,
   "stage": "dojo",
-  "replay_url": null
+  "replay_url": null,
+  "status": "final",
+  "left_early": null
 }
 ```
+
+- `status`: `final` for every legacy row; `pending` / `final` / `left_early` for community results.
+- `left_early`: community results only: `"p1"` or `"p2"` left before the deciding round (a loss for them).
 
 - `winner`: `"p1"`, `"p2"` or `"draw"`.
 - `score`: rounds won `[p1, p2]` from `rounds[]`, or `null` (schema 1).

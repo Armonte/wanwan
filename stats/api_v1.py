@@ -50,7 +50,7 @@ def player_obj(snap: Snapshot, dc: str,
     pid = privacy.public_id(dc)
     out: dict[str, Any] = {"public_id": pid,
                            "name": snap.nicks.get(dc, "anon"),
-                           "tag": privacy.tag_for(pid)}
+                           "tag": snap.tags.get(dc) or privacy.tag_for(pid)}
     if privacy.is_hidden(dc, viewer):
         out["private"] = True
     return out
@@ -78,6 +78,8 @@ def match_obj(snap: Snapshot, m: Match,
         "repaired": m.repaired,
         "stage": m.stage,
         "replay_url": m.replay_url,
+        "status": m.status,
+        "left_early": m.left_early,
     }
 
 

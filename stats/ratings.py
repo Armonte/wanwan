@@ -29,6 +29,11 @@ therefore relabeled as a win for the side with more round wins and marked
 `repaired: true`. Draws without rounds[] (schema 1) cannot be repaired and
 stay draws.
 
+Community results (the PovertyCaster service's export/results.jsonl, at FM2K_RESULTS_PATH): one line per match state
+change, latest line per match_id wins. Rated: status pending, final and left_early (owner ruling 2026-10-21: the leaver
+loses, the stayer wins), unless flagged pair_cap. Players there carry a public id, never a Discord id: a public id that
+equals public_id(<legacy Discord id>) joins that legacy player, any other is keyed "pid:<public id>" (privacy.PID_KEY).
+
 Game families: one log holds every engine. Ids look like "fm2k:<id>",
 "fm95:<id>" or a bare family name like "mbaacc"; legacy FM2K entries keep
 their bare exe-stem ids and map to "fm2k". See game_family().
@@ -48,6 +53,8 @@ import glicko2
 import privacy
 
 DISCORD_ID_RE = re.compile(r"^[0-9]{15,21}$")
+PUBLIC_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+RESULT_RATED = ("pending", "final", "left_early")
 KNOWN_FAMILIES = ("fm2k", "fm95", "mbaacc")
 
 
@@ -147,6 +154,12 @@ class Match:
     replay_url: Optional[str] = None
     stage: Optional[str] = None
     source_game_id: str = ""  # the id as logged (before game_aliases.json)
+    status: str = "final"     # community results: pending | final | left_early
+    left_early: Optional[str] = None  # "p1" | "p2": who left (community results)
+    p1_tag: Optional[str] = None      # the community numeric tag (results rows)
+    p2_tag: Optional[str] = None
+    p1_hidden: bool = False
+    p2_hidden: bool = False
 
 
 @dataclass
@@ -168,12 +181,57 @@ class Snapshot:
     matches: list[Match]                          # oldest first
     games: dict[str, dict[str, GameRecord]]       # game -> dc id -> record
     nicks: dict[str, str]                         # dc id -> latest nick
-    by_pid: dict[str, str]                        # public id -> dc id
+    by_pid: dict[str, str]                        # public id -> dc id (or "pid:<public id>")
     excluded: dict[str, int]
+    tags: dict[str, str] = field(default_factory=dict)  # player key -> community numeric tag
+
+
+def _result_player(p: Any) -> Optional[tuple[str, str, Optional[str], bool]]:
+    if not isinstance(p, dict):
+        return None
+    pid = p.get("public_id")
+    if not isinstance(pid, str) or not PUBLIC_ID_RE.match(pid):
+        return None
+    tag = p.get("tag")
+    return (privacy.PID_KEY + pid, str(p.get("name") or "anon"), tag if isinstance(tag, str) and tag else None,
+            bool(p.get("hidden")))
+
+
+def parse_result(r: dict) -> tuple[Optional[Match], str]:
+    """A community results.jsonl row (v1). Players come back keyed "pid:<public id>"; build_snapshot joins them."""
+    status = r.get("status")
+    if status not in RESULT_RATED:
+        return None, f"status_{status}" if isinstance(status, str) else "malformed"
+    if "pair_cap" in (r.get("flags") or []):
+        return None, "pair_cap"
+    a, b = _result_player(r.get("p1")), _result_player(r.get("p2"))
+    if a is None or b is None:
+        return None, "unlinked"
+    if a[0] == b[0]:
+        return None, "self"
+    winner = r.get("winner")
+    ts = r.get("finished_at") or r.get("started_at")
+    gid = r.get("game_id")
+    if winner not in ("p1", "p2", "draw") or not isinstance(ts, (int, float)) or not isinstance(gid, str) or not gid:
+        return None, "malformed"
+    score = r.get("score")
+    score = (int(score[0]), int(score[1])) if isinstance(score, list) and len(score) == 2 else None
+    replay = r.get("replay_url")
+    left = r.get("left_early") if r.get("left_early") in ("p1", "p2") else None
+    return Match(
+        id=str(r["match_id"]), game_id=canonical_game_id(gid), source_game_id=gid,
+        p1=a[0], p2=b[0], p1_nick=a[1], p2_nick=b[1],
+        p1_char=r["p1"].get("char") or None, p2_char=r["p2"].get("char") or None,
+        winner=winner, score=score, finished_at=float(ts), disconnect=left is not None,
+        replay_url=replay if isinstance(replay, str) and replay else None,
+        status=status, left_early=left, p1_tag=a[2], p2_tag=b[2], p1_hidden=a[3], p2_hidden=b[3],
+    ), ""
 
 
 def parse_record(r: Any) -> tuple[Optional[Match], str]:
-    """One raw log entry -> (Match, "") or (None, reason)."""
+    """One raw log entry -> (Match, "") or (None, reason). A community results row (v 1, match_id) is parse_result."""
+    if isinstance(r, dict) and r.get("v") == 1 and r.get("match_id"):
+        return parse_result(r)
     if not isinstance(r, dict) or not r.get("id"):
         return None, "malformed"
     p1, p2 = r.get("p1_id"), r.get("p2_id")
@@ -219,15 +277,27 @@ def parse_record(r: Any) -> tuple[Optional[Match], str]:
     ), ""
 
 
-def build_snapshot(raw: list[Any]) -> Snapshot:
+def build_snapshot(raw: list[Any], results: Optional[list[Any]] = None) -> Snapshot:
+    """`raw`: the legacy hub log; `results`: community results rows (latest per match_id, read_results)."""
     excluded: Counter = Counter()
     matches: list[Match] = []
-    for r in raw:
+    for r in list(raw) + list(results or []):
         m, why = parse_record(r)
         if m is None:
             excluded[why] += 1
         else:
             matches.append(m)
+    # the join: a results player whose public id is a legacy player's is that player
+    legacy = {privacy.public_id(k): k for m in matches if not m.p1.startswith(privacy.PID_KEY) for k in (m.p1, m.p2)}
+    hidden: dict[str, bool] = {}
+    tags: dict[str, str] = {}
+    for m in matches:
+        if m.p1.startswith(privacy.PID_KEY):
+            m.p1 = legacy.get(privacy.public_id(m.p1), m.p1)
+            m.p2 = legacy.get(privacy.public_id(m.p2), m.p2)
+            hidden[privacy.public_id(m.p1)] = m.p1_hidden  # file order: the latest row wins
+            hidden[privacy.public_id(m.p2)] = m.p2_hidden
+    privacy.set_row_hidden(pid for pid, h in hidden.items() if h)
     matches.sort(key=lambda m: m.finished_at)  # stable: log order breaks ties
     excluded["repaired"] = sum(1 for m in matches if m.repaired)
 
@@ -255,8 +325,11 @@ def build_snapshot(raw: list[Any]) -> Snapshot:
             b.chars[m.p2_char] += 1
         nicks[m.p1] = m.p1_nick
         nicks[m.p2] = m.p2_nick
+        for k, t in ((m.p1, m.p1_tag), (m.p2, m.p2_tag)):
+            if t:
+                tags[k] = t  # the community #tag belongs to the account: a later legacy row keeps it
     by_pid = {privacy.public_id(dc): dc for dc in nicks}
-    return Snapshot(matches, games, nicks, by_pid, dict(excluded))
+    return Snapshot(matches, games, nicks, by_pid, dict(excluded), tags)
 
 
 def read_log(path: Path) -> list[Any]:
@@ -270,21 +343,55 @@ def read_log(path: Path) -> list[Any]:
     return payload if isinstance(payload, list) else []
 
 
+def results_path() -> Optional[Path]:
+    """The community service's export/results.jsonl (FM2K_RESULTS_PATH), read beside matches.json. None when unset."""
+    p = __import__("os").environ.get("FM2K_RESULTS_PATH", "")
+    return Path(p) if p else None
+
+
+def read_results(path: Optional[Path]) -> list[Any]:
+    """Every v1 line, the latest per match_id (in file order). A torn last line (a write in progress) is skipped."""
+    if path is None:
+        return []
+    latest: dict[str, Any] = {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(r, dict) and r.get("v") == 1 and isinstance(r.get("match_id"), str):
+                    latest.pop(r["match_id"], None)
+                    latest[r["match_id"]] = r  # re-insert: the dict order is the latest line's order
+    except OSError:
+        return []
+    return list(latest.values())
+
+
+def _stat_key(path: Optional[Path]) -> tuple:
+    if path is None:
+        return (None,)
+    try:
+        st = path.stat()
+        return (str(path), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return (str(path), -1, -1)
+
+
 _cache_lock = threading.Lock()
 _cache: dict[str, Any] = {"key": None, "snap": None}
 
 
-def snapshot(path: Path) -> Snapshot:
-    """Cached snapshot of the log at `path`, keyed by (path, mtime, size)."""
-    try:
-        st = path.stat()
-        key = (str(path), st.st_mtime_ns, st.st_size, _aliases()["key"])
-    except OSError:
-        key = (str(path), -1, -1, _aliases()["key"])
+def snapshot(path: Path, results: Optional[Path] = None) -> Snapshot:
+    """Cached snapshot of the log at `path` merged with the community results (`results`, default FM2K_RESULTS_PATH),
+    keyed by both files' (mtime, size)."""
+    results = results if results is not None else results_path()
+    key = (_stat_key(path), _stat_key(results), _aliases()["key"])
     with _cache_lock:
         if _cache["key"] == key and _cache["snap"] is not None:
             return _cache["snap"]
-    snap = build_snapshot(read_log(path))
+    snap = build_snapshot(read_log(path), read_results(results))
     with _cache_lock:
         _cache["key"] = key
         _cache["snap"] = snap

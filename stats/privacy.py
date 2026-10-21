@@ -62,7 +62,13 @@ def set_secret(secret: bytes) -> None:
 _pid_cache: dict[str, str] = {}
 
 
+PID_KEY = "pid:"  # a community-results player the legacy log never saw: keyed by its public id (ratings.py)
+
+
 def public_id(discord_id: str) -> str:
+    """The public id of a player key: HMAC of a Discord id, or the id itself for a "pid:<public id>" key."""
+    if discord_id.startswith(PID_KEY):
+        return discord_id[len(PID_KEY):]
     pid = _pid_cache.get(discord_id)
     if pid is None:
         mac = hmac.new(_SECRET, discord_id.encode("utf-8"), hashlib.sha256)
@@ -136,10 +142,23 @@ def community_hidden_pids() -> frozenset[str]:
     return ids
 
 
+_row_hidden: frozenset[str] = frozenset()
+
+
+def set_row_hidden(pids: Iterable[str]) -> None:
+    """Public ids whose latest community results row says hidden (ratings.build_snapshot). Used only while
+    FM2K_COMMUNITY_HIDDEN_PATH is unset: the service's hidden.json is current, a row is as of its match."""
+    global _row_hidden
+    _row_hidden = frozenset(pids)
+
+
 def is_hidden(discord_id: str, viewer_dc_id: Optional[str] = None) -> bool:
     if viewer_dc_id and viewer_dc_id == discord_id:
         return False
-    return discord_id in hidden_ids() or public_id(discord_id) in community_hidden_pids()
+    pid = public_id(discord_id)
+    if discord_id in hidden_ids() or pid in community_hidden_pids():
+        return True
+    return not os.environ.get("FM2K_COMMUNITY_HIDDEN_PATH") and pid in _row_hidden
 
 
 def set_hidden(discord_id: str, hidden: bool) -> None:

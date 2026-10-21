@@ -9,6 +9,7 @@
     python3 admin.py revoke-ticket --gen 1 --serial 42   # deny one ticket serial until it expires
     python3 admin.py show "Name#1234"                    # or a 32-hex account id
     python3 admin.py stats
+    python3 admin.py backup [--dir DIR] [--keep 30]      # online SQLite snapshot (the daily timer runs this)
 
 The KEYSET body is UNSIGNED: carry it to the machine that holds the root keys and run sign_keyset.py there. This
 tool never reads a root private key.
@@ -28,6 +29,28 @@ from config import Config
 from service import Community, ServiceError, write_ticket_key
 
 DAY = 86400
+
+
+def backup_db(db_path: str, out_dir: str, keep: int, now: float | None = None) -> str:
+    """A consistent copy of a live (WAL) database through SQLite's backup API, named by UTC time; keeps the newest
+    `keep` snapshots. Snapshots are 0600: they hold Discord ids."""
+    import sqlite3
+    os.makedirs(out_dir, mode=0o700, exist_ok=True)
+    out = os.path.join(out_dir, time.strftime("community-%Y%m%d-%H%M%S.sqlite3", time.gmtime(now)))
+    tmp = out + ".part"
+    src = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    dst = sqlite3.connect(tmp)
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, out)
+    snaps = sorted(f for f in os.listdir(out_dir) if f.startswith("community-") and f.endswith(".sqlite3"))
+    for old in snaps[:-keep] if keep > 0 else []:
+        os.remove(os.path.join(out_dir, old))
+    return out
 
 
 def _entry(spec: str, role: int, issued: int, valid_until: int) -> T.KeysetEntry:
@@ -114,6 +137,9 @@ def main(argv=None) -> int:
     rt.add_argument("--gen", type=int, required=True)
     rt.add_argument("--serial", type=int, required=True)
     sub.add_parser("stats")
+    bk = sub.add_parser("backup", help="online snapshot of the database, oldest dropped past --keep")
+    bk.add_argument("--dir", help="default: <data>/backups beside the database")
+    bk.add_argument("--keep", type=int, default=30)
     sub.add_parser("deny", help="print the current deny list summary")
     a = p.parse_args(argv)
     cfg = Config.from_env()
@@ -155,6 +181,12 @@ def main(argv=None) -> int:
             dst = os.path.join(cfg.keyset_dir, f"keyset_{ks.serial:06d}.pckeys")
             shutil.copyfile(a.file, dst)
             print(f"installed {dst}")
+        return 0
+
+    if a.cmd == "backup":
+        out = backup_db(cfg.db_path, a.dir or os.path.join(os.path.dirname(os.path.abspath(cfg.db_path)), "backups"),
+                        a.keep)
+        print(f"wrote {out}")
         return 0
 
     c = Community(cfg)

@@ -31,7 +31,7 @@ class Config:
     db_path: str
     ticket_key_path: str
     keyset_dir: str
-    public_host: str  # the host clients sign into a section 6 call
+    public_host: str  # the host(s) clients sign into a section 6 call: "2dfm.org" or "2dfm.org,povertycaster.org"
     root_path: str  # the public prefix in front of the app (Caddy route), part of the signed path
     root_pubs: tuple[bytes, bytes]
     deny_valid_seconds: int
@@ -62,6 +62,13 @@ class Config:
             fake_discord=e("COMMUNITY_FAKE_DISCORD", "") == "1",
             bind_host=e("COMMUNITY_BIND_HOST", ""),
         )
+
+    @property
+    def public_hosts(self) -> list[str]:
+        """Every host a signed call may name. More than one during a domain move (2dfm.org -> povertycaster.org): a
+        launcher signs the host of its own community.url, so old and new launchers both verify until the old host
+        is dropped."""
+        return [h.strip() for h in self.public_host.split(",") if h.strip()]
 
     def discord_missing(self) -> list[str]:
         out = []

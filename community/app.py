@@ -279,9 +279,10 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
         row, t = c.account_for_refresh(ticket)
         body = await request.body()
         path = cfg.root_path + request.url.path
-        msg = T.call_message(cfg.public_host.encode(), request.method.encode(), path.encode(), T.sha256(body), ts,
-                             nonce, T.ticket_id(ticket))
-        if not T.verify_call(t.client_pub, msg, sig):
+        digest = T.sha256(body)
+        if not any(T.verify_call(t.client_pub, T.call_message(host.encode(), request.method.encode(), path.encode(),
+                                                               digest, ts, nonce, T.ticket_id(ticket)), sig)
+                   for host in cfg.public_hosts):
             raise ServiceError(401, "bad_call_signature", "the call signature does not verify")
         if c.nonce_seen(nonce):
             raise ServiceError(401, "nonce_reused", "this nonce was already used")

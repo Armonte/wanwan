@@ -112,7 +112,7 @@ Environment variables; any not set are read from `COMMUNITY_CONFIG` (default `co
 | `COMMUNITY_DB` | `community/data/community.sqlite3` | |
 | `COMMUNITY_TICKET_KEY` | `community/data/ticket_key.txt` | the online key file (0600) |
 | `COMMUNITY_KEYSET_DIR` | `community/data/keysets` | signed `*.pckeys`; the newest valid one is served |
-| `COMMUNITY_PUBLIC_HOST` | `2dfm.org` | the host clients sign into calls |
+| `COMMUNITY_PUBLIC_HOST` | `2dfm.org` | the host(s) clients sign into calls; a comma list during a domain move (`2dfm.org,povertycaster.org`) |
 | `COMMUNITY_ROOT_PATH` | `/community` | the public prefix, part of the signed path |
 | `COMMUNITY_DENY_VALID_SECONDS` | `86400` | deny list valid_until - issued |
 | `COMMUNITY_DENY_REFRESH_SECONDS` | `900` | the deny list is re-signed at least this often |
@@ -194,6 +194,9 @@ handle_path /community/* {
    Only the root the body names is opened (pass `-` for the other). The tool refuses a key that is not that root.
 5. **Install** on the server: `python3 admin.py install-keyset keyset_1.pckeys`, then start the service and check
    `https://2dfm.org/community/health` shows `"issuing": {"key_gen": 1}`.
+
+Backups: `deploy/pc-community-backup.{service,timer}` run `admin.py backup --keep 30` daily (an online SQLite snapshot
+into `data/backups/`, 0600). The unit files for the service itself are in `deploy/` too.
 
 Moderation: `admin.py ban "Name#1234" --reason ...` (live at the next deny-list fetch, refresh refused),
 `admin.py unban`, `admin.py revoke-ticket --gen 1 --serial N`, `admin.py show`, `admin.py stats`. Every action goes to

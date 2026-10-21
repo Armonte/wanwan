@@ -136,3 +136,15 @@ def test_no_discord_id_name_or_ip_in_any_response(h):
             assert n not in blob, (r.request.url, n)
     # and the server-side record holds it only in accounts.discord_id
     assert h.community.db.one("SELECT COUNT(*) FROM accounts WHERE discord_id = ?", (DISCORD_ID,))[0] == 1
+
+
+def test_refresh_accepts_every_listed_public_host(h):
+    # a domain move: launchers on the old and the new community.url both verify while both hosts are listed
+    t = linked(h)
+    h.cfg.public_host = "2dfm.org, povertycaster.org"
+    assert h.refresh(C1, t, nonce=b"\x21" * 16, host="povertycaster.org").status_code == 200
+    assert h.refresh(C1, t, nonce=b"\x22" * 16, host="2dfm.org").status_code == 200
+    r = h.refresh(C1, t, nonce=b"\x23" * 16, host="evil.example")
+    assert r.status_code == 401 and r.json()["error"] == "bad_call_signature"
+    h.cfg.public_host = "povertycaster.org"  # the old host dropped after the move
+    assert h.refresh(C1, t, nonce=b"\x24" * 16, host="2dfm.org").json()["error"] == "bad_call_signature"

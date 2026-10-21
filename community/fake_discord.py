@@ -46,7 +46,7 @@ def check_allowed(cfg: Config) -> None:
     if not host_is_loopback(cfg.bind_host):
         raise RuntimeError("COMMUNITY_FAKE_DISCORD=1 needs COMMUNITY_BIND_HOST set to a loopback address "
                            f"(the uvicorn --host); got {cfg.bind_host!r}")
-    if not host_is_loopback(cfg.public_host):
+    if not cfg.public_hosts or not all(host_is_loopback(h) for h in cfg.public_hosts):
         raise RuntimeError("COMMUNITY_FAKE_DISCORD=1 needs a loopback COMMUNITY_PUBLIC_HOST; "
                            f"got {cfg.public_host!r}")
 

@@ -81,3 +81,16 @@ def test_torn_line_is_skipped(tmp_path):
     with res.open("a") as f:
         f.write('{"v": 1, "match_id": "m2", "sta')
     assert [r["match_id"] for r in ratings.read_results(res)] == ["m1"]
+
+
+def test_replay_url_passes_through(tmp_path, monkeypatch, client):
+    """A later state line of the same match adds replay_url (the community service appends one after an upload)."""
+    res = tmp_path / "results.jsonl"
+    url = "https://replays.example.test/replays/v1/fm2k/testgame/2033-05/0123456789abcdef.pcrz"
+    write(res, [row("m1", privacy.public_id(A), Z), row("m1", privacy.public_id(A), Z, replay_url=url)])
+    monkeypatch.setenv("FM2K_RESULTS_PATH", str(res))
+    monkeypatch.delenv("FM2K_COMMUNITY_HIDDEN_PATH", raising=False)
+    m = next(x for x in ratings.snapshot(FIXTURE, res).matches if x.id == "m1")
+    assert m.replay_url == url
+    prof = client.get(f"/api/v1/u/{Z}").json()
+    assert next(r for r in prof["recent"] if r["id"] == "m1")["replay_url"] == url

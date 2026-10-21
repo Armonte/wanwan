@@ -1,4 +1,4 @@
-"""The link flow with a mocked Discord: start -> callback -> poll -> finish -> a ticket clients verify; names and
+"""The link flow with a mocked Discord: start -> link/discord -> finish -> a ticket clients verify; names and
 #tags; relink; refusals; missing configuration."""
 import base64
 import os
@@ -66,7 +66,7 @@ def test_name_rules_and_name_required(h):
 def test_bad_link_proof_and_wrong_key(h):
     pub = T.seed_public(client(1))
     j = h.post("/v1/link/start", json={"client_pub": b64(pub)}).json()
-    h.get("/discord/callback", params={"state": j["sign_in_url"].split("state=")[1], "code": "good-code"})
+    h.post("/v1/link/discord", json={"link_id": j["link_id"], "access_token": "good-code"})
     challenge = base64.b64decode(j["challenge"])
     other = T.sign(client(2), T.TAG_LINK, T.link_message(challenge, pub))
     r = h.post("/v1/link/finish", json={"link_id": j["link_id"], "signature": b64(other), "name": "X"})
@@ -83,18 +83,73 @@ def test_finish_before_discord_and_expired_link(h):
     r = h.post("/v1/link/finish", json={"link_id": j["link_id"], "signature": b64(sig), "name": "X"})
     assert r.status_code == 409 and r.json()["error"] == "not_authorized"
     h.clock.t += 601
-    assert h.post("/v1/link/poll", json={"link_id": j["link_id"]}).status_code == 410
-    cb = h.get("/discord/callback", params={"state": j["sign_in_url"].split("state=")[1], "code": "good-code"})
-    assert cb.status_code == 410
+    r = h.post("/v1/link/discord", json={"link_id": j["link_id"], "access_token": "good-code"})
+    assert r.status_code == 410 and r.json()["error"] == "link_expired"
 
 
-def test_callback_refusals(h):
-    j = h.post("/v1/link/start", json={"client_pub": b64(T.seed_public(client(1)))}).json()
-    state = j["sign_in_url"].split("state=")[1]
-    assert h.get("/discord/callback", params={"state": state, "code": "nope"}).status_code == 502
-    assert h.get("/discord/callback", params={"state": "unknown", "code": "good-code"}).status_code == 410
-    assert h.get("/discord/callback", params={"state": state, "error": "access_denied"}).status_code == 400
-    assert h.post("/v1/link/poll", json={"link_id": j["link_id"]}).json()["status"] == "failed"
+def start(h, n=1):
+    return h.post("/v1/link/start", json={"client_pub": b64(T.seed_public(client(n)))}).json()
+
+
+def test_start_has_no_browser_sign_in(h):
+    j = start(h)
+    assert set(j) == {"link_id", "challenge", "expires_in"}
+    assert h.get("/discord/callback").status_code == 404 and h.post("/v1/link/poll", json={}).status_code == 404
+
+
+def test_link_discord_answers_and_suggests_the_discord_name(h):
+    j = start(h)
+    r = h.post("/v1/link/discord", json={"link_id": j["link_id"], "access_token": "good-code"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"status": "authorized", "needs_name": True, "suggested_name": "DiscordSecretName",
+                        "discord_handle": "secretuser"}
+    fin = h.link(client(1), name=r.json()["suggested_name"]).json()
+    assert fin["display"].startswith("DiscordSecretName#") and fin["discord_handle"] == "secretuser"
+    again = h.post("/v1/link/discord", json={"link_id": start(h)["link_id"], "access_token": "good-code"}).json()
+    assert again["needs_name"] is False and again["display"] == fin["display"]
+
+
+def test_suggestion_falls_back_to_username_then_empty(h):
+    h.app.state.discord.names["111111111111111111"] = ("plainuser", "x" * 40)  # display name breaks the rules (too long)
+    r = h.post("/v1/link/discord", json={"link_id": start(h)["link_id"], "access_token": "other-code"}).json()
+    assert r["suggested_name"] == "plainuser"
+    from app import suggest_name
+    assert suggest_name({"global_name": "x" * 40, "username": ""}) == ""
+
+
+def test_link_discord_refusals(h):
+    j = start(h)
+    post = lambda tok, lid=j["link_id"]: h.post("/v1/link/discord", json={"link_id": lid, "access_token": tok})
+    assert post("nope").json()["error"] == "discord_token_invalid"
+    assert post("other-app-token").json()["error"] == "discord_wrong_app"
+    assert post("").json()["error"] == "bad_access_token" and post(None).json()["error"] == "bad_access_token"
+    assert post("x" * 600).json()["error"] == "bad_access_token"
+    assert post("good-code", lid="unknown").json()["error"] == "link_expired"
+    assert h.community.db.one("SELECT COUNT(*) FROM accounts")[0] == 0  # nothing created by a refused token
+    assert post("good-code").status_code == 200 and post("good-code").status_code == 200  # a retry is fine
+    r = post("other-code")  # but the same link cannot switch to another Discord account
+    assert r.status_code == 409 and r.json()["error"] == "link_used"
+
+
+def test_used_link_cannot_be_reused(h):
+    h.link(client(1), name="Skeleton")
+    lid = h.community.db.one("SELECT link_id FROM links WHERE status = 'consumed'")[0]
+    r = h.post("/v1/link/discord", json={"link_id": lid, "access_token": "good-code"})
+    assert r.status_code == 409 and r.json()["error"] == "link_used"
+
+
+def test_discord_token_is_never_stored(h):
+    h.link(client(1), name="Skeleton")
+    db = h.community.db
+    for (table,) in db.q("SELECT name FROM sqlite_master WHERE type = 'table'"):
+        for row in db.q(f"SELECT * FROM {table}"):
+            assert all(v != "good-code" for v in tuple(row)), table
+
+
+def test_refresh_returns_the_discord_handle(h):
+    t = base64.b64decode(h.link(client(1), name="Skeleton").json()["ticket"])
+    r = h.refresh(client(1), t)
+    assert r.status_code == 200 and r.json()["discord_handle"] == "secretuser"
 
 
 def test_start_refuses_weak_client_key(h):

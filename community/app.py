@@ -5,32 +5,35 @@ sections 2, 3, 6, 8, 9; COMMUNITY_SERVICE.md section 7).
 
 Endpoints (paths as the app sees them; the public URL adds /community):
     GET  /health                      liveness + what is configured (no secrets)
-    POST /v1/link/start               {client_pub} -> {link_id, challenge, sign_in_url}
-    GET  /discord/callback            Discord's OAuth redirect (the browser lands here)
-    POST /v1/link/poll                {link_id} -> {status, needs_name, display?}
-    POST /v1/link/finish              {link_id, signature, name?} -> {ticket, display, ...}
+    POST /v1/link/start               {client_pub} -> {link_id, challenge, expires_in}
+    POST /v1/link/discord             {link_id, access_token} -> {status, needs_name, display?, suggested_name,
+                                      discord_handle}: the launcher's Discord Social SDK token, used once and dropped
+    POST /v1/link/finish              {link_id, signature, name?} -> {ticket, display, discord_handle, ...}
     POST /v1/ticket/refresh           signed call (section 6 headers) -> {ticket, ...}
     GET  /v1/keyset                   the current root-signed KEYSET (PCKEYS1 bytes)
     GET  /v1/deny                     the deny list, signed by the ticket key (PCDENY1 bytes)
 
-No response carries a Discord id, a Discord name or an IP address. Players are Name#1234.
+One Discord login: the launcher signs in through the Discord Social SDK (its own token, for presence, invites and
+friends) and hands that token here once; the service asks Discord who it is and keeps nothing of the token.
+
+No response carries a Discord id or an IP address. The player's own Discord username (and a name suggestion from it)
+goes back only to that player, in link/discord, link/finish and ticket/refresh. Other players see Name#1234.
 """
 from __future__ import annotations
 
 import base64
 import binascii
-import html
 import secrets
 import time
-import urllib.parse
 from collections import defaultdict, deque
 from typing import Optional
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import JSONResponse, Response
 
 import fake_discord
+import names
 import tickets as T
 from config import Config
 from db import SCHEMA_VERSION
@@ -40,32 +43,46 @@ LINK_TTL = 600  # a link must be finished within 10 minutes of its start
 REFRESH_AFTER = T.TICKET_LIFETIME // 2  # the launcher refreshes silently at half-life
 
 
+DISCORD_ME = "https://discord.com/api/v10/oauth2/@me"
+MAX_TOKEN = 512
+
+
 class DiscordClient:
-    """The two Discord calls of the OAuth code flow. Tests replace app.state.discord with a fake."""
+    """Who a launcher's Discord access token belongs to. Tests replace app.state.discord with a fake."""
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
 
-    def authorize_url(self, state: str) -> str:
-        return "https://discord.com/oauth2/authorize?" + urllib.parse.urlencode({
-            "client_id": self.cfg.discord_client_id, "response_type": "code",
-            "redirect_uri": self.cfg.discord_redirect_uri, "scope": "identify", "state": state, "prompt": "none"})
+    async def whoami(self, access_token: str) -> dict:
+        """{id, username, global_name} of the token's user. The token must be one issued to OUR application: a token
+        another app holds for the same person is refused (discord_wrong_app)."""
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as cli:
+                r = await cli.get(DISCORD_ME, headers={"Authorization": f"Bearer {access_token}"})
+        except httpx.HTTPError:
+            raise ServiceError(502, "discord_unreachable", "could not reach Discord, try again")
+        if r.status_code == 401:
+            raise ServiceError(401, "discord_token_invalid", "Discord did not accept the sign-in, sign in again")
+        if r.status_code != 200:
+            raise ServiceError(502, "discord_unreachable", f"Discord answered {r.status_code}, try again")
+        j = r.json()
+        if str((j.get("application") or {}).get("id", "")) != self.cfg.discord_client_id:
+            raise ServiceError(403, "discord_wrong_app", "this Discord sign-in belongs to another application")
+        user = j.get("user") or {}
+        if not user.get("id"):
+            raise ServiceError(401, "discord_token_invalid", "the Discord sign-in lacks the identify scope")
+        return {"id": str(user["id"]), "username": str(user.get("username") or ""),
+                "global_name": str(user.get("global_name") or "")}
 
-    async def user_id(self, code: str) -> Optional[str]:
-        async with httpx.AsyncClient(timeout=10.0) as cli:
-            r = await cli.post("https://discord.com/api/oauth2/token", data={
-                "client_id": self.cfg.discord_client_id, "client_secret": self.cfg.discord_client_secret,
-                "grant_type": "authorization_code", "code": code, "redirect_uri": self.cfg.discord_redirect_uri})
-            if r.status_code != 200:
-                return None
-            tok = r.json().get("access_token")
-            if not tok:
-                return None
-            me = await cli.get("https://discord.com/api/users/@me", headers={"Authorization": f"Bearer {tok}"})
-            if me.status_code != 200:
-                return None
-            uid = me.json().get("id")
-            return str(uid) if uid else None
+
+def suggest_name(who: dict) -> str:
+    """The Discord display name if it passes the name rules, else the username, else nothing (the box starts empty)."""
+    for raw in (who.get("global_name"), who.get("username")):
+        try:
+            return names.normalize_name(raw or "")
+        except names.BadName:
+            continue
+    return ""
 
 
 def b64d(s, n: Optional[int] = None) -> bytes:
@@ -107,13 +124,6 @@ def client_key(request: Request) -> str:
     return peer
 
 
-def page(title: str, body: str, status: int = 200) -> HTMLResponse:
-    return HTMLResponse(status_code=status, content=(
-        "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'>"
-        f"<title>{html.escape(title)}</title><body style='font-family:sans-serif;max-width:36em;margin:3em auto;"
-        f"padding:0 1em'><h2>{html.escape(title)}</h2><p>{html.escape(body)}</p></body>"))
-
-
 def create_app(cfg: Optional[Config] = None, community: Optional[Community] = None) -> FastAPI:
     cfg = cfg or Config.from_env()
     fake_discord.check_allowed(cfg)  # local dev mode refuses to start off loopback
@@ -150,9 +160,12 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
         return body
 
     def ticket_response(b: bytes) -> dict:
+        """Only ever sent to the ticket's own player, so it may carry their Discord username."""
         _, t = T.decode_ticket(b)
+        acc = svc().db.one("SELECT discord_handle FROM accounts WHERE account_id = ?", (t.account,))
         return {"ticket": b64e(b), "account_id": t.account.hex(), "name": t.name, "tag": f"{t.tag:04d}",
-                "display": t.display, "refresh_after": REFRESH_AFTER}
+                "display": t.display, "refresh_after": REFRESH_AFTER,
+                "discord_handle": (acc["discord_handle"] if acc else None) or ""}
 
     @app.get("/health")
     async def health():
@@ -188,10 +201,7 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
         c.db.x("DELETE FROM links WHERE created < ?", (now - LINK_TTL,))
         c.db.x("INSERT INTO links(link_id, state, challenge, client_pub, created, status) VALUES(?,?,?,?,?, 'pending')",
                (link_id, state, challenge, client_pub, now))
-        d = app.state.discord
-        url = d.authorize_url(state, str(request.base_url)) if cfg.fake_discord else d.authorize_url(state)
-        return {"link_id": link_id, "challenge": b64e(challenge), "sign_in_url": url,
-                "expires_in": LINK_TTL}
+        return {"link_id": link_id, "challenge": b64e(challenge), "expires_in": LINK_TTL}
 
     def live_link(link_id: str):
         c = svc()
@@ -200,40 +210,30 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
             raise ServiceError(410, "link_expired", "start linking again")
         return row
 
-    @app.get("/discord/callback")
-    async def discord_callback(state: str = "", code: str = "", error: str = ""):
-        c = svc()
-        row = c.db.one("SELECT * FROM links WHERE state = ?", (state,)) if state else None
-        if row is None or row["created"] < c.now() - LINK_TTL or row["status"] != "pending":
-            return page("Link expired", "This sign-in link has expired or was already used. "
-                        "Start again from PovertyCaster.", 410)
-        if error or not code:
-            c.db.x("UPDATE links SET status = 'failed' WHERE link_id = ?", (row["link_id"],))
-            return page("Sign-in cancelled", "Discord sign-in was cancelled. You can close this tab and try again "
-                        "from PovertyCaster.", 400)
-        try:
-            uid = await app.state.discord.user_id(code)
-        except httpx.HTTPError:
-            uid = None
-        if not uid:
-            return page("Sign-in failed", "Discord did not confirm the sign-in. Close this tab and try again.", 502)
-        acc = c.account_for_discord(uid)
-        c.db.x("UPDATE links SET account = ?, status = 'authorized' WHERE link_id = ? AND status = 'pending'",
-               (acc, row["link_id"]))
-        return page("Signed in", "Discord is linked. Return to PovertyCaster to finish; you can close this tab.")
-
-    @app.post("/v1/link/poll")
-    async def link_poll(request: Request):
+    @app.post("/v1/link/discord")
+    async def link_discord(request: Request):
+        if not app.state.link_limit.allow(client_key(request), time.monotonic()):
+            raise ServiceError(429, "rate_limited", "too many link attempts, try again later")
         body = await json_body(request)
         row = live_link(body.get("link_id"))
-        out = {"status": row["status"]}
-        if row["status"] == "authorized":
-            acc = svc().account(row["account"])
-            out["needs_name"] = acc["name"] is None
-            if acc["name"]:
-                out["display"] = f"{acc['name']}#{acc['tag']:04d}"
-            if acc["banned"]:
-                out["status"] = "banned"
+        token = body.get("access_token")
+        if not isinstance(token, str) or not 0 < len(token) <= MAX_TOKEN or not token.isprintable():
+            raise ServiceError(400, "bad_access_token", "access_token must be the Discord access token")
+        if row["status"] not in ("pending", "authorized"):
+            raise ServiceError(409, "link_used", "this link was already used, start again")
+        who = await app.state.discord.whoami(token)  # the token is used for this one call and never stored
+        c = svc()
+        acc_row = c.account_for_discord(who["id"], who["username"] or None)
+        if row["status"] == "authorized" and row["account"] != acc_row:
+            raise ServiceError(409, "link_used", "this link belongs to another Discord account, start again")
+        c.db.x("UPDATE links SET account = ?, status = 'authorized' WHERE link_id = ?", (acc_row, row["link_id"]))
+        acc = c.account(acc_row)
+        if acc["banned"]:
+            raise ServiceError(403, "banned", "this account is banned")
+        out = {"status": "authorized", "needs_name": acc["name"] is None, "suggested_name": suggest_name(who),
+               "discord_handle": who["username"]}
+        if acc["name"]:
+            out["display"] = f"{acc['name']}#{acc['tag']:04d}"
         return out
 
     @app.post("/v1/link/finish")

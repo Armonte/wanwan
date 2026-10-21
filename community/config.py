@@ -8,7 +8,6 @@ from dataclasses import dataclass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "data")
-DEFAULT_REDIRECT = "https://2dfm.org/community/discord/callback"
 
 
 def load_env_file(path: str) -> None:
@@ -29,8 +28,6 @@ def load_env_file(path: str) -> None:
 @dataclass
 class Config:
     discord_client_id: str
-    discord_client_secret: str
-    discord_redirect_uri: str
     db_path: str
     ticket_key_path: str
     keyset_dir: str
@@ -40,7 +37,6 @@ class Config:
     deny_valid_seconds: int
     deny_refresh_seconds: int
     fake_discord: bool = False  # LOCAL DEV MODE (fake_discord.py): loopback only, refused anywhere else
-    fake_discord_user: str = "fake-user:Tester"  # ID[:NAME]
     bind_host: str = ""  # the uvicorn --host; fake mode checks it is loopback
 
     @classmethod
@@ -55,8 +51,6 @@ class Config:
             roots = (a, b)
         return cls(
             discord_client_id=e("COMMUNITY_DISCORD_CLIENT_ID", ""),
-            discord_client_secret=e("COMMUNITY_DISCORD_CLIENT_SECRET", ""),
-            discord_redirect_uri=e("COMMUNITY_DISCORD_REDIRECT_URI", DEFAULT_REDIRECT),
             db_path=e("COMMUNITY_DB", os.path.join(DATA, "community.sqlite3")),
             ticket_key_path=e("COMMUNITY_TICKET_KEY", os.path.join(DATA, "ticket_key.txt")),
             keyset_dir=e("COMMUNITY_KEYSET_DIR", os.path.join(DATA, "keysets")),
@@ -66,7 +60,6 @@ class Config:
             deny_valid_seconds=int(e("COMMUNITY_DENY_VALID_SECONDS", "86400")),
             deny_refresh_seconds=int(e("COMMUNITY_DENY_REFRESH_SECONDS", "900")),
             fake_discord=e("COMMUNITY_FAKE_DISCORD", "") == "1",
-            fake_discord_user=e("COMMUNITY_FAKE_DISCORD_USER", "") or "fake-user:Tester",
             bind_host=e("COMMUNITY_BIND_HOST", ""),
         )
 
@@ -74,8 +67,4 @@ class Config:
         out = []
         if not self.discord_client_id:
             out.append("COMMUNITY_DISCORD_CLIENT_ID")
-        if not self.discord_client_secret:
-            out.append("COMMUNITY_DISCORD_CLIENT_SECRET")
-        if not self.discord_redirect_uri:
-            out.append("COMMUNITY_DISCORD_REDIRECT_URI")
         return out

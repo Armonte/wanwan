@@ -1,7 +1,7 @@
 """SQLite storage for the community service, with migrations-lite: PRAGMA user_version holds the schema version and
 MIGRATIONS[i] takes the database from version i to i + 1. Add a migration at the end; never edit a shipped one.
 
-Discord ids live only in accounts.discord_id. Nothing here stores IP addresses.
+Discord ids live only in accounts.discord_id; accounts.discord_handle goes back only to its own player. Nothing here stores IP addresses.
 """
 from __future__ import annotations
 
@@ -58,6 +58,11 @@ MIGRATIONS = [
         signed      BLOB NOT NULL
     );
     CREATE TABLE audit (id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL);
+    """,
+    # 1 -> 2: the single Discord login (launcher Social SDK token -> /v1/link/discord). The player's own Discord
+    # username, shown back only to that player (finish / refresh), never to anyone else.
+    """
+    ALTER TABLE accounts ADD COLUMN discord_handle TEXT;
     """,
 ]
 

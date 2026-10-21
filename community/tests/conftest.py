@@ -30,21 +30,26 @@ class Clock:
 
 
 class FakeDiscord:
-    """code -> Discord user id; anything else fails like a refused exchange."""
+    """access token -> Discord user; anything else is refused like a token Discord does not accept."""
 
     def __init__(self):
         self.users = {"good-code": DISCORD_ID, "other-code": "111111111111111111"}
+        self.names = {DISCORD_ID: ("secretuser", DISCORD_NAME)}
+        self.wrong_app = {"other-app-token"}
 
-    def authorize_url(self, state):
-        return f"https://discord.example/authorize?state={state}"
-
-    async def user_id(self, code):
-        return self.users.get(code)
+    async def whoami(self, token):
+        from service import ServiceError
+        if token in self.wrong_app:
+            raise ServiceError(403, "discord_wrong_app", "another application")
+        uid = self.users.get(token)
+        if uid is None:
+            raise ServiceError(401, "discord_token_invalid", "refused")
+        username, global_name = self.names.get(uid, ("user" + uid[-4:], ""))
+        return {"id": uid, "username": username, "global_name": global_name}
 
 
 def make_cfg(tmp, **over) -> Config:
-    vals = dict(discord_client_id="cid", discord_client_secret="secret",
-                discord_redirect_uri="https://2dfm.org/community/discord/callback",
+    vals = dict(discord_client_id="cid",
                 db_path=os.path.join(tmp, "c.sqlite3"), ticket_key_path=os.path.join(tmp, "ticket_key.txt"),
                 keyset_dir=os.path.join(tmp, "keysets"), public_host="2dfm.org", root_path="/community",
                 root_pubs=ROOTS, deny_valid_seconds=86400, deny_refresh_seconds=900)
@@ -97,16 +102,13 @@ class Harness:
         return self._rec(self.client.post(path, **kw))
 
     def link(self, client_seed: bytes, name="Skeleton", code="good-code"):
-        """start -> Discord callback -> poll -> finish. Returns the finish response."""
+        """start -> link/discord (the launcher's Discord token) -> finish. Returns the finish response."""
         pub = T.seed_public(client_seed)
         st = self.post("/v1/link/start", json={"client_pub": b64(pub)})
         assert st.status_code == 200, st.text
         j = st.json()
-        state = j["sign_in_url"].split("state=")[1]
-        cb = self.get("/discord/callback", params={"state": state, "code": code})
-        assert cb.status_code == 200, cb.text
-        poll = self.post("/v1/link/poll", json={"link_id": j["link_id"]})
-        assert poll.json()["status"] in ("authorized", "banned")
+        d = self.post("/v1/link/discord", json={"link_id": j["link_id"], "access_token": code})
+        assert d.status_code in (200, 403), d.text
         challenge = base64.b64decode(j["challenge"])
         sig = T.sign(client_seed, T.TAG_LINK, T.link_message(challenge, pub))
         body = {"link_id": j["link_id"], "signature": b64(sig)}

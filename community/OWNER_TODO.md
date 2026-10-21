@@ -2,11 +2,8 @@
 
 Do these when you have a few minutes. Full commands are in README.md in this folder.
 
-1. **Create the Discord app.** https://discord.com/developers/applications -> New Application -> name it
-   **PovertyCaster**. OAuth2 -> Redirects -> add exactly:
-   `https://2dfm.org/community/discord/callback`
-   Copy the **Client ID** and **Client Secret** (the secret goes only into the server's
-   `community/data/community.env`, never into chat or git).
+1. **Discord app.** DONE 2026-10-21: the launcher's app (1558033167527575594), Public Client on, redirect
+   `http://127.0.0.1/callback`; its id is in the server's `community/data/community.env` (no secret needed any more).
 2. **Root keys** (generated in `D:\PC_ROOT_KEYS_MOVE_OFFLINE`): keep them on the PC until step 4 is done, then copy the
    two `*.private.pem` files to two offline places (USB + password manager) and delete them from the PC.
 3. **On the server** (ssh alias `2dfm`): generate the day-to-day key and the KEYSET body:

@@ -18,7 +18,7 @@ Standalone FastAPI app. It does not touch the live hub (`hub/`).
 | `db.py` | SQLite schema and migrations-lite (`PRAGMA user_version`) |
 | `admin.py` | server CLI: online key, unsigned KEYSET body, ban, revoke, stats |
 | `sign_keyset.py` | the owner's offline signer (runs where the root keys are; needs only `cryptography`) |
-| `fake_discord.py`, `dev_run_local.sh` | LOCAL DEV MODE: a fake Discord sign-in and throwaway test roots, loopback only |
+| `fake_discord.py`, `dev_run_local.sh` | LOCAL DEV MODE: fake Discord tokens and throwaway test roots, loopback only |
 | `tests/` | pytest, including the pinned C++ vectors |
 
 ## Endpoints
@@ -28,22 +28,24 @@ Public base: `https://2dfm.org/community` (Caddy strips the prefix; the app sees
 | Method and path | Body / headers | Answer |
 |---|---|---|
 | `GET /health` | | `{ok, schema, discord_configured, ticket_key, keyset, issuing}`, no secrets |
-| `POST /v1/link/start` | `{"client_pub": b64(32)}` | `{link_id, challenge: b64(32), sign_in_url, expires_in}` |
-| `GET /discord/callback` | Discord's redirect (`code`, `state`) | a small "return to PovertyCaster" page |
-| `POST /v1/link/poll` | `{"link_id"}` | `{status: pending, authorized, banned, failed, consumed; needs_name; display?}` |
-| `POST /v1/link/finish` | `{"link_id", "signature": b64(64), "name"?}` | `{ticket: b64(252), account_id, name, tag, display, refresh_after}` |
+| `POST /v1/link/start` | `{"client_pub": b64(32)}` | `{link_id, challenge: b64(32), expires_in}` |
+| `POST /v1/link/discord` | `{"link_id", "access_token"}` | `{status: authorized, needs_name, display?, suggested_name, discord_handle}` |
+| `POST /v1/link/finish` | `{"link_id", "signature": b64(64), "name"?}` | `{ticket: b64(252), account_id, name, tag, display, refresh_after, discord_handle}` |
 | `POST /v1/ticket/refresh` | section 6 headers `X-PC-Ticket`, `X-PC-Time`, `X-PC-Nonce`, `X-PC-Sig` | same as finish |
 | `GET /v1/keyset` | | the current KEYSET bytes (`application/octet-stream`, `X-PC-Keyset-Serial`) |
 | `GET /v1/deny` | | the PCDENY1 deny list bytes, signed by the ticket key |
 
 Errors are `{"error": code, "detail": text}`. Every response carries `X-PC-Server-Time`.
 
-The link flow (spec section 9):
-1. The launcher makes its client key and calls `link/start` with the public half. It opens `sign_in_url` (Discord)
-   in the browser and keeps `link_id` secret.
-2. Discord redirects the browser to `/discord/callback`; the service maps the Discord user to an account (a random
-   16-byte account_id on first sign-in, never derived from Discord).
-3. The launcher polls `link/poll` until `authorized`. `needs_name` says whether the player must choose a name.
+The link flow (spec section 9). There is ONE Discord login: the launcher's Discord Social SDK sign-in.
+1. The launcher makes its client key and calls `link/start` with the public half, keeping `link_id` secret.
+2. It signs in through the Discord Social SDK (the full social bundle plus `identify`; Public Client, redirect
+   `http://127.0.0.1/callback`). That token stays in the launcher for presence, invites and friends.
+3. It sends the access token once to `link/discord`. The service asks Discord `GET /api/v10/oauth2/@me`, refuses a
+   token issued to another application (`discord_wrong_app`), maps the Discord user to an account (a random 16-byte
+   account_id on first sign-in, never derived from Discord) and forgets the token. `needs_name` says whether the
+   player must choose a name; `suggested_name` is their Discord display name (or username) when it passes the name
+   rules, for the launcher to prefill.
 4. The launcher signs `PC-COMMUNITY-LINK-V1\n || challenge || client_pub` and calls `link/finish` with the name.
    The service checks the proof of possession, normalizes the name, assigns the #tag (unique per name skeleton)
    and returns the ticket.
@@ -55,8 +57,10 @@ Renewal: tickets live 48 h (the client verifier refuses more than 72 h). The lau
 is the public one, `/community/v1/ticket/refresh`. A ticket of any age refreshes while the account is linked to
 that client key and not banned, so the player never signs in again and never sees an expiry.
 
-Privacy: no response carries a Discord id, a Discord name or an IP. Discord ids live only in `accounts.discord_id`.
-Players are `Name#1234`; names are public (they are in the ticket).
+Privacy: no response carries a Discord id or an IP. Discord ids live only in `accounts.discord_id`, and the Discord
+access token is never stored. The player's own Discord username (`discord_handle`) and name suggestion go back only to
+that player (link/discord, link/finish, ticket/refresh), so their settings can show which Discord account is linked.
+Other players see `Name#1234`; names are public (they are in the ticket).
 
 ## Run locally
 
@@ -88,29 +92,14 @@ and runs uvicorn on `127.0.0.1:8790` with `COMMUNITY_FAKE_DISCORD=1`, `COMMUNITY
 `splitBaseUrl` takes the host without its port and the path after it. It prints the base URL and the test root public
 keys.
 
-In fake mode `link/start` needs no Discord credentials; its `sign_in_url` is `http://127.0.0.1:8790/fake/authorize`,
-a page with no external assets whose Continue button lands on the normal `/discord/callback` with the code
-`fake:<id>` (the id is editable, so a second id is a second account; Cancel tests the refusal). Accounts, names,
-tickets, the KEYSET, the deny list, bans and refresh all run for real (`admin.py` works with the same env).
+In fake mode `link/start` needs no Discord client id and `link/discord` takes an access token `fake:<id>[:<name>]`
+instead of asking Discord (a second id is a second account). The launcher sends `PC_COMMUNITY_FAKE_DISCORD_TOKEN`
+instead of its SDK sign-in when its `community.url` is loopback, and trusts `PC_COMMUNITY_TEST_ROOTS` the same way.
+Accounts, names, tickets, the KEYSET, the deny list, bans and refresh all run for real (`admin.py` works with the same env).
 
 Guards: the app refuses to start in fake mode unless `COMMUNITY_BIND_HOST` and `COMMUNITY_PUBLIC_HOST` are both
 loopback (production signs `2dfm.org`, so it can never come up there), and every request is refused (403
 `fake_discord_local_only`) from a non-loopback peer or with `X-Forwarded-For` (a proxy in front).
-
-**The real launcher refuses this service as is.** PovertyCaster (pc-core `community/Link.cpp`) has no runtime
-override for either of these:
-
-1. Roots: `LinkClient` verifies KEYSETs against `LinkDeps::roots`, which only tests set; pc-ui `CommunityLink` leaves
-   it empty, so `communityRootKeys()` (the two real roots, compiled in) is used and a test-root KEYSET is refused
-   (`bad_signature`), so no ticket is ever accepted. There is no env var or ini key for test roots.
-2. Sign-in URL: `signInUrlAllowed()` requires `https`, so the `http://127.0.0.1` fake authorize URL is never opened in
-   the browser. (`communityUrlOk` already allows `http` for a loopback `community.url`.)
-
-The hook that would be needed, dev builds only (for example behind a CMake option `PC_COMMUNITY_DEV_HOOKS`, off in
-release): an env var such as `PC_COMMUNITY_TEST_ROOTS=hexA,hexB` read in `CommunityLink` and passed as
-`LinkDeps::roots` (only when `community.url` is loopback), and `signInUrlAllowed` accepting `http` when the sign-in
-host equals a loopback community host. Until then, drive the flow with pc-core's own `LinkClient` in a test, or by
-hand (`curl` / a browser for `/fake/authorize`).
 
 ## Configuration
 
@@ -119,9 +108,7 @@ Environment variables; any not set are read from `COMMUNITY_CONFIG` (default `co
 
 | Variable | Default | |
 |---|---|---|
-| `COMMUNITY_DISCORD_CLIENT_ID` | (required for linking) | the PovertyCaster Discord application |
-| `COMMUNITY_DISCORD_CLIENT_SECRET` | (required for linking) | secret, keep in the env file (0600) |
-| `COMMUNITY_DISCORD_REDIRECT_URI` | `https://2dfm.org/community/discord/callback` | must equal the URL registered in Discord |
+| `COMMUNITY_DISCORD_CLIENT_ID` | (required for linking) | the PovertyCaster Discord application; a token issued to any other app is refused |
 | `COMMUNITY_DB` | `community/data/community.sqlite3` | |
 | `COMMUNITY_TICKET_KEY` | `community/data/ticket_key.txt` | the online key file (0600) |
 | `COMMUNITY_KEYSET_DIR` | `community/data/keysets` | signed `*.pckeys`; the newest valid one is served |
@@ -132,7 +119,6 @@ Environment variables; any not set are read from `COMMUNITY_CONFIG` (default `co
 | `COMMUNITY_CONFUSABLES` | (unset) | path to Unicode `confusables.txt` for the full UTS #39 skeleton |
 | `COMMUNITY_ROOT_PUBKEYS` | (unset) | staging/tests only: `hexA,hexB` instead of the compiled-in roots |
 | `COMMUNITY_FAKE_DISCORD` | (unset) | `1`: LOCAL DEV MODE (below). Refused unless bind and public host are loopback |
-| `COMMUNITY_FAKE_DISCORD_USER` | `fake-user:Tester` | dev mode: the fake Discord user, `ID[:NAME]` |
 | `COMMUNITY_BIND_HOST` | (unset) | dev mode: the uvicorn `--host`, must be loopback |
 
 The two root PUBLIC keys are built in (`tickets.py`, from COMMUNITY_SERVICE.md section 7): root A `c9e1bf09...`,
@@ -178,22 +164,18 @@ handle_path /community/* {
 }
 ```
 
-`handle_path` strips `/community`, so the app sees `/v1/...` and `/discord/callback`. Caddy adds
+`handle_path` strips `/community`, so the app sees `/v1/...`. Caddy adds
 `X-Forwarded-For`, which the app reads only for in-memory rate limits.
 
 ## The owner's steps
 
-1. **Discord application.** At https://discord.com/developers/applications create a NEW application named
-   **PovertyCaster**. Under OAuth2, add the redirect URL exactly:
-
-       https://2dfm.org/community/discord/callback
-
-   Copy the Client ID and Client Secret into `community/data/community.env` on the server:
+1. **Discord application.** The launcher's own Social SDK application (PovertyCaster, 1558033167527575594). Under
+   OAuth2 turn **Public Client** on and add the redirect `http://127.0.0.1/callback` (the SDK sign-in). Put its id in
+   `community/data/community.env` on the server:
 
        COMMUNITY_DISCORD_CLIENT_ID=...
-       COMMUNITY_DISCORD_CLIENT_SECRET=...
 
-   Scope used: `identify` only (no bot, no guild access).
+   The service needs no client secret: it only asks Discord who a launcher's token belongs to.
 2. **Online ticket key** (on the server):
 
        cd community && python3 admin.py gen-ticket-key --gen 1

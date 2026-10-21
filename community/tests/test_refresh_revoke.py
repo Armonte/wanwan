@@ -1,5 +1,5 @@
 """Silent renewal (section 6 signed calls), the deny list (bans and revoked serials), and the privacy scan: no
-response anywhere carries a Discord id, a Discord name or a client IP."""
+response anywhere carries a Discord id or a client IP, and the Discord names go back only to their own player."""
 import base64
 import json
 
@@ -124,12 +124,15 @@ def test_no_discord_id_name_or_ip_in_any_response(h):
     h.get("/v1/keyset")
     h.get("/v1/deny")
     h.refresh(C1, t, nonce=b"\x0b" * 16)  # an error response too
-    needles = [DISCORD_ID.encode(), DISCORD_NAME.encode(), b"203.0.113.77", b"testclient",
+    needles = [DISCORD_ID.encode(), b"203.0.113.77", b"testclient",
                DISCORD_ID.encode().hex().encode(), int(DISCORD_ID).to_bytes(8, "little")]
+    own = [DISCORD_NAME.encode(), b"secretuser"]  # the player's own Discord names: only back to that player
+    own_paths = ("/v1/link/discord", "/v1/link/finish", "/v1/ticket/refresh")
     assert len(h.responses) > 8
     for r in h.responses:
         blob = r.content + json.dumps(dict(r.headers)).encode()
-        for n in needles:
+        mine = r.status_code == 200 and r.request.url.path in own_paths
+        for n in needles + ([] if mine else own):
             assert n not in blob, (r.request.url, n)
     # and the server-side record holds it only in accounts.discord_id
     assert h.community.db.one("SELECT COUNT(*) FROM accounts WHERE discord_id = ?", (DISCORD_ID,))[0] == 1

@@ -1,11 +1,8 @@
-"""LOCAL DEV MODE (COMMUNITY_FAKE_DISCORD=1): refused off loopback; a full link through /fake/authorize, then a signed
+"""LOCAL DEV MODE (COMMUNITY_FAKE_DISCORD=1): refused off loopback; a full link with a fake:<id> token, then a signed
 refresh against a loopback public host with no root path (what a client with community.url http://127.0.0.1:8790
 signs)."""
 import base64
-import html
 import os
-import re
-import urllib.parse
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,7 +18,7 @@ BASE = "http://127.0.0.1:8790"
 
 def fake_cfg(tmp, **over):
     vals = dict(fake_discord=True, bind_host="127.0.0.1", public_host="127.0.0.1", root_path="",
-                discord_client_id="", discord_client_secret="", fake_discord_user="4242:Tester")
+                discord_client_id="")
     vals.update(over)
     return make_cfg(str(tmp), **vals)
 
@@ -60,14 +57,14 @@ def test_config_from_env(monkeypatch, tmp_path):
     monkeypatch.setenv("COMMUNITY_BIND_HOST", "0.0.0.0")
     monkeypatch.setenv("COMMUNITY_PUBLIC_HOST", "127.0.0.1")
     cfg = Config.from_env()
-    assert cfg.fake_discord and cfg.fake_discord_user == "fake-user:Tester"
+    assert cfg.fake_discord
     with pytest.raises(RuntimeError):
         app_mod.create_app(cfg, Community(make_cfg(str(tmp_path))))
 
 
 def test_non_loopback_peer_and_proxied_requests_refused(tmp_path):
     c, _ = build(tmp_path, peer=("203.0.113.9", 4000))
-    r = c.get("/fake/authorize", params={"state": "x"})
+    r = c.get("/health")
     assert r.status_code == 403 and r.json()["error"] == "fake_discord_local_only"
     c2, _ = build(tmp_path / "b")
     r = c2.post("/v1/link/start", json={"client_pub": b64(T.seed_public(bytes([0x51]) * 32))},
@@ -75,26 +72,17 @@ def test_non_loopback_peer_and_proxied_requests_refused(tmp_path):
     assert r.status_code == 403
 
 
-def test_full_link_through_fake_authorize_then_refresh(tmp_path):
+def test_full_link_with_a_fake_token_then_refresh(tmp_path):
     c, clock = build(tmp_path)
     assert c.get("/health").json()["fake_discord"] is True
     seed = bytes([0x52]) * 32
     pub = T.seed_public(seed)
     st = c.post("/v1/link/start", json={"client_pub": b64(pub)})
-    assert st.status_code == 200, st.text  # no Discord client id or secret needed
+    assert st.status_code == 200, st.text  # no Discord client id needed
     j = st.json()
-    url = urllib.parse.urlsplit(j["sign_in_url"])
-    assert f"{url.scheme}://{url.netloc}" == BASE and url.path == "/fake/authorize"
-    page = c.get(url.path + "?" + url.query)
-    assert page.status_code == 200 and "Tester" in page.text and "<script" not in page.text
-    assert "http" not in page.text.split("<body", 1)[1]  # no external assets or links
-    action = re.search(r"action='([^']+)'", page.text).group(1)
-    fields = dict((k, html.unescape(v)) for k, v in re.findall(r"name=(\w+) value='([^']*)'", page.text))
-    assert fields["code"] == "fake:4242"
-    cb = c.get(urllib.parse.urljoin(url.path, action), params=fields)  # what the button submits
-    assert cb.status_code == 200 and "linked" in cb.text
-    poll = c.post("/v1/link/poll", json={"link_id": j["link_id"]}).json()
-    assert poll == {"status": "authorized", "needs_name": True}
+    d = c.post("/v1/link/discord", json={"link_id": j["link_id"], "access_token": "fake:4242:Tester"})
+    assert d.json() == {"status": "authorized", "needs_name": True, "suggested_name": "Tester",
+                        "discord_handle": "tester"}
     sig = T.sign(seed, T.TAG_LINK, T.link_message(base64.b64decode(j["challenge"]), pub))
     fin = c.post("/v1/link/finish", json={"link_id": j["link_id"], "signature": b64(sig), "name": "DevPlayer"})
     assert fin.status_code == 200, fin.text
@@ -112,15 +100,12 @@ def test_full_link_through_fake_authorize_then_refresh(tmp_path):
     assert rr.json()["display"] == fin.json()["display"]
 
 
-def test_cancel_and_bad_codes(tmp_path):
-    c, _ = build(tmp_path)
-    j = c.post("/v1/link/start", json={"client_pub": b64(T.seed_public(bytes([0x53]) * 32))}).json()
-    state = j["sign_in_url"].split("state=")[1]
-    assert c.get("/discord/callback", params={"state": state, "code": "real-discord-code"}).status_code == 502
-    assert c.get("/discord/callback", params={"state": state, "code": "fake:"}).status_code == 502
-    assert c.get("/discord/callback", params={"state": state, "error": "access_denied"}).status_code == 400
-
-
-def test_off_by_default(h):
+def test_bad_fake_tokens_and_off_by_default(tmp_path, h):
+    c, _ = build(tmp_path / "fake")
+    lid = c.post("/v1/link/start", json={"client_pub": b64(T.seed_public(bytes([0x53]) * 32))}).json()["link_id"]
+    for tok in ("real-discord-token", "fake:", "fake:" + "x" * 65):
+        r = c.post("/v1/link/discord", json={"link_id": lid, "access_token": tok})
+        assert r.status_code == 401 and r.json()["error"] == "discord_token_invalid", tok
     assert "fake_discord" not in h.get("/health").json()
-    assert h.get("/fake/authorize").status_code == 404
+    lid = h.post("/v1/link/start", json={"client_pub": b64(T.seed_public(bytes([0x54]) * 32))}).json()["link_id"]
+    assert h.post("/v1/link/discord", json={"link_id": lid, "access_token": "fake:1"}).status_code == 401

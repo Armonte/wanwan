@@ -6,8 +6,8 @@
 #   ./dev_run_local.sh --keep          # keep the data dir (accounts, test roots) after exit
 #   ./dev_run_local.sh --data DIR      # reuse a kept data dir (same test roots, same accounts)
 #
-# Env: COMMUNITY_DEV_BASE (default ~/.cache/pc-community-dev), COMMUNITY_VENV (default ~/.cache/pc-community-venv),
-#      COMMUNITY_FAKE_DISCORD_USER (ID[:NAME], default fake-user:Tester).
+# Env: COMMUNITY_DEV_BASE (default ~/.cache/pc-community-dev), COMMUNITY_VENV (default ~/.cache/pc-community-venv).
+# The launcher skips its Discord sign-in and sends PC_COMMUNITY_FAKE_DISCORD_TOKEN=fake:<id>[:<name>] instead.
 # Never reads or writes the real root keys: the test roots are generated here, in the data dir.
 set -euo pipefail
 
@@ -46,7 +46,7 @@ export COMMUNITY_PUBLIC_HOST=127.0.0.1         # the client signs the host of co
 export COMMUNITY_ROOT_PATH=""                  # ...and the path after it: no prefix in front of /v1/...
 export COMMUNITY_BIND_HOST=127.0.0.1
 export COMMUNITY_FAKE_DISCORD=1
-export COMMUNITY_DISCORD_CLIENT_ID="" COMMUNITY_DISCORD_CLIENT_SECRET=""
+export COMMUNITY_DISCORD_CLIENT_ID=""
 
 cd "$HERE"
 if [ ! -f "$DATA/test_root_a.seed" ]; then
@@ -84,7 +84,8 @@ cat <<EOF
    TEST root A public key:                 $ROOT_A
    TEST root B public key:                 $ROOT_B
    data dir:                               $DATA $([ "$KEEP" = 1 ] && echo "(kept)" || echo "(removed on exit)")
-   fake Discord user:                      ${COMMUNITY_FAKE_DISCORD_USER:-fake-user:Tester}
+   launcher env (instead of Discord):      PC_COMMUNITY_FAKE_DISCORD_TOKEN=fake:4242:Tester
+   launcher env (trust the test roots):    PC_COMMUNITY_TEST_ROOTS=$ROOT_A,$ROOT_B
 
 EOF
 "$PY" -m uvicorn app:app --host "$COMMUNITY_BIND_HOST" --port "$PORT"

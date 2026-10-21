@@ -139,18 +139,21 @@ class Community:
         return key
 
     # ---- accounts ----
-    def account_for_discord(self, discord_id: str) -> int:
-        """The account row for a Discord user, created on first sign-in with a fresh random account_id."""
+    def account_for_discord(self, discord_id: str, handle: Optional[str] = None) -> int:
+        """The account row for a Discord user, created on first sign-in with a fresh random account_id. The Discord
+        username is refreshed at every sign-in (shown back only to that player)."""
         with self.db.tx() as db:
             r = db.one("SELECT id FROM accounts WHERE discord_id = ?", (discord_id,))
             if r:
+                if handle:
+                    db.x("UPDATE accounts SET discord_handle = ? WHERE id = ?", (handle, r[0]))
                 return r[0]
             while True:
                 aid = secrets.token_bytes(16)
                 if not db.one("SELECT 1 FROM accounts WHERE account_id = ?", (aid,)):
                     break
-            cur = db.x("INSERT INTO accounts(account_id, discord_id, created) VALUES(?, ?, ?)",
-                       (aid, discord_id, self.now()))
+            cur = db.x("INSERT INTO accounts(account_id, discord_id, discord_handle, created) VALUES(?, ?, ?, ?)",
+                       (aid, discord_id, handle, self.now()))
             db.audit(self.now(), "account_created", aid.hex())
             return cur.lastrowid
 

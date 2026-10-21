@@ -1,28 +1,24 @@
-"""LOCAL DEV MODE: a stand-in for the Discord OAuth app, so the whole link flow runs end to end on one machine.
+"""LOCAL DEV MODE: a stand-in for Discord's "who is this token" call, so the whole link flow runs end to end on one
+machine without a Discord login.
 
 Enabled by COMMUNITY_FAKE_DISCORD=1. Refused at startup unless BOTH the bind host (COMMUNITY_BIND_HOST, the --host
-given to uvicorn) and the signed public host (COMMUNITY_PUBLIC_HOST) are loopback, and every fake route also refuses a
-non-loopback peer or a proxied request (X-Forwarded-For: Caddy adds it in production). The production service is
-reached through 2dfm.org, so its public host alone keeps this off there.
+given to uvicorn) and the signed public host (COMMUNITY_PUBLIC_HOST) are loopback, and every request is refused from a
+non-loopback peer or when proxied (X-Forwarded-For: Caddy adds it in production). The production service is reached
+through 2dfm.org, so its public host alone keeps this off there.
 
-What it replaces: only the two Discord calls. /v1/link/start's sign_in_url points at this service's own
-/fake/authorize page, whose button lands on the normal /discord/callback with a code "fake:<discord id>". The code
-exchange returns that id. Accounts, tickets, the KEYSET, the deny list and refresh all run for real.
-
-The fake Discord user: COMMUNITY_FAKE_DISCORD_USER = "ID[:NAME]" (default "fake-user:Tester"). The page lets the tester
-edit the id before continuing, so two accounts are two ids.
+What it replaces: only DiscordClient.whoami. /v1/link/discord accepts an access_token "fake:<discord id>[:<name>]"
+(the launcher sends PC_COMMUNITY_FAKE_DISCORD_TOKEN instead of signing in through the SDK when its community.url is
+loopback). Accounts, names, tickets, the KEYSET, the deny list and refresh all run for real. Two ids are two accounts.
 """
 from __future__ import annotations
 
-import html
 import ipaddress
-import urllib.parse
-from typing import Optional
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import JSONResponse
 
 from config import Config
+from service import ServiceError
 
 CODE_PREFIX = "fake:"
 MAX_ID = 64
@@ -55,41 +51,30 @@ def check_allowed(cfg: Config) -> None:
                            f"got {cfg.public_host!r}")
 
 
-def fake_user(cfg: Config) -> tuple[str, str]:
-    uid, _, name = (cfg.fake_discord_user or "").partition(":")
-    return (uid.strip() or "fake-user")[:MAX_ID], name.strip() or "Tester"
-
-
 def request_is_local(request: Request) -> bool:
     peer = request.client.host if request.client else ""
     return host_is_loopback(peer) and "x-forwarded-for" not in request.headers
 
 
 class FakeDiscordClient:
-    """Same surface as app.DiscordClient. authorize_url needs the request's base URL (scheme, host, port, prefix)."""
+    """Same surface as app.DiscordClient: "fake:<id>[:<name>]" is that Discord user; anything else is refused."""
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
 
-    def authorize_url(self, state: str, base: str = "") -> str:
-        return base.rstrip("/") + "/fake/authorize?" + urllib.parse.urlencode({"state": state})
-
-    async def user_id(self, code: str) -> Optional[str]:
-        if not code.startswith(CODE_PREFIX):
-            return None
-        uid = code[len(CODE_PREFIX):].strip()
-        return uid if 0 < len(uid) <= MAX_ID and uid.isprintable() else None
-
-
-def _page(status: int, title: str, body_html: str) -> HTMLResponse:
-    return HTMLResponse(status_code=status, content=(
-        "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'>"
-        f"<title>{html.escape(title)}</title><body style='font-family:sans-serif;max-width:36em;margin:3em auto;"
-        f"padding:0 1em'><h2>{html.escape(title)}</h2>{body_html}</body>"))
+    async def whoami(self, access_token: str) -> dict:
+        if not access_token.startswith(CODE_PREFIX):
+            raise ServiceError(401, "discord_token_invalid", "local dev mode takes only fake:<id>[:<name>] tokens")
+        uid, _, name = access_token[len(CODE_PREFIX):].partition(":")
+        uid = uid.strip()
+        if not 0 < len(uid) <= MAX_ID:
+            raise ServiceError(401, "discord_token_invalid", "fake:<id> needs an id of 1 to 64 characters")
+        name = name.strip() or "Tester"
+        return {"id": uid, "username": name.lower(), "global_name": name}
 
 
 def install(app: FastAPI, cfg: Config) -> None:
-    """Swap in the fake client and add GET /fake/authorize. Call only after check_allowed."""
+    """Swap in the fake client and confine the app to loopback clients. Call only after check_allowed."""
     app.state.discord = FakeDiscordClient(cfg)
 
     @app.middleware("http")
@@ -98,18 +83,3 @@ def install(app: FastAPI, cfg: Config) -> None:
             return JSONResponse(status_code=403, content={"error": "fake_discord_local_only",
                                                           "detail": "local dev mode answers loopback clients only"})
         return await call_next(request)
-
-    @app.get("/fake/authorize")
-    async def fake_authorize(state: str = ""):
-        uid, name = fake_user(cfg)
-        s = html.escape(state, quote=True)
-        return _page(200, "Fake Discord sign-in (local dev)", (
-            "<p>LOCAL DEV MODE. No Discord is involved. Continue as fake Discord user "
-            f"<b>{html.escape(name)}</b>:</p>"
-            "<form method=get action='../discord/callback'>"
-            f"<input type=hidden name=state value='{s}'>"
-            f"<label>Discord id <input name=code value='{html.escape(CODE_PREFIX + uid, quote=True)}' "
-            "size=30></label> "
-            "<button type=submit autofocus>Continue</button></form>"
-            f"<p><a href='../discord/callback?state={urllib.parse.quote(state)}&amp;error=access_denied'>"
-            "Cancel</a></p>"))

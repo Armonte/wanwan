@@ -286,6 +286,8 @@ class Replays:
                 e.headers = {"Retry-After": "30"}
                 raise e
             d.x("DELETE FROM replays WHERE match = ?", (m["id"],))  # a crashed upload: reclaim
+        if m["status"] in ("void", "dropped"):  # settled as not counted: final, so the launcher's queue stops
+            raise ServiceError(410, "match_closed", f"the match is {m['status']}: no replay is kept for it")
         if m["status"] not in RECORDED:
             raise ServiceError(409, "match_unknown", f"the match is {m['status']}, not recorded (yet)")
         day = _day_start(now)

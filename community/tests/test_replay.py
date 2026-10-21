@@ -123,6 +123,9 @@ def test_participants_and_recorded_only(h, tmp_path, env):
     # an open match (no result yet) is not recorded: retryable 409
     open_mid = report(h, CA, ta, body(*started_pair(n=1), mk(P, 0, 600, n=1))).json()["match_id"]
     assert err(upload(h, CA, ta, pcrz(), open_mid)) == (409, "match_unknown")
+    # a match settled as not counted is final: 410, so the launcher's queue stops retrying
+    h.community.db.x("UPDATE matches SET status = 'void' WHERE match_id = ?", (open_mid,))
+    assert err(upload(h, CA, ta, pcrz(), open_mid)) == (410, "match_closed")
     # the query is part of the signed path: a match_id swapped in transit does not verify
     assert err(upload(h, CA, ta, pcrz(), mid, signed_query="match_id=0123456789ab")) == (401, "bad_call_signature")
     assert h.app.state.replays.store.puts == []

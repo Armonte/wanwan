@@ -166,6 +166,7 @@ run before the body is read):
 | 400 `bad_replay` / `bad_match_id` | the file fails any check above (detail says which); the match id is not 12 hex |
 | 403 `not_participant` | the caller is not one of the match's two players |
 | 409 `match_unknown` | no such match, or it is not recorded (`pending`/`final`/`left_early`) yet: retry like `not_disputed` |
+| 410 `match_closed` | the match settled `void` or `dropped`: no replay is kept, do not retry |
 | 409 `replay_busy` + `Retry-After: 30` | the other player's upload of this match is in flight (a reservation older than 5 min is reclaimed) |
 | 413 `body_too_large` | above 1 MiB (`COMMUNITY_REPLAY_MAX_BYTES`, never above 1 MiB), from Content-Length before reading and while streaming |
 | 429 `cap_daily` + `Retry-After` | the account stored `COMMUNITY_REPLAY_ACCOUNT_DAILY` (200) replays this UTC day |

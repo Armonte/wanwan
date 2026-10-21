@@ -1,9 +1,9 @@
-# PovertyCaster community service: Discord linking and tickets
+# PovertyCaster community service: Discord linking, tickets and match results
 
 First slice of the community service (fm2k-port `docs/COMMUNITY_SERVICE.md`, ticket formats in
 `docs/COMMUNITY_TICKET_SPEC.md` v9.1). A player links Discord ONCE; the service issues a signed PCTKT1 ticket that
 peers verify offline, renews it silently, and publishes the root-signed KEYSET and the deny list (bans). Records,
-stats, chat and uploads come later.
+stats come from signed match receipts (`POST /v1/report`, below); chat and uploads come later.
 
 Standalone FastAPI app. It does not touch the live hub (`hub/`).
 
@@ -16,6 +16,10 @@ Standalone FastAPI app. It does not touch the live hub (`hub/`).
 | `tickets.py` | PCTKT1 / PCKEYS1 / PCDENY1 encode, sign and verify, the link, proof and call messages (byte-identical to pc-core) |
 | `names.py`, `name_table.py` | section 10 name rules; the table is generated from pc-core `NameTable.inc` by `gen_name_table.py` |
 | `db.py` | SQLite schema and migrations-lite (`PRAGMA user_version`) |
+| `receipts.py` | RESULT-V1 receipts, PCCHAIN1/PCSLOT1 chains, the rules between receipts, the 7c receipt list (byte-identical to pc-core) |
+| `counting.py` | the counting decision for one match key from its receipts (pure) |
+| `results.py` | `/v1/report`: verification, storage, timing (pending, late, 7-day close, caps), the `results.jsonl` export |
+| `games.py` | the per-game table, imported from fm2k-port's `gen_game_table.py --format tsv` |
 | `admin.py` | server CLI: online key, unsigned KEYSET body, ban, revoke, stats |
 | `sign_keyset.py` | the owner's offline signer (runs where the root keys are; needs only `cryptography`) |
 | `fake_discord.py`, `dev_run_local.sh` | LOCAL DEV MODE: fake Discord tokens and throwaway test roots, loopback only |
@@ -32,6 +36,9 @@ Public base: `https://2dfm.org/community` (Caddy strips the prefix; the app sees
 | `POST /v1/link/discord` | `{"link_id", "access_token"}` | `{status: authorized, needs_name, display?, suggested_name, discord_handle}` |
 | `POST /v1/link/finish` | `{"link_id", "signature": b64(64), "name"?}` | `{ticket: b64(252), account_id, name, tag, display, refresh_after, discord_handle}` |
 | `POST /v1/ticket/refresh` | section 6 headers `X-PC-Ticket`, `X-PC-Time`, `X-PC-Nonce`, `X-PC-Sig` | same as finish |
+| `POST /v1/profile/visibility` | signed, `{"hidden": bool}` | `{hidden}`; republishes `export/hidden.json` |
+| `POST /v1/report` | signed, `application/octet-stream` receipt list (below) | 200 `{status, match_id}`; errors below |
+| `GET /v1/config` | | `{stats_url, replay_base, web_base}` |
 | `GET /v1/keyset` | | the current KEYSET bytes (`application/octet-stream`, `X-PC-Keyset-Serial`) |
 | `GET /v1/deny` | | the PCDENY1 deny list bytes, signed by the ticket key |
 
@@ -61,6 +68,53 @@ Privacy: no response carries a Discord id or an IP. Discord ids live only in `ac
 access token is never stored. The player's own Discord username (`discord_handle`) and name suggestion go back only to
 that player (link/discord, link/finish, ticket/refresh), so their settings can show which Discord account is linked.
 Other players see `Name#1234`; names are public (they are in the ticket).
+
+## Match results (`POST /v1/report`)
+
+A signed call (section 6 headers; the signature covers `sha256(body)`) whose body is exactly one spec 7c receipt
+list: `u16 n | n x { u16 len (1..512) | receipt }`, each receipt `fields || Ed25519 signature` (RESULT-V1, section 7),
+sorted by (signer_slot, frame, kind, bytes), no duplicates, at most 2 per (signer_slot, frame, kind), `n` in
+1..max_tape_receipts of the game row. The launcher sends the signer's result (or last progress) plus every receipt it
+holds from both sides. Content-Length above the largest row's cap (928286 for the default row) is refused before a
+byte is read.
+
+Checks: every receipt names one match (session key, match index, game, build, rounds_to_win, started_unix); a
+`games` row exists for (game_id, build_id); no zero state_hash; the reporter signed at least one slot (both slots =
+self-play); a new match key needs both started receipts, and the opponent is the account whose client key verifies
+its started receipt among the accounts holding a ticket at `started_unix` (receipts carry no ticket); every receipt
+verifies under its signer_slot's key; frames fit the wall time since `started_unix`; reports close 7 days after it.
+
+| Answer | When |
+|---|---|
+| 200 `{"status", "match_id"}` | stored. status `open` (no outcome yet), `pending` (counted, rated at once, `final` after 24 h), `left_early`, `disputed`, `void`, `dropped`. A byte-identical re-send answers the same and touches nothing |
+| 400 `bad_receipt` | the list or a receipt fails parsing, mixes matches, does not verify, or a frame is implausible |
+| 403 `not_participant` / `self_play` / `anonymous_peer` | the caller signed nothing here or is not in the match; one player in both slots; no linked (unbanned) opponent |
+| 409 `too_late` / `closed` | more than 7 days after the match; a dispute that already closed void |
+| 413 `body_too_large` | over the cap (checked before reading) |
+| 422 `unknown_game` / `no_started_pair` / `no_evidence` | no game row; a new match without both started receipts; a zero state_hash |
+| 429 `cap_daily` + `Retry-After` | 300 new reports per account per UTC day, or a 4th left-early result filed by one stayer that day (retried the next day) |
+| 429 `rate_limited` | the per-client window (120 per 10 min) |
+
+Counting (`counting.py`, spec section 7 with the owner's 2026-10-21 rulings): agreeing results count (a state_hash
+difference only adds the `desync` flag); a lone valid result counts; a claim contradicted by the other side's later
+receipt is stale (strike, the other result counts) and two reachable contradicting claims are `disputed` (no W/L,
+closes `void` at 7 days); a progress/started desync is `void` (on a game with a replay worker both of these are
+`disputed` for the replay); left early (a stayer's 0xFE result within the gate of the leaver's latest progress) is a
+rated loss for the leaver plus `left_early` (and `left_early_behind`) marks; both claiming the other left is `dropped`.
+After the 24 h pending window a contradicting report never flips the result: `late_claim` mark and flag (or
+`disputed` on a worker game). Past 20 counted matches per pair per UTC day the row carries `pair_cap` (not rated).
+
+Export: every state change of a recorded match appends one line to `export/results.jsonl` (fsync per line, latest
+line per `match_id` wins), the shape of `docs/STATS_DESIGN.md` 4.4: `match_id`, `game_id` `"<family>:<catalog id>"`,
+`build`, `status`, `started_at`, `finished_at`, `rounds_to_win`, `p1`/`p2` `{public_id, name, tag (4 digits),
+hidden, char: null}`, `winner` (`p1`/`p2`/`draw`/null), `score`, `left_early`, `flags`, `replay_url: null`. No
+Discord id, account id, session key, signature or IP. The stats site reads it at `FM2K_RESULTS_PATH`.
+
+Server steps: `admin.py import-games game_table.tsv` (from fm2k-port `tools/community/gen_game_table.py --format
+tsv`; a game/build without a row records nothing), set `FM2K_STATS_ID_SECRET` (public ids), install
+`deploy/pc-community-settle.{service,timer}` (hourly `admin.py settle`; reports also settle lazily), point the stats
+site's `FM2K_RESULTS_PATH` at `community/data/export/results.jsonl` and `FM2K_COMMUNITY_HIDDEN_PATH` at `hidden.json`.
+`admin.py reexport` appends every match's current state (after the secret was set late, or a name change).
 
 ## Run locally
 
@@ -120,6 +174,9 @@ Environment variables; any not set are read from `COMMUNITY_CONFIG` (default `co
 | `COMMUNITY_ROOT_PUBKEYS` | (unset) | staging/tests only: `hexA,hexB` instead of the compiled-in roots |
 | `COMMUNITY_FAKE_DISCORD` | (unset) | `1`: LOCAL DEV MODE (below). Refused unless bind and public host are loopback |
 | `COMMUNITY_BIND_HOST` | (unset) | dev mode: the uvicorn `--host`, must be loopback |
+| `FM2K_STATS_ID_SECRET` | (unset) | the stats site's id secret: `accounts.public_id`, the results export's player ids |
+| `COMMUNITY_EXPORT_DIR` | `community/data/export` | `hidden.json` and `results.jsonl` for the stats site |
+| `COMMUNITY_STATS_URL`, `COMMUNITY_REPLAY_PUBLIC_BASE`, `COMMUNITY_WEB_BASE` | (unset) | served by `/v1/config` |
 
 The two root PUBLIC keys are built in (`tickets.py`, from COMMUNITY_SERVICE.md section 7): root A `c9e1bf09...`,
 root B `b597400b...`. The service never reads a root private key.
@@ -204,6 +261,10 @@ the `audit` table.
 
 ## Known limits of this slice
 
+- Results: no `/v1/tape`, worker or `/v1/verdict` yet, so a game with a worker keeps its disputes until the 7-day void
+  close; no `/v1/replay` (`replay_url` is always null). The spec's "frame gap at most ~1320" check is not enforced (a
+  report holding a gap is accepted). The opponent of a new match is found only while it still holds the client key
+  that signed (a relink before the first report leaves that match unrecordable).
 - Perks records (section 4) are not issued yet; refresh returns only the ticket.
 - After a key rotation, list the old key file in `COMMUNITY_RETIRED_TICKET_KEYS`: `/v1/deny?gen=N` keeps serving that
   generation's deny list until 72 h past its last ticket (`X-PC-Deny-Gens` names every generation served). The

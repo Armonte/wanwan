@@ -8,6 +8,28 @@ Sources read: wanwan `stats/` and `community/` (HEAD of `bleeding`), the droplet
 `docs/COMMUNITY_SERVICE.md` and `docs/COMMUNITY_TICKET_SPEC.md` v9.2, PovertyCaster `origin/main` (`pc-core`,
 `pc-runtime`, `pc-replay`, `targets/pc-ui`), fm2k-port `shell/fm2k/pcrt/`.
 
+## Status (2026-10-21)
+
+- Step 2 (identity glue) is in: `accounts.public_id`, `/v1/profile/visibility`, `export/hidden.json`, `/v1/config`.
+- Step 3 server half is in (schema 5, not deployed): `receipts.py` (pinned to the pc-core vectors), `counting.py`,
+  `results.py`, `games.py`, `POST /v1/report`, `export/results.jsonl`, `admin.py import-games|settle|reexport`, the
+  hourly settle timer, and the stats merge (`FM2K_RESULTS_PATH`, `ratings.parse_record` v1 branch). Endpoint, body
+  and answers: `community/README.md` "Match results". Not yet: `/v1/tape`, `/v1/verdict`, `/v1/replay` (steps 5, 7).
+- Readings taken where the spec is silent (all in `counting.py` / `results.py` docstrings):
+  - receipts carry no ticket, so a new match's opponent is the account (holding a ticket at `started_unix`) whose
+    current client key verifies its started receipt; the match row then stores both signing keys;
+  - the body cap is enforced from Content-Length against the largest row's cap before reading (the game is known
+    only from the body), then against the row's own cap;
+  - the pair cap (4.5: counted, flag, not rated) is a 200 with `pair_cap`; `429 cap_daily` is used for the per-account
+    report cap (300/day) and the spec's 3 left-early marks per reporter per day (retried the next day, then counted);
+  - left early needs a leaver progress receipt and a stayer claim within 1320 frames of it; without it the match
+    stays `open` (not exported); a signer contradicting itself (two receipts at one frame and kind, or a score step
+    back or by 2) is struck and the match void; a stale or unreachable lone claim is struck and ignored;
+  - a zero state_hash is refused (`422 no_evidence`, open question 3 unchanged);
+  - the stats site keys a results player by public id; one equal to a legacy player's public id is that player;
+    hidden comes from `hidden.json` when configured, else the latest row's flag;
+  - receipts' `build_id` must equal the table's exactly (the generator writes the full 64-hex SHA-256).
+
 ---
 
 ## 1. Current state
@@ -160,6 +182,9 @@ signatures is the only writer. The file export avoids cross-process SQLite WAL r
   player keeps hub nick + hex tag. `results.jsonl` rows carry `name`/`tag` so the stats site needs no account table.
 
 ### 4.2 Schema (community DB migration 2 -> 3, `community/db.py` `MIGRATIONS`)
+
+As built: identity in migration 3 -> 4, results in 4 -> 5 (`games`, `matches` + `pub0/pub1/counted_at/exported`,
+`receipts`, `marks`, `reports`); `tapes`, `verdicts`, `replays` come with their endpoints.
 
 ```sql
 ALTER TABLE accounts ADD COLUMN public_id TEXT;            -- UNIQUE index; backfilled from discord_id

@@ -202,11 +202,12 @@ int msgbox_utf8(const char *pszText, const char *pszCaption, UINT uType)
    read straddles the end of a committed page (The Favorite Fighters 2.5 at character select, tick 57).
    Players never see it: FM2KHook's VectoredRenderGuard skips that draw by jumping to the function's
    epilogue. The same here, so the original side runs on; draw only, no world state. Each recovery is
-   logged to <dump>.dialogs.txt. */
+   logged to <dump>.dialogs.txt.  0x40CDEC (mov ax,[esi+3]) is the same draw reading an afterimage trail's frame
+   step: a trail left in use when its file was freed keeps dangling steps (MK Immortal at tick 65). */
 static LONG WINAPI lRenderGuard(EXCEPTION_POINTERS *ep)
 {
     if (!ep || !ep->ExceptionRecord || !ep->ContextRecord
-        || ep->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || ep->ContextRecord->Eip != 0x40ccae)
+        || ep->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || (ep->ContextRecord->Eip != 0x40ccae && ep->ContextRecord->Eip != 0x40cdec))
         return EXCEPTION_CONTINUE_SEARCH;
     {
         static int n;
@@ -219,7 +220,7 @@ static LONG WINAPI lRenderGuard(EXCEPTION_POINTERS *ep)
             if (h != INVALID_HANDLE_VALUE) {
                 DWORD dw;
                 char szLine[128];
-                wsprintfA(szLine, "[render guard] AV at 0x40ccae skipped (#%d, edx=0x%08lx)\r\n", n, ep->ContextRecord->Edx);
+                wsprintfA(szLine, "[render guard] AV at 0x%08lx skipped (#%d, edx=0x%08lx)\r\n", ep->ContextRecord->Eip, n, ep->ContextRecord->Edx);
                 WriteFile(h, szLine, lstrlenA(szLine), &dw, NULL);
                 CloseHandle(h);
             }

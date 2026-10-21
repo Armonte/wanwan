@@ -173,6 +173,7 @@ def games_list(snap: Snapshot,
 def recent(snap: Snapshot, game: Optional[str], limit: int,
            viewer: Optional[str] = None) -> list[dict[str, Any]]:
     out = []
+    game = ratings.canonical_game_id(game) if game else game
     for m in reversed(snap.matches):
         if game and m.game_id != game:
             continue
@@ -188,13 +189,13 @@ def legacy_matches(snap: Snapshot, limit: int, user_id: Optional[str],
     (opted-out players still appear; names are never private)."""
     out = []
     for m in reversed(snap.matches):
-        if game_id and m.game_id != game_id:
+        if game_id and game_id not in (m.game_id, m.source_game_id):
             continue
         p1, p2 = privacy.public_id(m.p1), privacy.public_id(m.p2)
         if user_id and user_id not in (p1, p2):
             continue
         out.append({
-            "id": m.id, "game_id": m.game_id,
+            "id": m.id, "game_id": m.source_game_id or m.game_id,  # the pre-v1 shape: the id as logged
             "p1_id": p1, "p1_nick": m.p1_nick,
             "p2_id": p2, "p2_nick": m.p2_nick,
             "p1_char_name": m.p1_char, "p2_char_name": m.p2_char,
@@ -211,10 +212,16 @@ def _not_found(what: str) -> JSONResponse:
     return JSONResponse({"error": "not_found", "what": what}, status_code=404)
 
 
+def _with_alias_names(name_of: Callable[[str], str]) -> Callable[[str], str]:
+    """Catalog ids from game_aliases.json name themselves; the registry still names raw ids."""
+    return lambda gid: ratings.alias_name(gid) or name_of(gid)
+
+
 def build_router(limiter: Any, matches_path: Callable[[], Path],
                  name_of: Callable[[str], str]) -> APIRouter:
     """Routes under /api/v1. `matches_path` is a callable so tests and the
     app can repoint the log without rebuilding the router."""
+    name_of = _with_alias_names(name_of)
     router = APIRouter(prefix="/api/v1")
 
     def snap() -> Snapshot:
@@ -239,6 +246,7 @@ def build_router(limiter: Any, matches_path: Callable[[], Path],
                         limit: int = Query(LB_DEFAULT_LIMIT, ge=1,
                                            le=LB_HARD_LIMIT)):
         s = snap()
+        game_id = ratings.canonical_game_id(game_id)  # a legacy exe-stem id finds its catalog game
         if game_id not in s.games:
             return _not_found("game")
         return {"game_id": game_id, "family": family(game_id),

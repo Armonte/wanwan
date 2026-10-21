@@ -67,6 +67,42 @@ def game_family(game_id: str, engine_hint: Optional[str] = None) -> str:
     return "fm2k"
 
 
+# Legacy hub ids (exe stems) -> the launcher's catalog ids ("fm2k:<catalog id>"), so the launcher's Statistics tab
+# finds the hub history and builds of one game share one rating. game_aliases.json, or FM2K_GAME_ALIASES.
+ALIASES_PATH = Path(__import__("os").environ.get("FM2K_GAME_ALIASES",
+                                                  str(Path(__file__).resolve().parent / "game_aliases.json")))
+_alias_cache: dict[str, Any] = {"key": None, "aliases": {}, "names": {}}
+
+
+def _aliases() -> dict[str, Any]:
+    try:
+        st = ALIASES_PATH.stat()
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return _alias_cache
+    if _alias_cache["key"] != key:
+        try:
+            d = json.loads(ALIASES_PATH.read_text(encoding="utf-8"))
+            _alias_cache.update(key=key, aliases=dict(d.get("aliases") or {}), names=dict(d.get("names") or {}))
+        except (OSError, ValueError):
+            pass
+    return _alias_cache
+
+
+def canonical_game_id(game_id: str) -> str:
+    """The id a match is rated under: the alias target when the raw id has one, else the raw id."""
+    return _aliases()["aliases"].get(game_id, game_id)
+
+
+def alias_name(game_id: str) -> Optional[str]:
+    return _aliases()["names"].get(game_id)
+
+
+def raw_ids_of(game_id: str) -> list[str]:
+    """Every raw id that is rated under this canonical id (for the HTML pages, which work on raw ids)."""
+    return [raw for raw, canon in _aliases()["aliases"].items() if canon == game_id]
+
+
 def is_linked(uid: Any) -> bool:
     return isinstance(uid, str) and bool(DISCORD_ID_RE.match(uid))
 
@@ -110,6 +146,7 @@ class Match:
     repaired: bool = False
     replay_url: Optional[str] = None
     stage: Optional[str] = None
+    source_game_id: str = ""  # the id as logged (before game_aliases.json)
 
 
 @dataclass
@@ -167,7 +204,8 @@ def parse_record(r: Any) -> tuple[Optional[Match], str]:
     replay = r.get("replay_url")
     stage = r.get("stage_name")
     return Match(
-        id=str(r["id"]), game_id=str(r.get("game_id") or ""),
+        id=str(r["id"]), game_id=canonical_game_id(str(r.get("game_id") or "")),
+        source_game_id=str(r.get("game_id") or ""),
         p1=p1, p2=p2,
         p1_nick=str(r.get("p1_nick") or "anon"),
         p2_nick=str(r.get("p2_nick") or "anon"),
@@ -240,9 +278,9 @@ def snapshot(path: Path) -> Snapshot:
     """Cached snapshot of the log at `path`, keyed by (path, mtime, size)."""
     try:
         st = path.stat()
-        key = (str(path), st.st_mtime_ns, st.st_size)
+        key = (str(path), st.st_mtime_ns, st.st_size, _aliases()["key"])
     except OSError:
-        key = (str(path), -1, -1)
+        key = (str(path), -1, -1, _aliases()["key"])
     with _cache_lock:
         if _cache["key"] == key and _cache["snap"] is not None:
             return _cache["snap"]

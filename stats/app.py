@@ -741,10 +741,13 @@ def user_page(request: Request, public_id: str):
 def game_page(request: Request, game_id: str):
     # If someone hits an old aliased URL, 301 to the renamed one so
     # bookmarks / external links keep working but settle on canonical.
-    primary = primary_game_id(game_id)
+    raw = ratings.raw_ids_of(game_id)  # a catalog id from game_aliases.json: the page of its first legacy id
+    primary = primary_game_id(raw[0] if raw else game_id)
     if primary != game_id:
+        from urllib.parse import quote
+
         from fastapi.responses import RedirectResponse
-        return RedirectResponse(url=f"/g/{primary}", status_code=301)
+        return RedirectResponse(url=f"/g/{quote(primary)}", status_code=301)
     if not game_id or len(game_id) > 64:
         raise HTTPException(status_code=404)
     data = aggregate_game(game_id)

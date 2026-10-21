@@ -75,6 +75,7 @@ t0=$(date +%s)
 timeout "$TIMEOUT" powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(win "$PS")" \
   || echo "[$SIDE] timed out or failed after ${TIMEOUT}s"
 taskkill.exe /F /IM "$IMG" >/dev/null 2>&1 || true
-taskkill.exe /F /IM fm2k_parity_inject.exe >/dev/null 2>&1 || true
+# the injector exits with its game: killing every fm2k_parity_inject.exe here ended another run's original side
+# (two runs at once: the other side's Start-Process -Wait returned and its game was taskkill'ed mid-run)
 cp -f "$OUT/game.ini.before" "$GAME_DIR/game.ini"
 echo "[$SIDE] done in $(( $(date +%s) - t0 ))s -> $OUT/$SIDE.fm2kpar ($(stat -c %s "$OUT/$SIDE.fm2kpar" 2>/dev/null || echo 0) bytes)"

@@ -204,6 +204,28 @@ int msgbox_utf8(const char *pszText, const char *pszCaption, UINT uType)
    epilogue. The same here, so the original side runs on; draw only, no world state. Each recovery is
    logged to <dump>.dialogs.txt.  0x40CDEC (mov ax,[esi+3]) is the same draw reading an afterimage trail's frame
    step: a trail left in use when its file was freed keeps dangling steps (MK Immortal at tick 65). */
+/* Any other crash of the original: the address goes to <dump>.dialogs.txt and the process ends without the
+   Windows error report (no minidump on C:, closeout rules "ARTIFACT BUDGET"). */
+static LONG WINAPI lLastChance(EXCEPTION_POINTERS *ep)
+{
+    char szPath[MAX_PATH];
+    DWORD dwLen = GetEnvironmentVariableA("FM2K_PARITY_DUMP_PATH", szPath, MAX_PATH - 16);
+    if (ep && ep->ExceptionRecord && ep->ContextRecord && dwLen && dwLen < MAX_PATH - 16) {
+        HANDLE h;
+        lstrcatA(szPath, ".dialogs.txt");
+        h = CreateFileA(szPath, FILE_APPEND_DATA, FILE_SHARE_READ, NULL, OPEN_ALWAYS, 0, NULL);
+        if (h != INVALID_HANDLE_VALUE) {
+            DWORD dw;
+            char szLine[128];
+            wsprintfA(szLine, "[crash] exception 0x%08lx at 0x%08lx\r\n", ep->ExceptionRecord->ExceptionCode, ep->ContextRecord->Eip);
+            WriteFile(h, szLine, lstrlenA(szLine), &dw, NULL);
+            CloseHandle(h);
+        }
+    }
+    TerminateProcess(GetCurrentProcess(), 0xdead);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
 static LONG WINAPI lRenderGuard(EXCEPTION_POINTERS *ep)
 {
     if (!ep || !ep->ExceptionRecord || !ep->ContextRecord
@@ -305,5 +327,7 @@ BOOL WINAPI DllMain(HINSTANCE hDll, DWORD dwReason, LPVOID pReserved)
     vLatOpen();
     vPatchFrameHash();
     AddVectoredExceptionHandler(1, lRenderGuard);
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    SetUnhandledExceptionFilter(lLastChance);
     return TRUE;
 }

@@ -12,12 +12,31 @@ C = bytes([0x91]) * 32
 SECRET = "0f" * 32
 
 
+# stats/privacy.py public_id("987654321098765432") under SECRET, pinned so the check runs where the stats code is not
+# beside this repo (the server keeps it in ~/stats); stats_privacy() cross-checks live wherever it is found.
+PINNED_PID = "6eb9a8a90fedc425"
+
+
+class _Pinned:
+    @staticmethod
+    def public_id(discord_id):
+        assert discord_id == DISCORD_ID
+        return PINNED_PID
+
+
 def stats_privacy():
-    p = os.path.join(os.path.dirname(__file__), "..", "..", "stats", "privacy.py")
-    spec = importlib.util.spec_from_file_location("stats_privacy", p)
+    here = os.path.dirname(__file__)
+    for p in (os.environ.get("FM2K_STATS_DIR", ""), os.path.join(here, "..", "..", "stats"),
+              os.path.expanduser("~/stats")):
+        if p and os.path.isfile(os.path.join(p, "privacy.py")):
+            break
+    else:
+        return _Pinned
+    spec = importlib.util.spec_from_file_location("stats_privacy", os.path.join(p, "privacy.py"))
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
     m.set_secret(SECRET.encode())
+    assert m.public_id(DISCORD_ID) == PINNED_PID
     return m
 
 

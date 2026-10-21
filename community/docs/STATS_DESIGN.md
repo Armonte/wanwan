@@ -348,6 +348,15 @@ Unchanged paths (`stats/API.md`), so the shipped tab works as soon as step 1 lan
 
 ---
 
+## 6a. Owner rulings (2026-10-21) -- these override the spec and the questions below
+
+- The stats site stays private (stats.2dfm.org basic auth) until the owner opens it; no public `/stats` route yet.
+- Left early / rage-quit: a LOSS for the leaver and a WIN for the stayer (rated), plus the `left_early` mark. This
+  overrides spec "never a W or L" (section 4.5 row U4 and verdict outcomes 1/4 become rated).
+- Shared replays keep player names as-is forever, also after an identity reset.
+- Pending matches show and rate immediately, marked `pending`; a later dispute or void recomputes.
+- Public id = HMAC(stats secret, Discord id) (question 1: yes). Legacy hub history auto-claims on link (live).
+
 ## 7. Open questions
 
 1. **Secret identity:** is HMAC(Discord id) acceptable as the long-term public id (it ties the profile to the

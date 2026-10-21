@@ -148,3 +148,32 @@ def test_refresh_accepts_every_listed_public_host(h):
     assert r.status_code == 401 and r.json()["error"] == "bad_call_signature"
     h.cfg.public_host = "povertycaster.org"  # the old host dropped after the move
     assert h.refresh(C1, t, nonce=b"\x24" * 16, host="2dfm.org").json()["error"] == "bad_call_signature"
+
+
+def test_rotation_keeps_the_old_generation_deny_list_for_72h(h):
+    import os
+    from conftest import ROOT_A
+    from service import write_ticket_key
+    t1 = linked(h)
+    old_serial = T.decode_ticket(t1)[1].serial
+    h.community.revoke_serial(1, old_serial)
+    # rotate: a gen 2 online key, a KEYSET carrying both generations, gen 1's file kept as retired
+    seed2 = bytes([0x34]) * 32
+    p2 = os.path.join(h.tmp, "ticket_key_2.txt")
+    write_ticket_key(p2, 2, seed2)
+    issued = h.clock.t - 3600
+    ks = T.Keyset(2, issued, issued + 45 * 86400, 0, 0, [
+        T.KeysetEntry(1, T.seed_public(h.key_seed), issued - 86400, issued + 90 * 86400),
+        T.KeysetEntry(2, T.seed_public(seed2), issued - 60, issued + 90 * 86400)])
+    h.install_keyset(T.sign_keyset(ks, ROOT_A), "keyset_000002.pckeys")
+    h.cfg.retired_ticket_keys, h.cfg.ticket_key_path = h.cfg.ticket_key_path, p2
+    r = h.get("/v1/deny")
+    assert T.parse_deny(r.content, T.seed_public(seed2))[1]["key_gen"] == 2
+    assert r.headers["X-PC-Deny-Gens"] == "2,1"
+    old = h.get("/v1/deny", params={"gen": 1})
+    rr, d = T.parse_deny(old.content, T.seed_public(h.key_seed))
+    assert rr == T.OK and d["key_gen"] == 1 and old_serial in d["serials"]
+    assert h.get("/v1/deny", params={"gen": 7}).json()["error"] == "deny_gen_unknown"
+    last = h.community.db.one("SELECT MAX(expires) FROM tickets WHERE key_gen = 1")[0]
+    h.clock.t = last + 72 * 3600 + 1  # 72 h past gen 1's last ticket: no longer served
+    assert h.get("/v1/deny", params={"gen": 1}).status_code == 404

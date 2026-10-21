@@ -204,3 +204,22 @@ def test_migrations_idempotent(h):
     from db import SCHEMA_VERSION, Database
     db2 = Database(h.cfg.db_path)
     assert db2.one("PRAGMA user_version")[0] == SCHEMA_VERSION
+
+
+def test_rate_limit_survives_a_restart_and_stores_no_address(h):
+    import app as app_mod
+    from service import Community
+    for _ in range(20):
+        assert h.post("/v1/link/start", json={"client_pub": b64(T.seed_public(client(1)))}).status_code == 200
+    assert h.post("/v1/link/start", json={"client_pub": b64(T.seed_public(client(1)))}).status_code == 429
+    # a restart: a new app on the same database still refuses
+    a2 = app_mod.create_app(h.cfg, Community(h.cfg, clock=h.clock))
+    a2.state.discord = h.app.state.discord
+    from fastapi.testclient import TestClient
+    r = TestClient(a2).post("/v1/link/start", json={"client_pub": b64(T.seed_public(client(1)))})
+    assert r.status_code == 429
+    for row in h.community.db.q("SELECT key FROM rate_hits"):
+        assert b"testclient" not in row[0] and len(row[0]) == 32
+    h.clock.t += 601  # the window passes: rows pruned, allowed again
+    assert h.post("/v1/link/start", json={"client_pub": b64(T.seed_public(client(1)))}).status_code == 200
+    assert h.community.db.one("SELECT COUNT(*) FROM rate_hits")[0] == 1

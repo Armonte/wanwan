@@ -36,6 +36,7 @@ class Config:
     root_pubs: tuple[bytes, bytes]
     deny_valid_seconds: int
     deny_refresh_seconds: int
+    retired_ticket_keys: str = ""  # comma list of key files of earlier generations (after a rotation)
     fake_discord: bool = False  # LOCAL DEV MODE (fake_discord.py): loopback only, refused anywhere else
     bind_host: str = ""  # the uvicorn --host; fake mode checks it is loopback
 
@@ -59,6 +60,7 @@ class Config:
             root_pubs=roots,
             deny_valid_seconds=int(e("COMMUNITY_DENY_VALID_SECONDS", "86400")),
             deny_refresh_seconds=int(e("COMMUNITY_DENY_REFRESH_SECONDS", "900")),
+            retired_ticket_keys=e("COMMUNITY_RETIRED_TICKET_KEYS", ""),
             fake_discord=e("COMMUNITY_FAKE_DISCORD", "") == "1",
             bind_host=e("COMMUNITY_BIND_HOST", ""),
         )

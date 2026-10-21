@@ -64,6 +64,12 @@ MIGRATIONS = [
     """
     ALTER TABLE accounts ADD COLUMN discord_handle TEXT;
     """,
+    # 2 -> 3: rate limits that survive a restart. key = HMAC(daily salt, client address): no address is stored, and
+    # a row lives only for its window (pruned on every check).
+    """
+    CREATE TABLE rate_hits (bucket TEXT NOT NULL, key BLOB NOT NULL, ts REAL NOT NULL);
+    CREATE INDEX rate_hits_key ON rate_hits(bucket, key, ts);
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

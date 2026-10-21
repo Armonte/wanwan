@@ -10,6 +10,7 @@
     python3 admin.py show "Name#1234"                    # or a 32-hex account id
     python3 admin.py stats
     python3 admin.py backup [--dir DIR] [--keep 30]      # online SQLite snapshot (the daily timer runs this)
+    python3 admin.py reskeleton                          # after the look-alike table changed: recompute, re-flag
 
 The KEYSET body is UNSIGNED: carry it to the machine that holds the root keys and run sign_keyset.py there. This
 tool never reads a root private key.
@@ -137,6 +138,7 @@ def main(argv=None) -> int:
     rt.add_argument("--gen", type=int, required=True)
     rt.add_argument("--serial", type=int, required=True)
     sub.add_parser("stats")
+    sub.add_parser("reskeleton", help="recompute name skeletons and look-alike flags (after a confusables change)")
     bk = sub.add_parser("backup", help="online snapshot of the database, oldest dropped past --keep")
     bk.add_argument("--dir", help="default: <data>/backups beside the database")
     bk.add_argument("--keep", type=int, default=30)
@@ -205,6 +207,10 @@ def main(argv=None) -> int:
         return 0
     if a.cmd == "revoke-ticket":
         print("revoked" if c.revoke_serial(a.gen, a.serial) else "no such ticket (recorded in the audit log anyway)")
+        return 0
+    if a.cmd == "reskeleton":
+        changed = c.reskeleton()
+        print(f"reskeleton: {len(changed)} #tag(s) reassigned" + "".join(f"\n  row {r}: {o} -> {n}" for r, o, n in changed))
         return 0
     if a.cmd == "stats":
         print(json.dumps(c.stats(), indent=2))

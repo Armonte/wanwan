@@ -205,7 +205,10 @@ the `audit` table.
 ## Known limits of this slice
 
 - Perks records (section 4) are not issued yet; refresh returns only the ticket.
-- The deny list is signed for the current key generation only; after a rotation, keep serving the old generation's
-  list for 72 h (not automated yet).
-- The skeleton is a simplified UTS #39 unless `COMMUNITY_CONFUSABLES` points at `confusables.txt`.
-- Rate limits are in memory (reset on restart).
+- After a key rotation, list the old key file in `COMMUNITY_RETIRED_TICKET_KEYS`: `/v1/deny?gen=N` keeps serving that
+  generation's deny list until 72 h past its last ticket (`X-PC-Deny-Gens` names every generation served). The
+  launcher still fetches only the current generation (`/v1/deny`); fetching each listed generation is pending there.
+- Names use the full UTS #39 table (`unicode/confusables.txt`, Unicode 16.0.0) on top of case folding. After changing
+  the table, run `admin.py reskeleton` (recomputes skeletons and look-alike flags; the oldest account keeps a #tag).
+- Rate limits live in the database (`rate_hits`): a salted HMAC of the client address, salt rotated daily, rows
+  deleted as they leave the 10-minute window. No address is ever stored.

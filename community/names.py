@@ -130,9 +130,16 @@ _BUILTIN_CONFUSABLES = {
 }
 
 
+# Unicode's UTS #39 confusables table (Unicode 16.0.0), shipped with the service. COMMUNITY_CONFUSABLES overrides
+# the path; set it to "none" to fall back to the small built-in table (tests that pin the built-in behavior).
+BUNDLED_CONFUSABLES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "unicode", "confusables.txt")
+
+
 @lru_cache(maxsize=1)
 def _confusables_file() -> dict[str, str]:
-    path = os.environ.get("COMMUNITY_CONFUSABLES", "")
+    path = os.environ.get("COMMUNITY_CONFUSABLES", "") or BUNDLED_CONFUSABLES
+    if path == "none":
+        return {}
     out: dict[str, str] = {}
     if not path or not os.path.isfile(path):
         return out
@@ -151,12 +158,13 @@ def _confusables_file() -> dict[str, str]:
 
 
 def skeleton(name: str) -> str:
+    """The comparison key for #tags and look-alike flags: case-folded, compatibility-decomposed, every character
+    mapped to its UTS #39 prototype (the full table when present), accents, spaces and the built-in digit/letter
+    look-alikes folded. Two names with one skeleton look the same to a player."""
     table = _confusables_file()
-    s = unicodedata.normalize("NFD", name)
-    if table:  # UTS #39: NFD, map each character to its prototype, NFD again
-        s = "".join(table.get(ch, ch) for ch in s)
-        return unicodedata.normalize("NFD", s)
     s = unicodedata.normalize("NFKD", name).casefold()
+    if table:
+        s = unicodedata.normalize("NFKD", "".join(table.get(ch, ch) for ch in s)).casefold()
     s = "".join(ch for ch in s if not unicodedata.combining(ch))
     s = "".join(_BUILTIN_CONFUSABLES.get(ch, ch) for ch in s)
     for multi in ("rn", "vv"):

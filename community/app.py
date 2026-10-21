@@ -11,7 +11,8 @@ Endpoints (paths as the app sees them; the public URL adds /community):
     POST /v1/link/finish              {link_id, signature, name?} -> {ticket, display, discord_handle, ...}
     POST /v1/ticket/refresh           signed call (section 6 headers) -> {ticket, ...}
     GET  /v1/keyset                   the current root-signed KEYSET (PCKEYS1 bytes)
-    GET  /v1/deny                     the deny list, signed by the ticket key (PCDENY1 bytes)
+    GET  /v1/deny[?gen=N]             the deny list of one key generation, signed by that ticket key (PCDENY1 bytes);
+                                      X-PC-Deny-Gens lists every generation served (old ones 72 h past their tickets)
 
 One Discord login: the launcher signs in through the Discord Social SDK (its own token, for presence, invites and
 friends) and hands that token here once; the service asks Discord who it is and keeps nothing of the token.
@@ -23,9 +24,10 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
+import hmac
 import secrets
 import time
-from collections import defaultdict, deque
 from typing import Optional
 
 import httpx
@@ -100,19 +102,29 @@ def b64e(b: bytes) -> str:
 
 
 class RateLimit:
-    """In-memory per-client sliding window. The key is hashed in memory only; nothing about a client is stored."""
+    """Per-client sliding window kept in the database, so a restart does not reset it. The client address is never
+    stored: the key is HMAC-SHA256 under a salt that rotates every UTC day (meta rate_salt), and rows are deleted as
+    soon as they leave the window."""
 
-    def __init__(self, limit: int, window: int):
-        self.limit, self.window = limit, window
-        self.hits: dict[int, deque] = defaultdict(deque)
+    def __init__(self, community: "Community", bucket: str, limit: int, window: int):
+        self.c, self.bucket, self.limit, self.window = community, bucket, limit, window
 
-    def allow(self, key: str, now: float) -> bool:
-        q = self.hits[hash(key)]
-        while q and q[0] <= now - self.window:
-            q.popleft()
-        if len(q) >= self.limit:
-            return False
-        q.append(now)
+    def _key(self, client: str) -> bytes:
+        day = str(int(self.c.now()) // 86400)
+        salt = self.c.db.meta_get("rate_salt", "")
+        if not salt.startswith(day + ":"):
+            salt = day + ":" + secrets.token_hex(16)
+            self.c.db.meta_set("rate_salt", salt)
+        return hmac.new(salt.encode(), client.encode(), hashlib.sha256).digest()
+
+    def allow(self, client: str, now: float) -> bool:
+        key = self._key(client)
+        with self.c.db.tx() as db:
+            db.x("DELETE FROM rate_hits WHERE ts <= ?", (now - self.window,))
+            n = db.one("SELECT COUNT(*) FROM rate_hits WHERE bucket = ? AND key = ?", (self.bucket, key))[0]
+            if n >= self.limit:
+                return False
+            db.x("INSERT INTO rate_hits(bucket, key, ts) VALUES(?, ?, ?)", (self.bucket, key, now))
         return True
 
 
@@ -131,8 +143,8 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
     app.state.cfg = cfg
     app.state.community = community or Community(cfg)
     app.state.discord = DiscordClient(cfg)
-    app.state.link_limit = RateLimit(20, 600)
-    app.state.refresh_limit = RateLimit(30, 600)
+    app.state.link_limit = RateLimit(app.state.community, "link", 20, 600)
+    app.state.refresh_limit = RateLimit(app.state.community, "refresh", 30, 600)
     if cfg.fake_discord:
         fake_discord.install(app, cfg)
 
@@ -189,7 +201,7 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
         missing = [] if cfg.fake_discord else cfg.discord_missing()
         if missing:
             raise ServiceError(503, "discord_not_configured", "the service is missing " + ", ".join(missing))
-        if not app.state.link_limit.allow(client_key(request), time.monotonic()):
+        if not app.state.link_limit.allow(client_key(request), float(svc().now())):
             raise ServiceError(429, "rate_limited", "too many link attempts, try again later")
         body = await json_body(request)
         client_pub = b64d(body.get("client_pub"), 32)
@@ -212,7 +224,7 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
 
     @app.post("/v1/link/discord")
     async def link_discord(request: Request):
-        if not app.state.link_limit.allow(client_key(request), time.monotonic()):
+        if not app.state.link_limit.allow(client_key(request), float(svc().now())):
             raise ServiceError(429, "rate_limited", "too many link attempts, try again later")
         body = await json_body(request)
         row = live_link(body.get("link_id"))
@@ -264,7 +276,7 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
     @app.post("/v1/ticket/refresh")
     async def ticket_refresh(request: Request):
         c = svc()
-        if not app.state.refresh_limit.allow(client_key(request), time.monotonic()):
+        if not app.state.refresh_limit.allow(client_key(request), float(svc().now())):
             raise ServiceError(429, "rate_limited", "too many refreshes")
         h = request.headers
         ticket = b64d(h.get("x-pc-ticket"), T.TICKET_SIZE)
@@ -297,8 +309,10 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
                         headers={"X-PC-Keyset-Serial": str(ks.serial)})
 
     @app.get("/v1/deny")
-    async def deny():
-        return Response(content=svc().deny_list(), media_type="application/octet-stream")
+    async def deny(gen: Optional[int] = None):
+        c = svc()
+        return Response(content=c.deny_list(gen), media_type="application/octet-stream",
+                        headers={"X-PC-Deny-Gens": ",".join(str(g) for g in c.deny_gens())})
 
     return app
 

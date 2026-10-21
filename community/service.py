@@ -25,6 +25,9 @@ class ServiceError(Exception):
         self.status, self.code, self.detail = status, code, detail
 
 
+RETIRED_DENY_SECONDS = 72 * 3600  # a retired key generation's deny list is served this long past its last ticket
+
+
 # ---- the online ticket key ----
 @dataclass
 class TicketKey:
@@ -195,6 +198,35 @@ class Community:
                  (name, skel, tag, flagged, row))
         return name, tag
 
+    def reskeleton(self) -> list[tuple[int, int, int]]:
+        """Recompute every account's skeleton after the look-alike table changed (the oldest account keeps its #tag
+        when two now collide; the later one gets a new one) and re-flag look-alikes. Returns (row, old tag, new tag)
+        for every #tag that had to change; each is audited."""
+        changed = []
+        with self.db.tx() as db:
+            rows = db.q("SELECT id, name, tag FROM accounts WHERE name IS NOT NULL ORDER BY id")
+            db.x("UPDATE accounts SET skeleton = NULL")
+            taken: dict[str, set[int]] = {}
+            for r in rows:
+                skel = names.skeleton(r["name"])
+                used = taken.setdefault(skel, set())
+                tag = r["tag"]
+                if tag is None or tag in used:
+                    tag = secrets.randbelow(10000)
+                    while tag in used:
+                        tag = secrets.randbelow(10000)
+                    changed.append((r["id"], r["tag"], tag))
+                    db.audit(self.now(), "tag_reassigned", f"{r['id']}:{r['tag']}->{tag}")
+                used.add(tag)
+                db.x("UPDATE accounts SET skeleton = ?, tag = ? WHERE id = ?", (skel, tag, r["id"]))
+            for r in rows:
+                skel = names.skeleton(r["name"])
+                others = db.q("SELECT name FROM accounts WHERE skeleton = ? AND id != ? AND banned = 0",
+                              (skel, r["id"]))
+                db.x("UPDATE accounts SET flagged = ? WHERE id = ?",
+                     (1 if any(o["name"] != r["name"] for o in others) else 0, r["id"]))
+        return changed
+
     def bind_client(self, row: int, client_pub: bytes) -> None:
         """Link or relink: a new client key denies every unexpired ticket of the old one (section 9)."""
         now = self.now()
@@ -267,10 +299,36 @@ class Community:
         return cur.rowcount > 0
 
     # ---- the deny list (section 8) ----
-    def deny_list(self) -> bytes:
-        """The signed PCDENY1 for the online key's generation. Rebuilt (list_serial + 1) when its content changes or
-        every deny_refresh_seconds, so a ban is live at the next fetch."""
+    def retired_keys(self) -> dict[int, TicketKey]:
+        """Earlier generations' key files (COMMUNITY_RETIRED_TICKET_KEYS), kept after a rotation only to sign their
+        deny lists while that generation's tickets can still be shown by peers."""
+        out = {}
+        for p in (x.strip() for x in self.cfg.retired_ticket_keys.split(",")):
+            if p:
+                k = read_ticket_key(p)
+                out[k.key_gen] = k
+        return out
+
+    def deny_gens(self) -> list[int]:
+        """Every generation /v1/deny serves now: the online key's, and each retired one until RETIRED_DENY_SECONDS
+        after its last ticket expired."""
+        gens = [self.signing_key().key_gen]
+        now = self.now()
+        for gen in sorted(self.retired_keys()):
+            last = self.db.one("SELECT MAX(expires) FROM tickets WHERE key_gen = ?", (gen,))[0]
+            if gen not in gens and last is not None and now <= last + RETIRED_DENY_SECONDS:
+                gens.append(gen)
+        return gens
+
+    def deny_list(self, gen: Optional[int] = None) -> bytes:
+        """The signed PCDENY1 for one key generation (default: the online key's). Rebuilt (list_serial + 1) when its
+        content changes or every deny_refresh_seconds, so a ban is live at the next fetch. A retired generation's list
+        is served for RETIRED_DENY_SECONDS past its last ticket: peers may still show those tickets."""
         key = self.signing_key()
+        if gen is not None and gen != key.key_gen:
+            if gen not in self.deny_gens():
+                raise ServiceError(404, "deny_gen_unknown", f"no deny list is served for key generation {gen}")
+            key = self.retired_keys()[gen]
         now = self.now()
         serials = [r[0] for r in self.db.q(
             "SELECT serial FROM tickets WHERE key_gen = ? AND revoked = 1 AND expires + ? >= ?",

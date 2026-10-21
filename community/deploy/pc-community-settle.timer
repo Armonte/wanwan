@@ -1,0 +1,10 @@
+[Unit]
+Description=PovertyCaster community service: settle results hourly (pending -> final at 24 h, disputes void at 7 days)
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

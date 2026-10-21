@@ -229,3 +229,6 @@ tools/.delayab/
 tools/.gate/
 tools/.natrepro/
 tools/.punchval/
+
+# the community service's systemd units are source, not a deploy artifact
+!community/deploy/

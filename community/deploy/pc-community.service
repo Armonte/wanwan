@@ -1,0 +1,20 @@
+[Unit]
+Description=PovertyCaster community service
+After=network.target
+
+[Service]
+Type=simple
+User=fm2k
+WorkingDirectory=/home/fm2k/wanwan/community
+EnvironmentFile=/home/fm2k/wanwan/community/data/community.env
+ExecStart=/home/fm2k/pc-community-venv/bin/uvicorn app:app --host 127.0.0.1 --port 8090 --no-access-log
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/home/fm2k/wanwan/community/data
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

@@ -11,6 +11,9 @@
     python3 admin.py stats
     python3 admin.py backup [--dir DIR] [--keep 30]      # online SQLite snapshot (the daily timer runs this)
     python3 admin.py reskeleton                          # after the look-alike table changed: recompute, re-flag
+    python3 admin.py import-games game_table.tsv [--replace]  # the per-game table (fm2k-port gen_game_table.py)
+    python3 admin.py settle                              # pending -> final at 24 h, disputes void at 7 days (timer)
+    python3 admin.py reexport                            # one results.jsonl line per match with its current state
 
 The KEYSET body is UNSIGNED: carry it to the machine that holds the root keys and run sign_keyset.py there. This
 tool never reads a root private key.
@@ -25,8 +28,10 @@ import shutil
 import sys
 import time
 
+import games as G
 import tickets as T
 from config import Config
+from results import Results
 from service import Community, ServiceError, write_ticket_key
 
 DAY = 86400
@@ -143,6 +148,11 @@ def main(argv=None) -> int:
     bk.add_argument("--dir", help="default: <data>/backups beside the database")
     bk.add_argument("--keep", type=int, default=30)
     sub.add_parser("deny", help="print the current deny list summary")
+    ig = sub.add_parser("import-games", help="load the per-game table TSV (gen_game_table.py --format tsv)")
+    ig.add_argument("file")
+    ig.add_argument("--replace", action="store_true", help="drop rows absent from this table")
+    sub.add_parser("settle", help="pending -> final after 24 h; open disputes close void after 7 days")
+    sub.add_parser("reexport", help="append every match's current state to export/results.jsonl")
     a = p.parse_args(argv)
     cfg = Config.from_env()
 
@@ -213,7 +223,21 @@ def main(argv=None) -> int:
         print(f"reskeleton: {len(changed)} #tag(s) reassigned" + "".join(f"\n  row {r}: {o} -> {n}" for r, o, n in changed))
         return 0
     if a.cmd == "stats":
-        print(json.dumps(c.stats(), indent=2))
+        print(json.dumps(dict(c.stats(), matches=Results(c).stats()), indent=2))
+        return 0
+    if a.cmd == "import-games":
+        with open(a.file, encoding="utf-8") as f:
+            try:
+                rows = G.parse_tsv(f.read())
+            except ValueError as e:
+                sys.exit(f"REFUSED: {e}")
+        print(f"imported {G.import_rows(c.db, rows, c.now(), a.replace)} game rows")
+        return 0
+    if a.cmd == "settle":
+        print(f"settled {Results(c).settle()} match(es)")
+        return 0
+    if a.cmd == "reexport":
+        print(f"wrote {Results(c).reexport()} line(s)")
         return 0
     if a.cmd == "deny":
         try:

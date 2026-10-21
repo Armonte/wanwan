@@ -11,6 +11,8 @@ Endpoints (paths as the app sees them; the public URL adds /community):
     POST /v1/link/finish              {link_id, signature, name?} -> {ticket, display, discord_handle, ...}
     POST /v1/ticket/refresh           signed call (section 6 headers) -> {ticket, public_id, ...}
     POST /v1/profile/visibility       signed {hidden} -> the stats profile opt-out (export/hidden.json)
+    POST /v1/report                   signed receipt list (octet-stream, spec 7c) -> {status, match_id}; the result
+                                      lands in export/results.jsonl for the stats site
     GET  /v1/config                   {stats_url, replay_base, web_base}: where the launcher finds the rest
     GET  /v1/keyset                   the current root-signed KEYSET (PCKEYS1 bytes)
     GET  /v1/deny[?gen=N]             the deny list of one key generation, signed by that ticket key (PCDENY1 bytes);
@@ -37,10 +39,12 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
 import fake_discord
+import games as G
 import names
 import tickets as T
 from config import Config
 from db import SCHEMA_VERSION
+from results import Results
 from service import Community, ServiceError
 
 LINK_TTL = 600  # a link must be finished within 10 minutes of its start
@@ -147,6 +151,8 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
     app.state.discord = DiscordClient(cfg)
     app.state.link_limit = RateLimit(app.state.community, "link", 20, 600)
     app.state.refresh_limit = RateLimit(app.state.community, "refresh", 30, 600)
+    app.state.report_limit = RateLimit(app.state.community, "report", 120, 600)
+    app.state.results = Results(app.state.community)
     if cfg.fake_discord:
         fake_discord.install(app, cfg)
 
@@ -162,7 +168,8 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
 
     @app.exception_handler(ServiceError)
     async def service_error(request: Request, e: ServiceError):
-        return JSONResponse(status_code=e.status, content={"error": e.code, "detail": e.detail})
+        return JSONResponse(status_code=e.status, content={"error": e.code, "detail": e.detail},
+                            headers=getattr(e, "headers", None))
 
     async def json_body(request: Request) -> dict:
         try:
@@ -184,9 +191,22 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
                 "public_id": (acc["public_id"] if acc else None) or "",
                 "stats_hidden": bool(acc["stats_hidden"]) if acc else False}
 
-    async def signed_call(request: Request, limit: "RateLimit") -> tuple[int, bytes]:
+    async def read_capped(request: Request, cap: int) -> bytes:
+        """The body, refused above `cap` from Content-Length before a byte is read (and while streaming)."""
+        cl = request.headers.get("content-length", "")
+        if cl and (not cl.isdigit() or int(cl) > cap):
+            raise ServiceError(413, "body_too_large", f"the body is above {cap} bytes")
+        out = bytearray()
+        async for chunk in request.stream():
+            out += chunk
+            if len(out) > cap:
+                raise ServiceError(413, "body_too_large", f"the body is above {cap} bytes")
+        return bytes(out)
+
+    async def signed_call(request: Request, limit: "RateLimit", max_body: int = 65536) -> tuple[int, bytes]:
         """Section 6: a ticket this service issued and still bound to the account's client key, X-PC-Time within
-        5 minutes, a fresh nonce, and the call signature over one of the public hosts. Returns (account row, body)."""
+        5 minutes, a fresh nonce, and the call signature over one of the public hosts. Returns (account row, body).
+        The body is read only after the header and ticket checks, and never above `max_body` (7c)."""
         c = svc()
         if not limit.allow(client_key(request), float(c.now())):
             raise ServiceError(429, "rate_limited", "too many calls, try again later")
@@ -201,7 +221,7 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
         if abs(ts - c.now()) > 300:
             raise ServiceError(401, "clock_skew", "X-PC-Time is more than 5 minutes off; use X-PC-Server-Time")
         row, t = c.account_for_refresh(ticket)
-        body = await request.body()
+        body = await read_capped(request, max_body)
         path = cfg.root_path + request.url.path
         digest = T.sha256(body)
         if not any(T.verify_call(t.client_pub, T.call_message(host.encode(), request.method.encode(), path.encode(),
@@ -211,6 +231,7 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
         if c.nonce_seen(nonce):
             raise ServiceError(401, "nonce_reused", "this nonce was already used")
         c.nonce_store(nonce)
+        request.state.client_pub = t.client_pub
         return row, body
 
     @app.get("/health")
@@ -324,6 +345,12 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
             raise ServiceError(400, "bad_json", 'the body must be {"hidden": true|false}')
         svc().set_stats_hidden(row, hidden)
         return {"hidden": hidden}
+
+    # ---- match results (spec section 7, 7c; STATS_DESIGN.md 4.3-4.5) ----
+    @app.post("/v1/report")
+    async def report(request: Request):
+        row, body = await signed_call(request, app.state.report_limit, G.max_report_body(svc().db))
+        return app.state.results.report(row, request.state.client_pub, body)
 
     # ---- discovery: where the stats site and replays live (no domain in launcher code) ----
     @app.get("/v1/config")

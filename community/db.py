@@ -77,6 +77,84 @@ MIGRATIONS = [
     ALTER TABLE accounts ADD COLUMN stats_hidden INTEGER NOT NULL DEFAULT 0;
     CREATE UNIQUE INDEX accounts_public_id ON accounts(public_id);
     """,
+    # 4 -> 5: match results (spec section 7, STATS_DESIGN.md 4.2). games = the generated per-game table (admin
+    # import-games); matches = one row per match key (session_key, match_index) with its counting state; receipts =
+    # every verified receipt (opponents' signatures: never exported); marks = strikes / left early / disputes; reports =
+    # the bodies already processed per account (a re-sent report is a no-op) and the per-account daily cap.
+    """
+    CREATE TABLE games (
+        game_id             TEXT NOT NULL,           -- the catalog id, as receipts carry it
+        build_id            TEXT NOT NULL,           -- sha256 of the .kgt (hex), as receipts carry it
+        family              TEXT NOT NULL,           -- fm2k, fm95, ...: the stats key is family:game_id
+        name                TEXT,
+        rounds_to_win_legal TEXT NOT NULL,
+        fps                 INTEGER NOT NULL,
+        min_round_frames    INTEGER NOT NULL,
+        double_ko           INTEGER NOT NULL,
+        input_width         INTEGER NOT NULL,
+        max_match_frames    INTEGER NOT NULL,
+        worker              INTEGER NOT NULL DEFAULT 0,
+        setup_layout        TEXT NOT NULL DEFAULT '',
+        confirmed           INTEGER NOT NULL DEFAULT 0,
+        imported            INTEGER NOT NULL,
+        PRIMARY KEY (game_id, build_id)
+    );
+    CREATE TABLE matches (
+        id            INTEGER PRIMARY KEY,
+        match_id      TEXT NOT NULL UNIQUE,          -- public, 12 random hex, never derived
+        session_key   BLOB NOT NULL,
+        match_index   INTEGER NOT NULL,
+        game_id       TEXT NOT NULL,
+        build_id      TEXT NOT NULL,
+        acct0         INTEGER NOT NULL REFERENCES accounts(id),
+        acct1         INTEGER NOT NULL REFERENCES accounts(id),
+        pub0          BLOB NOT NULL,                 -- the client keys that signed (a later relink does not matter)
+        pub1          BLOB NOT NULL,
+        started_unix  INTEGER NOT NULL,
+        rounds_to_win INTEGER NOT NULL,
+        status        TEXT NOT NULL,                 -- open pending final disputed void left_early dropped
+        winner_slot   INTEGER,                       -- 0, 1, 255 draw
+        rounds0       INTEGER,
+        rounds1       INTEGER,
+        decided_frame INTEGER,
+        flags         INTEGER NOT NULL DEFAULT 0,    -- 1 desync, 4 late claim, 8 pair cap (not rated)
+        left_slot     INTEGER,
+        first_report  INTEGER NOT NULL,
+        counted_at    INTEGER,                       -- when it first counted (the 24 h pending window, the pair cap day)
+        settled_at    INTEGER,
+        updated       INTEGER NOT NULL,
+        exported      TEXT,                          -- the last results.jsonl state written (no duplicate lines)
+        UNIQUE (session_key, match_index)
+    );
+    CREATE INDEX matches_status ON matches(status, counted_at);
+    CREATE INDEX matches_pair ON matches(acct0, acct1, counted_at);
+    CREATE TABLE receipts (
+        match       INTEGER NOT NULL REFERENCES matches(id),
+        sha         BLOB NOT NULL,
+        signer_slot INTEGER NOT NULL,
+        kind        INTEGER NOT NULL,
+        frame       INTEGER NOT NULL,
+        bytes       BLOB NOT NULL,
+        received    INTEGER NOT NULL,
+        PRIMARY KEY (match, sha)
+    );
+    CREATE TABLE marks (
+        account INTEGER NOT NULL REFERENCES accounts(id),
+        match   INTEGER NOT NULL REFERENCES matches(id),
+        kind    TEXT NOT NULL,                       -- strike left_early left_early_behind disputed late_claim
+        ts      INTEGER NOT NULL,
+        PRIMARY KEY (account, match, kind)
+    );
+    CREATE TABLE reports (
+        account  INTEGER NOT NULL REFERENCES accounts(id),
+        body_sha BLOB NOT NULL,
+        match    INTEGER REFERENCES matches(id),
+        ts       INTEGER NOT NULL,
+        PRIMARY KEY (account, body_sha)
+    );
+    CREATE INDEX reports_ts ON reports(account, ts);
+    CREATE INDEX tickets_window ON tickets(expires);
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

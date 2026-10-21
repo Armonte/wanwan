@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import glob
 import hashlib
+import hmac
+import json
 import os
 import secrets
 import time
@@ -81,6 +83,7 @@ class Community:
         self._key: Optional[TicketKey] = None
         self._key_mtime = None
         self._ks_cache: tuple = (None, None, None)  # (dir signature, now bucket, (bytes, Keyset))
+        self.ensure_public_ids()
 
     def now(self) -> int:
         return int(self.clock())
@@ -155,10 +158,45 @@ class Community:
                 aid = secrets.token_bytes(16)
                 if not db.one("SELECT 1 FROM accounts WHERE account_id = ?", (aid,)):
                     break
-            cur = db.x("INSERT INTO accounts(account_id, discord_id, discord_handle, created) VALUES(?, ?, ?, ?)",
-                       (aid, discord_id, handle, self.now()))
+            cur = db.x("INSERT INTO accounts(account_id, discord_id, discord_handle, public_id, created) "
+                       "VALUES(?, ?, ?, ?, ?)", (aid, discord_id, handle, self.stats_public_id(discord_id), self.now()))
             db.audit(self.now(), "account_created", aid.hex())
             return cur.lastrowid
+
+    # ---- the stats join ----
+    def stats_public_id(self, discord_id: str) -> Optional[str]:
+        """The stats site's public id for a Discord user (stats/privacy.py public_id): HMAC-SHA256 under the shared
+        FM2K_STATS_ID_SECRET, 16 hex. None while the secret is not configured."""
+        if not self.cfg.stats_id_secret:
+            return None
+        return hmac.new(self.cfg.stats_id_secret.encode(), discord_id.encode(), hashlib.sha256).hexdigest()[:16]
+
+    def ensure_public_ids(self) -> int:
+        """Fill accounts.public_id where missing (accounts made before the secret was set). Returns how many."""
+        if not self.cfg.stats_id_secret:
+            return 0
+        rows = self.db.q("SELECT id, discord_id FROM accounts WHERE public_id IS NULL")
+        for r in rows:
+            self.db.x("UPDATE accounts SET public_id = ? WHERE id = ?", (self.stats_public_id(r["discord_id"]), r["id"]))
+        return len(rows)
+
+    def set_stats_hidden(self, row: int, hidden: bool) -> None:
+        """The player's profile opt-out. Republishes export/hidden.json (public ids only) for the stats site."""
+        self.db.x("UPDATE accounts SET stats_hidden = ? WHERE id = ?", (1 if hidden else 0, row))
+        self.export_hidden()
+
+    def export_hidden(self) -> str:
+        ids = sorted(r[0] for r in self.db.q(
+            "SELECT public_id FROM accounts WHERE stats_hidden = 1 AND public_id IS NOT NULL"))
+        os.makedirs(self.cfg.export_dir, exist_ok=True)
+        path = os.path.join(self.cfg.export_dir, "hidden.json")
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"v": 1, "hidden": ids}, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        return path
 
     def account(self, row: int):
         return self.db.one("SELECT * FROM accounts WHERE id = ?", (row,))

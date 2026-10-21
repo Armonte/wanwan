@@ -9,7 +9,9 @@ Endpoints (paths as the app sees them; the public URL adds /community):
     POST /v1/link/discord             {link_id, access_token} -> {status, needs_name, display?, suggested_name,
                                       discord_handle}: the launcher's Discord Social SDK token, used once and dropped
     POST /v1/link/finish              {link_id, signature, name?} -> {ticket, display, discord_handle, ...}
-    POST /v1/ticket/refresh           signed call (section 6 headers) -> {ticket, ...}
+    POST /v1/ticket/refresh           signed call (section 6 headers) -> {ticket, public_id, ...}
+    POST /v1/profile/visibility       signed {hidden} -> the stats profile opt-out (export/hidden.json)
+    GET  /v1/config                   {stats_url, replay_base, web_base}: where the launcher finds the rest
     GET  /v1/keyset                   the current root-signed KEYSET (PCKEYS1 bytes)
     GET  /v1/deny[?gen=N]             the deny list of one key generation, signed by that ticket key (PCDENY1 bytes);
                                       X-PC-Deny-Gens lists every generation served (old ones 72 h past their tickets)
@@ -26,8 +28,8 @@ import base64
 import binascii
 import hashlib
 import hmac
+import json
 import secrets
-import time
 from typing import Optional
 
 import httpx
@@ -174,10 +176,42 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
     def ticket_response(b: bytes) -> dict:
         """Only ever sent to the ticket's own player, so it may carry their Discord username."""
         _, t = T.decode_ticket(b)
-        acc = svc().db.one("SELECT discord_handle FROM accounts WHERE account_id = ?", (t.account,))
+        acc = svc().db.one("SELECT discord_handle, public_id, stats_hidden FROM accounts WHERE account_id = ?",
+                           (t.account,))
         return {"ticket": b64e(b), "account_id": t.account.hex(), "name": t.name, "tag": f"{t.tag:04d}",
                 "display": t.display, "refresh_after": REFRESH_AFTER,
-                "discord_handle": (acc["discord_handle"] if acc else None) or ""}
+                "discord_handle": (acc["discord_handle"] if acc else None) or "",
+                "public_id": (acc["public_id"] if acc else None) or "",
+                "stats_hidden": bool(acc["stats_hidden"]) if acc else False}
+
+    async def signed_call(request: Request, limit: "RateLimit") -> tuple[int, bytes]:
+        """Section 6: a ticket this service issued and still bound to the account's client key, X-PC-Time within
+        5 minutes, a fresh nonce, and the call signature over one of the public hosts. Returns (account row, body)."""
+        c = svc()
+        if not limit.allow(client_key(request), float(c.now())):
+            raise ServiceError(429, "rate_limited", "too many calls, try again later")
+        h = request.headers
+        ticket = b64d(h.get("x-pc-ticket"), T.TICKET_SIZE)
+        nonce = b64d(h.get("x-pc-nonce"), 16)
+        sig = b64d(h.get("x-pc-sig"), 64)
+        ts_s = h.get("x-pc-time", "")
+        if not ts_s.isdigit() or len(ts_s) > 20:
+            raise ServiceError(401, "bad_time", "X-PC-Time must be decimal unix seconds")
+        ts = int(ts_s)
+        if abs(ts - c.now()) > 300:
+            raise ServiceError(401, "clock_skew", "X-PC-Time is more than 5 minutes off; use X-PC-Server-Time")
+        row, t = c.account_for_refresh(ticket)
+        body = await request.body()
+        path = cfg.root_path + request.url.path
+        digest = T.sha256(body)
+        if not any(T.verify_call(t.client_pub, T.call_message(host.encode(), request.method.encode(), path.encode(),
+                                                               digest, ts, nonce, T.ticket_id(ticket)), sig)
+                   for host in cfg.public_hosts):
+            raise ServiceError(401, "bad_call_signature", "the call signature does not verify")
+        if c.nonce_seen(nonce):
+            raise ServiceError(401, "nonce_reused", "this nonce was already used")
+        c.nonce_store(nonce)
+        return row, body
 
     @app.get("/health")
     async def health():
@@ -275,31 +309,26 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
     # ---- renewal (section 6) ----
     @app.post("/v1/ticket/refresh")
     async def ticket_refresh(request: Request):
-        c = svc()
-        if not app.state.refresh_limit.allow(client_key(request), float(svc().now())):
-            raise ServiceError(429, "rate_limited", "too many refreshes")
-        h = request.headers
-        ticket = b64d(h.get("x-pc-ticket"), T.TICKET_SIZE)
-        nonce = b64d(h.get("x-pc-nonce"), 16)
-        sig = b64d(h.get("x-pc-sig"), 64)
-        ts_s = h.get("x-pc-time", "")
-        if not ts_s.isdigit() or len(ts_s) > 20:
-            raise ServiceError(401, "bad_time", "X-PC-Time must be decimal unix seconds")
-        ts = int(ts_s)
-        if abs(ts - c.now()) > 300:
-            raise ServiceError(401, "clock_skew", "X-PC-Time is more than 5 minutes off; use X-PC-Server-Time")
-        row, t = c.account_for_refresh(ticket)
-        body = await request.body()
-        path = cfg.root_path + request.url.path
-        digest = T.sha256(body)
-        if not any(T.verify_call(t.client_pub, T.call_message(host.encode(), request.method.encode(), path.encode(),
-                                                               digest, ts, nonce, T.ticket_id(ticket)), sig)
-                   for host in cfg.public_hosts):
-            raise ServiceError(401, "bad_call_signature", "the call signature does not verify")
-        if c.nonce_seen(nonce):
-            raise ServiceError(401, "nonce_reused", "this nonce was already used")
-        c.nonce_store(nonce)
-        return ticket_response(c.issue_ticket(row))
+        row, _ = await signed_call(request, app.state.refresh_limit)
+        return ticket_response(svc().issue_ticket(row))
+
+    # ---- the player's own settings (signed) ----
+    @app.post("/v1/profile/visibility")
+    async def profile_visibility(request: Request):
+        row, body = await signed_call(request, app.state.refresh_limit)
+        try:
+            hidden = json.loads(body or b"{}").get("hidden")
+        except (ValueError, AttributeError):
+            hidden = None
+        if not isinstance(hidden, bool):
+            raise ServiceError(400, "bad_json", 'the body must be {"hidden": true|false}')
+        svc().set_stats_hidden(row, hidden)
+        return {"hidden": hidden}
+
+    # ---- discovery: where the stats site and replays live (no domain in launcher code) ----
+    @app.get("/v1/config")
+    async def public_config():
+        return {"stats_url": cfg.stats_url, "replay_base": cfg.replay_public_base, "web_base": cfg.web_base}
 
     # ---- published records ----
     @app.get("/v1/keyset")

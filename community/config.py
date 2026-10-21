@@ -36,6 +36,11 @@ class Config:
     root_pubs: tuple[bytes, bytes]
     deny_valid_seconds: int
     deny_refresh_seconds: int
+    stats_id_secret: str = ""  # FM2K_STATS_ID_SECRET, shared with the stats site (public ids)
+    stats_url: str = ""  # the stats site's base URL, served by /v1/config (no domain in launcher code)
+    replay_public_base: str = ""  # public base of shared replays (R2), served by /v1/config
+    web_base: str = ""  # the public web root, served by /v1/config
+    export_dir: str = ""  # files the stats site reads (hidden.json); default <data>/export
     retired_ticket_keys: str = ""  # comma list of key files of earlier generations (after a rotation)
     fake_discord: bool = False  # LOCAL DEV MODE (fake_discord.py): loopback only, refused anywhere else
     bind_host: str = ""  # the uvicorn --host; fake mode checks it is loopback
@@ -61,6 +66,11 @@ class Config:
             deny_valid_seconds=int(e("COMMUNITY_DENY_VALID_SECONDS", "86400")),
             deny_refresh_seconds=int(e("COMMUNITY_DENY_REFRESH_SECONDS", "900")),
             retired_ticket_keys=e("COMMUNITY_RETIRED_TICKET_KEYS", ""),
+            stats_id_secret=e("FM2K_STATS_ID_SECRET", ""),
+            stats_url=e("COMMUNITY_STATS_URL", ""),
+            replay_public_base=e("COMMUNITY_REPLAY_PUBLIC_BASE", ""),
+            web_base=e("COMMUNITY_WEB_BASE", ""),
+            export_dir=e("COMMUNITY_EXPORT_DIR", os.path.join(DATA, "export")),
             fake_discord=e("COMMUNITY_FAKE_DISCORD", "") == "1",
             bind_host=e("COMMUNITY_BIND_HOST", ""),
         )

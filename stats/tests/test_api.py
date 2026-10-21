@@ -119,3 +119,12 @@ def test_legacy_matches_feed(client):
                for r in rows)
     mine = client.get(f"/api/v1/matches?user_id={pid(B)}").json()["matches"]
     assert mine and all(pid(B) in (r["p1_id"], r["p2_id"]) for r in mine)
+
+
+def test_launcher_opt_out_by_public_id(client, tmp_path, monkeypatch):
+    # the community service exports public ids of players who hid their profile from the launcher
+    f = tmp_path / "hidden.json"
+    f.write_text(json.dumps({"v": 1, "hidden": [pid(A)]}), encoding="utf-8")
+    monkeypatch.setenv("FM2K_COMMUNITY_HIDDEN_PATH", str(f))
+    body = client.get(f"/api/v1/u/{pid(A)}").json()
+    assert body["private"] is True and set(body) == {"public_id", "name", "tag", "private"}

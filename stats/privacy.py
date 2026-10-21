@@ -110,10 +110,36 @@ def hidden_ids() -> frozenset[str]:
     return ids
 
 
+_community_cache: dict[str, object] = {"key": None, "ids": frozenset()}
+
+
+def community_hidden_pids() -> frozenset[str]:
+    """Public ids hidden through the launcher (the community service's export/hidden.json, at
+    FM2K_COMMUNITY_HIDDEN_PATH). Cached by the file's mtime + size; a missing file hides no one."""
+    p = os.environ.get("FM2K_COMMUNITY_HIDDEN_PATH", "")
+    if not p:
+        return frozenset()
+    path = Path(p)
+    try:
+        st = path.stat()
+    except OSError:
+        return frozenset()
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    if _community_cache["key"] == key:
+        return _community_cache["ids"]  # type: ignore[return-value]
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        ids = frozenset(str(x) for x in (payload.get("hidden") or []) if x)
+    except (OSError, ValueError, AttributeError):
+        return _community_cache["ids"]  # type: ignore[return-value]
+    _community_cache["key"], _community_cache["ids"] = key, ids
+    return ids
+
+
 def is_hidden(discord_id: str, viewer_dc_id: Optional[str] = None) -> bool:
     if viewer_dc_id and viewer_dc_id == discord_id:
         return False
-    return discord_id in hidden_ids()
+    return discord_id in hidden_ids() or public_id(discord_id) in community_hidden_pids()
 
 
 def set_hidden(discord_id: str, hidden: bool) -> None:

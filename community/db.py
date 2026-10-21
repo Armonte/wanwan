@@ -70,6 +70,13 @@ MIGRATIONS = [
     CREATE TABLE rate_hits (bucket TEXT NOT NULL, key BLOB NOT NULL, ts REAL NOT NULL);
     CREATE INDEX rate_hits_key ON rate_hits(bucket, key, ts);
     """,
+    # 3 -> 4: the stats join. public_id = HMAC-SHA256(FM2K_STATS_ID_SECRET, discord_id)[:16 hex], the stats site's own
+    # derivation, so a linked player's legacy hub history is theirs with no claim step. stats_hidden = profile opt-out.
+    """
+    ALTER TABLE accounts ADD COLUMN public_id TEXT;
+    ALTER TABLE accounts ADD COLUMN stats_hidden INTEGER NOT NULL DEFAULT 0;
+    CREATE UNIQUE INDEX accounts_public_id ON accounts(public_id);
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

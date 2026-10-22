@@ -68,3 +68,30 @@ def test_unknown_user_404(client):
     assert client.get("/u/0000000000000000").status_code == 404
     assert client.get("/u/999999999999999999",
                       follow_redirects=False).status_code == 404
+
+
+def test_recent_shows_community_results_with_replay_links(client, tmp_path, monkeypatch):
+    import json as _json
+    import privacy
+    import ratings
+    pa, pb = privacy.public_id("200000000000000001"), privacy.public_id("200000000000000002")
+    rows = [{"v": 1, "match_id": "aaaaaaaaaaaa", "game_id": "fm2k:wonderfulworld", "family": "fm2k", "status": "pending",
+             "started_at": 1792530000, "finished_at": 1792530400, "rounds_to_win": 2,
+             "p1": {"public_id": pa, "name": "alice", "tag": "0412", "hidden": False, "char": None},
+             "p2": {"public_id": pb, "name": "bob", "tag": "7781", "hidden": False, "char": None},
+             "winner": "p1", "score": [2, 1], "flags": [],
+             "replay_url": "https://replays.example.test/replays/v1/fm2k/x.pcrz"},
+            {"v": 1, "match_id": "bbbbbbbbbbbb", "game_id": "fm2k:wonderfulworld", "family": "fm2k", "status": "final",
+             "started_at": 1792530000, "finished_at": 1792530500, "rounds_to_win": 2,
+             "p1": {"public_id": pa, "name": "alice", "tag": "0412", "hidden": False, "char": None},
+             "p2": {"public_id": pb, "name": "bob", "tag": "7781", "hidden": False, "char": None},
+             "winner": "p2", "score": [1, 2], "flags": [], "replay_url": "javascript:alert(1)"}]
+    f = tmp_path / "results.jsonl"
+    f.write_text("\n".join(_json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    monkeypatch.setenv("FM2K_RESULTS_PATH", str(f))
+    ratings.clear_cache()
+    html = client.get("/recent").text
+    assert "alice" in html and "bob" in html and f"/u/{pa}" in html
+    assert 'href="https://replays.example.test/replays/v1/fm2k/x.pcrz"' in html
+    assert "javascript:" not in html  # only https replay links render
+    assert "pending" in html

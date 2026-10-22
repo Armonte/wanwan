@@ -193,7 +193,30 @@ def load_matches() -> list[dict[str, Any]]:
                     })
             rec["rounds"] = clean_rounds
         out.append(rec)
+    out.extend(_community_rows())
     return out
+
+
+def _community_rows() -> list[dict[str, Any]]:
+    """The PovertyCaster community results (FM2K_RESULTS_PATH) in the same whitelisted shape, keyed by the same
+    public ids (the service derives them from the shared secret), with the shared replay link when there is one."""
+    rows: list[dict[str, Any]] = []
+    for r in ratings.read_results(ratings.results_path()):
+        m, _ = ratings.parse_result(r)
+        if m is None:
+            continue
+        p1, p2 = m.p1[len(privacy.PID_KEY):], m.p2[len(privacy.PID_KEY):]
+        started = r.get("started_at") if isinstance(r.get("started_at"), (int, float)) else m.finished_at
+        rows.append({
+            "id": m.id, "p1_id": p1, "p1_nick": m.p1_nick, "p2_id": p2, "p2_nick": m.p2_nick,
+            "p1_char_id": None, "p2_char_id": None, "p1_char_name": m.p1_char, "p2_char_name": m.p2_char,
+            "stage_id": None, "stage_name": None, "game_id": m.game_id,
+            "winner_id": p1 if m.winner == "p1" else p2 if m.winner == "p2" else "",
+            "started_at": started, "finished_at": m.finished_at,
+            "replay_url": m.replay_url if (m.replay_url or "").startswith("https://") else None,
+            "status": m.status,
+        })
+    return rows
 
 
 # ─── Game registry loader ────────────────────────────────────────────────
@@ -261,7 +284,7 @@ def game_friendly_name(game_id: str) -> str:
     rec = load_registry().get(game_id)
     if rec and rec.get("name"):
         return rec["name"]
-    return game_id
+    return ratings.alias_name(game_id) or game_id  # a catalog id from game_aliases.json names itself
 
 
 def game_meta(game_id: str) -> dict[str, Any]:

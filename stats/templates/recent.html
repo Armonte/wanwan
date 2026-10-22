@@ -29,7 +29,8 @@
       <div class="vs">
         <div class="vs-text">VS</div>
         <div class="game"><a href="/g/{{ m.game_id }}">{{ friendly_name(m.game_id) }}</a></div>
-        <div class="when">{{ format_iso(m.finished_at) }}</div>
+        <div class="when">{{ format_iso(m.finished_at) }}{% if m.status == 'pending' %} <span class="pending" title="Inside the 24 h dispute window">pending</span>{% endif %}</div>
+        {% if m.replay_url %}<div class="replay"><a href="{{ m.replay_url }}" rel="nofollow noopener" download>Replay</a></div>{% endif %}
       </div>
       <div class="side p2 {{ 'win' if (not p1_won and not is_draw) else ('draw' if is_draw else 'loss') }}">
         <div class="nick"><a href="/u/{{ m.p2_id }}">{{ who(m.p2_nick, m.p2_id) }}</a></div>

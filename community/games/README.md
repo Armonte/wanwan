@@ -11,3 +11,4 @@ per `.kgt` SHA-256, or per game exe SHA-256 for a non-FM2K game), with the rules
 |---|---|
 | wonderfulworld `54873cd1...` | WonderfulWorld ver 0946, the build the old hub's 2634 matches were played on; rules from the 0945 row |
 | mbaacc `6d1415ca...` | MBAACC CE 1.4 MBAA.exe (PovertyCaster build_id = the exe SHA-256; the handshake refuses differing sim code, so no suffix). Not an FM2K game, so the row names its `family`. The Steam MBAA.exe (`11270cf2...`) has no row: the adapter does not run it |
+| fuuka `24a0a661...` | Fuuka Sigma Taisen FuukaVS.exe (the Jul 2023 build the PovertyCaster adapter runs; build_id = the exe SHA-256). Rounds are the options screen's {1,2,3} (the exe's table @0x6C0264), 60 fps, input 2 bytes a player, double_ko no (a drawn match result is refused: the adapter scores a winner only when a team reaches the target, never a draw), 1v1 only (the native 4P mode signs nothing). Not an FM2K game, so the row names its `family` |

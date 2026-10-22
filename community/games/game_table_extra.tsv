@@ -1,0 +1,2 @@
+game_id	name	engine	build_id	rounds_to_win_legal	fps	min_round_frames	double_ko	input_width	max_match_frames	worker	confirmed
+wonderfulworld	Wonderful World	FM2K	54873cd182ccddfa906c420686c0c1ce041c28c11dc93ff7471ad64da9cfdeae	1,2,3	100	300	0	2	180000	yes	no

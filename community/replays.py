@@ -22,7 +22,7 @@ chunks (CH_INPUTS / CH_TAPE) covering at least `frames` frames ("no inputs" othe
 only allowed chunk types: no CH_GEN_STATE / CH_GEN_STATE_Z (snapshots) and no CH_CHAT.
 
 Money guard (the owner: nobody can drain it): every limit below is checked before a byte goes to R2, and a stored
-object is the only thing that costs. 1 MiB per body (Content-Length before reading, and while streaming); one object
+object is the only thing that costs. 8 MiB per body (Content-Length before reading, and while streaming); one object
 per match (first valid upload wins, a re-upload stores nothing); only a participant of a recorded match; a per-account
 daily cap (429 cap_daily); a global daily breaker on count and bytes (503 replays_paused); the per-client rate limit.
 Decompression is bounded (RAW_CAP, an 8 MiB zstd window) and never parses past the cap.
@@ -41,7 +41,7 @@ from service import ServiceError
 MAGIC = b"PCRZ"
 VERSION = 1
 FIXED = 24  # magic .. z_len
-RAW_CAP = 16 << 20
+RAW_CAP = 64 << 20
 ZSTD_WINDOW_MAX = 8 << 20
 RECORDED = ("pending", "final", "left_early")
 STALE_RESERVATION = 300  # an `uploading` row older than this (a crash mid-PutObject) is reclaimed

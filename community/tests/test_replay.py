@@ -188,7 +188,7 @@ def test_bad_files(h, tmp_path, env):
     # decompression bomb: raw_len is checked against RAW_CAP, and a stream bigger than raw_len is refused
     bomb_raw = pcrep() + bytes(RP.RAW_CAP)
     bomb = pcrz(raw=bomb_raw)
-    assert len(bomb) < (1 << 20)
+    assert len(bomb) < (8 << 20)
     bad(bomb, "raw_len")
     lie = bytearray(pcrz(raw=pcrep() + bytes(1 << 20)))
     struct.pack_into("<I", lie, 16, len(pcrep()))  # declares far less than the stream holds
@@ -249,7 +249,7 @@ def test_match_zero_alone(h, tmp_path, env):
 def test_size_cap_before_reading(h, tmp_path, env):
     ta, _ = env
     mid = recorded(h, ta)
-    r = upload(h, CA, ta, b"\0" * ((1 << 20) + 1), mid)
+    r = upload(h, CA, ta, b"\0" * ((8 << 20) + 1), mid)
     assert err(r) == (413, "body_too_large")
 
 

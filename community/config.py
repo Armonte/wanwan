@@ -49,7 +49,7 @@ class Config:
     r2_bucket: str = ""
     r2_access_key_id: str = ""
     r2_secret_access_key: str = ""
-    replay_max_bytes: int = 1 << 20  # one upload, checked from Content-Length before reading
+    replay_max_bytes: int = 8 << 20  # one upload, checked from Content-Length before reading
     replay_account_daily: int = 200  # stored uploads per account per UTC day (429 cap_daily)
     replay_daily_uploads: int = 20000  # global circuit breaker per UTC day (503 replays_paused)
     replay_daily_bytes: int = 2 << 30
@@ -89,7 +89,7 @@ class Config:
             r2_bucket=e("COMMUNITY_R2_BUCKET", ""),
             r2_access_key_id=e("COMMUNITY_R2_ACCESS_KEY_ID", ""),
             r2_secret_access_key=e("COMMUNITY_R2_SECRET_ACCESS_KEY", ""),
-            replay_max_bytes=min(int(e("COMMUNITY_REPLAY_MAX_BYTES", str(1 << 20))), 1 << 20),
+            replay_max_bytes=min(int(e("COMMUNITY_REPLAY_MAX_BYTES", str(8 << 20))), 8 << 20),
             replay_account_daily=int(e("COMMUNITY_REPLAY_ACCOUNT_DAILY", "200")),
             replay_daily_uploads=int(e("COMMUNITY_REPLAY_DAILY_UPLOADS", "20000")),
             replay_daily_bytes=int(e("COMMUNITY_REPLAY_DAILY_BYTES", str(2 << 30))),

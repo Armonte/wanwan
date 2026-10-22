@@ -40,7 +40,7 @@ Public base: `https://2dfm.org/community` (Caddy strips the prefix; the app sees
 | `POST /v1/ticket/refresh` | section 6 headers `X-PC-Ticket`, `X-PC-Time`, `X-PC-Nonce`, `X-PC-Sig` | same as finish |
 | `POST /v1/profile/visibility` | signed, `{"hidden": bool}` | `{hidden}`; republishes `export/hidden.json` |
 | `POST /v1/report` | signed, `application/octet-stream` receipt list (below) | 200 `{status, match_id}`; errors below |
-| `POST /v1/replay?match_id=<id>` | signed (the query is part of the signed path), `application/octet-stream` PCRZ1 (below), at most 1 MiB | 200 `{replay_id, replay_url}`; errors below |
+| `POST /v1/replay?match_id=<id>` | signed (the query is part of the signed path), `application/octet-stream` PCRZ1 (below), at most 8 MiB | 200 `{replay_id, replay_url}`; errors below |
 | `GET /v1/config` | | `{stats_url, replay_base, web_base}` |
 | `GET /v1/keyset` | | the current KEYSET bytes (`application/octet-stream`, `X-PC-Keyset-Serial`) |
 | `GET /v1/deny` | | the PCDENY1 deny list bytes, signed by the ticket key |
@@ -137,7 +137,7 @@ little-endian:
 | 6 | u16 header_len | bytes before the payload: 26 + len(game_id) + len(build_id) |
 | 8 | u32 match_index | the receipts' match_index; must equal the match's |
 | 12 | u32 frames | battle frames of the match, 1..`max_match_frames` of the game row |
-| 16 | u32 raw_len | decompressed size, 1..16 MiB |
+| 16 | u32 raw_len | decompressed size, 1..64 MiB |
 | 20 | u32 z_len | header_len + z_len must equal the body length exactly |
 | 24 | u8 n, n bytes | game_id (ASCII, 1..64), equal to the match's (the receipts' catalog id) |
 | | u8 n, n bytes | build_id (ASCII, 1..64), equal to the match's |
@@ -159,8 +159,8 @@ inputs-only:
 The wrapper's `frames` is match N's own battle frames. Allowed chunks: `CH_GEN`, `CH_INPUTS`, `CH_CHECK`,
 `CH_ROUND_END`, `CH_RETRY`, `CH_END`, `CH_TAPE`, `CH_TAPE_MARK`, `CH_TAPE_CHECK`, `CH_TAPE_END`, `CH_SESSION`,
 `CH_MATCH_START`, `CH_MATCH_END`, `CH_SETUP_EXT`, `CH_CSS_LIVE`, `CH_SESSION_NAMES`, `CH_MATCH_CHARS`. Refused:
-`CH_GEN_STATE`, `CH_GEN_STATE_Z` (snapshots), `CH_CHAT`, and any unknown type. The size caps stay as they are (1 MiB
-compressed, 16 MiB raw), so a very long set can leave its late matches unshareable.
+`CH_GEN_STATE`, `CH_GEN_STATE_Z` (snapshots), `CH_CHAT`, and any unknown type. The size caps are 8 MiB
+compressed and 64 MiB raw, so only a very long set can leave its late matches unshareable.
 
 Stored as `replays/v1/<family>/<game_id>/<yyyy-mm of started_at>/<replay_id>.pcrz` (`replay_id` = 16 random hex, no
 account or session data), `Content-Type: application/octet-stream`, `Cache-Control: public, max-age=31536000,
@@ -179,7 +179,7 @@ run before the body is read):
 | 409 `match_unknown` | no such match, or it is not recorded (`pending`/`final`/`left_early`) yet: retry like `not_disputed` |
 | 410 `match_closed` | the match settled `void` or `dropped`: no replay is kept, do not retry |
 | 409 `replay_busy` + `Retry-After: 30` | the other player's upload of this match is in flight (a reservation older than 5 min is reclaimed) |
-| 413 `body_too_large` | above 1 MiB (`COMMUNITY_REPLAY_MAX_BYTES`, never above 1 MiB), from Content-Length before reading and while streaming |
+| 413 `body_too_large` | above 8 MiB (`COMMUNITY_REPLAY_MAX_BYTES`, never above 8 MiB), from Content-Length before reading and while streaming |
 | 429 `cap_daily` + `Retry-After` | the account stored `COMMUNITY_REPLAY_ACCOUNT_DAILY` (200) replays this UTC day |
 | 429 `rate_limited` | the per-client window (60 per 10 min) |
 | 502 `replay_store_failed` | R2 refused; nothing is kept, retry later |
@@ -257,7 +257,7 @@ Environment variables; any not set are read from `COMMUNITY_CONFIG` (default `co
 | `COMMUNITY_EXPORT_DIR` | `community/data/export` | `hidden.json` and `results.jsonl` for the stats site |
 | `COMMUNITY_STATS_URL`, `COMMUNITY_REPLAY_PUBLIC_BASE`, `COMMUNITY_WEB_BASE` | (unset) | served by `/v1/config`; the replay base also composes every `replay_url` |
 | `COMMUNITY_R2_ENDPOINT`, `COMMUNITY_R2_BUCKET`, `COMMUNITY_R2_ACCESS_KEY_ID`, `COMMUNITY_R2_SECRET_ACCESS_KEY` | (unset) | R2 (S3 API) for shared replays; any missing -> `503 replays_disabled` |
-| `COMMUNITY_REPLAY_MAX_BYTES` | `1048576` | one upload (clamped to 1 MiB) |
+| `COMMUNITY_REPLAY_MAX_BYTES` | `8388608` | one upload (clamped to 8 MiB) |
 | `COMMUNITY_REPLAY_ACCOUNT_DAILY` | `200` | stored replays per account per UTC day |
 | `COMMUNITY_REPLAY_DAILY_UPLOADS`, `COMMUNITY_REPLAY_DAILY_BYTES` | `20000`, `2147483648` | the global daily breaker |
 

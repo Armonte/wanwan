@@ -33,17 +33,35 @@ def chunk(ctype, payload):
     return struct.pack("<BBHI", ctype, 0, len(payload), zlib.crc32(payload) & 0xFFFFFFFF) + payload
 
 
-def pcrep(mi=3, frames=1500, extra=(), end=True, input_size=2, version=14):
+def tape(count, input_size=2, first=0):
+    out = b""
+    while count > 0:
+        n = min(count, 1000)
+        out += chunk(RP.CH_TAPE, struct.pack("<iH", first, n) + bytes(n * 2 * input_size))
+        first, count = first + n, count - n
+    return out
+
+
+def pcrep(mi=3, frames=1500, extra=(), end=True, input_size=2, version=14, prior=None, inputs=None, tail=()):
+    """The set prefix through match `mi`: every earlier match (`prior`, default 100 frames each) started and ended,
+    then match `mi` with `inputs` tape frames (default `frames`), `extra`, its end and `tail`."""
     head = RP.PCREP_HEADER.pack(b"PCRP", version, 88, b"FM2K".ljust(16, b"\0"), 2, input_size, 232, 2, 8, 0, 0, NOW,
                                 bytes(32), 0, 0, 0, 0)
     names = bytes([2, 0, 0, 0]) + b"Alice".ljust(32, b"\0") + b"Bob".ljust(32, b"\0") + bytes(64)
     out = head + chunk(RP.CH_SESSION, struct.pack("<QBB6x", 77, 2, 0)) + chunk(RP.CH_SESSION_NAMES, names)
+    for k in (range(mi) if prior is None else prior):
+        out += chunk(RP.CH_MATCH_START, struct.pack("<HBB", k, 2, 0) + bytes(32)) + tape(100, input_size)
+        out += chunk(RP.CH_MATCH_END, struct.pack("<HbB4BI", k, 0, 0, 2, 1, 0, 0, 100))
     out += chunk(RP.CH_MATCH_START, struct.pack("<HBB", mi, 2, 0) + bytes(32))
-    out += chunk(RP.CH_TAPE, struct.pack("<iH", 0, 6) + bytes(24))
+    n = frames if inputs is None else inputs
+    if n:
+        out += tape(n, input_size)
     for c in extra:
         out += c
     if end:
         out += chunk(RP.CH_MATCH_END, struct.pack("<HbB4BI", mi, 0, 0, 2, 1, 0, 0, frames))
+    for c in tail:
+        out += c
     return out + chunk(RP.CH_END, b"")
 
 
@@ -61,9 +79,10 @@ def upload(h, seed, ticket, data, match_id, signed_query=None):
                                                "Content-Type": "application/octet-stream"})
 
 
-def recorded(h, ta, n=0):
-    rs = started_pair(n=n) + [mk(P, 0, 600, n=n), mk(P, 1, 600, n=n), mk(P, 0, 1200, (1, 1), n=n),
-                              mk(P, 1, 1200, (1, 1), n=n), mk(RES, 0, 1500, (2, 1), 0, n=n)]
+def recorded(h, ta, n=0, mi=3):
+    rs = started_pair(n=n, mi=mi) + [mk(P, 0, 600, n=n, mi=mi), mk(P, 1, 600, n=n, mi=mi),
+                                     mk(P, 0, 1200, (1, 1), n=n, mi=mi), mk(P, 1, 1200, (1, 1), n=n, mi=mi),
+                                     mk(RES, 0, 1500, (2, 1), 0, n=n, mi=mi)]
     j = report(h, CA, ta, body(*rs)).json()
     assert j["status"] == "pending", j
     return j["match_id"]
@@ -176,6 +195,55 @@ def test_bad_files(h, tmp_path, env):
     bad(bytes(lie), "decompressed size")
     assert h.app.state.replays.store.puts == []
     assert h.community.db.one("SELECT COUNT(*) FROM replays")[0] == 0
+
+
+def start(k):
+    return chunk(RP.CH_MATCH_START, struct.pack("<HBB", k, 2, 0) + bytes(32))
+
+
+def end(k, frames=100):
+    return chunk(RP.CH_MATCH_END, struct.pack("<HbB4BI", k, 0, 0, 2, 1, 0, 0, frames))
+
+
+def test_set_prefix(h, tmp_path, env):
+    """Match N of a set is the session start through match N's end: matches 0..N in order, each earlier one closed."""
+    ta, _ = env
+    mid = recorded(h, ta)  # match_index 3
+
+    def bad(raw, why):
+        r = upload(h, CA, ta, pcrz(raw=raw), mid)
+        assert err(r) == (400, "bad_replay"), r.text
+        assert why in r.json()["detail"], r.json()["detail"]
+    bad(pcrep(prior=[0, 2]), "out of order")                      # match 1 is missing
+    bad(pcrep(prior=[1, 2]), "out of order")                      # the set does not start at 0
+    bad(pcrep(prior=[0, 1, 2, 2]), "out of order")                # a start repeated
+    bad(pcrep(prior=[]), "out of order")                          # match 3 alone: no session start for its inputs
+    bad(pcrep(prior=[0, 1, 2], tail=[start(4), tape(10)]), "after this one")
+    raw = pcrep()
+    no_end = raw.replace(end(1), b"")
+    bad(no_end, "before the CH_MATCH_END of match 1")
+    bad(raw.replace(end(1), end(2)), "does not close the open match")
+    bad(pcrep(mi=3, prior=[0, 1, 2], tail=[end(3)]), "does not close the open match")  # a second end of match 3
+    bad(pcrep(inputs=0, prior=[]), "out of order")
+    nothing = pcrep(inputs=0).replace(tape(100), b"")
+    bad(nothing, "no inputs")
+    bad(pcrep(inputs=1000), "all of the match's frames")
+    short = bytearray(pcrep())
+    i = short.index(tape(100)[:8])
+    bad(bytes(short[:i]) + chunk(RP.CH_TAPE, struct.pack("<iH", 0, 100) + bytes(10)) + bytes(short[i + len(tape(100)):]),
+        "wrong size")
+    assert h.app.state.replays.store.puts == []
+    # an unfinished match (no CH_MATCH_END: it ended early) is accepted, its frames from the header
+    r = upload(h, CA, ta, pcrz(raw=pcrep(end=False)), mid)
+    assert r.status_code == 200, r.text
+    assert len(h.app.state.replays.store.puts) == 1
+
+
+def test_match_zero_alone(h, tmp_path, env):
+    ta, _ = env
+    mid = recorded(h, ta, mi=0)
+    r = upload(h, CA, ta, pcrz(raw=pcrep(mi=0), mi=0), mid)
+    assert r.status_code == 200, r.text
 
 
 def test_size_cap_before_reading(h, tmp_path, env):

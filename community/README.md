@@ -144,12 +144,23 @@ little-endian:
 | header_len | z_len bytes | ONE zstd frame (window at most 8 MiB) of an inputs-only `.pcrep` |
 
 The inner `.pcrep` is pc-replay `ReplayFormat.hpp` version 14 (88-byte FileHeader `PCRP`), complete and CRC-clean
-chunk by chunk, with `inputSize` equal to the game row's `input_width`; exactly one `CH_SESSION` before exactly one
-`CH_MATCH_START` of this match index; at most one `CH_MATCH_END` (same index, `frames` equal to the wrapper's; absent
-for a match that ended early) and at most one `CH_SESSION_NAMES`. Allowed chunks: `CH_GEN`, `CH_INPUTS`, `CH_CHECK`,
+chunk by chunk, with `inputSize` equal to the game row's `input_width`. It is the SET PREFIX through this match: a
+session can keep one continuous rollback attach across every match of the set (FM2K does), so a match's inputs only
+play from the session start. The slice of match N is the session start through the end of match N, still
+inputs-only:
+
+- exactly one `CH_SESSION`, before the first `CH_MATCH_START`; at most one `CH_SESSION_NAMES`;
+- `CH_MATCH_START` chunks of indexes 0..N in order (1..N+1 of them), the LAST one equal to the wrapper's
+  `match_index`; each earlier start is closed by its own `CH_MATCH_END` before the next start;
+- at most one `CH_MATCH_END` of match N, its `frames` equal to the wrapper's (absent for a match that ended early);
+- input chunks (`CH_INPUTS` / `CH_TAPE`, `{i32 firstFrame, u16 count}` then exactly `count * numPlayers * inputSize`
+  bytes) covering at least `frames` frames: none is 400 `bad_replay` "no inputs".
+
+The wrapper's `frames` is match N's own battle frames. Allowed chunks: `CH_GEN`, `CH_INPUTS`, `CH_CHECK`,
 `CH_ROUND_END`, `CH_RETRY`, `CH_END`, `CH_TAPE`, `CH_TAPE_MARK`, `CH_TAPE_CHECK`, `CH_TAPE_END`, `CH_SESSION`,
 `CH_MATCH_START`, `CH_MATCH_END`, `CH_SETUP_EXT`, `CH_CSS_LIVE`, `CH_SESSION_NAMES`, `CH_MATCH_CHARS`. Refused:
-`CH_GEN_STATE`, `CH_GEN_STATE_Z` (snapshots), `CH_CHAT`, and any unknown type.
+`CH_GEN_STATE`, `CH_GEN_STATE_Z` (snapshots), `CH_CHAT`, and any unknown type. The size caps stay as they are (1 MiB
+compressed, 16 MiB raw), so a very long set can leave its late matches unshareable.
 
 Stored as `replays/v1/<family>/<game_id>/<yyyy-mm of started_at>/<replay_id>.pcrz` (`replay_id` = 16 random hex, no
 account or session data), `Content-Type: application/octet-stream`, `Cache-Control: public, max-age=31536000,

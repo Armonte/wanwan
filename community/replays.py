@@ -15,9 +15,11 @@ The body is one PCRZ1 file (README "Shared replays"):
         u8  build_id_len, build_id (ASCII, the receipts' build_id)
     header_len: one zstd frame of `raw_len` bytes: an inputs-only .pcrep (pc-replay ReplayFormat.hpp, version 14)
 
-The inner .pcrep must be complete and CRC-clean, hold exactly one CH_SESSION before exactly one CH_MATCH_START of this
-match index (at most one CH_MATCH_END of the same index whose frames equal the wrapper's), use the game row's input
-width, and carry only allowed chunk types: no CH_GEN_STATE / CH_GEN_STATE_Z (snapshots) and no CH_CHAT.
+The inner .pcrep must be complete and CRC-clean and hold the SET PREFIX through this match: exactly one CH_SESSION before
+the CH_MATCH_STARTs of indexes 0..match_index in order (the last one this match), each earlier start closed by its own
+CH_MATCH_END before the next start, at most one CH_MATCH_END of this match (its frames equal the wrapper's), input
+chunks (CH_INPUTS / CH_TAPE) covering at least `frames` frames ("no inputs" otherwise), the game row's input width, and
+only allowed chunk types: no CH_GEN_STATE / CH_GEN_STATE_Z (snapshots) and no CH_CHAT.
 
 Money guard (the owner: nobody can drain it): every limit below is checked before a byte goes to R2, and a stored
 object is the only thing that costs. 1 MiB per body (Content-Length before reading, and while streaming); one object
@@ -136,7 +138,7 @@ def check_pcrep(raw: bytes, match_index: int, frames: int, input_width: int) -> 
     """Walk the inner .pcrep chunk by chunk (CRC'd). Returns counts for the record; BadReplay on anything refused."""
     if len(raw) < PCREP_HEADER.size:
         _bad("pcrep header truncated")
-    (magic, version, head_bytes, _gid, num_players, input_size, rng_bytes, *_rest) = PCREP_HEADER.unpack_from(raw)
+    (magic, version, head_bytes, _gid, num_players, input_size, _rng_bytes, *_rest) = PCREP_HEADER.unpack_from(raw)
     if magic != PCREP_MAGIC:
         _bad("inner file is not a .pcrep")
     if version not in PCREP_VERSIONS:
@@ -147,6 +149,7 @@ def check_pcrep(raw: bytes, match_index: int, frames: int, input_width: int) -> 
         _bad("pcrep geometry does not match the game")
     pos, seen = head_bytes, {}
     order = []
+    input_frames = tape_frames = 0
     while pos < len(raw):
         if pos + CHUNK.size > len(raw):
             _bad("truncated chunk header")
@@ -162,28 +165,59 @@ def check_pcrep(raw: bytes, match_index: int, frames: int, input_width: int) -> 
             _bad("chunk CRC mismatch")
         if ctype in SIZES and n != SIZES[ctype]:
             _bad(f"chunk type {ctype} has the wrong size")
+        if ctype in (CH_INPUTS, CH_TAPE):
+            # InputsChunkHdr / TapeChunkHdr {i32 firstFrame, u16 count} then count * numPlayers * inputSize bytes
+            if n < 6:
+                _bad(f"chunk type {ctype} has the wrong size")
+            count = struct.unpack_from("<H", pay, 4)[0]
+            if n != 6 + count * num_players * input_size:
+                _bad(f"chunk type {ctype} has the wrong size")
+            if ctype == CH_INPUTS:
+                input_frames += count
+            else:
+                tape_frames += count
         seen[ctype] = seen.get(ctype, 0) + 1
         if ctype in (CH_SESSION, CH_MATCH_START, CH_MATCH_END, CH_SESSION_NAMES):
             order.append((ctype, pay))
         pos += CHUNK.size + n
-    for ctype, name in ((CH_SESSION, "CH_SESSION"), (CH_MATCH_START, "CH_MATCH_START")):
-        if seen.get(ctype, 0) != 1:
-            _bad(f"exactly one {name} is required")
-    for ctype, name in ((CH_MATCH_END, "CH_MATCH_END"), (CH_SESSION_NAMES, "CH_SESSION_NAMES")):
-        if seen.get(ctype, 0) > 1:
-            _bad(f"more than one {name}")
-    kinds = [c for c, _ in order]
-    if kinds.index(CH_SESSION) > kinds.index(CH_MATCH_START):
+    # THE SET PREFIX. A session records one continuous rollback attach across a whole set (FM2K), so a match's inputs
+    # are only playable from the session start: the slice of match N is the session through the end of match N, with
+    # every earlier match (CH_MATCH_START k, then its CH_MATCH_END k) in order, k = 0..N.
+    if seen.get(CH_SESSION, 0) != 1:
+        _bad("exactly one CH_SESSION is required")
+    if seen.get(CH_SESSION_NAMES, 0) > 1:
+        _bad("more than one CH_SESSION_NAMES")
+    if not seen.get(CH_MATCH_START):
+        _bad("no CH_MATCH_START")
+    if [c for c, _ in order].index(CH_SESSION) > [c for c, _ in order].index(CH_MATCH_START):
         _bad("CH_SESSION must come before CH_MATCH_START")
-    start = dict(order)[CH_MATCH_START]
-    if struct.unpack_from("<H", start)[0] != match_index:
-        _bad("CH_MATCH_START is another match")
-    if CH_MATCH_END in kinds:
-        if kinds.index(CH_MATCH_END) < kinds.index(CH_MATCH_START):
-            _bad("CH_MATCH_END before CH_MATCH_START")
-        end = dict(order)[CH_MATCH_END]
-        if struct.unpack_from("<H", end)[0] != match_index or struct.unpack_from("<I", end, 8)[0] != frames:
-            _bad("CH_MATCH_END does not match the header")
+    nxt, open_ = 0, None  # the next start index expected; the start index waiting for its end
+    end_frames = None
+    for ctype, pay in order:
+        if ctype == CH_MATCH_START:
+            mi = struct.unpack_from("<H", pay)[0]
+            if open_ is not None:
+                _bad(f"CH_MATCH_START {mi} before the CH_MATCH_END of match {open_}")
+            if mi != nxt:
+                _bad(f"CH_MATCH_START {mi} is out of order (expected {nxt})")
+            if mi > match_index:
+                _bad("CH_MATCH_START is another match (after this one)")
+            open_, nxt = mi, mi + 1
+        elif ctype == CH_MATCH_END:
+            mi = struct.unpack_from("<H", pay)[0]
+            if open_ is None or mi != open_:
+                _bad(f"CH_MATCH_END {mi} does not close the open match")
+            if mi == match_index:
+                end_frames = struct.unpack_from("<I", pay, 8)[0]
+            open_ = None
+    if nxt != match_index + 1:
+        _bad("the last CH_MATCH_START is another match")
+    if end_frames is not None and end_frames != frames:
+        _bad("CH_MATCH_END does not match the header")
+    if max(input_frames, tape_frames) == 0:
+        _bad("no inputs")
+    if max(input_frames, tape_frames) < frames:
+        _bad("no inputs for all of the match's frames")
     return {"chunks": sum(seen.values())}
 
 

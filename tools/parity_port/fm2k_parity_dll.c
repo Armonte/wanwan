@@ -30,6 +30,7 @@
  * open files and read game.ini through literally the same code.
  */
 #include <windows.h>
+#include <tlhelp32.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -84,9 +85,100 @@ static void vLatOpen(void)
     vLatWrite(szLine);
 }
 
+/* FM2K_PARITY_SYS15_SYNC (default on when present, 0 = off): a game folder's StudioS dsound.dll ("KGT2nd_SaveExtension",
+   fm2k-port engine/fm2k/sim/compat_sys15.c) serves SYS15 (gshSystemVariables[15], 0x4456CE) from its own thread every
+   10 ms, so on the original the save / load and SYS15's clear land 1-3 ticks after the script wrote it, differently
+   per run (torikkaku #177: fm2k-port-fleet artifacts/torikkaku_sysvar15_2026-10-22). The port does that step at a
+   fixed point, after the tick and before the dump. Here: the DLL's threads are suspended once (by start address
+   inside the module) and the port's step runs after every original tick, on the same in-memory save record (read
+   once from the game folder's SaveData.dat, as the port reads it at boot). */
+#define SYS15_ADDR 0x4456CE
+#define SYS_VARS_ADDR 0x4456B0
+static const char kStudioSHeader[] = "StudioS-SaveData-v1.0";   /* 21 bytes in the file, no terminator */
+static int giSys15 = -1;              /* -1 not checked yet, 0 off, 1 StudioS synced */
+static unsigned char gabSave[21 + 15 * 4];
+static int giSaveLen = -1;
+
+static int bModuleHas(HMODULE h, const char *psz)
+{
+    const IMAGE_DOS_HEADER *d = (const IMAGE_DOS_HEADER *)h;
+    const IMAGE_NT_HEADERS *nt = (const IMAGE_NT_HEADERS *)((const char *)h + d->e_lfanew);
+    const char *p = (const char *)h, *e = p + nt->OptionalHeader.SizeOfImage;
+    size_t n = strlen(psz);
+    for (; p + n <= e; p++)
+        if (*p == *psz && memcmp(p, psz, n) == 0) return 1;
+    return 0;
+}
+
+static void vSys15Init(void)
+{
+    HMODULE h = GetModuleHandleA("dsound.dll"), hNt = GetModuleHandleA("ntdll.dll");
+    char szMod[MAX_PATH], szExe[MAX_PATH], *p;
+    char szEnv[8];
+    typedef LONG (WINAPI *QitFn)(HANDLE, int, PVOID, ULONG, PULONG);
+    QitFn pfnQit = hNt ? (QitFn)(void *)GetProcAddress(hNt, "NtQueryInformationThread") : NULL;
+    giSys15 = 0;
+    if (GetEnvironmentVariableA("FM2K_PARITY_SYS15_SYNC", szEnv, sizeof(szEnv)) && szEnv[0] == '0') return;
+    if (!h || !GetModuleFileNameA(h, szMod, MAX_PATH) || !GetModuleFileNameA(NULL, szExe, MAX_PATH)) return;
+    if ((p = strrchr(szMod, '\\')) != NULL) *p = 0;
+    if ((p = strrchr(szExe, '\\')) != NULL) *p = 0;
+    if (lstrcmpiA(szMod, szExe) != 0 || !bModuleHas(h, kStudioSHeader)) return;   /* the system's dsound.dll, or another */
+    {   /* its threads (the SYS15 poll, the F5-F7 helpers) stop */
+        const IMAGE_NT_HEADERS *nt = (const IMAGE_NT_HEADERS *)((const char *)h + ((const IMAGE_DOS_HEADER *)h)->e_lfanew);
+        uintptr_t uLo = (uintptr_t)h, uHi = uLo + nt->OptionalHeader.SizeOfImage;
+        HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        THREADENTRY32 te;
+        te.dwSize = sizeof(te);
+        if (hSnap != INVALID_HANDLE_VALUE && pfnQit && Thread32First(hSnap, &te)) {
+            do {
+                if (te.th32OwnerProcessID != GetCurrentProcessId() || te.th32ThreadID == GetCurrentThreadId()) continue;
+                HANDLE hT = OpenThread(THREAD_QUERY_INFORMATION | THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
+                uintptr_t uStart = 0;
+                if (hT && pfnQit(hT, 9 /* ThreadQuerySetWin32StartAddress */, &uStart, sizeof(uStart), NULL) == 0
+                    && uStart >= uLo && uStart < uHi)
+                    SuspendThread(hT);
+                if (hT) CloseHandle(hT);
+            } while (Thread32Next(hSnap, &te));
+        }
+        if (hSnap != INVALID_HANDLE_VALUE) CloseHandle(hSnap);
+    }
+    {   /* the save record as the port reads it at boot */
+        HANDLE hF = CreateFileA("SaveData.dat", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+        DWORD dw = 0;
+        if (hF != INVALID_HANDLE_VALUE) {
+            if (ReadFile(hF, gabSave, sizeof(gabSave), &dw, NULL)) giSaveLen = (int)dw;
+            CloseHandle(hF);
+        }
+    }
+    giSys15 = 1;
+}
+
+static void vSys15Step(void)
+{
+    short *pVars = (short *)(uintptr_t)SYS_VARS_ADDR;
+    int i;
+    if (giSys15 < 0) vSys15Init();
+    if (giSys15 != 1) return;
+    if (pVars[15] == 1) {
+        memcpy(gabSave, kStudioSHeader, 21);
+        for (i = 0; i < 15; i++) {
+            uint32_t dw = (uint32_t)((int)pVars[i] ^ 0x1BF52);
+            memcpy(&gabSave[21 + i * 4], &dw, 4);
+        }
+        giSaveLen = (int)sizeof(gabSave);
+        pVars[15] = 0;
+    } else if (pVars[15] == 2) {
+        if (giSaveLen >= (int)sizeof(gabSave))
+            for (i = 0; i < 15; i++)
+                pVars[i] = (short)((gabSave[21 + i * 4] | (gabSave[21 + i * 4 + 1] << 8)) ^ 0xBF52);
+        pVars[15] = 0;
+    }
+}
+
 static void __cdecl hkTick(void)
 {
     pfnTickTramp();
+    vSys15Step();   /* the port's fixed point: after the tick, before the dump */
     guLatTick++;
     Parity_AfterTick();
 }

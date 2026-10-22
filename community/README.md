@@ -203,7 +203,7 @@ cd community && ./dev_run_local.sh            # --port N, --keep, --data DIR
 
 It makes a data dir under `~/.cache/pc-community-dev/` (removed on exit unless `--keep`), generates two THROWAWAY test
 roots there (never the real ones), an online ticket key gen 1 and a KEYSET serial 1 signed by test root a, installs it,
-and runs uvicorn on `127.0.0.1:8790` with `COMMUNITY_FAKE_DISCORD=1`, `COMMUNITY_PUBLIC_HOST=127.0.0.1` and an empty
+and runs uvicorn on `127.0.0.1:8790` (results export in the data dir too) with `COMMUNITY_FAKE_DISCORD=1`, `COMMUNITY_PUBLIC_HOST=127.0.0.1` and an empty
 `COMMUNITY_ROOT_PATH`. That is what a client with `community.url=http://127.0.0.1:8790` signs: pc-core
 `splitBaseUrl` takes the host without its port and the path after it. It prints the base URL and the test root public
 keys.
@@ -212,6 +212,11 @@ In fake mode `link/start` needs no Discord client id and `link/discord` takes an
 instead of asking Discord (a second id is a second account). The launcher sends `PC_COMMUNITY_FAKE_DISCORD_TOKEN`
 instead of its SDK sign-in when its `community.url` is loopback, and trusts `PC_COMMUNITY_TEST_ROOTS` the same way.
 Accounts, names, tickets, the KEYSET, the deny list, bans and refresh all run for real (`admin.py` works with the same env).
+
+Shared replays need no R2 in dev mode: `dev_run_local.sh` sets `COMMUNITY_REPLAY_LOCAL_DIR` (default `<data dir>/replays`)
+and `COMMUNITY_REPLAY_PUBLIC_BASE=http://127.0.0.1:<port>/fake/replays`, so an accepted `POST /v1/replay` is written
+under that directory by its object key and served back at `/fake/replays/<key>`. The local store is refused at startup
+without `COMMUNITY_FAKE_DISCORD=1`.
 
 Guards: the app refuses to start in fake mode unless `COMMUNITY_BIND_HOST` and `COMMUNITY_PUBLIC_HOST` are both
 loopback (production signs `2dfm.org`, so it can never come up there), and every request is refused (403
@@ -236,6 +241,7 @@ Environment variables; any not set are read from `COMMUNITY_CONFIG` (default `co
 | `COMMUNITY_ROOT_PUBKEYS` | (unset) | staging/tests only: `hexA,hexB` instead of the compiled-in roots |
 | `COMMUNITY_FAKE_DISCORD` | (unset) | `1`: LOCAL DEV MODE (below). Refused unless bind and public host are loopback |
 | `COMMUNITY_BIND_HOST` | (unset) | dev mode: the uvicorn `--host`, must be loopback |
+| `COMMUNITY_REPLAY_LOCAL_DIR` | (unset) | dev mode only: store shared replays in this directory instead of R2, served at `/fake/replays/<key>` |
 | `FM2K_STATS_ID_SECRET` | (unset) | the stats site's id secret: `accounts.public_id`, the results export's player ids |
 | `COMMUNITY_EXPORT_DIR` | `community/data/export` | `hidden.json` and `results.jsonl` for the stats site |
 | `COMMUNITY_STATS_URL`, `COMMUNITY_REPLAY_PUBLIC_BASE`, `COMMUNITY_WEB_BASE` | (unset) | served by `/v1/config`; the replay base also composes every `replay_url` |

@@ -256,3 +256,27 @@ def test_r2_store_put_arguments(monkeypatch):
     assert calls["Bucket"] == "b" and calls["Key"] == "replays/v1/x.pcrz" and calls["Body"] == b"data"
     assert calls["ContentType"] == "application/octet-stream"
     assert calls["CacheControl"] == "public, max-age=31536000, immutable"
+
+
+def test_local_store_dev_mode(h, tmp_path, env):
+    """COMMUNITY_REPLAY_LOCAL_DIR: the upload lands as a file under the directory (no R2 values needed), keyed exactly
+    like R2; anything that is not an object key, or leaves the root, is refused."""
+    ta, _ = env
+    h.cfg.r2_endpoint = h.cfg.r2_bucket = h.cfg.r2_access_key_id = h.cfg.r2_secret_access_key = ""
+    h.cfg.replay_local_dir = str(tmp_path / "store")
+    assert h.cfg.replays_missing() == []
+    h.app.state.replays.store = RP.LocalStore(h.cfg.replay_local_dir)
+    mid = recorded(h, ta)
+    r = upload(h, CA, ta, pcrz(), mid)
+    assert r.status_code == 200, r.text
+    key = r.json()["replay_url"][len(BASE) + 1:]
+    with open(tmp_path / "store" / key, "rb") as f:
+        assert f.read() == pcrz()
+    st = h.app.state.replays.store
+    for bad in ("../x.pcrz", "replays/v1/../../" + key.split("/", 2)[2], "replays/v1/x/y/2026-01/zz.pcrz", ""):
+        with pytest.raises(ValueError):
+            st.path(bad)
+    with pytest.raises(ValueError):
+        st.path("replays/v1/../g/2026-01/0123456789abcdef.pcrz")
+    h.cfg.replay_public_base = ""
+    assert h.cfg.replays_missing() == ["COMMUNITY_REPLAY_PUBLIC_BASE"]

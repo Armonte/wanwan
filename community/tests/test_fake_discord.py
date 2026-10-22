@@ -109,3 +109,27 @@ def test_bad_fake_tokens_and_off_by_default(tmp_path, h):
     assert "fake_discord" not in h.get("/health").json()
     lid = h.post("/v1/link/start", json={"client_pub": b64(T.seed_public(bytes([0x54]) * 32))}).json()["link_id"]
     assert h.post("/v1/link/discord", json={"link_id": lid, "access_token": "fake:1"}).status_code == 401
+
+
+def test_local_replay_store_served_and_fake_only(tmp_path):
+    """COMMUNITY_REPLAY_LOCAL_DIR is refused without fake mode; in fake mode the stored object is served at
+    /fake/replays/<key> (loopback only, like the rest of fake mode) and nothing outside the store is."""
+    from service import Community as C
+    (tmp_path / "real").mkdir()
+    cfg = make_cfg(str(tmp_path / "real"), replay_local_dir=str(tmp_path / "s"))
+    with pytest.raises(RuntimeError, match="COMMUNITY_REPLAY_LOCAL_DIR"):
+        app_mod.create_app(cfg, C(cfg))
+    store = tmp_path / "store"
+    c, _ = build(tmp_path / "a", replay_local_dir=str(store), replay_public_base=BASE + "/fake/replays")
+    key = "replays/v1/fm2k/ww/2026-10/0123456789abcdef.pcrz"
+    c.app.state.replays.store.put(key, b"PCRZ-bytes")
+    r = c.get("/fake/replays/" + key)
+    assert r.status_code == 200 and r.content == b"PCRZ-bytes"
+    assert r.headers["content-type"] == "application/octet-stream"
+    (tmp_path / "a" / "secret.txt").write_text("no")
+    for bad in ("replays/v1/fm2k/ww/2026-10/ffffffffffffffff.pcrz", "../secret.txt", "replays/v1/../../secret.txt"):
+        assert c.get("/fake/replays/" + bad).status_code == 404, bad
+    far, _ = build(tmp_path / "b", peer=("203.0.113.9", 4000), replay_local_dir=str(store),
+                   replay_public_base=BASE + "/fake/replays")
+    assert far.get("/fake/replays/" + key).status_code == 403
+    assert c.get("/v1/config").json()["replay_base"] == BASE + "/fake/replays"

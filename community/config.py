@@ -53,6 +53,9 @@ class Config:
     replay_account_daily: int = 200  # stored uploads per account per UTC day (429 cap_daily)
     replay_daily_uploads: int = 20000  # global circuit breaker per UTC day (503 replays_paused)
     replay_daily_bytes: int = 2 << 30
+    # LOCAL DEV MODE only (fake_discord.py): store shared replays in this directory instead of R2, served back at
+    # /fake/replays/<key>. Refused at startup without COMMUNITY_FAKE_DISCORD=1 (and so off loopback)
+    replay_local_dir: str = ""
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -90,6 +93,7 @@ class Config:
             replay_account_daily=int(e("COMMUNITY_REPLAY_ACCOUNT_DAILY", "200")),
             replay_daily_uploads=int(e("COMMUNITY_REPLAY_DAILY_UPLOADS", "20000")),
             replay_daily_bytes=int(e("COMMUNITY_REPLAY_DAILY_BYTES", str(2 << 30))),
+            replay_local_dir=e("COMMUNITY_REPLAY_LOCAL_DIR", ""),
         )
 
     @property
@@ -101,6 +105,8 @@ class Config:
 
     def replays_missing(self) -> list[str]:
         """What shared replays still need (names only, never values)."""
+        if self.replay_local_dir:  # local dev store: no R2, only where the files are served from
+            return [] if self.replay_public_base else ["COMMUNITY_REPLAY_PUBLIC_BASE"]
         return [n for n, v in (("COMMUNITY_R2_ENDPOINT", self.r2_endpoint), ("COMMUNITY_R2_BUCKET", self.r2_bucket),
                                ("COMMUNITY_R2_ACCESS_KEY_ID", self.r2_access_key_id),
                                ("COMMUNITY_R2_SECRET_ACCESS_KEY", self.r2_secret_access_key),

@@ -6,7 +6,8 @@
 #   ./dev_run_local.sh --keep          # keep the data dir (accounts, test roots) after exit
 #   ./dev_run_local.sh --data DIR      # reuse a kept data dir (same test roots, same accounts)
 #
-# Env: COMMUNITY_DEV_BASE (default ~/.cache/pc-community-dev), COMMUNITY_VENV (default ~/.cache/pc-community-venv).
+# Env: COMMUNITY_DEV_BASE (default ~/.cache/pc-community-dev), COMMUNITY_VENV (default ~/.cache/pc-community-venv),
+# COMMUNITY_REPLAY_LOCAL_DIR (default <data dir>/replays: shared replays stored there, served at /fake/replays/).
 # The launcher skips its Discord sign-in and sends PC_COMMUNITY_FAKE_DISCORD_TOKEN=fake:<id>[:<name>] instead.
 # Never reads or writes the real root keys: the test roots are generated here, in the data dir.
 set -euo pipefail
@@ -23,7 +24,7 @@ while [ $# -gt 0 ]; do
         --port) PORT="$2"; shift 2 ;;
         --keep) KEEP=1; shift ;;
         --data) DATA="$2"; KEEP=1; shift 2 ;;
-        -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -42,11 +43,15 @@ export COMMUNITY_CONFIG="$DATA/no-such.env"   # never pick up community/data/com
 export COMMUNITY_DB="$DATA/community.sqlite3"
 export COMMUNITY_TICKET_KEY="$DATA/ticket_key.txt"
 export COMMUNITY_KEYSET_DIR="$DATA/keysets"
+export COMMUNITY_EXPORT_DIR="$DATA/export"      # results.jsonl / hidden.json of test matches stay in the data dir
 export COMMUNITY_PUBLIC_HOST=127.0.0.1         # the client signs the host of community.url without its port
 export COMMUNITY_ROOT_PATH=""                  # ...and the path after it: no prefix in front of /v1/...
 export COMMUNITY_BIND_HOST=127.0.0.1
 export COMMUNITY_FAKE_DISCORD=1
 export COMMUNITY_DISCORD_CLIENT_ID=""
+# shared replays go to a directory in the data dir, served back at /fake/replays/<key> (no R2 in dev mode)
+export COMMUNITY_REPLAY_LOCAL_DIR="${COMMUNITY_REPLAY_LOCAL_DIR:-$DATA/replays}"
+export COMMUNITY_REPLAY_PUBLIC_BASE="http://127.0.0.1:$PORT/fake/replays"
 
 cd "$HERE"
 if [ ! -f "$DATA/test_root_a.seed" ]; then
@@ -83,6 +88,7 @@ cat <<EOF
    base URL (launcher ini community.url):  http://127.0.0.1:$PORT
    TEST root A public key:                 $ROOT_A
    TEST root B public key:                 $ROOT_B
+   shared replays (local store):           $COMMUNITY_REPLAY_LOCAL_DIR -> $COMMUNITY_REPLAY_PUBLIC_BASE
    data dir:                               $DATA $([ "$KEEP" = 1 ] && echo "(kept)" || echo "(removed on exit)")
    launcher env (instead of Discord):      PC_COMMUNITY_FAKE_DISCORD_TOKEN=fake:4242:Tester
    launcher env (trust the test roots):    PC_COMMUNITY_TEST_ROOTS=$ROOT_A,$ROOT_B

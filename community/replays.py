@@ -27,6 +27,7 @@ Decompression is bounded (RAW_CAP, an 8 MiB zstd window) and never parses past t
 """
 from __future__ import annotations
 
+import os
 import re
 import secrets
 import struct
@@ -45,6 +46,7 @@ STALE_RESERVATION = 300  # an `uploading` row older than this (a crash mid-PutOb
 DAY = 86400
 MATCH_ID_RE = re.compile(r"[0-9a-f]{12}")
 SAFE_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
+KEY_RE = re.compile(r"replays/v1/[A-Za-z0-9._-]{1,64}/[A-Za-z0-9._-]{1,64}/\d{4}-\d{2}/[0-9a-f]{16}\.pcrz")
 
 # pc-replay ReplayFormat.hpp (kVersion 14, kMinReadableVersion 14)
 PCREP_MAGIC = b"PCRP"
@@ -235,6 +237,31 @@ class R2Store:
                                  CacheControl="public, max-age=31536000, immutable")
 
 
+class LocalStore:
+    """LOCAL DEV MODE only (COMMUNITY_REPLAY_LOCAL_DIR with COMMUNITY_FAKE_DISCORD=1, fake_discord.check_allowed): the
+    object written under a directory, served back by fake_discord at /fake/replays/<key>. Same surface as R2Store."""
+
+    def __init__(self, root: str):
+        self.root = os.path.realpath(root)
+
+    def path(self, key: str) -> str:
+        """The file for `key`; ValueError for anything that is not an object key or leaves the root."""
+        if not KEY_RE.fullmatch(key or "") or any(part in (".", "..") for part in key.split("/")):
+            raise ValueError("not a replay object key")
+        p = os.path.realpath(os.path.join(self.root, key))
+        if not p.startswith(self.root + os.sep):
+            raise ValueError("key leaves the store")
+        return p
+
+    def put(self, key: str, body: bytes) -> None:
+        p = self.path(key)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        tmp = f"{p}.{secrets.token_hex(4)}.tmp"
+        with open(tmp, "wb") as f:
+            f.write(body)
+        os.replace(tmp, p)
+
+
 def _day_start(now: int) -> int:
     return now - now % DAY
 
@@ -249,7 +276,8 @@ class Replays:
         self.c = community
         self.db = community.db
         self.results = results
-        self.store = R2Store(community.cfg)
+        cfg = community.cfg
+        self.store = LocalStore(cfg.replay_local_dir) if cfg.replay_local_dir else R2Store(cfg)
 
     @property
     def cfg(self):

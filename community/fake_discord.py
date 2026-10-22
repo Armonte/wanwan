@@ -13,9 +13,10 @@ loopback). Accounts, names, tickets, the KEYSET, the deny list and refresh all r
 from __future__ import annotations
 
 import ipaddress
+import os
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from config import Config
 from service import ServiceError
@@ -40,7 +41,10 @@ def host_is_loopback(host: str) -> bool:
 
 
 def check_allowed(cfg: Config) -> None:
-    """Raises RuntimeError (the app refuses to start) unless fake mode is confined to loopback."""
+    """Raises RuntimeError (the app refuses to start) unless fake mode is confined to loopback. The local replay
+    store (COMMUNITY_REPLAY_LOCAL_DIR) exists only in fake mode."""
+    if cfg.replay_local_dir and not cfg.fake_discord:
+        raise RuntimeError("COMMUNITY_REPLAY_LOCAL_DIR is local dev mode only: it needs COMMUNITY_FAKE_DISCORD=1")
     if not cfg.fake_discord:
         return
     if not host_is_loopback(cfg.bind_host):
@@ -76,6 +80,19 @@ class FakeDiscordClient:
 def install(app: FastAPI, cfg: Config) -> None:
     """Swap in the fake client and confine the app to loopback clients. Call only after check_allowed."""
     app.state.discord = FakeDiscordClient(cfg)
+
+    if cfg.replay_local_dir:
+        @app.get("/fake/replays/{key:path}")
+        async def fake_replay(key: str):
+            """The local replay store's public URL (COMMUNITY_REPLAY_PUBLIC_BASE points here)."""
+            try:
+                p = app.state.replays.store.path(key)
+            except (AttributeError, ValueError):
+                p = ""
+            if not p or not os.path.isfile(p):
+                return JSONResponse(status_code=404, content={"error": "not_found", "detail": "no such replay"})
+            with open(p, "rb") as f:
+                return Response(content=f.read(), media_type="application/octet-stream")
 
     @app.middleware("http")
     async def fake_local_only(request: Request, call_next):

@@ -33,6 +33,7 @@
 #include <tlhelp32.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include "parity.h"
 #include "cp932.h"   /* the port's Shift-JIS layer (src/cp932.c), linked in */
@@ -91,13 +92,16 @@ static void vLatOpen(void)
    per run (torikkaku #177: fm2k-port-fleet artifacts/torikkaku_sysvar15_2026-10-22). The port does that step at a
    fixed point, after the tick and before the dump. Here: the DLL's threads are suspended once (by start address
    inside the module) and the port's step runs after every original tick, on the same in-memory save record (read
-   once from the game folder's SaveData.dat, as the port reads it at boot). */
+   once from the game folder's SaveData.dat, as the port reads it at boot). Robot Heroes' WSOCK32.dll (the same
+   SYS15 channel, its own commands: compat_sys15.c vRobotHeroes; config_save.txt) is synced the same way: its poll
+   thread also crashed the original's heap in RoHe 0.7.1 (ucrtbase free from that thread, css_picks #048). */
 #define SYS15_ADDR 0x4456CE
 #define SYS_VARS_ADDR 0x4456B0
 static const char kStudioSHeader[] = "StudioS-SaveData-v1.0";   /* 21 bytes in the file, no terminator */
-static int giSys15 = -1;              /* -1 not checked yet, 0 off, 1 StudioS synced */
-static unsigned char gabSave[21 + 15 * 4];
+static int giSys15 = -1;              /* -1 not checked yet, 0 off, 1 StudioS synced, 2 Robot Heroes synced */
+static unsigned char gabSave[4096];   /* the save file's image (compat_sys15.h COMPAT_SYS15_FILE_MAX) */
 static int giSaveLen = -1;
+static unsigned char gabRhBuf[30];    /* Robot Heroes: the DLL's 30-byte buffer (zeroed, as the port's) */
 
 static int bModuleHas(HMODULE h, const char *psz)
 {
@@ -110,19 +114,72 @@ static int bModuleHas(HMODULE h, const char *psz)
     return 0;
 }
 
-static void vSys15Init(void)
+/* one line appended to <dump>.dll.log */
+static void vDllLog(const char *pszLine)
 {
-    HMODULE h = GetModuleHandleA("dsound.dll"), hNt = GetModuleHandleA("ntdll.dll");
+    char szPath[MAX_PATH];
+    DWORD dwLen = GetEnvironmentVariableA("FM2K_PARITY_DUMP_PATH", szPath, MAX_PATH - 16), dw;
+    HANDLE h;
+    if (!dwLen || dwLen >= MAX_PATH - 16) return;
+    lstrcatA(szPath, ".dll.log");
+    h = CreateFileA(szPath, FILE_APPEND_DATA, FILE_SHARE_READ, NULL, OPEN_ALWAYS, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE) return;
+    WriteFile(h, pszLine, lstrlenA(pszLine), &dw, NULL);
+    WriteFile(h, "\n", 1, &dw, NULL);
+    CloseHandle(h);
+}
+
+/* Suspend a DLL thread only while it is parked in Sleep (its EIP in ntdll's NtDelayExecution stub): suspended
+   anywhere else it may hold the process heap's or the CRT's lock, and the game's own thread then waits on it for
+   good (RoHe 0.7.1's WSOCK32.dll thread writes its log through std::ostream between sleeps). Tried for up to 2 s;
+   a thread never seen parked is left suspended where it is, and that is logged. */
+static void vSuspendParked(HANDLE hT)
+{
+    uintptr_t uLo = (uintptr_t)(void *)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtDelayExecution");
+    int i;
+    for (i = 0; i < 2000; i++) {
+        CONTEXT c;
+        if (SuspendThread(hT) == (DWORD)-1) return;
+        c.ContextFlags = CONTEXT_CONTROL;
+        if (uLo && GetThreadContext(hT, &c) && c.Eip >= uLo && c.Eip < uLo + 0x20)
+            return;
+        ResumeThread(hT);
+        Sleep(1);
+    }
+    SuspendThread(hT);
+    vDllLog("sys15 sync: a DLL thread was never seen parked in Sleep; suspended where it was");
+}
+
+/* the game folder's own copy of a module (not the system's), holding psz */
+static HMODULE hGameModule(const char *pszName, const char *psz)
+{
+    HMODULE h = GetModuleHandleA(pszName);
     char szMod[MAX_PATH], szExe[MAX_PATH], *p;
-    char szEnv[8];
-    typedef LONG (WINAPI *QitFn)(HANDLE, int, PVOID, ULONG, PULONG);
-    QitFn pfnQit = hNt ? (QitFn)(void *)GetProcAddress(hNt, "NtQueryInformationThread") : NULL;
-    giSys15 = 0;
-    if (GetEnvironmentVariableA("FM2K_PARITY_SYS15_SYNC", szEnv, sizeof(szEnv)) && szEnv[0] == '0') return;
-    if (!h || !GetModuleFileNameA(h, szMod, MAX_PATH) || !GetModuleFileNameA(NULL, szExe, MAX_PATH)) return;
+    if (!h || !GetModuleFileNameA(h, szMod, MAX_PATH) || !GetModuleFileNameA(NULL, szExe, MAX_PATH)) return NULL;
     if ((p = strrchr(szMod, '\\')) != NULL) *p = 0;
     if ((p = strrchr(szExe, '\\')) != NULL) *p = 0;
-    if (lstrcmpiA(szMod, szExe) != 0 || !bModuleHas(h, kStudioSHeader)) return;   /* the system's dsound.dll, or another */
+    return lstrcmpiA(szMod, szExe) == 0 && bModuleHas(h, psz) ? h : NULL;
+}
+
+static void vSys15Init(void)
+{
+    HMODULE h, hNt = GetModuleHandleA("ntdll.dll");
+    char szEnv[8];
+    const char *pszFile;
+    typedef LONG (WINAPI *QitFn)(HANDLE, int, PVOID, ULONG, PULONG);
+    QitFn pfnQit = hNt ? (QitFn)(void *)GetProcAddress(hNt, "NtQueryInformationThread") : NULL;
+    int iKind;
+    giSys15 = 0;
+    if (GetEnvironmentVariableA("FM2K_PARITY_SYS15_SYNC", szEnv, sizeof(szEnv)) && szEnv[0] == '0') return;
+    if ((h = hGameModule("dsound.dll", kStudioSHeader)) != NULL) {
+        iKind = 1;
+        pszFile = "SaveData.dat";
+    } else if ((h = hGameModule("wsock32.dll", "config_save.txt")) != NULL) {
+        iKind = 2;
+        pszFile = "config_save.txt";
+    } else {
+        return;
+    }
     {   /* its threads (the SYS15 poll, the F5-F7 helpers) stop */
         const IMAGE_NT_HEADERS *nt = (const IMAGE_NT_HEADERS *)((const char *)h + ((const IMAGE_DOS_HEADER *)h)->e_lfanew);
         uintptr_t uLo = (uintptr_t)h, uHi = uLo + nt->OptionalHeader.SizeOfImage;
@@ -132,25 +189,48 @@ static void vSys15Init(void)
         if (hSnap != INVALID_HANDLE_VALUE && pfnQit && Thread32First(hSnap, &te)) {
             do {
                 if (te.th32OwnerProcessID != GetCurrentProcessId() || te.th32ThreadID == GetCurrentThreadId()) continue;
-                HANDLE hT = OpenThread(THREAD_QUERY_INFORMATION | THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
+                HANDLE hT = OpenThread(THREAD_QUERY_INFORMATION | THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, te.th32ThreadID);
                 uintptr_t uStart = 0;
                 if (hT && pfnQit(hT, 9 /* ThreadQuerySetWin32StartAddress */, &uStart, sizeof(uStart), NULL) == 0
                     && uStart >= uLo && uStart < uHi)
-                    SuspendThread(hT);
+                    vSuspendParked(hT);
                 if (hT) CloseHandle(hT);
             } while (Thread32Next(hSnap, &te));
         }
         if (hSnap != INVALID_HANDLE_VALUE) CloseHandle(hSnap);
     }
     {   /* the save record as the port reads it at boot */
-        HANDLE hF = CreateFileA("SaveData.dat", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+        HANDLE hF = CreateFileA(pszFile, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
         DWORD dw = 0;
         if (hF != INVALID_HANDLE_VALUE) {
             if (ReadFile(hF, gabSave, sizeof(gabSave), &dw, NULL)) giSaveLen = (int)dw;
             CloseHandle(hF);
         }
     }
-    giSys15 = 1;
+    giSys15 = iKind;
+    vDllLog(iKind == 1 ? "sys15 sync: StudioS dsound.dll" : "sys15 sync: Robot Heroes WSOCK32.dll");
+}
+
+/* compat_sys15.c vRobotHeroes, on the original's memory */
+static void vRobotHeroesStep(short *pVars)
+{
+    unsigned uCmd = (unsigned short)pVars[15];
+    int n;
+    if (uCmd == 0) return;
+    if (uCmd >= 3) {
+        *(unsigned char *)(uintptr_t)0x43010C = (unsigned char)((uCmd & 0xff) - 3);   /* giConfigTestplayStageNb */
+        return;
+    }
+    if (uCmd == 1) {
+        memcpy(gabRhBuf, pVars, 30);
+        memcpy(gabSave, gabRhBuf, 30);
+        giSaveLen = 30;
+    } else if (giSaveLen >= 0) {
+        n = giSaveLen < 30 ? giSaveLen : 30;
+        memcpy(gabRhBuf, gabSave, (size_t)n);
+        memcpy(pVars, gabRhBuf, 30);
+    }
+    pVars[15] = 0;
 }
 
 static void vSys15Step(void)
@@ -158,6 +238,7 @@ static void vSys15Step(void)
     short *pVars = (short *)(uintptr_t)SYS_VARS_ADDR;
     int i;
     if (giSys15 < 0) vSys15Init();
+    if (giSys15 == 2) { vRobotHeroesStep(pVars); return; }
     if (giSys15 != 1) return;
     if (pVars[15] == 1) {
         memcpy(gabSave, kStudioSHeader, 21);
@@ -165,18 +246,22 @@ static void vSys15Step(void)
             uint32_t dw = (uint32_t)((int)pVars[i] ^ 0x1BF52);
             memcpy(&gabSave[21 + i * 4], &dw, 4);
         }
-        giSaveLen = (int)sizeof(gabSave);
+        giSaveLen = 21 + 15 * 4;
         pVars[15] = 0;
     } else if (pVars[15] == 2) {
-        if (giSaveLen >= (int)sizeof(gabSave))
+        if (giSaveLen >= 21 + 15 * 4)
             for (i = 0; i < 15; i++)
                 pVars[i] = (short)((gabSave[21 + i * 4] | (gabSave[21 + i * 4 + 1] << 8)) ^ 0xBF52);
         pVars[15] = 0;
     }
 }
 
+static volatile LONG glTicks;          /* original ticks run (the hang watch, below) */
+static volatile DWORD gdwMainThread;   /* the thread running them */
 static void __cdecl hkTick(void)
 {
+    if (!gdwMainThread) gdwMainThread = GetCurrentThreadId();
+    InterlockedIncrement(&glTicks);
     pfnTickTramp();
     vSys15Step();   /* the port's fixed point: after the tick, before the dump */
     guLatTick++;
@@ -298,21 +383,125 @@ int msgbox_utf8(const char *pszText, const char *pszCaption, UINT uType)
    step: a trail left in use when its file was freed keeps dangling steps (MK Immortal at tick 65). */
 /* Any other crash of the original: the address goes to <dump>.dialogs.txt and the process ends without the
    Windows error report (no minidump on C:, closeout rules "ARTIFACT BUDGET"). */
-static LONG WINAPI lLastChance(EXCEPTION_POINTERS *ep)
+/* " at <eip> (thread <id>, <module>+<off>) <ret addrs>": the module of the address and of the first 24 return
+   addresses on the stack (which code it is in), appended to szLine (4096 bytes), with the line end */
+static void vFormatAt(char *szLine, const CONTEXT *pc, DWORD dwThread)
+{
+    DWORD i, n = 0;
+    char szMod[MAX_PATH];
+    const DWORD *pStack = (const DWORD *)pc->Esp;
+    HMODULE hm;
+    wsprintfA(szLine + lstrlenA(szLine), " at 0x%08lx (thread %lu", pc->Eip, dwThread);
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)pc->Eip, &hm) && GetModuleFileNameA(hm, szMod, MAX_PATH))
+        wsprintfA(szLine + lstrlenA(szLine), ", %s+0x%lx", szMod, pc->Eip - (DWORD)hm);
+    lstrcatA(szLine, ")");
+    for (i = 0; i < 2048 && n < 24 && !IsBadReadPtr(pStack + i, 4); i++) {
+        if (pStack[i] < 0x10000u || !GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)pStack[i], &hm)
+            || !GetModuleFileNameA(hm, szMod, MAX_PATH))
+            continue;
+        {
+            const char *pszBase = szMod + lstrlenA(szMod);
+            while (pszBase > szMod && pszBase[-1] != '\\') pszBase--;
+            wsprintfA(szLine + lstrlenA(szLine), " <%s+0x%lx", pszBase, pStack[i] - (DWORD)hm);
+            n++;
+        }
+    }
+    lstrcatA(szLine, "\r\n");
+}
+
+static void vDialogLine(const char *pszLine)
 {
     char szPath[MAX_PATH];
-    DWORD dwLen = GetEnvironmentVariableA("FM2K_PARITY_DUMP_PATH", szPath, MAX_PATH - 16);
-    if (ep && ep->ExceptionRecord && ep->ContextRecord && dwLen && dwLen < MAX_PATH - 16) {
-        HANDLE h;
-        lstrcatA(szPath, ".dialogs.txt");
-        h = CreateFileA(szPath, FILE_APPEND_DATA, FILE_SHARE_READ, NULL, OPEN_ALWAYS, 0, NULL);
-        if (h != INVALID_HANDLE_VALUE) {
-            DWORD dw;
-            char szLine[128];
-            wsprintfA(szLine, "[crash] exception 0x%08lx at 0x%08lx\r\n", ep->ExceptionRecord->ExceptionCode, ep->ContextRecord->Eip);
-            WriteFile(h, szLine, lstrlenA(szLine), &dw, NULL);
-            CloseHandle(h);
+    DWORD dwLen = GetEnvironmentVariableA("FM2K_PARITY_DUMP_PATH", szPath, MAX_PATH - 16), dw;
+    HANDLE h;
+    if (!dwLen || dwLen >= MAX_PATH - 16) return;
+    lstrcatA(szPath, ".dialogs.txt");
+    h = CreateFileA(szPath, FILE_APPEND_DATA, FILE_SHARE_READ, NULL, OPEN_ALWAYS, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE) return;
+    WriteFile(h, pszLine, lstrlenA(pszLine), &dw, NULL);
+    CloseHandle(h);
+}
+
+/* FM2K_PARITY_HANG_SECS (default 20, 0 = off): a game whose tick has not advanced for that long once it ticked
+   (a hang, not a crash) has its main thread's place and stack written to <dump>.dialogs.txt ("[hang] ..."),
+   then the process ends as a crash does: the run says where it stopped instead of only timing out */
+/* the hang report runs while the main thread is suspended, maybe holding the heap or the loader lock: everything
+   that could take one (the file, the module list) is done before it is suspended, the report itself only formats */
+typedef struct HangMod { DWORD dwBase, dwSize; char szName[64]; } HangMod;
+static HangMod gaHangMods[256];
+static int giHangMods;
+static const char *pszHangMod(DWORD a, DWORD *pdwOff)
+{
+    int i;
+    for (i = 0; i < giHangMods; i++)
+        if (a - gaHangMods[i].dwBase < gaHangMods[i].dwSize) { *pdwOff = a - gaHangMods[i].dwBase; return gaHangMods[i].szName; }
+    return NULL;
+}
+static DWORD WINAPI dwHangWatch(LPVOID pv)
+{
+    DWORD dwSecs = (DWORD)(uintptr_t)pv, dwSame = 0;
+    LONG lPrev = -1;
+    HANDLE hF = INVALID_HANDLE_VALUE, hT = NULL;
+    while (glTicks == 0) Sleep(100);
+    {   /* at the first tick, while nothing is stuck: the report's file, the main thread's handle and the module list
+           (a stuck main thread may hold the process heap's lock: CreateFile / a toolhelp snapshot would wait on it) */
+        char szPath[MAX_PATH];
+        DWORD dwLen = GetEnvironmentVariableA("FM2K_PARITY_DUMP_PATH", szPath, MAX_PATH - 16);
+        HANDLE hSnap;
+        MODULEENTRY32 me;
+        if (dwLen && dwLen < MAX_PATH - 16) {
+            lstrcatA(szPath, ".dialogs.txt");
+            hF = CreateFileA(szPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS, 0, NULL);
         }
+        hT = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, gdwMainThread);
+        hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+        me.dwSize = sizeof(me);
+        if (hSnap != INVALID_HANDLE_VALUE && Module32First(hSnap, &me))
+            do {
+                gaHangMods[giHangMods].dwBase = (DWORD)(uintptr_t)me.modBaseAddr;
+                gaHangMods[giHangMods].dwSize = me.modBaseSize;
+                lstrcpynA(gaHangMods[giHangMods].szName, me.szModule, 64);
+            } while (++giHangMods < 256 && Module32Next(hSnap, &me));
+        if (hSnap != INVALID_HANDLE_VALUE) CloseHandle(hSnap);
+    }
+    for (;;) {
+        Sleep(1000);
+        if (glTicks != lPrev) { lPrev = glTicks; dwSame = 0; continue; }
+        if (++dwSame < dwSecs) continue;
+        {
+            char szLine[4096];
+            DWORD dw, i, n = 0, dwOff;
+            CONTEXT c;
+            const char *pszM;
+            c.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+            if (hT && SuspendThread(hT) != (DWORD)-1 && GetThreadContext(hT, &c)) {
+                const DWORD *pStack = (const DWORD *)c.Esp;
+                wsprintfA(szLine, "[hang] no tick for %lu s after tick %ld at 0x%08lx (thread %lu", dwSecs, glTicks, c.Eip, gdwMainThread);
+                if ((pszM = pszHangMod(c.Eip, &dwOff)) != NULL) wsprintfA(szLine + lstrlenA(szLine), ", %s+0x%lx", pszM, dwOff);
+                lstrcatA(szLine, ")");
+                for (i = 0; i < 4096 && n < 32 && !IsBadReadPtr(pStack + i, 4); i++)
+                    if (pStack[i] >= 0x10000u && (pszM = pszHangMod(pStack[i], &dwOff)) != NULL) {
+                        wsprintfA(szLine + lstrlenA(szLine), " <%s+0x%lx", pszM, dwOff);
+                        n++;
+                    }
+                lstrcatA(szLine, "\r\n");
+                if (hF != INVALID_HANDLE_VALUE) WriteFile(hF, szLine, lstrlenA(szLine), &dw, NULL);
+            }
+            if (hF != INVALID_HANDLE_VALUE) CloseHandle(hF);
+            TerminateProcess(GetCurrentProcess(), 0xdead);
+        }
+    }
+    return 0;
+}
+
+static LONG WINAPI lLastChance(EXCEPTION_POINTERS *ep)
+{
+    if (ep && ep->ExceptionRecord && ep->ContextRecord) {
+        char szLine[4096];
+        wsprintfA(szLine, "[crash] exception 0x%08lx", ep->ExceptionRecord->ExceptionCode);
+        vFormatAt(szLine, ep->ContextRecord, GetCurrentThreadId());
+        vDialogLine(szLine);
     }
     TerminateProcess(GetCurrentProcess(), 0xdead);
     return EXCEPTION_EXECUTE_HANDLER;
@@ -421,5 +610,10 @@ BOOL WINAPI DllMain(HINSTANCE hDll, DWORD dwReason, LPVOID pReserved)
     AddVectoredExceptionHandler(1, lRenderGuard);
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
     SetUnhandledExceptionFilter(lLastChance);
+    {
+        char szEnv[16];
+        DWORD dwSecs = GetEnvironmentVariableA("FM2K_PARITY_HANG_SECS", szEnv, sizeof(szEnv)) ? (DWORD)atoi(szEnv) : 20u;
+        if (dwSecs) CloseHandle(CreateThread(NULL, 0, dwHangWatch, (LPVOID)(uintptr_t)dwSecs, 0, NULL));
+    }
     return TRUE;
 }

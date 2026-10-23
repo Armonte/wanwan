@@ -258,12 +258,41 @@ static void vSys15Step(void)
 
 static volatile LONG glTicks;          /* original ticks run (the hang watch, below) */
 static volatile DWORD gdwMainThread;   /* the thread running them */
+/* FM2K_PARITY_SNAP=<from>-<to>:<path prefix> (diagnostics): after each original tick in the range, every writable
+   section of the exe (its .data / .bss: the whole engine state but the heap) to <prefix><tick>.bin, so two runs of
+   the original can be compared byte for byte where the parity regions agree */
+static uint32_t guSnapFrom = 1, guSnapTo;
+static char gszSnap[MAX_PATH];
+static void vSnap(uint32_t uTick)
+{
+    const IMAGE_NT_HEADERS *nt;
+    const IMAGE_SECTION_HEADER *sec;
+    HMODULE h = GetModuleHandleA(NULL);
+    char szPath[MAX_PATH + 16];
+    FILE *f;
+    int i;
+    if (uTick < guSnapFrom || uTick > guSnapTo) return;
+    snprintf(szPath, sizeof(szPath), "%s%05u.bin", gszSnap, uTick);
+    if ((f = fopen(szPath, "wb")) == NULL) return;
+    nt = (const IMAGE_NT_HEADERS *)((const char *)h + ((const IMAGE_DOS_HEADER *)h)->e_lfanew);
+    sec = IMAGE_FIRST_SECTION(nt);
+    for (i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++)
+        if (sec->Characteristics & IMAGE_SCN_MEM_WRITE) {
+            uint32_t a = (uint32_t)(uintptr_t)h + sec->VirtualAddress, n = sec->Misc.VirtualSize;
+            fwrite(&a, 4, 1, f);
+            fwrite(&n, 4, 1, f);
+            fwrite((const void *)(uintptr_t)a, 1, n, f);
+        }
+    fclose(f);
+}
+
 static void __cdecl hkTick(void)
 {
     if (!gdwMainThread) gdwMainThread = GetCurrentThreadId();
     InterlockedIncrement(&glTicks);
     pfnTickTramp();
     vSys15Step();   /* the port's fixed point: after the tick, before the dump */
+    if (guSnapTo) vSnap(guLatTick);
     guLatTick++;
     Parity_AfterTick();
 }
@@ -586,6 +615,61 @@ static void vPatchCp932(HMODULE hGame)
     }
 }
 
+/* FM2K_PARITY_RAND_LOG=<path> (diagnostics): every call of the original's rand (0x417A22, LIBC's, holdrand at 0x41FB1C)
+   as "tick<TAB>caller<TAB>seed before", so two runs of the original can be compared call by call */
+static int (__cdecl *pfnRandTramp)(void);
+static FILE *gpRandLog;
+static int __cdecl hkRand(void)
+{
+    uint32_t uSeed = *(volatile uint32_t *)0x41FB1Cu;
+    if (gpRandLog)
+        fprintf(gpRandLog, "%u\t%08x\t%08x\n", guLatTick, (unsigned)(uintptr_t)__builtin_return_address(0), uSeed);
+    return pfnRandTramp();
+}
+
+/* with the rand log: every entry of ai_input_processor (0x411270): "AI<TAB>tick<TAB>object<TAB>slot<TAB>timer
+   (+0xDF7D)<TAB>level (+0xDF61)<TAB>mode (+0xDF65)<TAB>+0xDF5D<TAB>+0xDF69<TAB>+0xDF75<TAB>game state 0x47004C" */
+static void (__cdecl *pfnAiTramp)(void);
+/* with the rand log, FM2K_PARITY_OBJ_LOG=1: every handler dispatch (vJumptableJump 0x40C130): "OB<TAB>tick<TAB>object<TAB>
+   jump<TAB>depth<TAB>skill script<TAB>process step" */
+static void (__cdecl *pfnJumpTramp)(void);
+static void __cdecl hkJump(void)
+{
+    if (gpRandLog) {
+        const unsigned char *o = (const unsigned char *)(uintptr_t)*(volatile uint32_t *)0x4cfa00u;
+        int32_t j, dpt, sk, ps;
+        memcpy(&j, o, 4); memcpy(&dpt, o + 4, 4); memcpy(&sk, o + 0x2c, 4); memcpy(&ps, o + 0x152, 4);
+        fprintf(gpRandLog, "OB\t%u\t%08x\t%d\t%d\t%d\t%d\n", guLatTick, (unsigned)(uintptr_t)o, j, dpt, sk, ps);
+        if (j == 4 && guLatTick >= 5500 && guLatTick <= 5545) {   /* a script object: its step, the table it is read from */
+            uint32_t uSlot = *(const uint32_t *)(o + 0x156), uTab;
+            const unsigned char *t;
+            SIZE_T cb;
+            int k;
+            memcpy(&uTab, (const unsigned char *)(uintptr_t)(0x4d1d80u + uSlot * 0xe03fu + 0x114u), 4);
+            t = (const unsigned char *)(uintptr_t)uTab;
+            cb = uTab ? GlobalSize((HGLOBAL)(uintptr_t)uTab) : 0;
+            fprintf(gpRandLog, "ST\t%u\t%08x\t%u\ttab=%08x\tsize=%lu\tsteps=%lu\tstep%d=", guLatTick, (unsigned)(uintptr_t)o, uSlot, uTab,
+                    (unsigned long)cb, (unsigned long)(cb / 16u), sk);
+            for (k = 0; k < 16 && t && !IsBadReadPtr(t + (size_t)sk * 16u + k, 1); k++) fprintf(gpRandLog, "%02x", t[(size_t)sk * 16u + k]);
+            fprintf(gpRandLog, "\n");
+        }
+    }
+    pfnJumpTramp();
+}
+static void __cdecl hkAi(void)
+{
+    if (gpRandLog) {
+        uint32_t uObj = *(volatile uint32_t *)0x4cfa00u, uSlot = *(volatile uint32_t *)(uintptr_t)(uObj + 0x156u);
+        const unsigned char *c = (const unsigned char *)(uintptr_t)(0x4d1d80u + uSlot * 0xe03fu);
+        int32_t aV[6];
+        memcpy(&aV[0], c + 0xdf7d, 4); memcpy(&aV[1], c + 0xdf61, 4); memcpy(&aV[2], c + 0xdf65, 4);
+        memcpy(&aV[3], c + 0xdf5d, 4); memcpy(&aV[4], c + 0xdf69, 4); memcpy(&aV[5], c + 0xdf75, 4);
+        fprintf(gpRandLog, "AI\t%u\t%08x\t%u\t%d\t%d\t%d\t%d\t%08x\t%d\t%u\n", guLatTick, uObj, uSlot, aV[0], aV[1], aV[2], aV[3],
+                (unsigned)aV[4], aV[5], *(volatile uint32_t *)0x47004cu);
+    }
+    pfnAiTramp();
+}
+
 BOOL WINAPI DllMain(HINSTANCE hDll, DWORD dwReason, LPVOID pReserved)
 {
     static const unsigned char kTick[9] = { 0x53, 0x33, 0xdb, 0x89, 0x1d, 0xfc, 0x46, 0x42, 0x00 };
@@ -605,6 +689,25 @@ BOOL WINAPI DllMain(HINSTANCE hDll, DWORD dwReason, LPVOID pReserved)
     vPatchCp932(host.hGameModule);
     pfnTickTramp = (void (*)(void))pDetour(0x404cd0, kTick, 9, (void *)hkTick);
     pfnInputTramp = (int (__cdecl *)(int, int))pDetour(0x414340, kInput, 5, (void *)hkInput);
+    {
+        static const unsigned char kRand[5] = { 0xa1, 0x1c, 0xfb, 0x41, 0x00 };   /* mov eax, [holdrand] */
+        char szRand[MAX_PATH];
+        if (GetEnvironmentVariableA("FM2K_PARITY_RAND_LOG", szRand, sizeof(szRand)) && (gpRandLog = fopen(szRand, "w")) != NULL)
+            pfnRandTramp = (int (__cdecl *)(void))pDetour(0x417a22, kRand, 5, (void *)hkRand);
+        if (gpRandLog) {
+            static const unsigned char kAi[5] = { 0xa1, 0x00, 0xfa, 0x4c, 0x00 };   /* mov eax, [current object] */
+            pfnAiTramp = (void (__cdecl *)(void))pDetour(0x411270, kAi, 5, (void *)hkAi);
+            if (GetEnvironmentVariableA("FM2K_PARITY_OBJ_LOG", szRand, sizeof(szRand)))
+                pfnJumpTramp = (void (__cdecl *)(void))pDetour(0x40c130, kAi, 5, (void *)hkJump);
+        }
+        if (GetEnvironmentVariableA("FM2K_PARITY_SNAP", szRand, sizeof(szRand))) {
+            char *pc = strchr(szRand, ':');
+            if (pc && sscanf(szRand, "%u-%u", &guSnapFrom, &guSnapTo) == 2)
+                lstrcpynA(gszSnap, pc + 1, MAX_PATH);
+            else
+                guSnapTo = 0;
+        }
+    }
     vLatOpen();
     vPatchFrameHash();
     AddVectoredExceptionHandler(1, lRenderGuard);

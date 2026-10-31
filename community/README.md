@@ -157,6 +157,55 @@ req = urllib.request.Request("https://2dfm.org/community" + path, data=body, hea
     "X-PC-Sig": base64.b64encode(sk.sign(msg)).decode(), "Content-Type": "application/json"})
 ```
 
+### Match lookup and replay metadata (`/v1/site/matches`, `/v1/site/replaymeta`)
+
+Same signing, limits and errors as above. Only matches played through PovertyCaster exist here (signed RESULT-V1
+receipts). A plain CCCaster match has no `match_id`, and the stats site stores those with the counted flag clear.
+
+| Call | Body | Answer |
+|---|---|---|
+| `POST /v1/site/matches` | `{"accounts": [b64(16), b64(16)], "from": unix, "to": unix, "game_id"?: "mbaacc"}` | `{"matches": [...], "hidden": n}` |
+| `POST /v1/site/replaymeta` | `{"match_id": "<12 hex>", "replay_sha256": "<64 lowercase hex>"}` | the REPLAYMETA-V1 assertion |
+
+`matches`:
+- It needs two different account ids, `from <= to` and `to - from <= 86400` (else 400 `bad_accounts` / `bad_window`).
+- It returns matches between those two accounts, in either slot order, with `started` in `[from, to]`. Status is one of `pending final disputed void left_early`, sorted by start time, at most 200.
+- `game_id` filters by either the raw id or the family-prefixed one (`wonderfulworld` or `fm2k:wonderfulworld`).
+- If either player hid their stats, the match is only counted in `hidden` and never listed.
+- An unknown account id gives the same answer as two accounts that never played each other, so the call cannot test whether an id exists.
+
+Each item has these fields:
+- `match_id`, `game_id`, `build`
+- `game_no` (the match index within the session)
+- `started`, `ended` (unix; `ended` is null until decided)
+- `status`
+- `slots` (base64 account ids, slot 0 then 1)
+- `score` (`[r0, r1]` or null)
+- `winner` (`p1`, `p2`, `draw` or null)
+- `flags`
+
+`replaymeta`:
+- It answers only for counted matches (`pending`, `final`) with a score. Otherwise it returns 409 `not_counted`, 404 `match_not_found`, or 403 `stats_hidden`.
+- `replay_sha256` is the SHA-256 the SITE computed over the replay bytes before its PCRM block. The service vouches for the match facts and binds the hash as given.
+- The answer has these fields: `match_id`, `replay_sha256`, `game_no`, `nslots` (2), `slots`, `score`, `winner` (slot number), `issued`, `key_gen`, `assertion` (base64, 64 bytes).
+- The signature is Ed25519 by the online ticket key `key_gen`, which is in `/v1/keyset`. It covers:
+
+      b"PC-COMMUNITY-REPLAYMETA-V1\n" + match_id (12 ASCII) + replay_sha256 (32) + u32le game_no + u8 nslots
+        + nslots x account_id (16) + nslots x u16le score + u8 winner (slot; 255 draw; 254 none) + u64le issued
+
+Test vector (`tests/test_site_matches.py` `test_replaymeta_pinned_vector`). It uses the TEST seed 32 x 0x03, public key
+`ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1`:
+
+    match_id "0123456789ab", replay_sha256 = bytes 00..1f, game_no 3, accounts 16 x a0 / 16 x b0,
+    score [2, 1], winner 0, issued 1800000000
+
+    message (hex, 121 bytes):
+    50432d434f4d4d554e4954592d5245504c41594d4554412d56310a3031323334
+    35363738396162000102030405060708090a0b0c0d0e0f101112131415161718
+    191a1b1c1d1e1f0300000002a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0b0b0b0b0
+    b0b0b0b0b0b0b0b0b0b0b0b0020001000000d2496b00000000
+    signature = shNM00vI2z0zPDoNT+cqOWEUx5cai2+AI5fKHBVw5ejKPOxqF7RjYNJ8sSr2ogwNVt2sGssocATP08/pA+d2Dg==
+
 ## Match results (`POST /v1/report`)
 
 A signed call (section 6 headers; the signature covers `sha256(body)`) whose body is exactly one spec 7c receipt

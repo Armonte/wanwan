@@ -14,6 +14,7 @@ Endpoints (paths as the app sees them; the public URL adds /community):
     POST /v1/report                   signed receipt list (octet-stream, spec 7c) -> {status, match_id}; the result
                                       lands in export/results.jsonl for the stats site
     POST /v1/site/account[/create|/name]  first-party site calls (X-PC-Site signed, README "Site endpoints")
+    POST /v1/site/matches, /v1/site/replaymeta  match lookup by two accounts + window; REPLAYMETA-V1 assertion
     POST /v1/replay?match_id=<id>     signed PCRZ1 inputs-only replay (octet-stream, 1 MiB) -> {replay_id, replay_url};
                                       stored in R2, public, kept forever (replays.py)
     GET  /v1/config                   {stats_url, replay_base, web_base}: where the launcher finds the rest
@@ -451,6 +452,31 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
         c.signing_key()
         c.set_name(r[0], j["name"])
         return c.site_account_view(site, r[0])
+
+    @app.post("/v1/site/matches")
+    async def site_matches(request: Request):
+        _, j = await site_call(request)
+        accs = j.get("accounts")
+        if not isinstance(accs, list) or len(accs) != 2 or not all(isinstance(x, str) for x in accs):
+            raise ServiceError(400, "bad_accounts", "accounts must be two base64 account ids")
+        ids = [b64d(x, 16) for x in accs]
+        t_from, t_to = j.get("from"), j.get("to")
+        if not all(isinstance(x, int) and not isinstance(x, bool) and 0 <= x < 2 ** 40 for x in (t_from, t_to)):
+            raise ServiceError(400, "bad_window", "from and to are unix seconds")
+        gid = j.get("game_id")
+        if gid is not None and (not isinstance(gid, str) or len(gid) > 64):
+            raise ServiceError(400, "bad_game", "game_id must be a short string")
+        return app.state.results.site_matches(ids, t_from, t_to, gid)
+
+    @app.post("/v1/site/replaymeta")
+    async def site_replaymeta(request: Request):
+        _, j = await site_call(request)
+        mid, h = j.get("match_id"), j.get("replay_sha256")
+        if not isinstance(mid, str) or len(mid) != 12 or any(ch not in "0123456789abcdef" for ch in mid):
+            raise ServiceError(400, "bad_match_id", "match_id is 12 lowercase hex")
+        if not isinstance(h, str) or len(h) != 64 or any(ch not in "0123456789abcdef" for ch in h):
+            raise ServiceError(400, "bad_replay_sha256", "replay_sha256 is 64 lowercase hex")
+        return app.state.results.site_replaymeta(mid, bytes.fromhex(h))
 
     # ---- discovery: where the stats site and replays live (no domain in launcher code) ----
     @app.get("/v1/config")

@@ -31,8 +31,9 @@ TAG_RESULT = b"PC-COMMUNITY-RESULT-V1\n"
 TAG_REPLAY = b"PC-COMMUNITY-REPLAY-V1\n"
 TAG_SITECALL = b"PC-COMMUNITY-SITECALL-V1\n"  # first-party site -> service calls (/v1/site/*)
 TAG_SITEACCT = b"PC-COMMUNITY-SITEACCT-V1\n"  # the service's assertion about an account, for a first-party site
+TAG_REPLAYMETA = b"PC-COMMUNITY-REPLAYMETA-V1\n"  # the service's assertion binding a replay's bytes to a counted match
 ALL_TAGS = (TAG_KEYSET, TAG_TICKET, TAG_PERKS, TAG_DENY, TAG_LINK, TAG_PROOF, TAG_CALL, TAG_RESULT, TAG_REPLAY,
-            TAG_SITECALL, TAG_SITEACCT)
+            TAG_SITECALL, TAG_SITEACCT, TAG_REPLAYMETA)
 
 # The two offline roots (COMMUNITY_SERVICE.md section 7, generated 2026-10-20). Public halves only.
 ROOT_A_PUB = bytes.fromhex("c9e1bf09a428508b860cd21cb3b49dcadc2c8e3e6abe17cd51e8155bfe8797de")
@@ -433,6 +434,23 @@ def site_account_message(site: bytes, account_id: bytes, name: str, tag: int, is
     """The body signed (under TAG_SITEACCT, by the online ticket key) in /v1/site/account's `assertion`."""
     nb = name.encode("utf-8")
     return TAG_SITEACCT + site + account_id + bytes([len(nb)]) + nb + le(tag, 2) + le(issued, 8)
+
+
+REPLAYMETA_NO_WINNER = 254  # winner byte when the match has no decided winner (draw is 255, as in receipts)
+
+
+def replay_meta_message(match_id: str, replay_sha256: bytes, game_no: int, accounts: list, score: list, winner: int,
+                        issued: int) -> bytes:
+    """The body signed (under TAG_REPLAYMETA, by the online ticket key) in /v1/site/replaymeta's `assertion`:
+    tag + match_id (12 ASCII hex) + sha256 of the replay bytes before its PCRM block (32) + u32le game_no + u8 nslots
+    + nslots x account_id (16) + nslots x u16le score + u8 winner (slot, 255 draw, 254 none) + u64le issued."""
+    mid = match_id.encode("ascii")
+    if len(mid) != 12 or len(replay_sha256) != 32 or len(accounts) != len(score) or not 1 <= len(accounts) <= 8:
+        raise ValueError("bad replay meta fields")
+    if any(len(a) != 16 for a in accounts):
+        raise ValueError("account ids are 16 bytes")
+    return (TAG_REPLAYMETA + mid + replay_sha256 + le(game_no, 4) + bytes([len(accounts)]) + b"".join(accounts)
+            + b"".join(le(x, 2) for x in score) + bytes([winner]) + le(issued, 8))
 
 
 def verify_call(client_pub: bytes, msg: bytes, sig: bytes) -> bool:

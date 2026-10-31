@@ -17,6 +17,7 @@ tag and the hidden flag only.
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import secrets
@@ -262,6 +263,70 @@ class Results:
                 "winner": winner, "score": None if m["rounds0"] is None else [m["rounds0"], m["rounds1"]],
                 "left_early": {0: "p1", 1: "p2"}.get(m["left_slot"]),
                 "flags": [name for bit, name in FLAG_NAMES if m["flags"] & bit], "replay_url": self.replay_url(mid)}
+
+    # ---- first-party site lookups (README "Site endpoints": matches, replaymeta) ----
+    SITE_WINDOW = DAY
+    SITE_MATCH_STATUSES = ("pending", "final", "disputed", "void", "left_early")
+    REPLAYMETA_STATUSES = ("pending", "final")
+
+    def _acct_row(self, account_id: bytes) -> Optional[int]:
+        r = self.db.one("SELECT id FROM accounts WHERE account_id = ?", (account_id,))
+        return r[0] if r else None
+
+    def site_matches(self, accounts: list, t_from: int, t_to: int, game_id: Optional[str]) -> dict:
+        """Matches between exactly these two accounts (either slot order) started in [t_from, t_to] (at most 24 h).
+        A match where either player hid their stats is only counted (`hidden`), never listed. Unknown accounts answer
+        an empty list, the same as two accounts that never met, so the call cannot test whether an id exists."""
+        if len(accounts) != 2 or accounts[0] == accounts[1]:
+            raise ServiceError(400, "bad_accounts", "exactly two different account ids")
+        if t_to < t_from or t_to - t_from > self.SITE_WINDOW:
+            raise ServiceError(400, "bad_window", "from <= to and the window is at most 86400 seconds")
+        a, b = (self._acct_row(x) for x in accounts)
+        if a is None or b is None:
+            return {"matches": [], "hidden": 0}
+        qs = ",".join("?" * len(self.SITE_MATCH_STATUSES))
+        rows = self.db.q(f"SELECT id FROM matches WHERE ((acct0 = ? AND acct1 = ?) OR (acct0 = ? AND acct1 = ?)) "
+                         f"AND started_unix BETWEEN ? AND ? AND status IN ({qs}) ORDER BY started_unix, id LIMIT 200",
+                         (a, b, b, a, t_from, t_to, *self.SITE_MATCH_STATUSES))
+        out, hidden = [], 0
+        for (mid,) in rows:
+            e = self.export_row(mid)
+            m = self.db.one("SELECT * FROM matches WHERE id = ?", (mid,))
+            if game_id and game_id not in (m["game_id"], e["game_id"]):
+                continue
+            if e["p1"]["hidden"] or e["p2"]["hidden"]:
+                hidden += 1
+                continue
+            accs = [self.c.account(m["acct0"])["account_id"], self.c.account(m["acct1"])["account_id"]]
+            out.append({"match_id": m["match_id"], "game_id": e["game_id"], "build": m["build_id"],
+                        "game_no": m["match_index"], "started": m["started_unix"], "ended": e["finished_at"],
+                        "status": m["status"], "slots": [base64.b64encode(x).decode() for x in accs],
+                        "score": e["score"], "winner": e["winner"], "flags": e["flags"]})
+        return {"matches": out, "hidden": hidden}
+
+    def site_replaymeta(self, match_id: str, replay_sha256: bytes) -> dict:
+        """The REPLAYMETA-V1 assertion: the online ticket key binds the replay hash the site computed (bytes before
+        the PCRM block) to the match's slots, score and winner. The service vouches for the match facts; the hash is
+        the caller's, recorded as given. Only counted matches (pending, final) with both players' stats visible."""
+        m = self.db.one("SELECT * FROM matches WHERE match_id = ?", (match_id,))
+        if m is None:
+            raise ServiceError(404, "match_not_found", "no match with this id")
+        if m["status"] not in self.REPLAYMETA_STATUSES or m["rounds0"] is None:
+            raise ServiceError(409, "not_counted", f"the match is {m['status']}, not counted")
+        a0, a1 = self.c.account(m["acct0"]), self.c.account(m["acct1"])
+        if a0["stats_hidden"] or a1["stats_hidden"]:
+            raise ServiceError(403, "stats_hidden", "a player hid their stats")
+        w = m["winner_slot"]
+        winner = T.REPLAYMETA_NO_WINNER if w is None else w
+        key = self.c.signing_key()
+        now = self.c.now()
+        accs = [a0["account_id"], a1["account_id"]]
+        score = [m["rounds0"], m["rounds1"]]
+        msg = T.replay_meta_message(m["match_id"], replay_sha256, m["match_index"], accs, score, winner, now)
+        sig = T.sign(key.seed, T.TAG_REPLAYMETA, msg[len(T.TAG_REPLAYMETA):])
+        return {"match_id": m["match_id"], "replay_sha256": replay_sha256.hex(), "game_no": m["match_index"],
+                "nslots": 2, "slots": [base64.b64encode(x).decode() for x in accs], "score": score,
+                "winner": winner, "issued": now, "key_gen": key.key_gen, "assertion": base64.b64encode(sig).decode()}
 
     def replay_url(self, mid: int) -> Optional[str]:
         """The stored replay's public URL, composed from the key and COMMUNITY_REPLAY_PUBLIC_BASE now (never stored)."""

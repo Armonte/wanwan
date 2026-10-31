@@ -13,6 +13,7 @@ Endpoints (paths as the app sees them; the public URL adds /community):
     POST /v1/profile/visibility       signed {hidden} -> the stats profile opt-out (export/hidden.json)
     POST /v1/report                   signed receipt list (octet-stream, spec 7c) -> {status, match_id}; the result
                                       lands in export/results.jsonl for the stats site
+    POST /v1/site/account[/create|/name]  first-party site calls (X-PC-Site signed, README "Site endpoints")
     POST /v1/replay?match_id=<id>     signed PCRZ1 inputs-only replay (octet-stream, 1 MiB) -> {replay_id, replay_url};
                                       stored in R2, public, kept forever (replays.py)
     GET  /v1/config                   {stats_url, replay_base, web_base}: where the launcher finds the rest
@@ -372,6 +373,84 @@ def create_app(cfg: Optional[Config] = None, community: Optional[Community] = No
         row, body = await signed_call(request, app.state.replay_limit, cfg.replay_max_bytes,
                                       pre=lambda acct: rp.precheck(acct, match_id))
         return await run_in_threadpool(rp.upload, row, match_id, body)
+
+    # ---- first-party sites (meltyblood.org): signed server-to-server calls, README "Site endpoints" ----
+    async def site_call(request: Request) -> tuple[str, dict]:
+        """Verify X-PC-Site/Time/Nonce/Sig over the path AS THE APP SEES IT (Caddy already stripped /community), then
+        the per-site rate limit and the nonce replay cache. Returns (site id, JSON object body). Discord ids in the
+        body are never logged."""
+        c = svc()
+        h = request.headers
+        site = h.get("x-pc-site", "")
+        pub = c.site_pub(site) if site and len(site) <= 64 else None
+        if pub is None:
+            raise ServiceError(401, "unknown_site", "this site is not allowed")
+        ts_s, nonce_s, sig_s = h.get("x-pc-time", ""), h.get("x-pc-nonce", ""), h.get("x-pc-sig", "")
+        if not ts_s.isascii() or not ts_s.isdigit() or len(ts_s) > 12:
+            raise ServiceError(401, "bad_time", "X-PC-Time must be decimal unix seconds")
+        if abs(int(ts_s) - c.now()) > c.SITE_SKEW:
+            raise ServiceError(401, "clock_skew", "X-PC-Time is more than 120 seconds off; see X-PC-Server-Time")
+        b64d(nonce_s, 16)
+        sig = b64d(sig_s, 64)
+        body = await read_capped(request, 4096)
+        path = request.url.path + ("?" + request.url.query if request.url.query else "")
+        msg = T.site_call_message(site.encode(), request.method.encode(), path.encode(), ts_s.encode(),
+                                  nonce_s.encode(), body)
+        if not T.verify(pub, b"", msg, sig):
+            raise ServiceError(401, "bad_site_signature", "the call signature does not verify")
+        if not c.site_rate_ok(site):
+            raise ServiceError(429, "rate_limited", "too many calls from this site")
+        if not c.site_nonce_use(site, nonce_s):
+            raise ServiceError(401, "nonce_reused", "this nonce was already used")
+        try:
+            j = json.loads(body or b"{}")
+        except ValueError:
+            j = None
+        if not isinstance(j, dict):
+            raise ServiceError(400, "bad_json", "the body must be a JSON object")
+        return site, j
+
+    @app.post("/v1/site/account")
+    async def site_account(request: Request):
+        site, j = await site_call(request)
+        c = svc()
+        r = c.site_account_row(c.site_discord_id(j.get("discord_id")))
+        if r is None or c.account(r[0])["name"] is None:
+            return {"found": False}
+        return c.site_account_view(site, r[0])
+
+    @app.post("/v1/site/account/create")
+    async def site_account_create(request: Request):
+        site, j = await site_call(request)
+        c = svc()
+        did = c.site_discord_id(j.get("discord_id"))
+        r = c.site_account_row(did)
+        if r is not None and c.account(r[0])["name"] is not None:
+            return dict(c.site_account_view(site, r[0]), created=False)  # existing account, unchanged
+        try:
+            names.normalize_name(j.get("name") if isinstance(j.get("name"), str) else "")
+        except names.BadName as e:
+            raise ServiceError(400, "bad_name", str(e))  # refused before any account is made
+        c.signing_key()  # no account without a key to vouch for it
+        created = r is None
+        row = r[0] if r else c.account_for_discord(did)
+        c.set_name(row, j["name"])
+        return dict(c.site_account_view(site, row), created=created)
+
+    @app.post("/v1/site/account/name")
+    async def site_account_name(request: Request):
+        site, j = await site_call(request)
+        c = svc()
+        r = c.site_account_row(c.site_discord_id(j.get("discord_id")))
+        if r is None:
+            raise ServiceError(404, "account_not_found", "no account for this Discord id")
+        if c.account(r[0])["banned"]:
+            raise ServiceError(403, "banned", "this account is banned")
+        if not isinstance(j.get("name"), str):
+            raise ServiceError(400, "bad_name", "name must be a string")
+        c.signing_key()
+        c.set_name(r[0], j["name"])
+        return c.site_account_view(site, r[0])
 
     # ---- discovery: where the stats site and replays live (no domain in launcher code) ----
     @app.get("/v1/config")

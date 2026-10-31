@@ -8,6 +8,8 @@
     python3 admin.py unban "Name#1234"
     python3 admin.py revoke-ticket --gen 1 --serial 42   # deny one ticket serial until it expires
     python3 admin.py show "Name#1234"                    # or a 32-hex account id
+    python3 admin.py add-site meltyblood.org <32-byte Ed25519 public key hex>   # first-party site allow-list
+    python3 admin.py remove-site meltyblood.org
     python3 admin.py stats
     python3 admin.py backup [--dir DIR] [--keep 30]      # online SQLite snapshot (the daily timer runs this)
     python3 admin.py reskeleton                          # after the look-alike table changed: recompute, re-flag
@@ -143,6 +145,11 @@ def main(argv=None) -> int:
     rt.add_argument("--gen", type=int, required=True)
     rt.add_argument("--serial", type=int, required=True)
     sub.add_parser("stats")
+    asite = sub.add_parser("add-site", help="allow a first-party site to call /v1/site/* (re-adding replaces its key)")
+    asite.add_argument("site_id")
+    asite.add_argument("pubhex")
+    rsite = sub.add_parser("remove-site", help="its signed calls answer 401 from now on")
+    rsite.add_argument("site_id")
     sub.add_parser("reskeleton", help="recompute name skeletons and look-alike flags (after a confusables change)")
     bk = sub.add_parser("backup", help="online snapshot of the database, oldest dropped past --keep")
     bk.add_argument("--dir", help="default: <data>/backups beside the database")
@@ -221,6 +228,16 @@ def main(argv=None) -> int:
     if a.cmd == "reskeleton":
         changed = c.reskeleton()
         print(f"reskeleton: {len(changed)} #tag(s) reassigned" + "".join(f"\n  row {r}: {o} -> {n}" for r, o, n in changed))
+        return 0
+    if a.cmd == "add-site":
+        try:
+            c.add_site(a.site_id, bytes.fromhex(a.pubhex))
+        except (ServiceError, ValueError) as e:
+            sys.exit(f"REFUSED: {getattr(e, 'detail', '') or e}")
+        print(f"site {a.site_id} allowed")
+        return 0
+    if a.cmd == "remove-site":
+        print("removed" if c.remove_site(a.site_id) else "no such site")
         return 0
     if a.cmd == "stats":
         print(json.dumps(dict(c.stats(), matches=Results(c).stats()), indent=2))

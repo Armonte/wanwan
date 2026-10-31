@@ -174,6 +174,16 @@ MIGRATIONS = [
     CREATE INDEX replays_day ON replays(created);
     CREATE INDEX replays_uploader ON replays(uploader, created);
     """,
+    # 6 -> 7: first-party sites (meltyblood.org). sites = allow-listed Ed25519 public keys (admin add-site); site_nonces
+    # = the replay cache of signed site calls; site_hits = per-site rate limit (minute and day windows). No Discord id
+    # and no address is stored in any of them.
+    """
+    CREATE TABLE sites (site_id TEXT PRIMARY KEY, pub BLOB NOT NULL, added INTEGER NOT NULL);
+    CREATE TABLE site_nonces (site_id TEXT NOT NULL, nonce TEXT NOT NULL, seen INTEGER NOT NULL,
+                              PRIMARY KEY (site_id, nonce));
+    CREATE TABLE site_hits (site_id TEXT NOT NULL, ts INTEGER NOT NULL);
+    CREATE INDEX site_hits_site ON site_hits(site_id, ts);
+    """,
 ]
 
 SCHEMA_VERSION = len(MIGRATIONS)

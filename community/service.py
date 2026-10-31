@@ -325,6 +325,80 @@ class Community:
         self.db.x("DELETE FROM nonces WHERE seen < ?", (now - 660,))
         self.db.x("INSERT OR REPLACE INTO nonces(nonce, seen) VALUES(?, ?)", (nonce, now))
 
+    # ---- first-party sites (meltyblood.org): signed server-to-server calls, /v1/site/* ----
+    def site_pub(self, site_id: str) -> Optional[bytes]:
+        r = self.db.one("SELECT pub FROM sites WHERE site_id = ?", (site_id,))
+        return bytes(r[0]) if r else None
+
+    def add_site(self, site_id: str, pub: bytes) -> None:
+        if not site_id or len(site_id) > 64 or not site_id.isascii() or not site_id.isprintable() or "\n" in site_id:
+            raise ServiceError(400, "bad_site", "site id: 1..64 printable ASCII characters")
+        if len(pub) != 32 or not T.pubkey_strong(pub):
+            raise ServiceError(400, "bad_site_key", "not a usable Ed25519 public key")
+        self.db.x("INSERT INTO sites(site_id, pub, added) VALUES(?,?,?) ON CONFLICT(site_id) DO UPDATE SET pub = "
+                  "excluded.pub", (site_id, pub, self.now()))
+        self.db.audit(self.now(), "add_site", site_id)
+
+    def remove_site(self, site_id: str) -> bool:
+        cur = self.db.x("DELETE FROM sites WHERE site_id = ?", (site_id,))
+        self.db.audit(self.now(), "remove_site", site_id)
+        return cur.rowcount > 0
+
+    SITE_SKEW, SITE_PER_MINUTE, SITE_PER_DAY = 120, 30, 1000
+
+    def site_nonce_use(self, site_id: str, nonce_b64: str) -> bool:
+        """Records the nonce; False when it was already seen inside the window (a replay)."""
+        now = self.now()
+        with self.db.tx() as db:
+            db.x("DELETE FROM site_nonces WHERE seen < ?", (now - 2 * self.SITE_SKEW - 60,))
+            if db.one("SELECT 1 FROM site_nonces WHERE site_id = ? AND nonce = ?", (site_id, nonce_b64)):
+                return False
+            db.x("INSERT INTO site_nonces(site_id, nonce, seen) VALUES(?,?,?)", (site_id, nonce_b64, now))
+        return True
+
+    def site_rate_ok(self, site_id: str) -> bool:
+        now = self.now()
+        with self.db.tx() as db:
+            db.x("DELETE FROM site_hits WHERE ts <= ?", (now - 86400,))
+            day = db.one("SELECT COUNT(*) FROM site_hits WHERE site_id = ?", (site_id,))[0]
+            minute = db.one("SELECT COUNT(*) FROM site_hits WHERE site_id = ? AND ts > ?", (site_id, now - 60))[0]
+            if day >= self.SITE_PER_DAY or minute >= self.SITE_PER_MINUTE:
+                return False
+            db.x("INSERT INTO site_hits(site_id, ts) VALUES(?,?)", (site_id, now))
+        return True
+
+    @staticmethod
+    def site_discord_id(v) -> str:
+        if not isinstance(v, str) or not v.isascii() or not v.isdigit() or not 1 <= len(v) <= 20 or int(v) >= 1 << 64:
+            raise ServiceError(400, "bad_discord_id", 'discord_id must be a decimal snowflake string')
+        return str(int(v))
+
+    def site_account_row(self, discord_id: str):
+        return self.db.one("SELECT id FROM accounts WHERE discord_id = ?", (discord_id,))
+
+    def account_denied(self, row: int) -> bool:
+        """Banned, or it holds unexpired tickets and every one of them is revoked (deny list)."""
+        acc = self.account(row)
+        if acc["banned"]:
+            return True
+        now = self.now()
+        live = self.db.q("SELECT revoked FROM tickets WHERE account = ? AND expires + ? >= ?", (row, T.SKEW, now))
+        return bool(live) and all(r[0] for r in live)
+
+    def site_account_view(self, site_id: str, row: int) -> dict:
+        """The found:true answer: name and #tag only (no Discord id), plus the ticket key's assertion over them."""
+        acc = self.account(row)
+        key = self.signing_key()
+        now = self.now()
+        sig = T.sign(key.seed, T.TAG_SITEACCT, T.site_account_message(site_id.encode(), acc["account_id"],
+                                                                     acc["name"], acc["tag"], now)[len(T.TAG_SITEACCT):])
+        import base64
+        return {"found": True, "account_id": base64.b64encode(acc["account_id"]).decode(),
+                "public_id": acc["public_id"] or "", "name": acc["name"], "tag": f"{acc['tag']:04d}",
+                "display": f"{acc['name']}#{acc['tag']:04d}", "stats_hidden": bool(acc["stats_hidden"]),
+                "denied": self.account_denied(row), "key_gen": key.key_gen, "issued": now,
+                "assertion": base64.b64encode(sig).decode()}
+
     # ---- moderation ----
     def ban(self, row: int, reason: str, ban: bool = True) -> None:
         self.db.x("UPDATE accounts SET banned = ?, ban_reason = ? WHERE id = ?", (1 if ban else 0,

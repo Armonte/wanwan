@@ -29,7 +29,10 @@ TAG_PROOF = b"PC-COMMUNITY-PROOF-V1\n"
 TAG_CALL = b"PC-COMMUNITY-CALL-V1\n"
 TAG_RESULT = b"PC-COMMUNITY-RESULT-V1\n"
 TAG_REPLAY = b"PC-COMMUNITY-REPLAY-V1\n"
-ALL_TAGS = (TAG_KEYSET, TAG_TICKET, TAG_PERKS, TAG_DENY, TAG_LINK, TAG_PROOF, TAG_CALL, TAG_RESULT, TAG_REPLAY)
+TAG_SITECALL = b"PC-COMMUNITY-SITECALL-V1\n"  # first-party site -> service calls (/v1/site/*)
+TAG_SITEACCT = b"PC-COMMUNITY-SITEACCT-V1\n"  # the service's assertion about an account, for a first-party site
+ALL_TAGS = (TAG_KEYSET, TAG_TICKET, TAG_PERKS, TAG_DENY, TAG_LINK, TAG_PROOF, TAG_CALL, TAG_RESULT, TAG_REPLAY,
+            TAG_SITECALL, TAG_SITEACCT)
 
 # The two offline roots (COMMUNITY_SERVICE.md section 7, generated 2026-10-20). Public halves only.
 ROOT_A_PUB = bytes.fromhex("c9e1bf09a428508b860cd21cb3b49dcadc2c8e3e6abe17cd51e8155bfe8797de")
@@ -417,6 +420,19 @@ def proof_message(game_id: bytes, build_id: bytes, session_id: bytes, nonce_mine
 def call_message(host: bytes, method: bytes, path: bytes, body_sha: bytes, ts: int, nonce: bytes,
                  tid: bytes) -> bytes:
     return TAG_CALL + lp(host) + lp(method) + lp(path) + body_sha + le(ts, 8) + nonce + tid
+
+
+def site_call_message(site: bytes, method: bytes, path_with_query: bytes, time_s: bytes, nonce_b64: bytes,
+                      body: bytes) -> bytes:
+    """What a first-party site signs (README "Site endpoints"): the tag, then newline-joined text fields."""
+    return (TAG_SITECALL + site + b"\n" + method + b"\n" + path_with_query + b"\n" + time_s + b"\n" + nonce_b64
+            + b"\n" + hashlib.sha256(body).hexdigest().encode())
+
+
+def site_account_message(site: bytes, account_id: bytes, name: str, tag: int, issued: int) -> bytes:
+    """The body signed (under TAG_SITEACCT, by the online ticket key) in /v1/site/account's `assertion`."""
+    nb = name.encode("utf-8")
+    return TAG_SITEACCT + site + account_id + bytes([len(nb)]) + nb + le(tag, 2) + le(issued, 8)
 
 
 def verify_call(client_pub: bytes, msg: bytes, sig: bytes) -> bool:

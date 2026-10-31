@@ -22,7 +22,7 @@ Standalone FastAPI app. It does not touch the live hub (`hub/`).
 | `results.py` | `/v1/report`: verification, storage, timing (pending, late, 7-day close, caps), the `results.jsonl` export |
 | `replays.py` | `/v1/replay`: the PCRZ1 / inputs-only .pcrep checks, the abuse caps, the R2 PutObject |
 | `games.py` | the per-game table, imported from fm2k-port's `gen_game_table.py --format tsv` |
-| `admin.py` | server CLI: online key, unsigned KEYSET body, ban, revoke, stats |
+| `admin.py` | server CLI: online key, unsigned KEYSET body, ban, revoke, stats, add-site / remove-site |
 | `sign_keyset.py` | the owner's offline signer (runs where the root keys are; needs only `cryptography`) |
 | `fake_discord.py`, `dev_run_local.sh` | LOCAL DEV MODE: fake Discord tokens and throwaway test roots, loopback only |
 | `tests/` | pytest, including the pinned C++ vectors |
@@ -71,6 +71,91 @@ Privacy: no response carries a Discord id or an IP. Discord ids live only in `ac
 access token is never stored. The player's own Discord username (`discord_handle`) and name suggestion go back only to
 that player (link/discord, link/finish, ticket/refresh), so their settings can show which Discord account is linked.
 Other players see `Name#1234`; names are public (they are in the ticket).
+
+## Site endpoints (first-party sites)
+
+meltyblood.org shares ONE account system with PovertyCaster. Its server (never a browser) calls `/v1/site/*`, signed
+with its own Ed25519 key. Discord ids cross this server-to-server hop only: no response carries one, tickets, peers
+and public pages are unchanged, and nothing logs one. Only name + #tag (plus `public_id`, `stats_hidden`) are shared.
+
+Allow-list (server): `python3 admin.py add-site meltyblood.org <32-byte public key hex>` (re-adding replaces the
+key), `python3 admin.py remove-site meltyblood.org` (its calls answer 401 at once). Stored in the `sites` table.
+
+### Signing recipe (what the client signs)
+
+Headers on every call: `X-PC-Site` (site id), `X-PC-Time` (unix seconds, decimal), `X-PC-Nonce` (base64 of 16 random
+bytes, the exact header text is signed), `X-PC-Sig` (base64 of the 64-byte Ed25519 signature). The signature is over
+these UTF-8 bytes, nothing else (NO extra domain-prefix step; the tag is part of the message):
+
+    b"PC-COMMUNITY-SITECALL-V1\n" + site + b"\n" + METHOD + b"\n" + path_with_query + b"\n" + time + b"\n"
+      + nonce_b64 + b"\n" + hex(sha256(body)).encode()
+
+`path_with_query` is the path AS THE APP SEES IT, i.e. after Caddy stripped `/community`: for the public URL
+`https://2dfm.org/community/v1/site/account?x=1` the client signs `/v1/site/account?x=1` (NOT `/community/...`). This
+differs from the launcher's section 6 calls, which sign the public path. `hex(sha256(body))` is lowercase hex of the
+exact body bytes sent (empty body: hash of nothing). Checks: `|X-PC-Time - now| <= 120` s, nonce not seen within the
+window (replay -> 401 `nonce_reused`), site known (else 401 `unknown_site`), signature (401 `bad_site_signature`), then
+per-site rate limit 30/minute and 1000/day (429 `rate_limited`). Bodies are JSON objects, at most 4096 bytes. The
+Discord id is `{"discord_id": "<decimal snowflake string>"}` (1..20 digits, below 2^64; else 400 `bad_discord_id`).
+
+### Endpoints
+
+| Call | Body | Answer |
+|---|---|---|
+| `POST /v1/site/account` | `{discord_id}` | `{"found": false}` (also while the account has no name yet) or the account object |
+| `POST /v1/site/account/create` | `{discord_id, name}` | the account object plus `created`; an existing named account is returned unchanged (`created: false`, `name` ignored). Name errors are the link/finish ones (400 `bad_name`) and make no account |
+| `POST /v1/site/account/name` | `{discord_id, name}` | the account object after the rename; 404 `account_not_found`, 403 `banned`, 400 `bad_name` |
+
+Account object: `found: true`, `account_id` (base64, 16 bytes), `public_id` (the stats 16-hex id, `""` if the stats
+secret is unset), `name`, `tag` ("0042"), `display` ("name#0042"), `stats_hidden`, `denied` (banned, or every live
+ticket revoked), `key_gen`, `issued` (unix), `assertion` (base64, 64 bytes). A launcher sign-in of the same Discord user
+(`/v1/link/discord`) maps to this account with `needs_name: false`, because accounts are keyed by Discord id.
+
+Assertion: Ed25519 by the online ticket key `key_gen` (its public key is in the KEYSET) over
+`b"PC-COMMUNITY-SITEACCT-V1\n" + site_bytes + account_id(16) + u8 len(name_utf8) + name_utf8 + u16le tag +
+u64le issued` (`site_bytes` = the site id, no length prefix; `issued` is the answer's `issued`). Both new domain tags
+(`SITECALL-V1`, `SITEACCT-V1`) are prefix-free with the existing ones. If pc-core keeps a C++ mirror of the tag list for
+its prefix-freeness check, it should add them (this repo does not touch PovertyCaster).
+
+### Test vector (fixed TEST seed; the real site seed is never in this repo)
+
+    seed            = 32 bytes of 0x01
+    public key      = 8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c
+    site            = meltyblood.org
+    method          = POST
+    path_with_query = /v1/site/account
+    X-PC-Time       = 1800000000
+    nonce           = 16 bytes of 0x02  ->  X-PC-Nonce = AgICAgICAgICAgICAgICAg==
+    body (35 bytes) = {"discord_id":"123456789012345678"}
+    sha256(body)    = b8d6d9faacb431d3253c27bb4fc90bcb69eab2f5e59a9b8d45a8c249ae6aa714
+
+    signed message (text; the \n are 0x0a):
+    PC-COMMUNITY-SITECALL-V1\nmeltyblood.org\nPOST\n/v1/site/account\n1800000000\nAgICAgICAgICAgICAgICAg==\nb8d6d9fa...a714
+    signed message (hex):
+    50432d434f4d4d554e4954592d5349544543414c4c2d56310a6d656c7479626c
+    6f6f642e6f72670a504f53540a2f76312f736974652f6163636f756e740a3138
+    30303030303030300a416749434167494341674943416749434167494341673d
+    3d0a623864366439666161636234333164333235336332376262346663393062
+    6362363965616232663565353961396238643435613863323439616536616137
+    3134
+
+    X-PC-Sig = jLTfRT3cEIq8AlVRg4KNO4+QeT8lB28zXSMY6pG8nk7gizuRcYHJvujciXjP1WpylsuKA6c45VnjCJxM3RTuDA==
+
+(The hex is wrapped at 64 characters for reading: join the lines with no separators; 162 bytes. `tests/test_site.py`
+`test_pinned_vector` pins the same bytes.) Python client:
+
+```python
+import base64, hashlib, os, time, json, urllib.request
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+sk = Ed25519PrivateKey.from_private_bytes(seed)                  # the site's 32-byte seed
+body = json.dumps({"discord_id": "123456789012345678"}, separators=(",", ":")).encode()
+path, t, nonce = "/v1/site/account", str(int(time.time())), base64.b64encode(os.urandom(16)).decode()
+msg = (b"PC-COMMUNITY-SITECALL-V1\n" + b"meltyblood.org\nPOST\n" + path.encode() + b"\n" + t.encode() + b"\n"
+       + nonce.encode() + b"\n" + hashlib.sha256(body).hexdigest().encode())
+req = urllib.request.Request("https://2dfm.org/community" + path, data=body, headers={
+    "X-PC-Site": "meltyblood.org", "X-PC-Time": t, "X-PC-Nonce": nonce,
+    "X-PC-Sig": base64.b64encode(sk.sign(msg)).decode(), "Content-Type": "application/json"})
+```
 
 ## Match results (`POST /v1/report`)
 

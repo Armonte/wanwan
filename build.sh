@@ -20,7 +20,7 @@ ninja || { echo "Build failed!" >&2; exit 1; }
 # symbolication (addr2line / objdump) when diagnosing user logs.
 DIST="$(cd .. && pwd)/dist"
 mkdir -p "$DIST"
-for f in FM2K_RollbackLauncher.exe FM2KHook.dll FM95Hook.dll FM2KUpdater.exe; do
+for f in FM2K_RollbackLauncher.exe FM2KHook.dll FM2KUpdater.exe; do
     if [ ! -f "$f" ]; then
         echo "Expected build output missing: build/$f" >&2
         exit 1

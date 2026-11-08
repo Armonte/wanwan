@@ -30,22 +30,17 @@ taskkill.exe /F /T /IM pkmncc.exe                2>/dev/null || true
 taskkill.exe /F /T /IM CPW.exe                   2>/dev/null || true
 sleep 0.3   # let Windows release file handles before cp
 
-# Launcher distribution dir -- both DLLs sit alongside the launcher exe so
-# FM2KGameInstance::GetDLLPath(engine) picks the right one per game.engine.
+# Launcher distribution dir (FM2KHook.dll beside the launcher exe; FM95Hook
+# retired in 0.2.85).
 cp dist/FM2K_RollbackLauncher.exe \
    dist/FM2KHook.dll \
-   dist/FM95Hook.dll \
    dist/FM2KUpdater.exe \
    /mnt/c/games/
 
 # Per-game copies (Windows resolves the DLL from the game's own dir first when
-# LoadLibrary is called via the remote thread). Drop both DLLs to
-# /mnt/c/games/2dfm/wanwan so we can iterate quickly on either engine.
+# LoadLibrary is called via the remote thread).
 cp dist/FM2KHook.dll /mnt/c/games/2dfm/wanwan/
-cp dist/FM95Hook.dll /mnt/c/games/2dfm/wanwan/
 [ -d /mnt/c/games/2dfm/pkmncc ] && cp dist/FM2KHook.dll /mnt/c/games/2dfm/pkmncc/
-# FM95 reference dir (clean CPW build) -- ships FM95Hook.dll for end-to-end test.
-[ -d /mnt/c/games/2dfm/fm95/CPW ] && cp dist/FM95Hook.dll /mnt/c/games/2dfm/fm95/CPW/
 
 # Sync the locale .ini files alongside the launcher. T() reads them from
 # <exedir>\locales at runtime; stale deployed copies cause new translation

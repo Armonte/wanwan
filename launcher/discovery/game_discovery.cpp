@@ -665,13 +665,23 @@ std::vector<FM2K::FM2KGameInfo> FM2KLauncher::DiscoverGames() {
     // don't show the same game twice.
     std::vector<FM2K::FM2KGameInfo> games;
     std::unordered_set<std::string> seen;
+    int fm95_hidden = 0;
     for (auto& fut : futures) {
         std::vector<FM2K::FM2KGameInfo> partial = fut.get();
         for (auto& g : partial) {
             std::string key = Utils::CanonicalizePath(g.exe_path);
             if (!seen.insert(key).second) continue;
+            // FM95 support is retired from this launcher (0.2.85): FM95 games
+            // are played through PovertyCaster. The cache keeps them, so a
+            // later build that brings FM95 back needs no rescan.
+            if (g.engine == FM2K::Engine::FM95) { ++fm95_hidden; continue; }
             games.push_back(std::move(g));
         }
+    }
+    if (fm95_hidden) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "DiscoverGames: %d FM95 game(s) hidden (FM95 is played through PovertyCaster)",
+                    fm95_hidden);
     }
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,

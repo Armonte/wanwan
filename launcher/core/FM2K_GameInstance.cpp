@@ -30,8 +30,8 @@ constexpr uint32_t IPC_EVENT_TIMEOUT_MS = 100;
     wchar_t buffer[MAX_PATH];
     GetModuleFileNameW(nullptr, buffer, MAX_PATH);
     std::filesystem::path exe_path(buffer);
-    const wchar_t* dll_name = (engine == FM2K::Engine::FM95) ? L"FM95Hook.dll" : L"FM2KHook.dll";
-    return exe_path.parent_path() / dll_name;
+    (void)engine;  // FM95 retired: only FM2KHook.dll ships
+    return exe_path.parent_path() / L"FM2KHook.dll";
 }
 
 // Helper function to convert UTF-8 to wide string using Windows API
@@ -163,6 +163,14 @@ bool FM2KGameInstance::Launch(const std::string& exe_path, FM2K::Engine engine) 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 "FM2KGameInstance::Launch engine=%s exe=%s",
                 FM2K::EngineName(engine), exe_path.c_str());
+    // FM95 support is retired from this launcher (0.2.85); FM95Hook.dll no
+    // longer ships. Discovery hides FM95 games; this catches any other path.
+    if (engine == FM2K::Engine::FM95) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+            "FM95 games are not supported by this launcher any more (play them through PovertyCaster): %s",
+            exe_path.c_str());
+        return false;
+    }
     // Use SDL3's cross-platform filesystem helpers for existence checks.
     if (!SDL_GetPathInfo(exe_path.c_str(), nullptr)) {
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
@@ -402,7 +410,7 @@ bool FM2KGameInstance::Launch(const std::string& exe_path, FM2K::Engine engine) 
         }
     }
 
-    // Inject hook DLL -- FM2KHook.dll for FM2K, FM95Hook.dll for FM95.
+    // Inject hook DLL (FM2KHook.dll; FM95 is refused at the top of Launch).
     std::wstring dll_path = GetDLLPath(engine_);
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Using DLL path: %s (engine=%s)",
                 std::string(dll_path.begin(), dll_path.end()).c_str(),

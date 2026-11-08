@@ -329,9 +329,9 @@ endif()
 # Add FM2KHook subdirectory
 add_subdirectory(FM2KHook)
 
-# Set FM2KHook output properties — both engines (FM2KHook + FM95Hook) ship
-# alongside the launcher exe so it can pick the right DLL per game.engine.
-set_target_properties(FM2KHook FM95Hook PROPERTIES
+# Set FM2KHook output properties. FM95Hook (opt-in, FM2K_BUILD_FM95) no longer
+# ships with the launcher.
+set_target_properties(FM2KHook PROPERTIES
     PREFIX ""  # Remove "lib" prefix
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
 )
@@ -375,7 +375,7 @@ add_custom_command(
 )
 add_custom_target(libwinpthread_no_rsrc DEPENDS "${CLEAN_LIBWINPTHREAD}")
 
-# Add pthread static linking for FM2KHook + FM95Hook
+# Add pthread static linking for FM2KHook (+ FM95Hook when FM2K_BUILD_FM95)
 target_link_options(FM2KHook PRIVATE
     -static
     -static-libgcc
@@ -384,14 +384,20 @@ target_link_options(FM2KHook PRIVATE
     -Wl,-Bstatic,--whole-archive "${CLEAN_LIBWINPTHREAD}" -Wl,--no-whole-archive
 )
 add_dependencies(FM2KHook libwinpthread_no_rsrc)
-target_link_options(FM95Hook PRIVATE
-    -static
-    -static-libgcc
-    -static-libstdc++
-    -pthread
-    -Wl,-Bstatic,--whole-archive "${CLEAN_LIBWINPTHREAD}" -Wl,--no-whole-archive
-)
-add_dependencies(FM95Hook libwinpthread_no_rsrc)
+if(TARGET FM95Hook)
+    set_target_properties(FM95Hook PROPERTIES
+        PREFIX ""
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
+    )
+    target_link_options(FM95Hook PRIVATE
+        -static
+        -static-libgcc
+        -static-libstdc++
+        -pthread
+        -Wl,-Bstatic,--whole-archive "${CLEAN_LIBWINPTHREAD}" -Wl,--no-whole-archive
+    )
+    add_dependencies(FM95Hook libwinpthread_no_rsrc)
+endif()
 
 # Main executable
 # Pre-build version stamper. Writes version_local.h with the current

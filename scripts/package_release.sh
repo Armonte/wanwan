@@ -30,11 +30,10 @@ LAUNCHER="$BUILD_DIR/FM2K_RollbackLauncher.exe"
 # Ninja drops the hook DLLs alongside the launcher (single-config build).
 # Paths are relative to the project root because we cd'd here above.
 HOOK_FM2K="$BUILD_DIR/FM2KHook.dll"
-HOOK_FM95="$BUILD_DIR/FM95Hook.dll"
 UPDATER="$BUILD_DIR/FM2KUpdater.exe"
 LOCALES_SRC="$REPO_ROOT/locales"
 
-for f in "$LAUNCHER" "$HOOK_FM2K" "$HOOK_FM95" "$UPDATER"; do
+for f in "$LAUNCHER" "$HOOK_FM2K" "$UPDATER"; do
     if [ ! -f "$f" ]; then
         echo "package_release: missing $f — run ./go.sh first" >&2
         exit 1
@@ -49,10 +48,9 @@ mkdir -p "$OUT_DIR"
 STAGED="$(mktemp -d)"
 # Top-level files at the zip root — match the layout the launcher
 # expects on disk after extraction (locale subfolder beside the EXE).
-cp "$LAUNCHER" "$HOOK_FM2K" "$HOOK_FM95" "$UPDATER" "$STAGED/"
+cp "$LAUNCHER" "$HOOK_FM2K" "$UPDATER" "$STAGED/"
 i686-w64-mingw32-strip --strip-debug "$STAGED/FM2K_RollbackLauncher.exe"
 i686-w64-mingw32-strip --strip-debug "$STAGED/FM2KHook.dll"
-i686-w64-mingw32-strip --strip-debug "$STAGED/FM95Hook.dll"
 i686-w64-mingw32-strip --strip-debug "$STAGED/FM2KUpdater.exe"
 
 # Locale .ini files under locales/. T() reads <exedir>\locales at
@@ -68,7 +66,7 @@ rm -f "$ZIP_PATH"
 # subdirectory inside the zip. FM2KUpdater.exe extracts via tar -xf
 # which preserves dir structure on its way into the install dir.
 ( cd "$STAGED" && zip -9 -r "$ZIP_PATH" \
-    FM2K_RollbackLauncher.exe FM2KHook.dll FM95Hook.dll FM2KUpdater.exe \
+    FM2K_RollbackLauncher.exe FM2KHook.dll FM2KUpdater.exe \
     locales )
 
 rm -rf "$STAGED"

@@ -282,9 +282,14 @@ fm2khook_configure_target(FM2KHook)
 # FM95 target — Fighter Maker 95 prototype (CPW.exe and friends). Same source,
 # different address tables via ENGINE_FM95 ifdef in src/core/globals.h. Always
 # installs the locale spoof unconditionally (FM95-era games are Japanese-only).
-add_library(FM95Hook SHARED ${FM2KHOOK_SOURCES})
-fm2khook_configure_target(FM95Hook ENGINE_FM95=1)
-set_target_properties(FM95Hook PROPERTIES OUTPUT_NAME "FM95Hook")
+# Retired from the shipping launcher in 0.2.85 (FM95 is played through
+# PovertyCaster); opt in with -DFM2K_BUILD_FM95=ON for the FM95 tools.
+option(FM2K_BUILD_FM95 "Build FM95Hook.dll (retired, not shipped)" OFF)
+if(FM2K_BUILD_FM95)
+    add_library(FM95Hook SHARED ${FM2KHOOK_SOURCES})
+    fm2khook_configure_target(FM95Hook ENGINE_FM95=1)
+    set_target_properties(FM95Hook PROPERTIES OUTPUT_NAME "FM95Hook")
+endif()
 
 # render_simd.cpp vectorizes the FM2K software blit/blur with SSE2 intrinsics
 # (<emmintrin.h>). The rest of the DLL is built unoptimized (-O0) for

@@ -76,19 +76,11 @@
 #   3. ddraw         ddraw_redirect_test.sh — cnc-ddraw redirect applied.
 #   4. multigame     multigame_determinism_sweep.sh (FULL only) — byte-identical
 #                    engine determinism across the real FM2K game library.
-#   5. fm95-determ.  fm95_stress_smoke.py — FM95/CPW rollback determinism
-#                    (FM95Hook.dll engine). gekko-desync verdict (FM95 emits no
-#                    .pty). Self-skips if CPW absent. FM95_NETPLAY=1 also runs
-#                    the WIP 2-instance netplay smoke (non-gating).
-#
-# Stages 1-4 are the FM2K engine; stage 5 is the FM95 engine — one gate, two
-# engines. FM95 uses a gekko-desync verdict backend (not the FM2K .pty parity
-# path) per docs/dev/fm95_harness_gap.md.
+#   (5. fm95 removed 2026-11-07: FM95 is deprecated in this launcher.)
 #
 # Usage:
-#   tools/run_all_tests.sh                 # stages 1-2b-3-5 (the pre-cut default)
+#   tools/run_all_tests.sh                 # stages 1-2b-3 (the pre-cut default)
 #   FULL=1 tools/run_all_tests.sh          # + stage 4 (the multigame sweep)
-#   FM95_NETPLAY=1 tools/run_all_tests.sh  # + the WIP FM95 netplay smoke
 #   LOSS=0.20 SPEC_RUNS=6 tools/run_all_tests.sh
 #
 # Env: FRAMES(1500) LOSS(0.15) SPEC_RUNS(4) FM2K_CHECK_DISTANCE(10) FULL(0)
@@ -104,7 +96,6 @@
 #      SPECSTAGE_SKIP(0) SPECSTAGE_EXE(...)     -- stage 6a stage switching
 #      SPECSETTINGS_SKIP(0) SPECSETTINGS_ROUNDS(fatal|advisory)  -- stage 6b
 #      SPECROTATE_SKIP(0) SPECROTATE_GAMES("")  -- stage 6c rotation subset
-#      CPW_EXE(/mnt/c/dev/fm95/CPW/ＣＰＷ.exe) FM95_NETPLAY(0)  — stage 5
 #      GATE_ID(timestamp_pid) SPEC_KEEP_GATES(3)  -- per-run spectator out-dirs
 #                    under tools/.spec_runs/<GATE_ID>/<stage-run>/. One dir per
 #                    RUN so nothing a gate writes can be overwritten by the next
@@ -164,9 +155,6 @@ kill_games() { for p in WonderfulWorld_ver_0946 WonderfulRvl FM2K_RollbackLaunch
     _hrun pkmncc DragonPuppy_version01a kensei2023 "REQUIEM FINAL" 闘闘 ShadowArts URORFGRelease102; do
     taskkill.exe /F /IM "${p}.exe" >/dev/null 2>&1; done; }
 
-# FM95/CPW reference exe (fullwidth filename). Stage 5 self-skips if absent so
-# the gate still runs on FM2K-only machines.
-CPW_EXE="${CPW_EXE:-/mnt/c/dev/fm95/CPW/ＣＰＷ.exe}"
 
 # MACHINE-STALL VOID (H2, 2026-08-18). spec_selftest now refuses to score a run
 # in which every game process stopped being scheduled at the same instant -- it
@@ -709,43 +697,9 @@ else
     echo "[run_all] multigame: SKIPPED (set FULL=1 to run the library sweep)"
 fi
 
-# Stage 5 — FM95/CPW rollback determinism (the FM95Hook.dll engine). Single
-# instance, forced rollbacks under FM95_TRAMPOLINE; verdict is gekko-desync
-# based (FM95 emits no .pty — its recorder is intentionally closed). GATING.
-# Self-skips (no fail) when CPW isn't installed on this machine.
-if [ -f "$CPW_EXE" ]; then
-    # ADVISORY (non-gating) while FM95 is WIP (#46): CPW runs its own CRT
-    # audio thread that walks duplicated IDirectSoundBuffer tables
-    # concurrently with rollback restores -- deterministic AV in
-    # StopAllSoundsInBufferArray@0x4016A0 (NULL buffer slot, EIP 0x4016B9)
-    # ~f210 under stress. FM2K stages remain the release gate.
-    echo "======================================================================"
-    echo "[run_all] STAGE: fm95-determinism (advisory, non-gating -- #46)"
-    echo "======================================================================"
-    kill_games; sleep 0.6
-    if python3 "$ROOT/tools/fm95_stress_smoke.py" "$FRAMES" "$CD" \
-        > "$OUT/5_fm95_stress.log" 2>&1; then
-        echo "[run_all] fm95-determinism (advisory): PASS"
-    else
-        echo "[run_all] fm95-determinism (advisory, non-gating): not-yet-green -- tail:"
-        tail -4 "$OUT/5_fm95_stress.log" | sed 's/^/    /'
-    fi
-    # FM95 2-instance netplay — WIP (CSS→battle lockstep, workplan 3b). Opt-in
-    # (FM95_NETPLAY=1) and NON-GATING until it's green, so it's visible in CI
-    # without redding the release gate.
-    if [ "${FM95_NETPLAY:-0}" = 1 ]; then
-        kill_games; sleep 0.6
-        python3 "$ROOT/tools/fm95_netplay_smoke.py" "$FRAMES" \
-            > "$OUT/5b_fm95_netplay.log" 2>&1
-        if grep -q "PASS" "$OUT/5b_fm95_netplay.log"; then
-            echo "[run_all]   fm95-netplay (WIP): PASS"
-        else
-            echo "[run_all]   fm95-netplay (WIP, non-gating): not-yet-green (3b)"
-        fi
-    fi
-else
-    echo "[run_all] fm95-determinism: SKIPPED (CPW not found at $CPW_EXE)"
-fi
+# Stage 5 (FM95/CPW) removed 2026-11-07: FM95 is deprecated in this launcher
+# (the FM95 port in fm2k-port + PovertyCaster replaces it). The tools
+# fm95_stress_smoke.py / fm95_netplay_smoke.py remain for manual runs.
 
 kill_games
 echo "======================================================================"

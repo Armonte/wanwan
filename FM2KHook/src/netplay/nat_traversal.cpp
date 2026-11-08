@@ -60,6 +60,38 @@ sockaddr_in6 g_local_v6{};
 uint8_t g_match_token[MATCH_TOKEN_LEN] = {};
 bool    g_match_token_set = false;
 
+// Every CTRL_PUNCH carries a per-process sender nonce after the want_reply
+// byte: [MAGIC, TAG, token x16, want_reply, nonce x4]. The match token is
+// SHARED by both peers, so without it a punch of our OWN that comes back to us
+// authenticates as the peer and we latch ourselves: the symmetric-NAT port
+// prediction sprays peer_port+1..+4, and when both peers share one IP (same
+// PC, or two PCs behind one hairpinning router) one of those ports can be our
+// own. A self-latched peer acks its own HELLO and never answers the real
+// peer's, so the match dies at the 10 s handshake hold. Builds without the
+// nonce send shorter punches, which are accepted as before.
+constexpr size_t PUNCH_NONCE_OFF = 2 + MATCH_TOKEN_LEN + 1;
+constexpr size_t PUNCH_LEN       = PUNCH_NONCE_OFF + 4;
+
+uint32_t PunchNonce() {
+    static const uint32_t s_nonce = [] {
+        LARGE_INTEGER qpc{};
+        QueryPerformanceCounter(&qpc);
+        uint32_t n = (uint32_t)qpc.QuadPart ^ (uint32_t)(qpc.QuadPart >> 32) ^
+                     (GetCurrentProcessId() * 2654435761u) ^ GetTickCount();
+        return n ? n : 1u;
+    }();
+    return s_nonce;
+}
+
+void FillPunch(uint8_t (&pkt)[PUNCH_LEN], bool want_reply) {
+    pkt[0] = MAGIC;
+    pkt[1] = TAG_CTRL_PUNCH;
+    std::memcpy(pkt + 2, g_match_token, MATCH_TOKEN_LEN);
+    pkt[2 + MATCH_TOKEN_LEN] = want_reply ? 1 : 0;
+    const uint32_t n = PunchNonce();
+    std::memcpy(pkt + PUNCH_NONCE_OFF, &n, 4);
+}
+
 // Burst-punch state. The burst thread loops until either the 30
 // packets are out OR g_punching latches false (set by a successful
 // authenticated peer punch landing in HandleDatagram).
@@ -363,8 +395,8 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
     if (peer_ip_be == htonl(INADDR_LOOPBACK) && !g_relay_configured && !force_punch) {
         SOCKET sock = ControlChannel_GetSocket();
         if (sock != INVALID_SOCKET) {
-            uint8_t pkt[2 + MATCH_TOKEN_LEN] = {MAGIC, TAG_CTRL_PUNCH};
-            std::memcpy(pkt + 2, g_match_token, MATCH_TOKEN_LEN);
+            uint8_t pkt[PUNCH_LEN];
+            FillPunch(pkt, /*want_reply=*/false);
             for (int i = 0; i < 3; ++i) {
                 fm2k::Sendto4or6(sock,
                        reinterpret_cast<const char*>(pkt), sizeof(pkt),
@@ -406,8 +438,8 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
             return;
         }
 
-        uint8_t pkt[2 + MATCH_TOKEN_LEN] = {MAGIC, TAG_CTRL_PUNCH};
-        std::memcpy(pkt + 2, g_match_token, MATCH_TOKEN_LEN);
+        uint8_t pkt[PUNCH_LEN];
+        FillPunch(pkt, /*want_reply=*/false);
 
         // SYMMETRIC-NAT PORT PREDICTION.
         //
@@ -530,8 +562,8 @@ void StartPunch(uint32_t peer_ip_be, uint16_t peer_port,
             for (int i = 0; i < 200 && !g_peer_authenticated.load(); ++i) {
                 Sleep(10);
                 if (i && (i % 50) == 0 && !PeerAckedUs()) {
-                    uint8_t rb[2 + MATCH_TOKEN_LEN] = {MAGIC, TAG_CTRL_PUNCH};
-                    std::memcpy(rb + 2, g_match_token, MATCH_TOKEN_LEN);
+                    uint8_t rb[PUNCH_LEN];
+                    FillPunch(rb, /*want_reply=*/false);
                     for (int k = 0; k < 8; ++k) {
                         if (punch_reflexive)
                             fm2k::Sendto4or6(sock, (const char*)rb, sizeof(rb),
@@ -641,9 +673,8 @@ void SetMatchToken(const uint8_t token[16]) {
 static void SendPunchTo(const sockaddr_storage& to, bool want_reply) {
     SOCKET sock = ControlChannel_GetSocket();
     if (sock == INVALID_SOCKET) return;
-    uint8_t pkt[2 + MATCH_TOKEN_LEN + 1] = {MAGIC, TAG_CTRL_PUNCH};
-    std::memcpy(pkt + 2, g_match_token, MATCH_TOKEN_LEN);
-    pkt[2 + MATCH_TOKEN_LEN] = want_reply ? 1 : 0;
+    uint8_t pkt[PUNCH_LEN];
+    FillPunch(pkt, want_reply);
     fm2k::SendtoStorage(sock, reinterpret_cast<const char*>(pkt), sizeof(pkt), to);
 }
 
@@ -709,6 +740,22 @@ void HandleDatagram(const uint8_t* data, size_t len, const sockaddr_storage& fro
                     "NAT: CTRL_PUNCH from %s dropped -- token mismatch",
                     from_s.c_str());
                 return;
+            }
+            // Our own punch came back (port prediction hit our own port on a
+            // shared IP, or a hairpin NAT reflected it): never latch it.
+            if (len >= PUNCH_LEN) {
+                uint32_t n = 0;
+                std::memcpy(&n, data + PUNCH_NONCE_OFF, 4);
+                if (n == PunchNonce()) {
+                    static bool s_logged_self = false;
+                    if (!s_logged_self) {
+                        s_logged_self = true;
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                            "NAT: CTRL_PUNCH from %s is our own (sender nonce) -- ignored",
+                            from_s.c_str());
+                    }
+                    return;
+                }
             }
             // A challenge asks us to punch straight back. Answer BEFORE the
             // latch bookkeeping below: the challenger is waiting on a packet

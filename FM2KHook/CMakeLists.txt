@@ -113,6 +113,7 @@ set(FM2KHOOK_SOURCES
     src/netplay/spec_relatch.cpp     # viewer-plane g_round_limit re-derive at MATCH_START + the ONE FM2K_ROUNDS_RELATCH switch (sibling of 3297b25)
     src/netplay/spec_session_file.cpp # .fm2kset/.fm2krep write + load/seek (split from spectator_node)
     src/netplay/spec_playback.cpp     # op-apply + PopFrameInputs driver (split from spectator_node)
+    src/netplay/spec_replay_stage.cpp # the stage a replay file loads per match (lookahead to MATCH_START)
     src/netplay/spec_playback_state.cpp # admission pacing + adaptive delay bank + state accessors (split from spec_playback)
     src/netplay/spec_playback_seam.cpp  # match-boundary (SEAM/PINNING) state machine (split from spec_playback)
     src/netplay/nat_traversal.cpp

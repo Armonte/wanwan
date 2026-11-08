@@ -78,6 +78,7 @@ static LoadStageFileAlt_t original_LoadStageFileAlt = nullptr;
 extern "C" uint32_t Netplay_PeekNextRolledStage();  // 0xFFFFFFFF if random off
 extern "C" uint32_t RandomStage_ConsumeForLoad();   // advances the roll
 extern "C" bool     RandomStage_IsEnabled();
+extern "C" uint32_t SpectatorNode_ReplayStageForLoad();  // replay files: this match's stage
 // Forward decl -- definition at line ~280. Used by Hook_CreateFileA/W to
 // register virtual-file aliases for .player loads (other agent's WIP).
 extern "C" void MaybeRegisterPlayerVFileA(HANDLE h, LPCSTR name);
@@ -116,6 +117,18 @@ static int __cdecl Hook_LoadStageFile(int stage_idx) {
         // which passes a per-character table value, not g_selected_stage.
         const uint32_t mode_flag = *(const uint32_t*)FM2K::ADDR_GAME_MODE_FLAG;
         const bool vs_or_team = (mode_flag == 1u || mode_flag == 2u);
+        // Replay file: the recorded stage of the match being loaded (its
+        // MATCH_START arrives after this load for match 2+ of a session).
+        if (g_spectator_mode && !g_is_rolling_back && vs_or_team) {
+            const uint32_t rec = SpectatorNode_ReplayStageForLoad();
+            if (rec != 0xFFFFFFFFu && (int)rec != stage_idx) {
+                *(uint32_t*)FM2K::ADDR_SELECTED_STAGE  = rec;
+                *(uint32_t*)FM2K::ADDR_ACTIVE_STAGE_ID = rec;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Replay: LoadStageFile %d -> recorded stage %u", stage_idx, rec);
+                stage_idx = (int)rec;
+            }
+        }
         if (!g_spectator_mode && !g_is_rolling_back && vs_or_team &&
             RandomStage_IsEnabled()) {
             const uint32_t rolled = RandomStage_ConsumeForLoad();

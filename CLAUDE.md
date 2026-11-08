@@ -46,8 +46,8 @@ tests/run.sh                    # host-native unit suite (doctest + standalone)
 
 `run_all_tests.sh` is the gate quoted in commit messages. Know what it does and
 does not cover before claiming "ALL GREEN": its stages are determinism, netplay
-+ spectator E2E, the CSS gate self-test, ddraw redirect, multigame (FULL=1) and
-FM95 (advisory). `tests/run.sh` is a separate host-compiler unit suite.
++ spectator E2E, the CSS gate self-test, ddraw redirect, hub-brokered spectate and multigame (FULL=1); the FM95 stage
+was removed (FM95 is deprecated in this launcher). `tests/run.sh` is a separate host-compiler unit suite.
 
 Determinism rules that have burned us before:
 - Judge netplay by GekkoNet's per-frame desync term, **not** `.fm2krep` index

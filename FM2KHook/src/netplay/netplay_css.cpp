@@ -319,11 +319,9 @@ bool Netplay_ProcessCSS() {
         // stale value and desyncs them from a host that then zeroes it --
         // measured, both spectators diverging on the rematch session only.
         //
-        // Zeroing twice costs nothing and guarantees the peers, the marker
-        // and the viewers all describe the same start state.
-        if constexpr (!FM2K::kIsFM95) {
-            std::memset((void*)0x424E50, 0, 0x10);  // g_p1/p2_cursor_pos {x,y}
-        }
+        // Writing twice (here and at the rendezvous, the same kept cursors or
+        // zeros) keeps the peers, the marker and the viewers on one start state.
+        Netplay_RestoreCssCursors();   // g_p1/p2_cursor_pos {x,y}
         // Phase F seam mirror: mark the seam stream so viewers know where
         // the results-screen inputs end and the CSS dance begins. The marker
         // captures the host's CSS start state (cursor + selected) so a
@@ -463,10 +461,10 @@ bool Netplay_ProcessCSS() {
             // re-aligning), which the harness reports as CSS NONDETERMINISM.
             //
             // Reproduced only with the machine deliberately loaded: 1 in 3
-            // loaded runs, 0 in 22 on a quiet one. Load does not cause it --
-            // it changes how many frames each peer carries through the mode
-            // transition, which is what makes the residue differ.
-            std::memset((void*)0x424E50, 0, 0x10);   // g_p1/p2_cursor_pos {x,y}
+            // loaded runs, 0 in 22 on a quiet one. So both peers write the SAME
+            // cursors here: the ones captured at battle start (agreed, so each
+            // player's cursor stays on their last pick) or zeros at first.
+            Netplay_RestoreCssCursors();   // g_p1/p2_cursor_pos {x,y}
         }
         // Restart the harness-autoplay browse window for this CSS phase
         // (authoritative per-session reset; the in-function gap heuristic

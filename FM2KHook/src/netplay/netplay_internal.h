@@ -172,6 +172,11 @@ void ResetConfirmRing();
 uint8_t NextBarrierEpoch();
 bool    Netplay_StartCSSSession();
 void    Netplay_EndCSSSession();
+// Character-select cursors kept across matches (netplay_battle.cpp): captured
+// at battle start (lockstep-agreed on both peers), written back at the next
+// CSS rendezvous; zeros before the first match.
+void    Netplay_SnapshotCssCursors();
+void    Netplay_RestoreCssCursors();
 // desync diagnostics (defined in netplay.cpp), called by the battle-phase TU:
 bool Netplay_IsPhantomDesync(uint32_t local_chk, uint32_t remote_chk);
 void HandleDesyncDetected(int frame, uint32_t local_chk, uint32_t remote_chk, bool synthetic);

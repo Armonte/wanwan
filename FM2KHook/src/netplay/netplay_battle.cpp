@@ -56,6 +56,32 @@ uint32_t Netplay_TestBattleSeed() {
 // GEKKONET SESSION - Battle Mode (rollback)
 // =============================================================================
 
+// The CSS cursors (0x424E50: P1 {x,y}, P2 {x,y}) as they stood when the CSS
+// lockstep session ended into this battle. Both players had confirmed, so the
+// cursors sit on their picks and are identical on both peers. The next CSS
+// rendezvous writes them back instead of zeros, so a rematch starts each
+// player on their last character (a player request) without reintroducing the
+// per-peer residue the rendezvous realignment exists to remove.
+static int32_t s_css_cursor_snap[4] = {};
+static bool    s_css_cursor_have    = false;
+
+void Netplay_SnapshotCssCursors() {
+    if constexpr (FM2K::kIsFM95) return;
+    std::memcpy(s_css_cursor_snap, (const void*)0x424E50, sizeof(s_css_cursor_snap));
+    s_css_cursor_have = true;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+        "CSS cursors kept for the next select: P1=(%d,%d) P2=(%d,%d)",
+        s_css_cursor_snap[0], s_css_cursor_snap[1], s_css_cursor_snap[2], s_css_cursor_snap[3]);
+}
+
+void Netplay_RestoreCssCursors() {
+    if constexpr (FM2K::kIsFM95) return;
+    if (s_css_cursor_have)
+        std::memcpy((void*)0x424E50, s_css_cursor_snap, sizeof(s_css_cursor_snap));
+    else
+        std::memset((void*)0x424E50, 0, sizeof(s_css_cursor_snap));
+}
+
 bool Netplay_StartBattle() {
     // Tear down the CSS lockstep session before standing up the battle
     // session. Sequenced so g_session is null between the two -- the
@@ -67,6 +93,7 @@ bool Netplay_StartBattle() {
     if (g_session) {
         return true;  // Already in some other session (battle or stress).
     }
+    Netplay_SnapshotCssCursors();
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Netplay: Starting battle GekkoSession");
 

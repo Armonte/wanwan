@@ -391,9 +391,9 @@ bool Netplay_Init(int player_index, uint16_t local_port, const char* remote_addr
     // Initialize control channel
     ControlChannel_SetCallback(OnControlMessage);
 
-    // Delay-negotiation mode (#24). 0 = avg ping (mean RTT), 1 = peak
-    // ping (worst RTT). Picked by the launcher's Delay combo; absent
-    // env defaults to avg. Drives ControlChannel_GetLocalDelayCandidate.
+    // Delay-negotiation mode (#24). 0 = auto (rollback cap 8), 1 = auto with
+    // less rollback (cap 4). Picked by the launcher's Delay combo; absent env
+    // defaults to 0. Drives ControlChannel_GetLocalDelayCandidate.
     if (const char* env = std::getenv("FM2K_DELAY_MODE"); env && env[0]) {
         ControlChannel_SetDelayMode(std::atoi(env));
     } else {

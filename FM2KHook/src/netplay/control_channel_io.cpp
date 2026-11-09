@@ -372,8 +372,8 @@ void RawReceive() {
                     }
                 } else if (packet->header.type == CtrlMsg::DELAY_PROPOSAL) {
                     // Stash the peer's delay candidate (#24). Battle
-                    // start adopts max(local, this) so both peers run
-                    // identical input delay.
+                    // start combines it with ours (netplay_battle.cpp) so
+                    // both auto peers run identical input delay.
                     const int d = packet->data.delay_proposal.delay;
                     const uint8_t m = packet->data.delay_proposal.mode;
                     // Current builds: 0..120, the manual FM2K_LOCAL_DELAY

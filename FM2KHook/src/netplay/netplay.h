@@ -70,6 +70,9 @@ void Netplay_CssFlushRemaining();
 // Returns true if ready to advance (AdvanceEvent received), false if waiting
 bool Netplay_ProcessBattleInputPhase();
 
+// Battle prediction window (frames): 32, or FM2K_PREDICTION_WINDOW 0..64.
+int Netplay_ConfiguredPredictionWindow();
+
 // Process menu/other mode frame (just keepalive)
 // Call for other game modes
 void Netplay_ProcessMenu();

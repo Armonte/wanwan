@@ -20,7 +20,7 @@ from pathlib import Path
 BEAT_BRAKE = re.compile(r"brake=(\d+)/(\d+)")
 KV = re.compile(r"(\w+)=([-+]?[\d.]+)")
 DELAY = re.compile(r"Netplay: RTT .*?local_delay=(\d+)")
-P95 = re.compile(r"Netplay: RTT .*?p95=(\d+)ms")
+P95 = re.compile(r"Netplay: RTT .*?p9[05]=(\d+)ms")
 
 
 def parse_log(path):
@@ -75,7 +75,7 @@ def main():
     def mean(xs):
         return f"{statistics.mean(xs):5.1f}" if xs else "  n/a"
 
-    print(f"{'profile':<18} {'arm':<5} {'runs':>4} {'delay':>9} {'p95':>5} "
+    print(f"{'profile':<18} {'arm':<5} {'runs':>4} {'delay':>9} {'p90':>5} "
           f"{'start%':>7} {'steady%':>8} {'rb_avg':>6} {'rb_max':>6} "
           f"{'desync':>6}")
     for (prof, arm), r in sorted(rows.items()):

@@ -1,12 +1,12 @@
-// Unit test for the input-delay negotiation math (#24).
+// Unit test for the input-delay sizing math (#24).
 //
-// Exercises the exact pure functions the hook uses for delay sizing,
-// so the formula behind the "delay 13 on a 10 ms link" bug is proven
-// without needing a game / two live peers.
+// Exercises the exact pure functions the hook uses (FM2KHook/src/netplay/
+// delay_math.h), so the auto-delay table is proven without a game or two
+// live peers. FM2K runs at 100 Hz: one frame is 10 ms.
 //
 // Build + run (host compiler, no cross-toolchain needed), from repo root:
-//   g++ -std=c++17 -Wall -o /tmp/delay_math_test tests/delay_math_test.cpp
-//   /tmp/delay_math_test
+//   g++ -std=c++17 -Wall -o delay_math_test tests/delay_math_test.cpp
+//   ./delay_math_test
 #include "../FM2KHook/src/netplay/delay_math.h"
 #include <cstdio>
 #include <vector>
@@ -24,91 +24,75 @@ static int g_fail = 0;
         }                                                              \
     } while (0)
 
+using namespace fm2k::delay;
+
+static bool Plan(uint32_t rtt, int window, int rcap, int L, int R, int D) {
+    const DelayPlan p = SplitDelay(rtt, window, rcap);
+    if (p.L == L && p.R == R && p.D == D) return true;
+    std::printf("  rtt=%u W=%d rcap=%d -> L=%d R=%d D=%d (want %d/%d/%d)\n",
+                rtt, window, rcap, p.L, p.R, p.D, L, R, D);
+    return false;
+}
+
 int main() {
-    using fm2k::delay::RttFromWindow;
-    using fm2k::delay::DelayCandidateFromRtt;
-
-    // --- empty window -------------------------------------------------
-    CHECK(RttFromWindow(nullptr, 0, 0) == 0);
-    { uint32_t s[1] = {99}; CHECK(RttFromWindow(s, 0, 1) == 0); }
-
-    // --- avg mode = arithmetic mean -----------------------------------
-    { uint32_t s[] = {10, 10, 10, 10}; CHECK(RttFromWindow(s, 4, 0) == 10); }
-    { uint32_t s[] = {10, 20, 30};     CHECK(RttFromWindow(s, 3, 0) == 20); }
-    { uint32_t s[] = {12, 14, 16, 18}; CHECK(RttFromWindow(s, 4, 0) == 15); }
-
-    // --- peak mode p90 ignores a lone cold-start spike ----------------
-    // THE delay-13 bug: 20 pings of 10 ms + one 250 ms handshake spike.
-    // Old code took the all-time max (250). p90 must take 10.
-    {
-        std::vector<uint32_t> s(20, 10);
-        s.push_back(250);
-        CHECK(RttFromWindow(s.data(), (int)s.size(), 1) == 10);
-    }
-    // p90 still drops the top spike with only 6 samples.
-    { uint32_t s[] = {10, 10, 10, 10, 10, 250};
-      CHECK(RttFromWindow(s, 6, 1) == 10); }
-
-    // --- peak mode DOES rise under sustained jitter -------------------
-    // That is the point of peak mode: 16 pings @ 10 ms, 4 @ 60 ms.
-    {
-        std::vector<uint32_t> s(16, 10);
-        for (int i = 0; i < 4; ++i) s.push_back(60);
-        CHECK(RttFromWindow(s.data(), 20, 1) == 60);
-    }
-    // Single-sample window: p90 can only return that sample.
-    { uint32_t s[] = {250}; CHECK(RttFromWindow(s, 1, 1) == 250); }
-
-    // --- DelayCandidateFromRtt: ceil(one_way/10), clamp [2,15] --------
-    CHECK(DelayCandidateFromRtt(0)   == -1);  // no measurement
-    CHECK(DelayCandidateFromRtt(10)  == 2);   // one_way 5   -> 1 -> clamp 2
-    CHECK(DelayCandidateFromRtt(20)  == 2);   // one_way 10  -> 1 -> clamp 2
-    CHECK(DelayCandidateFromRtt(100) == 5);   // one_way 50  -> 5
-    CHECK(DelayCandidateFromRtt(200) == 10);  // one_way 100 -> 10
-    CHECK(DelayCandidateFromRtt(202) == 11);  // one_way 101 -> ceil -> 11
-    CHECK(DelayCandidateFromRtt(250) == 13);  // one_way 125 -> 13  (the bug)
-    CHECK(DelayCandidateFromRtt(300) == 15);  // one_way 150 -> 15
-
-    // Ceiling back to 15 (2026-11-08): 0.2.85-0.2.87's 24 cap plus jitter
-    // headroom sized ordinary links to 19-24 in the field.
-    CHECK(DelayCandidateFromRtt(400) == 15);
-    CHECK(DelayCandidateFromRtt(900) == 15);
-
     // --- PercentileFromWindow ----------------------------------------
+    CHECK(PercentileFromWindow(nullptr, 0, 50) == 0);
+    { const uint32_t one[] = {42}; CHECK(PercentileFromWindow(one, 1, 95) == 42); }
     {
-        using fm2k::delay::PercentileFromWindow;
-        CHECK(PercentileFromWindow(nullptr, 0, 50) == 0);
-        const uint32_t one[] = {42};
-        CHECK(PercentileFromWindow(one, 1, 95) == 42);
-        // n=20: p50 index 9, p95 index 18 (floor(19*95/100) = 18).
+        // n=20: p50 index 9, p95 index floor(19*95/100) = 18.
         std::vector<uint32_t> s;
         for (uint32_t i = 1; i <= 20; ++i) s.push_back(i * 10);  // 10..200
         CHECK(PercentileFromWindow(s.data(), 20, 50) == 100);
         CHECK(PercentileFromWindow(s.data(), 20, 95) == 190);
         CHECK(PercentileFromWindow(s.data(), 20, 100) == 200);
         CHECK(PercentileFromWindow(s.data(), 20, 0) == 10);
-        // order-independent
-        std::reverse(s.begin(), s.end());
+        std::reverse(s.begin(), s.end());                         // order-independent
         CHECK(PercentileFromWindow(s.data(), 20, 95) == 190);
     }
+    {
+        // A lone cold-start spike in a 64-sample window does not move p95:
+        // index floor(63*95/100) = 59, the spike sits at 63.
+        std::vector<uint32_t> s(63, 40);
+        s.push_back(400);
+        CHECK(PercentileFromWindow(s.data(), 64, 95) == 40);
+    }
 
-    // --- full chain: 10 ms link + cold-start spike --------------------
-    // Peak mode: p90 -> 10 ms -> delay 2. Was 250 ms -> delay 13.
-    {
-        std::vector<uint32_t> s(20, 10);
-        s.push_back(250);
-        uint32_t rtt = RttFromWindow(s.data(), 21, 1);
-        CHECK(rtt == 10);
-        CHECK(DelayCandidateFromRtt(rtt) == 2);
-    }
-    // Avg mode, same window: mean (200+250)/21 = 21 ms -> delay 2.
-    {
-        std::vector<uint32_t> s(20, 10);
-        s.push_back(250);
-        uint32_t rtt = RttFromWindow(s.data(), 21, 0);
-        CHECK(rtt == 21);
-        CHECK(DelayCandidateFromRtt(rtt) == 2);
-    }
+    // --- SplitDelay: the shipped table (W=32, auto rcap 8) ------------
+    //   p95 RTT   L   R   D      (0.2.84 delay / 0.2.87 delay)
+    CHECK(Plan(  20, 32, AUTO_RCAP,  1, 0,  1));   //  2 / 2
+    CHECK(Plan(  50, 32, AUTO_RCAP,  3, 2,  1));   //  3 / 3-7
+    CHECK(Plan( 100, 32, AUTO_RCAP,  5, 3,  2));   //  5 / 5-13
+    CHECK(Plan( 150, 32, AUTO_RCAP,  8, 6,  2));   //  8 / 8-18
+    CHECK(Plan( 200, 32, AUTO_RCAP, 10, 7,  3));   // 10 / 10-24
+    CHECK(Plan( 300, 32, AUTO_RCAP, 15, 8,  7));   // 15 / 15-24
+    CHECK(Plan( 400, 32, AUTO_RCAP, 20, 8, 12));   // 15 / 20-24
+    CHECK(Plan(1000, 32, AUTO_RCAP, 50, 8, MAX_SPLIT_DELAY));  // capped
+
+    // --- "auto (less rollback)": rcap 4 -------------------------------
+    CHECK(Plan( 100, 32, AUTO_SMOOTH_RCAP,  5, 3, 2));  // under the cap: same
+    CHECK(Plan( 200, 32, AUTO_SMOOTH_RCAP, 10, 4, 6));
+    CHECK(Plan( 300, 32, AUTO_SMOOTH_RCAP, 15, 4, 11));
+
+    // --- window interaction -------------------------------------------
+    // W=0 is lockstep: no rollback, delay covers the whole trip.
+    CHECK(Plan(200, 0, AUTO_RCAP, 10, 0, 10));
+    // A small window caps R at W-3 and buys the rest back as delay.
+    CHECK(Plan(300, 8, AUTO_RCAP, 15, 5, 10));
+    // W=4: R capped at 1; the 3-frame spike headroom kicks in (3-(4-1)=0).
+    CHECK(Plan(200, 4, AUTO_RCAP, 10, 1, 9));
+    // W=2: W-3 < 0, so no rollback is planned at all, plus 1 frame headroom.
+    CHECK(Plan(200, 2, AUTO_RCAP, 10, 0, 11));
+
+    // --- no measurement ------------------------------------------------
+    { const DelayPlan p = SplitDelay(0, 32, AUTO_RCAP);
+      CHECK(p.L == 0 && p.R == 0 && p.D == 1); }
+
+    // --- ApplyDelayHysteresis -------------------------------------------
+    CHECK(ApplyDelayHysteresis(-1, 7) == 7);   // nothing cached: take it
+    CHECK(ApplyDelayHysteresis( 5, 3) == 3);   // drops freely
+    CHECK(ApplyDelayHysteresis( 5, 5) == 5);
+    CHECK(ApplyDelayHysteresis( 5, 6) == 5);   // +1 is noise: hold
+    CHECK(ApplyDelayHysteresis( 5, 7) == 7);   // +2 is a real change
 
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

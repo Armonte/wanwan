@@ -54,7 +54,7 @@ extern uint32_t g_ping_send_time;
 extern uint32_t g_rtt_worst_ms;
 extern uint32_t g_rtt_sample_count;
 
-extern std::atomic<int> g_delay_mode;               // 0=avg, 1=peak
+extern std::atomic<int> g_delay_mode;               // 0=auto (rcap 8), 1=auto less rollback (rcap 4)
 extern std::atomic<int> g_remote_delay_candidate;
 extern std::atomic<int> g_remote_delay_mode;   // DelayProposalMode, -1 = none
 

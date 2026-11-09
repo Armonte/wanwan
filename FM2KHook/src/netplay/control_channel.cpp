@@ -93,9 +93,14 @@ uint32_t g_rtt_sample_count = 0;
 // advertised via DELAY_PROPOSAL (-1 = none received). Both are touched
 // from the MM-timer thread (send) and the main thread (receive / battle
 // start), so they're atomic.
-std::atomic<int> g_delay_mode{0};               // 0=avg, 1=peak
+std::atomic<int> g_delay_mode{0};               // 0=auto (rcap 8), 1=auto less rollback (rcap 4)
 std::atomic<int> g_remote_delay_candidate{-1};
 std::atomic<int> g_remote_delay_mode{-1};
+// The candidate this peer last put on the wire. Battle start combines THIS
+// (not a fresh recompute) with the peer's last proposal, so both sides take
+// min() over the same two numbers and land on the same delay; a fresh value
+// would also pick up the battle-load stall in the last few pings.
+std::atomic<int> g_last_sent_delay_candidate{-1};
 
 // Recent RTT samples for delay sizing (#24). A single cold-start ping
 // (peer still injecting / loading) or a scheduler hiccup easily round-
@@ -109,6 +114,11 @@ std::atomic<int> g_remote_delay_mode{-1};
 uint32_t g_rtt_ring[kRttRingCap] = {};
 int      g_rtt_ring_count = 0;   // valid entries (caps at cap)
 int      g_rtt_ring_head  = 0;   // next write index
+// Pings that complete in the first RTT_WARMUP_MS after connect are kept out
+// of the ring: both games are still booting/injecting and the timer threads
+// stall, so those round trips read 200-600 ms on a 50 ms link (measured
+// 2026-11-08 -- see docs/dev/auto_delay_plan_2026-11-08.md).
+uint32_t g_rtt_warmup_until = 0;
 
 // Player ID (set from globals)
 uint8_t g_local_player_id = 0;
@@ -712,21 +722,41 @@ int ControlChannel_GetLocalDelayCandidate() {
         // GekkoNet's input ring (DEFAULT_BUFF_SIZE=128); keep clear of it.
         if (v >= 0 && v <= 120) return v;
     }
-    // No override: size from the measured RTT window. avg mode uses the
-    // mean (lower delay, spikes can rollback); peak mode uses the p90
-    // (higher delay, rides out jitter). The window math is pure and
-    // lives in delay_math.h -- see tests/delay_math_test.cpp.
-    const uint32_t rtt = fm2k::delay::RttFromWindow(
-        g_rtt_ring, g_rtt_ring_count,
-        g_delay_mode.load(std::memory_order_relaxed));
-    return fm2k::delay::DelayCandidateFromRtt(rtt);
+    // No override: split the p90 one-way trip between input delay and up to
+    // rcap frames of rollback (delay_math.h SplitDelay, tested in
+    // tests/delay_math_test.cpp). Mode 1 caps rollback lower for players who
+    // prefer delay over teleports. Needs MIN_DELAY_SAMPLES pings first, so a
+    // handful of boot-time pings cannot size the match.
+    const int n = g_rtt_ring_count;
+    if (n < fm2k::delay::MIN_DELAY_SAMPLES) return -1;
+    const uint32_t rtt = fm2k::delay::PercentileFromWindow(
+        g_rtt_ring, n, fm2k::delay::AUTO_RTT_PERCENTILE);
+    if (rtt == 0) return -1;
+    const int rcap = g_delay_mode.load(std::memory_order_relaxed) == 1
+                         ? fm2k::delay::AUTO_SMOOTH_RCAP
+                         : fm2k::delay::AUTO_RCAP;
+    return fm2k::delay::SplitDelay(
+        rtt, Netplay_ConfiguredPredictionWindow(), rcap).D;
 }
 
-void ControlChannel_GetRttStats(int* n, uint32_t* p50, uint32_t* p95) {
+int ControlChannel_CopyRttWindow(uint32_t* out, int cap) {
+    const int cnt  = g_rtt_ring_count;
+    const int head = g_rtt_ring_head;
+    const int n    = cnt < cap ? cnt : cap;
+    // Oldest first: when the ring has wrapped the oldest entry sits at head.
+    const int start = (cnt < kRttRingCap) ? 0 : head;
+    const int skip  = cnt - n;  // keep the NEWEST n when cap < cnt
+    for (int i = 0; i < n; ++i)
+        out[i] = g_rtt_ring[(start + skip + i) % kRttRingCap];
+    return n;
+}
+
+void ControlChannel_GetRttStats(int* n, uint32_t* p50, uint32_t* p90) {
     const int cnt = g_rtt_ring_count;
     if (n)   *n   = cnt;
     if (p50) *p50 = fm2k::delay::PercentileFromWindow(g_rtt_ring, cnt, 50);
-    if (p95) *p95 = fm2k::delay::PercentileFromWindow(g_rtt_ring, cnt, 95);
+    if (p90) *p90 = fm2k::delay::PercentileFromWindow(
+                        g_rtt_ring, cnt, fm2k::delay::AUTO_RTT_PERCENTILE);
 }
 
 int ControlChannel_GetRemoteDelayCandidate() {
@@ -750,6 +780,11 @@ void ControlChannel_SendDelayProposal() {
         : (g_delay_mode.load(std::memory_order_relaxed) == 1
                ? DELAY_PROP_AUTO_SMOOTH : DELAY_PROP_AUTO);
     ControlChannel_Send(pkt);
+    g_last_sent_delay_candidate.store(cand, std::memory_order_relaxed);
+}
+
+int ControlChannel_GetLastSentDelayCandidate() {
+    return g_last_sent_delay_candidate.load(std::memory_order_relaxed);
 }
 
 // Handle incoming PONG to calculate RTT
@@ -758,6 +793,7 @@ void ControlChannel_HandlePong(uint32_t sent_time) {
     if (g_rtt_ms > g_rtt_worst_ms) g_rtt_worst_ms = g_rtt_ms;
     ++g_rtt_sample_count;
     // Feed the delay-sizing window (#24).
+    if ((int32_t)(GetTimeMs() - g_rtt_warmup_until) < 0) return;
     g_rtt_ring[g_rtt_ring_head] = g_rtt_ms;
     g_rtt_ring_head = (g_rtt_ring_head + 1) % kRttRingCap;
     if (g_rtt_ring_count < kRttRingCap) ++g_rtt_ring_count;
@@ -768,12 +804,14 @@ void ControlChannel_SetConnected(bool connected) {
     g_connected = connected;
     if (connected) {
         g_last_recv_time = GetTimeMs();
+        g_rtt_warmup_until = GetTimeMs() + fm2k::delay::RTT_WARMUP_MS;
     } else {
         // Drop the peer's delay candidate + our RTT window so a
         // reconnect renegotiates from scratch instead of reusing a
         // stale value or another peer's latency samples (#24).
         g_remote_delay_candidate.store(-1, std::memory_order_relaxed);
         g_remote_delay_mode.store(-1, std::memory_order_relaxed);
+        g_last_sent_delay_candidate.store(-1, std::memory_order_relaxed);
         g_rtt_ring_count = 0;
         g_rtt_ring_head  = 0;
     }

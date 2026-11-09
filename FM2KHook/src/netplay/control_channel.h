@@ -112,11 +112,11 @@ void     ControlChannel_ResetWorstRttMs();
 // control channel during CSS. Netplay_StartBattleSession then EITHER runs a
 // manual FM2K_LOCAL_DELAY verbatim (purely local -- each player owns their
 // delay; asymmetric is safe, just more rollback for the lower side) OR, when
-// neither side pinned a value, adopts max(local, remote) so both AUTO peers
-// land on the same smooth delay.
+// neither side pinned a value, adopts min(local, remote) so both AUTO peers
+// land on the same delay (see netplay_battle.cpp for why min).
 
-// Delay-mode formula: 0 = avg ping (mean RTT), 1 = peak ping (worst
-// RTT). Set once at init from the launcher's FM2K_DELAY_MODE env var.
+// Delay mode: 0 = auto (rollback cap 8), 1 = auto, less rollback (cap 4).
+// Set once at init from the launcher's FM2K_DELAY_MODE env var.
 void ControlChannel_SetDelayMode(int mode);
 int  ControlChannel_GetDelayMode();
 
@@ -125,14 +125,21 @@ int  ControlChannel_GetDelayMode();
 // Returns -1 if no RTT has been measured yet and no manual override.
 int  ControlChannel_GetLocalDelayCandidate();
 
-// Diagnostics over the delay-sizing RTT window: sample count, p50, p95 (ms).
-void ControlChannel_GetRttStats(int* n, uint32_t* p50, uint32_t* p95);
+// Diagnostics over the delay-sizing RTT window: sample count, p50, and the
+// percentile auto delay sizes from (AUTO_RTT_PERCENTILE, p90), in ms.
+void ControlChannel_GetRttStats(int* n, uint32_t* p50, uint32_t* p90);
+// The delay-sizing RTT window, oldest first (newest `cap` if it holds more).
+// Returns the number of samples written.
+int  ControlChannel_CopyRttWindow(uint32_t* out, int cap);
 
 // Last delay candidate received from the peer via DELAY_PROPOSAL.
 // Returns -1 if none received (e.g. the peer runs an older build).
 int  ControlChannel_GetRemoteDelayCandidate();
 // DelayProposalMode of that candidate, -1 if none received.
 int  ControlChannel_GetRemoteDelayMode();
+
+// The delay candidate this peer last sent in a DELAY_PROPOSAL, -1 if none.
+int  ControlChannel_GetLastSentDelayCandidate();
 
 // Compute and broadcast this peer's DELAY_PROPOSAL. No-op until
 // connected with a candidate available. Driven on the ping cadence.

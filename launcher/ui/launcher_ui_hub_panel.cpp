@@ -166,72 +166,8 @@ void LauncherUI::RenderHubPanel() {
         const char* def   = (env_h && env_h[0]) ? env_h : "hub.2dfm.org";
         std::snprintf(hub_host_, sizeof(hub_host_), "%s", def);
     }
-    // Delay override panel (#24). Peers exchange a delay candidate over the
-    // control channel; a peer on a COMPUTED mode adopts max(local, remote) so
-    // two computed peers land on the same delay. A MANUAL pin runs verbatim and
-    // purely local -- it is advertised (so a computed opponent can max() it in)
-    // but is never itself raised, so two manual peers may run different delays.
-    // This combo picks how THIS peer's candidate is sized:
-    //   index 0 "computed (avg ping)"  -> FM2K_DELAY_MODE=0, mean RTT
-    //   index 1 "computed (peak ping)" -> FM2K_DELAY_MODE=1, p90 RTT
-    //   index 2..28 manual 0..26       -> FM2K_LOCAL_DELAY=N
-    // FM2K_LOCAL_DELAY is cleared for the two computed modes so the hook
-    // computes from RTT. A manual pick runs VERBATIM and PURELY LOCAL -- it is
-    // never pulled up to the peer's value. Your manual value is still
-    // advertised as this peer's candidate, but that only matters to an opponent
-    // on a COMPUTED mode (they factor it into their max()); it does NOT force a
-    // manual opponent, who runs their own value. Two manual players can run
-    // DIFFERENT delays (asymmetric is fine -- inputs are frame-tagged).
-    static int s_delay_override = 0;
-    {
-        // Manual delay range: 0..26. 0 is opt-in for sub-1ms LAN /
-        // loopback / hot-seat play -- GekkoNet's prediction-0 mode applies
-        // input same frame, but ANY jitter on the link will rollback
-        // every frame. Users on actual internet should leave this on
-        // computed.
-        //
-        // THE OLD CEILING WAS 16, justified as "the upper limit of playable
-        // delay-only netcode". That reasoning does not apply here: this is
-        // ROLLBACK, where delay and prediction share the latency-hiding work,
-        // so more delay buys smoothness rather than hitting a playability
-        // wall. The practical effect of the 16 cap was that a cross-region
-        // player COULD NOT SELECT THE SETTING THAT FIXES THEIR GAME.
-        const char* delay_items[] = {
-            "computed (avg ping)",
-            "computed (peak ping)",
-            "0",  "1",  "2",  "3",  "4",  "5",  "6",  "7",  "8",
-            "9", "10", "11", "12", "13", "14", "15", "16",
-            "17", "18", "19", "20", "21", "22", "23", "24", "25", "26",
-        };
-        ImGui::PushItemWidth(-120);
-        ImGui::Combo("Delay", &s_delay_override, delay_items,
-                     IM_ARRAYSIZE(delay_items));
-        ImGui::PopItemWidth();
-        ImGui::SetItemTooltip(
-            "Input delay (frames at 100 Hz). \"computed (avg ping)\" sizes "
-            "delay to mean RTT -- lower delay, but spikes can cause rollbacks. "
-            "\"computed (peak ping)\" sizes to the 90th-percentile RTT -- higher "
-            "delay, rides out jitter. Two computed peers exchange picks and "
-            "adopt the higher, so their delay matches. Pin 0..26 to force a "
-            "MANUAL value: yours runs exactly as set and is NEVER raised to the "
-            "opponent's -- if they also pin manual, the two sides can differ "
-            "(that's fine). 0 = same-frame input, only safe on near-zero-"
-            "latency links (LAN / loopback / hotseat) -- any jitter rolls back "
-            "every frame.");
-        if (s_delay_override >= 2) {
-            // Manual override: index 2 -> "0", index 3 -> "1", ...
-            char buf[8];
-            std::snprintf(buf, sizeof(buf), "%d", s_delay_override - 2);
-            ::SetEnvironmentVariableA("FM2K_LOCAL_DELAY", buf);
-        } else {
-            ::SetEnvironmentVariableA("FM2K_LOCAL_DELAY", nullptr);
-        }
-        // Computed-delay formula: index 0 = avg ping, index 1 = peak.
-        // Harmless when a manual value is pinned (the hook ignores mode
-        // once FM2K_LOCAL_DELAY is set).
-        ::SetEnvironmentVariableA("FM2K_DELAY_MODE",
-                                  s_delay_override == 1 ? "1" : "0");
-    }
+    // Delay picker (#24) -- launcher_ui_hub_delay.cpp.
+    RenderDelayCombo();
 
     // Runahead and prediction window are intentionally NOT exposed here.
     // Neither is a free "pick a number" knob:

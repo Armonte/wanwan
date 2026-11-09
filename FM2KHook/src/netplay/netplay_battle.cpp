@@ -10,6 +10,7 @@
 #include "../hooks/hooks.h"   // Hook_ApplySOCD_Public for SOCD-pre-apply on spec capture
 #include "../hooks/css_autoconfirm.h"  // CssAutoConfirm_OnReplayMatchStart (TEST_CSS_CHAR pin)
 #include "control_channel.h"
+#include "delay_math.h"       // SplitDelay -- logged next to the chosen delay
 #include "content_tag.h"      // install fingerprint stamped into MATCH_START
 #include "gameplay_tag_hook.h" // replay provenance v2: prewarm the per-file digest cache
 #include "game_hash.h"
@@ -81,6 +82,20 @@ void Netplay_RestoreCssCursors() {
     else
         std::memset((void*)0x424E50, 0, sizeof(s_css_cursor_snap));
 }
+
+// FM2K_PREDICTION_WINDOW env override accepts 0..64; default 32 (the
+// rationale lives at the battle-session config below). Shared with the delay
+// sizing in control_channel.cpp, which needs the window BEFORE the session is
+// configured -- auto delay plans its rollback share against it.
+int Netplay_ConfiguredPredictionWindow() {
+    int w = 32;
+    if (const char* env = std::getenv("FM2K_PREDICTION_WINDOW"); env && env[0]) {
+        int v = std::atoi(env);
+        if (v >= 0 && v <= 64) w = v;
+    }
+    return w;
+}
+
 
 bool Netplay_StartBattle() {
     // Tear down the CSS lockstep session before standing up the battle
@@ -212,20 +227,22 @@ bool Netplay_StartBattle() {
     //
     //  * AUTO (no override): peers exchange a DELAY_PROPOSAL over the control
     //    channel through CSS (ControlChannel_SendDelayProposal on the ping
-    //    cadence) and adopt max(local candidate, remote candidate). max is
-    //    commutative, so both AUTO peers land on the SAME smooth delay -- the
-    //    right default when neither side expressed a preference. (History: peers
-    //    once computed delay independently and drifted apart on jittery links;
-    //    the shared-max fixed that. It does NOT override a manual choice.)
+    //    cadence) and adopt min(local candidate, remote candidate) -- max() of
+    //    a MANUAL remote pin. Both are commutative, so both AUTO peers land on
+    //    the SAME delay. (History: peers once computed delay independently and
+    //    drifted apart on jittery links; a shared max() fixed that, and was
+    //    switched to min() on 2026-11-08 because local stalls inflate one
+    //    side's window -- see the auto branch below. It does NOT override a
+    //    manual choice.)
     //
-    // ControlChannel computes the local candidate from measured RTT per the
-    // delay mode (FM2K_DELAY_MODE: avg = mean RTT, peak = worst RTT) at FM2K's
-    // 100 Hz, where 10 ms is one frame budget:
-    //   candidate = clamp(ceil(one_way_ms / 10), 2, 15)
+    // ControlChannel computes the local candidate with SplitDelay (delay_math.h)
+    // from the p95 RTT at FM2K's 100 Hz (10 ms = one frame): input delay takes
+    // a share of the one-way trip and rollback covers the rest, up to 8 frames
+    // ("auto", FM2K_DELAY_MODE=0) or 4 ("auto (less rollback)", mode 1).
     //
-    // The AUTO value is pinned for the connection lifetime
-    // (g_session_delay_cached) so it stays stable across every CSS-> battle
-    // transition. A manual override bypasses the cache so it can flip mid-session.
+    // The AUTO value is re-sized every battle start with hysteresis
+    // (g_session_delay_cached + ApplyDelayHysteresis): it drops freely and only
+    // rises by 2+ frames. A manual override bypasses the cache.
     bool has_manual_delay = false;
     int  manual_delay     = 0;
     if (const char* env = std::getenv("FM2K_LOCAL_DELAY"); env && env[0]) {
@@ -251,17 +268,48 @@ bool Netplay_StartBattle() {
         // negotiation cache so it can be flipped mid-session.
         local_delay  = manual_delay;
         delay_source = DS_MANUAL;
-    } else if (g_session_delay_cache_valid) {
-        local_delay  = g_session_delay_cached;
-        delay_source = DS_CACHED;
     } else {
-        // Auto path (no manual override): size from RTT and adopt
-        // max(local, remote) so both auto peers land on the same smooth delay.
-        // local_cand is -1 only when no RTT has been measured -- fall back to
-        // the conservative CSS delay.
-        const int lc = (local_cand < 0) ? CSS_LOCAL_DELAY : local_cand;
-        local_delay  = (remote_cand > lc) ? remote_cand : lc;
-        delay_source = DS_COMPUTED;
+        // Auto path (no manual override): re-sized EVERY battle start (it was
+        // pinned for the whole session until 2026-11-08, so one noisy window
+        // stuck through every rematch). local_cand is the split delay/rollback
+        // plan from the p95 RTT (delay_math.h SplitDelay); -1 until enough
+        // pings are in, in which case the previous match's value (or the
+        // conservative CSS delay) stands in.
+        //
+        // The peer's candidate is used only when it comes from a current
+        // build: 0.2.85-0.2.87 auto candidates are jitter-inflated, and
+        // asymmetric delay is safe (see the manual branch above), so a legacy
+        // peer simply runs its own value.
+        const int cached = g_session_delay_cache_valid ? g_session_delay_cached : -1;
+        const int lc = (local_cand >= 0) ? local_cand
+                     : (cached >= 0 ? cached : CSS_LOCAL_DELAY);
+        //
+        // Two AUTO peers take min(), not max(): the link is the same in both
+        // directions, and what inflates a ping window is a LOCAL stall (game
+        // boot, battle load) that only one side's measurement catches -- on
+        // 2026-11-08 the host read p90 400+ ms on a 50 ms link while the
+        // joiner read 60. min() is still commutative, so both land on the same
+        // delay. A MANUAL pin from the opponent is folded in with max(), as
+        // before: they asked for at least that much.
+        const int rmode = ControlChannel_GetRemoteDelayMode();
+        const bool remote_ok = remote_cand >= 0 && rmode >= 0 &&
+                               !DelayProposalIsLegacy((uint8_t)rmode);
+        //
+        // Against an auto peer, our side of the min() is the value we last
+        // PROPOSED, which the peer also holds -- so both evaluate the same
+        // min(a, b). Recomputing here instead would also catch the battle-load
+        // stall in the newest pings and let the two sides diverge.
+        int fresh = lc;
+        if (remote_ok) {
+            const int sent = ControlChannel_GetLastSentDelayCandidate();
+            const int mine = (sent >= 0) ? sent : local_cand;
+            if (rmode == DELAY_PROP_MANUAL) fresh = std::max(lc, remote_cand);
+            else if (mine < 0)              fresh = remote_cand;
+            else                            fresh = std::min(mine, remote_cand);
+        }
+        local_delay  = fm2k::delay::ApplyDelayHysteresis(cached, fresh);
+        delay_source = (cached >= 0 && local_delay == cached) ? DS_CACHED
+                                                              : DS_COMPUTED;
         g_session_delay_cached      = local_delay;
         g_session_delay_cache_valid = true;
         // Fresh worst-RTT window for the next match's diagnostics.
@@ -323,11 +371,7 @@ bool Netplay_StartBattle() {
     // this number again is a cheaper game update, not a cheaper save.
     //
     // FM2K_PREDICTION_WINDOW env override accepts 0..64.
-    int prediction_window = 32;
-    if (const char* env = std::getenv("FM2K_PREDICTION_WINDOW"); env && env[0]) {
-        int v = std::atoi(env);
-        if (v >= 0 && v <= 64) prediction_window = v;
-    }
+    const int prediction_window = Netplay_ConfiguredPredictionWindow();
     g_pred_window = prediction_window;
 
     const char* source_str =
@@ -335,17 +379,36 @@ bool Netplay_StartBattle() {
         delay_source == DS_CACHED   ? "negotiated (cached)" :
                                       "negotiated";
     const char* mode_str =
-        ControlChannel_GetDelayMode() == 1 ? "peak" : "avg";
+        ControlChannel_GetDelayMode() == 1 ? "auto-smooth" : "auto";
     int rtt_n = 0;
-    uint32_t rtt_p50 = 0, rtt_p95 = 0;
-    ControlChannel_GetRttStats(&rtt_n, &rtt_p50, &rtt_p95);
+    uint32_t rtt_p50 = 0, rtt_p90 = 0;
+    ControlChannel_GetRttStats(&rtt_n, &rtt_p50, &rtt_p90);
+    const int rcap = ControlChannel_GetDelayMode() == 1
+                         ? fm2k::delay::AUTO_SMOOTH_RCAP : fm2k::delay::AUTO_RCAP;
+    const fm2k::delay::DelayPlan plan =
+        fm2k::delay::SplitDelay(rtt_p90, prediction_window, rcap);
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "Netplay: RTT mean=%ums worst=%ums n=%d p50=%ums p95=%ums -> delay "
-        "candidate local=%d remote=%d (remote_mode=%d), local_delay=%d "
-        "(%s, mode=%s), prediction_window=%d",
-        rtt_mean_ms, rtt_worst_ms, rtt_n, rtt_p50, rtt_p95, local_cand,
-        remote_cand, ControlChannel_GetRemoteDelayMode(), local_delay,
-        source_str, mode_str, prediction_window);
+        "Netplay: RTT mean=%ums worst=%ums n=%d p50=%ums p90=%ums -> plan "
+        "L=%d R=%d D=%d rcap=%d; candidate local=%d remote=%d (remote_mode=%d), "
+        "local_delay=%d (%s, mode=%s), prediction_window=%d",
+        rtt_mean_ms, rtt_worst_ms, rtt_n, rtt_p50, rtt_p90, plan.L, plan.R,
+        plan.D, rcap, local_cand, remote_cand,
+        ControlChannel_GetRemoteDelayMode(), local_delay, source_str, mode_str,
+        prediction_window);
+    {
+        // The window itself, oldest first, so a field log shows WHEN the slow
+        // pings happened (connect/boot burst vs a steadily jittery link).
+        uint32_t win[64];
+        const int wn = ControlChannel_CopyRttWindow(win, 64);
+        char buf[64 * 5 + 1];
+        int off = 0;
+        for (int i = 0; i < wn && off < (int)sizeof(buf) - 6; ++i)
+            off += std::snprintf(buf + off, sizeof(buf) - off, "%s%u",
+                                 i ? "," : "", win[i]);
+        buf[off] = '\0';
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+            "Netplay: RTT window (oldest first, ms): %s", buf);
+    }
 
     GekkoConfig config = {};
     config.num_players = 2;

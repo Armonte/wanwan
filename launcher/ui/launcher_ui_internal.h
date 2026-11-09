@@ -20,6 +20,10 @@ void SaveDevFlag(const char* key, bool value);
 int  LoadDevFlagInt(const char* key, int default_val);
 void SaveDevFlagInt(const char* key, int value);
 
+// Hub panel "Delay" combo (launcher_ui_hub_delay.cpp). Sets FM2K_LOCAL_DELAY /
+// FM2K_DELAY_MODE for the next game launch.
+void RenderDelayCombo();
+
 // Per-game patch overrides ini (host-config panel writes, launch path reads).
 std::string GamePatchesDir();
 std::string GamePatchesIniPath(const std::string& game_id);

@@ -336,12 +336,16 @@ bool Netplay_StartBattle() {
                                       "negotiated";
     const char* mode_str =
         ControlChannel_GetDelayMode() == 1 ? "peak" : "avg";
+    int rtt_n = 0;
+    uint32_t rtt_p50 = 0, rtt_p95 = 0;
+    ControlChannel_GetRttStats(&rtt_n, &rtt_p50, &rtt_p95);
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-        "Netplay: RTT mean=%ums worst=%ums -> delay candidate "
-        "local=%d remote=%d, local_delay=%d (%s, mode=%s), "
-        "prediction_window=%d",
-        rtt_mean_ms, rtt_worst_ms, local_cand, remote_cand,
-        local_delay, source_str, mode_str, prediction_window);
+        "Netplay: RTT mean=%ums worst=%ums n=%d p50=%ums p95=%ums -> delay "
+        "candidate local=%d remote=%d (remote_mode=%d), local_delay=%d "
+        "(%s, mode=%s), prediction_window=%d",
+        rtt_mean_ms, rtt_worst_ms, rtt_n, rtt_p50, rtt_p95, local_cand,
+        remote_cand, ControlChannel_GetRemoteDelayMode(), local_delay,
+        source_str, mode_str, prediction_window);
 
     GekkoConfig config = {};
     config.num_players = 2;

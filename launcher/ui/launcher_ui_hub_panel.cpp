@@ -173,7 +173,7 @@ void LauncherUI::RenderHubPanel() {
     // but is never itself raised, so two manual peers may run different delays.
     // This combo picks how THIS peer's candidate is sized:
     //   index 0 "computed (avg ping)"  -> FM2K_DELAY_MODE=0, mean RTT
-    //   index 1 "computed (peak ping)" -> FM2K_DELAY_MODE=1, worst RTT
+    //   index 1 "computed (peak ping)" -> FM2K_DELAY_MODE=1, p90 RTT
     //   index 2..28 manual 0..26       -> FM2K_LOCAL_DELAY=N
     // FM2K_LOCAL_DELAY is cleared for the two computed modes so the hook
     // computes from RTT. A manual pick runs VERBATIM and PURELY LOCAL -- it is
@@ -196,15 +196,6 @@ void LauncherUI::RenderHubPanel() {
         // so more delay buys smoothness rather than hitting a playability
         // wall. The practical effect of the 16 cap was that a cross-region
         // player COULD NOT SELECT THE SETTING THAT FIXES THEIR GAME.
-        //
-        // Measured 2026-09-10 on a 300 ms / 20 ms-jitter link (the shape of a
-        // real framedrop report), 2400 frames per point, n=3: at delay 15 the
-        // netcode predicted the FULL window on every frame (rb_max 16); at
-        // delay 21 it never predicted at all (rb_max 0), reproducibly. 21
-        // frames = 210 ms = ~12.6 frames at 60 Hz. 26 leaves headroom above
-        // that. Braking percentages from the same runs are NOT quoted here on
-        // purpose -- they are a match-start transient that varied 0.0-22.6% at
-        // one setting, so rb_max is the honest measure.
         const char* delay_items[] = {
             "computed (avg ping)",
             "computed (peak ping)",
@@ -219,15 +210,14 @@ void LauncherUI::RenderHubPanel() {
         ImGui::SetItemTooltip(
             "Input delay (frames at 100 Hz). \"computed (avg ping)\" sizes "
             "delay to mean RTT -- lower delay, but spikes can cause rollbacks. "
-            "\"computed (peak ping)\" sizes to the worst RTT seen -- higher "
+            "\"computed (peak ping)\" sizes to the 90th-percentile RTT -- higher "
             "delay, rides out jitter. Two computed peers exchange picks and "
-            "adopt the higher, so their delay matches. Pin 0..16 to force a "
+            "adopt the higher, so their delay matches. Pin 0..26 to force a "
             "MANUAL value: yours runs exactly as set and is NEVER raised to the "
             "opponent's -- if they also pin manual, the two sides can differ "
             "(that's fine). 0 = same-frame input, only safe on near-zero-"
             "latency links (LAN / loopback / hotseat) -- any jitter rolls back "
-            "every frame. 16 = 160 ms, upper limit of playable delay-only "
-            "netcode.");
+            "every frame.");
         if (s_delay_override >= 2) {
             // Manual override: index 2 -> "0", index 3 -> "1", ...
             char buf[8];
@@ -247,7 +237,7 @@ void LauncherUI::RenderHubPanel() {
     // Neither is a free "pick a number" knob:
     //   - prediction window must be IDENTICAL on both peers (GekkoNet
     //     derives the desync-detection checkpoint frame from it) -- a
-    //     mismatch causes false desyncs, so it stays fixed at 16.
+    //     mismatch causes false desyncs, so it stays fixed at 32.
     //   - runahead's correct value is exactly the input delay; the hook
     //     auto-tracks the negotiated local_delay.
     // FM2K_PREDICTION_WINDOW / FM2K_RUNAHEAD env vars still force-pin

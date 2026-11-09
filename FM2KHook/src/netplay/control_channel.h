@@ -125,9 +125,14 @@ int  ControlChannel_GetDelayMode();
 // Returns -1 if no RTT has been measured yet and no manual override.
 int  ControlChannel_GetLocalDelayCandidate();
 
+// Diagnostics over the delay-sizing RTT window: sample count, p50, p95 (ms).
+void ControlChannel_GetRttStats(int* n, uint32_t* p50, uint32_t* p95);
+
 // Last delay candidate received from the peer via DELAY_PROPOSAL.
 // Returns -1 if none received (e.g. the peer runs an older build).
 int  ControlChannel_GetRemoteDelayCandidate();
+// DelayProposalMode of that candidate, -1 if none received.
+int  ControlChannel_GetRemoteDelayMode();
 
 // Compute and broadcast this peer's DELAY_PROPOSAL. No-op until
 // connected with a candidate available. Driven on the ping cadence.

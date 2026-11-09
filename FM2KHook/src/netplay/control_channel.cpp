@@ -95,6 +95,7 @@ uint32_t g_rtt_sample_count = 0;
 // start), so they're atomic.
 std::atomic<int> g_delay_mode{0};               // 0=avg, 1=peak
 std::atomic<int> g_remote_delay_candidate{-1};
+std::atomic<int> g_remote_delay_mode{-1};
 
 // Recent RTT samples for delay sizing (#24). A single cold-start ping
 // (peer still injecting / loading) or a scheduler hiccup easily round-
@@ -718,16 +719,22 @@ int ControlChannel_GetLocalDelayCandidate() {
     const uint32_t rtt = fm2k::delay::RttFromWindow(
         g_rtt_ring, g_rtt_ring_count,
         g_delay_mode.load(std::memory_order_relaxed));
-    // Size with jitter headroom from the SAME window. A link that wobbles
-    // needs more delay than its mean latency implies, because it is the late
-    // samples that force a prediction -- and braking tracks prediction depth.
-    const uint32_t jit = fm2k::delay::JitterFromWindow(
-        g_rtt_ring, g_rtt_ring_count);
-    return fm2k::delay::DelayCandidateFromRtt(rtt, jit);
+    return fm2k::delay::DelayCandidateFromRtt(rtt);
+}
+
+void ControlChannel_GetRttStats(int* n, uint32_t* p50, uint32_t* p95) {
+    const int cnt = g_rtt_ring_count;
+    if (n)   *n   = cnt;
+    if (p50) *p50 = fm2k::delay::PercentileFromWindow(g_rtt_ring, cnt, 50);
+    if (p95) *p95 = fm2k::delay::PercentileFromWindow(g_rtt_ring, cnt, 95);
 }
 
 int ControlChannel_GetRemoteDelayCandidate() {
     return g_remote_delay_candidate.load(std::memory_order_relaxed);
+}
+
+int ControlChannel_GetRemoteDelayMode() {
+    return g_remote_delay_mode.load(std::memory_order_relaxed);
 }
 
 void ControlChannel_SendDelayProposal() {
@@ -737,8 +744,11 @@ void ControlChannel_SendDelayProposal() {
     CtrlPacket pkt = {};
     pkt.header.type = CtrlMsg::DELAY_PROPOSAL;
     pkt.data.delay_proposal.delay = (uint8_t)cand;
-    pkt.data.delay_proposal.mode  =
-        (uint8_t)g_delay_mode.load(std::memory_order_relaxed);
+    const char* manual = std::getenv("FM2K_LOCAL_DELAY");
+    pkt.data.delay_proposal.mode =
+        (manual && manual[0]) ? DELAY_PROP_MANUAL
+        : (g_delay_mode.load(std::memory_order_relaxed) == 1
+               ? DELAY_PROP_AUTO_SMOOTH : DELAY_PROP_AUTO);
     ControlChannel_Send(pkt);
 }
 
@@ -763,6 +773,7 @@ void ControlChannel_SetConnected(bool connected) {
         // reconnect renegotiates from scratch instead of reusing a
         // stale value or another peer's latency samples (#24).
         g_remote_delay_candidate.store(-1, std::memory_order_relaxed);
+        g_remote_delay_mode.store(-1, std::memory_order_relaxed);
         g_rtt_ring_count = 0;
         g_rtt_ring_head  = 0;
     }

@@ -56,6 +56,7 @@ extern uint32_t g_rtt_sample_count;
 
 extern std::atomic<int> g_delay_mode;               // 0=avg, 1=peak
 extern std::atomic<int> g_remote_delay_candidate;
+extern std::atomic<int> g_remote_delay_mode;   // DelayProposalMode, -1 = none
 
 inline constexpr int kRttRingCap = 64;
 extern uint32_t g_rtt_ring[kRttRingCap];

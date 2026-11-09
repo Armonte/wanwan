@@ -375,9 +375,17 @@ void RawReceive() {
                     // start adopts max(local, this) so both peers run
                     // identical input delay.
                     const int d = packet->data.delay_proposal.delay;
-                    if (d >= 0 && d <= 16) {
+                    const uint8_t m = packet->data.delay_proposal.mode;
+                    // Current builds: 0..120, the manual FM2K_LOCAL_DELAY
+                    // ceiling (the old <= 16 bound dropped every manual
+                    // pin of 17-26). Legacy builds keep the <= 16 bound so
+                    // a 0.2.85-0.2.87 jitter-inflated 17-24 stays out.
+                    const int cap = DelayProposalIsLegacy(m) ? 16 : 120;
+                    if (d >= 0 && d <= cap) {
                         g_remote_delay_candidate.store(
                             d, std::memory_order_relaxed);
+                        g_remote_delay_mode.store(
+                            m, std::memory_order_relaxed);
                     }
                 }
 

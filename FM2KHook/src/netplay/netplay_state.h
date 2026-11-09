@@ -258,8 +258,8 @@ struct CtrlPacket {
         // CtrlMsg::DELAY_PROPOSAL comment. mode is informational (which
         // formula produced the number); the receiver only needs delay.
         struct {
-            uint8_t delay;   // proposed input delay frames, 0..16
-            uint8_t mode;    // 0 = avg ping, 1 = peak ping
+            uint8_t delay;   // proposed input delay frames, 0..120
+            uint8_t mode;    // DelayProposalMode (0/1 = legacy builds)
         } delay_proposal;
 
         // Raw bytes for unknown/future use
@@ -290,6 +290,20 @@ constexpr uint32_t CONNECT_TIMEOUT_MS = 5000;       // 5 seconds to connect
 // Poll() ticking inside DefWindowProc's modal loop (title drag, menu
 // open), so dragging a window no longer triggers a disconnect on the
 // peer side. Real-DC detection is still ~1.5s end-to-end.
+// DELAY_PROPOSAL.mode values. Builds up to 0.2.87 sent the raw delay mode
+// (0 = avg, 1 = peak) for every candidate, auto or manual, and 0.2.85-0.2.87
+// auto candidates are jitter-inflated -- so a legacy value is honored only up
+// to the old 16 bound. 2+ marks a build that sizes per
+// docs/dev/auto_delay_plan_2026-11-08.md.
+enum DelayProposalMode : uint8_t {
+    DELAY_PROP_LEGACY_AVG  = 0,
+    DELAY_PROP_LEGACY_PEAK = 1,
+    DELAY_PROP_AUTO        = 2,
+    DELAY_PROP_AUTO_SMOOTH = 3,
+    DELAY_PROP_MANUAL      = 4,
+};
+inline bool DelayProposalIsLegacy(uint8_t mode) { return mode < DELAY_PROP_AUTO; }
+
 constexpr uint32_t PING_INTERVAL_MS = 250;          // Ping every 250ms (4Hz)
 constexpr uint32_t PING_TIMEOUT_MS  = 1500;         // ~6 missed pings = disconnect
 constexpr uint32_t BATTLE_READY_TIMEOUT_MS = 5000;  // 5 seconds to start battle

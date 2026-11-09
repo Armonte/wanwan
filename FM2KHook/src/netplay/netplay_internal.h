@@ -85,6 +85,9 @@ extern uint32_t g_last_rollback_frame;
 extern uint32_t g_desync_count;
 extern uint32_t g_last_desync_log_tick;
 extern int g_local_delay;  // Computed from RTT at battle start
+// Set by Netplay_EndBattle's drain: the battle input phase feeds NEUTRAL local
+// input instead of the live pad, so post-end predictions converge on reality.
+extern bool g_battle_drain_neutral;
 extern int                g_pred_window;
 extern int                g_runahead_user_pref;
 extern std::atomic<int>   g_runahead_active;

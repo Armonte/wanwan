@@ -3,6 +3,7 @@
 // points DllMain calls (declared in dllmain_internal.h); the logger state
 // + LogOutputFunction/CrashHandler/VectoredRenderGuard stay file-local.
 // Clean DLL entry point with persistent network connection
+#include "../hooks/exit_trace.h"  // ExitTrace_SetMainThread
 #include "globals.h"
 #include "dllmain_internal.h"
 #include "hooks.h"
@@ -591,6 +592,7 @@ void Crash_ArmMainThread() {
         GetProcAddress(GetModuleHandleA("kernel32.dll"), "SetThreadStackGuarantee"));
     ULONG bytes = 64 * 1024;
     const bool ok = f && f(&bytes);
+    ExitTrace_SetMainThread(GetCurrentThreadId());
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
         "CrashHandler: main-thread stack guarantee %s (tid %lu)",
         ok ? "64 KB reserved" : "unavailable", (unsigned long)GetCurrentThreadId());

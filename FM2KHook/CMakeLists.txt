@@ -53,6 +53,7 @@ set(FM2KHOOK_SOURCES
     src/hooks/alt_colors.cpp
     src/hooks/css_autoconfirm.cpp
     src/hooks/css_fastsound.cpp
+    src/hooks/exit_trace.cpp             # [EXIT] who called ExitProcess (module+offset stack)
     src/hooks/per_game_patches.cpp        # FM2K: damage/kof + input/mode toggles (#if !ENGINE_FM95)
     src/hooks/per_game_patches_battle.cpp # FM2K: AI fields + boot-to-battle + ApplyRuntime (#if !ENGINE_FM95)
     src/hooks/per_game_patches_fm95.cpp   # FM95 no-op stubs (#if ENGINE_FM95)

@@ -1,5 +1,6 @@
 // Simplified hooks - detect battle mode transitions, delegate to netplay
 // Sync barrier: block game until both clients connected (CCCaster-style)
+#include "exit_trace.h"
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "round_events.h"     // C3.5 -- vs_round_function detour install
@@ -469,6 +470,10 @@ bool InitializeHooks() {
     // from rebuilding ~80 sound buffers on every CSS cursor move. Queues its
     // hooks here; applied in the batch below. See css_fastsound.cpp.
     CssFastSound_Install();
+
+    // [EXIT] trace: log who calls ExitProcess (module+offset stack). Queued
+    // into the same batch as everything above. See exit_trace.h.
+    ExitTrace_Install();
 
     // Single thread-freeze for every hook queued during this function and by
     // InstallLocaleSpoof/RoundEvents_Install/CssAutoConfirm_Install. One call

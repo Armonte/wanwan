@@ -132,6 +132,10 @@ static void CollectAndAddLocalInput() {
         // vs 986) -- the live "transient desync" class users hit.
         // GekkoNet's examples only add inputs in lockstep with a started
         // session.
+        // Battle-end drain (Netplay_EndBattle): both peers feed neutral
+        // input past the end, so once the peer's neutral frames are
+        // confirmed every remaining prediction (repeat-last) is exact.
+        if (g_battle_drain_neutral) local_input = 0;
         if (g_session_ready) {
             // ONE local input per call. This function is exactly one gekko
             // step (add -> update -> advance); the heavy-stage sim/render

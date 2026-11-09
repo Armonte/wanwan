@@ -558,6 +558,33 @@ char __cdecl Hook_GameStateManager() {
     // STATE 0 reads it to dispatch 1-cursor vs 2-cursor CSS init).
     PerGamePatches_OnGameStateManagerEntry();
 
+    // Exit-tick input leak (match-end desync, 2026-11-09,
+    // docs/dev/investigations/2026-11-09_matchend_lowdelay_desync/). STATE 0
+    // (CSS init, obj+338 == 0) falls through in the SAME call into the cursor
+    // block, which reads g_processed_input (0x447F40) -- input that was read
+    // while game_mode was still 3000, so the netplay non-battle zero gate never
+    // applied. A held or PREDICTED direction moved the cursor one step and
+    // player_data_file_loader freed + reloaded that character slot inside the
+    // rollback window; later rollbacks then resimulated battle frames against
+    // the new character's script blobs (3 extra spawns, rng off by 3 draws).
+    // Neutral input on the init call is decided from simulated state only, so
+    // forward pass, resim, both peers and replays all agree.
+    // FM2K_SEAM_EXIT_INPUT_NEUTRAL=0 restores the leak (A/B control).
+    {
+        static int s_neutral = -1;
+        if (s_neutral < 0) {
+            const char* v = std::getenv("FM2K_SEAM_EXIT_INPUT_NEUTRAL");
+            s_neutral = (v && v[0] == '0') ? 0 : 1;
+        }
+        const uint32_t obj = *(volatile uint32_t*)0x004CFA00;  // g_object_data_ptr
+        if (s_neutral && obj && *(volatile int32_t*)(obj + 338) == 0) {
+            volatile uint32_t* processed = (volatile uint32_t*)0x00447F40;  // g_processed_input
+            volatile uint32_t* changes   = (volatile uint32_t*)0x00447F60;  // g_input_changes
+            processed[0] = processed[1] = 0;
+            changes[0]   = changes[1]   = 0;
+        }
+    }
+
     // Team-mode dupe-lock runs independently of the replay auto-confirm
     // path -- they're orthogonal features that both happen to live in the
     // same hook because MinHook only allows one detour per function.

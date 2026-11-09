@@ -246,6 +246,7 @@ bool     g_local_battle_end_signaled  = false;
 bool     g_remote_battle_end_signaled = false;
 bool     g_battle_end_synced          = false;
 uint32_t g_battle_end_swap_frame      = 0;
+bool     g_battle_drain_neutral       = false;
 bool     g_battle_end_armed           = false;
 
 // Barrier epoch + completion records (deafness fix, 2026-06-11). The old

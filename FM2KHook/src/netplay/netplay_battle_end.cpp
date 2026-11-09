@@ -177,42 +177,71 @@ void Netplay_EndBattle() {
         SharedMem_PublishMatchOutcome(outcome);
     }
 
-    // Drain the confirmed-input flush BEFORE tearing the session down.
-    // Under loss the confirmed horizon trails the live sim by RTT +
-    // recovery (observed ~500 frames at 20% loss); destroying the session
-    // strands every pending-confirm ring entry past the horizon, so the
-    // recorded .fm2krep and the live spectator stream lose the MATCH TAIL
-    // -- spectators froze at the host's last flushed frame and never saw
-    // the match end (multi-match journey, 2026-06-11). Keep pumping the
-    // battle phase (full event handling: corrections land, flush runs)
-    // until the horizon catches the sim or the budget expires. Both peers
-    // linger symmetrically -- they just exited the same battle-end swap
-    // barrier.
+    // Drain BEFORE tearing the session down, so the state this peer carries
+    // into CSS is the CONFIRMED state, not its own prediction.
+    //
+    // Two things the old drain got wrong (rematch f=1 desync, 2026-11-08,
+    // docs/dev/investigations/2026-11-08_rematch_f1_desync/):
+    //  1. It checked gekko_confirmed_frame BEFORE running an update. Confirmed
+    //     means the inputs ARRIVED, not that the rollback applying them has
+    //     run -- one peer tore down at f=5826 with confirmed=5830 and a
+    //     misprediction at 5819 never resimulated (rng split there for good).
+    //  2. It kept feeding the LIVE pad while waiting, so the sim kept
+    //     advancing on predicted remote input. When input delay is below the
+    //     one-way latency (the split auto model) confirmed trails the sim by
+    //     R frames forever and the drain could not converge (600 ms timeout,
+    //     the peer advanced 30 frames past the other).
+    //
+    // Now: feed NEUTRAL local input for the whole drain and keep running
+    // update passes until confirmed has passed (a) this peer's last real
+    // input frame (drain start + local delay) plus (b) one RTT of margin for
+    // the peer's own last real input. Past that point both sides' inputs are
+    // neutral, so GekkoNet's repeat-last prediction IS the real input and any
+    // frames beyond confirmed are already correct. At least one update runs
+    // after the threshold is read, so received corrections are applied.
+    //
+    // Also covers the replay/spectator tail the drain was originally for:
+    // under loss the confirmed horizon trails the live sim by RTT + recovery,
+    // and destroying the session strands every pending-confirm ring entry.
     if (g_session && g_session_kind == SessionKind::BATTLE && !g_stress_mode) {
-        const uint64_t drain_deadline = GetTickCount64() + 600;
-        uint32_t last_logged = 0;
-        while (GetTickCount64() < drain_deadline) {
-            const int confirmed = gekko_confirmed_frame(g_session);
-            if (g_netplay_frame == 0 ||
-                confirmed >= (int)g_netplay_frame - 1) {
-                break;  // every advanced frame is flushed
-            }
-            last_logged = (uint32_t)confirmed;
+        const uint32_t rtt_ms     = ControlChannel_GetRttMs();
+        const int      rtt_frames = (int)((rtt_ms + 9) / 10);
+        const int      start      = (int)g_netplay_frame;
+        const int      target     = start + std::max(g_local_delay, 0) + rtt_frames + 2;
+        const uint64_t budget_ms  = std::min<uint64_t>(600 + 3ull * rtt_ms, 3000);
+        const uint64_t deadline   = GetTickCount64() + budget_ms;
+        g_battle_drain_neutral = true;
+        int passes = 0;
+        bool done = false;
+        while (GetTickCount64() < deadline) {
             Netplay_ProcessBattleInputPhase();
+            ++passes;
+            const int confirmed = gekko_confirmed_frame(g_session);
+            if (confirmed >= target) {
+                // One more pass so a correction that arrived with this
+                // confirmation is rolled back into the sim before teardown.
+                Netplay_ProcessBattleInputPhase();
+                ++passes;
+                done = true;
+                break;
+            }
             Sleep(5);
         }
+        g_battle_drain_neutral = false;
         const int final_confirmed = gekko_confirmed_frame(g_session);
-        if (g_netplay_frame > 0 && final_confirmed < (int)g_netplay_frame - 1) {
+        if (!done) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "Netplay: EndBattle drain timed out -- confirmed=%d < last "
-                "frame %u; stream/replay tail may be short",
-                final_confirmed, g_netplay_frame - 1);
+                "Netplay: EndBattle drain timed out after %llums -- confirmed=%d "
+                "< target %d (start=%d delay=%d rtt=%ums frame=%u passes=%d); "
+                "state past confirmed may be a prediction",
+                (unsigned long long)budget_ms, final_confirmed, target, start,
+                g_local_delay, rtt_ms, g_netplay_frame, passes);
         } else {
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "Netplay: EndBattle drain complete (confirmed=%d, frames=%u)",
-                final_confirmed, g_netplay_frame);
+                "Netplay: EndBattle drain complete (confirmed=%d target=%d "
+                "start=%d frame=%u passes=%d)",
+                final_confirmed, target, start, g_netplay_frame, passes);
         }
-        (void)last_logged;
     }
 
     if (g_session) {

@@ -60,3 +60,12 @@ const char* ReplayDiffLogPath();
 // Defined in the FM2K diag TU, called from the FM2K save TU. (FullChecksum is
 // in the public savestate.h; Fingerprint was only a local forward decl.)
 uint32_t SaveState_CalculateFingerprint();
+
+// Dead object-pool slots byte-exact across save / load (FM2K_POOL_DEADSLOT_RESTORE, default 1; 0 = the old
+// live-only save + zeroing load, the negative control). A child object with the follow-parent flag
+// (vHandleHitMovements 0x40F910: x = parent.x +- off, y = parent.y + off) keeps reading its parent's slot after the
+// parent dies, i.e. the dead slot's residue. Saving only live slots and zeroing dead ones on load made a rollback
+// across a spawn into that slot hand the resim zeros instead of the residue: the child landed at (-off, +off) on the
+// rolled-back peer only -- the pkmncc round-1 desync (21 of 65 production desyncs on 0.2.89, f~335; repro
+// artifacts/desync_0289_2026-11-11/repro).
+bool SaveState_PoolDeadSlotRestore();

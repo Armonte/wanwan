@@ -3677,7 +3677,13 @@ def main():
               # PLAYER-half red proof shortens it so a starved guest reaches
               # the "MATCH SETTINGS NEVER AGREED" force-complete inside the
               # run's wall clock instead of after the default 10s.
-              "FM2K_CFG_BARRIER_FORCE_MS"):
+              "FM2K_CFG_BARRIER_FORCE_MS",
+              # Desync-ring baseline dump at a confirmed frame (no desync
+              # needed) + headless dialog auto-answer. BOTH players: a ring
+              # from one peer cannot be diffed.
+              "FM2K_DESYNCRING_DUMP_AT", "FM2K_DIALOG_AUTO",
+              # dead pool slots byte-exact across save/load (savestate_internal.h); 0 = negative control
+              "FM2K_POOL_DEADSLOT_RESTORE"):
         if os.environ.get(k):
             common_env[k] = os.environ[k]
     # FM2K_TEST_ROUNDS_HOST_ONLY: suppresses the per-frame g_default_round force

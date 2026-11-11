@@ -318,10 +318,13 @@ bool SaveState_Load(int frame) {
         size_t total_obj_candidates = 0;
         size_t total_obj_restored   = 0;
         size_t total_obj_truncated  = 0;
+        // FM2K_POOL_DEADSLOT_RESTORE (savestate_internal.h): a slot dead in the snapshot gets its saved residue back
+        // like a live one, never zeros -- the resim must see the bytes the forward pass saw.
+        const bool restore_dead = SaveState_PoolDeadSlotRestore();
         for (size_t i = 0; i < OBJ_COUNT; i++) {
             const uint8_t* src = src_base + i * OBJ_SZ;
             uint8_t* dst = dst_base + i * OBJ_SZ;
-            if (src[0] != 0) {
+            if (src[0] != 0 || restore_dead) {
                 if (!is_spec_apply) {
                     // NOTE(task #34, 2026-06-11): object slot byte 299 (a
                     // render-written anim timer on stage BG objects) drifts

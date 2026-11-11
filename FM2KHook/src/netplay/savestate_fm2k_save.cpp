@@ -418,6 +418,10 @@ bool SaveState_Save(int frame) {
         constexpr size_t OBJ_COUNT = SaveStateData::SavedRegionCRCs::OBJ_SLOT_COUNT;
         const uint8_t* src_base = (const uint8_t*)ADDR_OBJECT_POOL;
         uint8_t* dst_base = state->object_pool;
+        // Dead slots are game state too (their residue is read by follow-parent children): the whole pool, byte-exact
+        if (SaveState_PoolDeadSlotRestore()) {
+            memcpy(dst_base, src_base, OBJ_COUNT * OBJ_SZ);
+        } else
         for (size_t i = 0; i < OBJ_COUNT; i++) {
             const uint8_t* src = src_base + i * OBJ_SZ;
             uint8_t* dst = dst_base + i * OBJ_SZ;

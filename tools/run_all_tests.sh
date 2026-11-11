@@ -94,6 +94,7 @@
 #      SPECGAME_SKIP(0) SPECGAME_TIMEOUT(720) VANPRI_EXE(...)  -- stage 2g
 #      SPECSWEEP(0)                             -- the opt-in Phase 6 tier (6c)
 #      SPECSTAGE_SKIP(0) SPECSTAGE_EXE(...)     -- stage 6a stage switching
+#      DDRAW_SKIP(0)                            -- stage 3 cnc-ddraw redirect
 #      SPECSETTINGS_SKIP(0) SPECSETTINGS_ROUNDS(fatal|advisory)  -- stage 6b
 #      SPECROTATE_SKIP(0) SPECROTATE_GAMES("")  -- stage 6c rotation subset
 #      GATE_ID(timestamp_pid) SPEC_KEEP_GATES(3)  -- per-run spectator out-dirs
@@ -686,8 +687,14 @@ fi
 # Stage 3 — cnc-ddraw redirect (the "SJIS folder -> fullscreen" class). Drives
 # real library games offline and requires the hook to confirm cnc-ddraw loaded
 # (not stock DirectDraw). Self-skips (exit 0) if the launcher/library is absent.
-CMD="bash '$ROOT/tools/ddraw_redirect_test.sh'"
-stage "ddraw-redirect" "$OUT/3_ddraw.log"
+# DDRAW_SKIP=1 skips it: it drives the deployed library with GameScreenMode pinned to 1 and relies on cnc-ddraw's own
+# window mode, so on a desk where a display-mode switch is unacceptable it is run only on purpose.
+if [ "${DDRAW_SKIP:-0}" = 1 ]; then
+    echo "[run_all] ddraw-redirect: SKIPPED (DDRAW_SKIP=1)"
+else
+    CMD="bash '$ROOT/tools/ddraw_redirect_test.sh'"
+    stage "ddraw-redirect" "$OUT/3_ddraw.log"
+fi
 
 # Stage 4 — multigame determinism (opt-in, slow).
 if [ "$FULL" = 1 ]; then

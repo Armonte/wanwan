@@ -194,6 +194,17 @@ const char* ReplayDiffLogPath() {
     return s_path;
 }
 
+bool SaveState_PoolDeadSlotRestore() {
+    static int s_on = -1;
+    if (s_on < 0) {
+        const char* v = std::getenv("FM2K_POOL_DEADSLOT_RESTORE");
+        s_on = (v && v[0] == '0') ? 0 : 1;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "SaveState: dead pool slots %s (FM2K_POOL_DEADSLOT_RESTORE=%d)",
+                    s_on ? "saved and restored byte-exact" : "NOT restored (live-only save, zeroed on load)", s_on);
+    }
+    return s_on != 0;
+}
+
 void SaveState_Init() {
     memset(g_state_buffer, 0, sizeof(g_state_buffer));
     // Reset replay-shadow buffer so stale forward-vs-replay diffs from a

@@ -321,6 +321,19 @@ bool FM2KGameInstance::Launch(const std::string& exe_path, FM2K::Engine engine) 
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                 "GameIni: ForceFullscreenForLaunch failed -- game may launch windowed and fight cnc-ddraw");
         }
+    } else {
+        // No cnc-ddraw: the game's full screen is its own DirectDraw EXCLUSIVE mode, which switches the monitor to
+        // 640x480 (a dev launcher without its cnc-ddraw folder did exactly that, 2026-11-11). Pin windowed for this
+        // launch -- unless the game ships its own ddraw.dll (a wrapper of its own: its full screen is its business).
+        std::filesystem::path exe_fs(UTF8ToWide(exe_path));
+        std::error_code ec;
+        const bool own_ddraw = std::filesystem::is_regular_file(exe_fs.parent_path() / L"ddraw.dll", ec);
+        if (!own_ddraw && !fm2k::game_ini::ForceWindowedForLaunch(exe_fs)) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                "GameIni: ForceWindowedForLaunch failed -- without cnc-ddraw the game may take exclusive 640x480 full screen");
+        } else if (!own_ddraw) {
+            SDL_Log("GameIni: no cnc-ddraw -- this launch is pinned windowed (no exclusive 640x480 mode switch)");
+        }
     }
     std::wstring cnc_ddraw_dir;
     std::vector<wchar_t> env_block;

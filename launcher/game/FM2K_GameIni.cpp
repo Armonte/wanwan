@@ -472,12 +472,14 @@ bool ApplyForLaunch(const std::filesystem::path& exe_path, bool is_online) {
     return Save(ini, resolved);
 }
 
-bool ForceFullscreenForLaunch(const std::filesystem::path& exe_path) {
+// Pins [GamePlay] GameScreenMode for this launch (1 full screen, 0 window); the backup is restored on exit
+// (RestoreFromBackup), so the user's own setting comes back.
+static bool ForceScreenModeForLaunch(const std::filesystem::path& exe_path, int mode) {
     auto ini = PathForExe(exe_path);
     GamePlayConfig current;
     Load(ini, current);
-    if (current.game_screen_mode == 1) {
-        // Already fullscreen -- no write needed, no backup needed.
+    if (current.game_screen_mode == mode) {
+        // Already in that mode -- no write needed, no backup needed.
         return true;
     }
     // Same backup-once behaviour as ApplyForLaunch. Done before we
@@ -490,15 +492,23 @@ bool ForceFullscreenForLaunch(const std::filesystem::path& exe_path) {
             std::filesystem::copy_options::none, ec);
         if (ec) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                "GameIni: backup for fullscreen-pin failed (%s); aborting",
+                "GameIni: backup for screen-mode pin failed (%s); aborting",
                 ec.message().c_str());
             return false;
         }
     }
     GamePlayConfig resolved;
     LoadResolved(exe_path, resolved);
-    resolved.game_screen_mode = 1;
+    resolved.game_screen_mode = mode;
     return Save(ini, resolved);
+}
+
+bool ForceFullscreenForLaunch(const std::filesystem::path& exe_path) {
+    return ForceScreenModeForLaunch(exe_path, 1);
+}
+
+bool ForceWindowedForLaunch(const std::filesystem::path& exe_path) {
+    return ForceScreenModeForLaunch(exe_path, 0);
 }
 
 bool RestoreFromBackup(const std::filesystem::path& exe_path) {

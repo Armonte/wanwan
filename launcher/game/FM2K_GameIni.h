@@ -160,6 +160,9 @@ bool ApplyForLaunch(const std::filesystem::path& exe_path, bool is_online);
 // file that `ApplyForLaunch` creates, so the two can coexist within a
 // single session and `RestoreFromBackup` unwinds either or both.
 bool ForceFullscreenForLaunch(const std::filesystem::path& exe_path);
+// GameScreenMode=0 for this launch: without cnc-ddraw, FM2K's own full screen is DirectDraw EXCLUSIVE and switches
+// the monitor to 640x480 (FM2K_GameInstance.cpp). Same backup / RestoreFromBackup as the full-screen pin.
+bool ForceWindowedForLaunch(const std::filesystem::path& exe_path);
 
 // Restore the pristine game.ini from the backup made by ApplyForLaunch.
 // Called from FM2KLauncher::StopSession so leaving the launcher doesn't

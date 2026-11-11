@@ -10,6 +10,7 @@
 
 namespace fm2k::desync_ring {
 namespace {
+char g_last_dump_path[MAX_PATH * 2] = "";   // LastDumpPath()
 
 // ~40 s at 100 Hz. Enough to cover a whole match's approach to a desync
 // without the buffer itself being a memory event (4096 * 60 B = 240 KB).
@@ -290,10 +291,13 @@ void Dump(const char* reason, int32_t desync_frame) {
             std::fputc('\n', f);
         }
         std::fclose(f);
+        std::snprintf(g_last_dump_path, sizeof(g_last_dump_path), "%s", path);
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
             "DesyncRing: wrote %zu frames to %s -- diff it against the peer's "
             "copy to name the field that diverged", g_count, path);
     }
 }
+
+const char* LastDumpPath() { return g_last_dump_path; }
 
 }  // namespace fm2k::desync_ring

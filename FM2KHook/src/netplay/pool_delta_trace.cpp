@@ -10,6 +10,7 @@
 
 namespace fm2k::pool_delta_trace {
 namespace {
+char g_last_dump_path[MAX_PATH * 2] = "";   // LastDumpPath()
 
 // Object pool geometry -- local literals for the same reason round_events.cpp
 // and seam_trace.cpp keep their own: this replicates the engine's own address
@@ -145,8 +146,11 @@ void DumpRetires(const char* reason, int32_t desync_frame) {
         std::fprintf(f, "%u,%u,%u,0x%06X\n", r.frame, r.slot, r.type, r.ra);
     }
     std::fclose(f);
+    std::snprintf(g_last_dump_path, sizeof(g_last_dump_path), "%s", path);
     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
         "PoolDeltaTrace: wrote %zu retirements to %s", g_ret_count, path);
 }
+
+const char* LastDumpPath() { return g_last_dump_path; }
 
 }  // namespace fm2k::pool_delta_trace

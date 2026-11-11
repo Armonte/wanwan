@@ -9,6 +9,7 @@
 
 namespace fm2k::scriptrand_trace {
 namespace {
+char g_last_dump_path[MAX_PATH * 2] = "";   // LastDumpPath()
 
 // ~1170 frames at the measured ~7 draws/frame, which comfortably spans the
 // approach to every desync captured so far (they land 15-17 frames after a
@@ -128,9 +129,12 @@ void Dump(const char* reason, int32_t desync_frame) {
                          e.kind, e.player, e.script_id, e.cursor, e.value);
         }
         std::fclose(f);
+        std::snprintf(g_last_dump_path, sizeof(g_last_dump_path), "%s", path);
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
             "ScriptRandTrace: wrote %zu draws to %s", g_count, path);
     }
 }
+
+const char* LastDumpPath() { return g_last_dump_path; }
 
 }  // namespace fm2k::scriptrand_trace

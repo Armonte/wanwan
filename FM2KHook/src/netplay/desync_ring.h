@@ -38,4 +38,7 @@ void Note(int32_t frame, int32_t confirmed_frame);
 // same session cannot overwrite the first one's evidence).
 void Dump(const char* reason, int32_t desync_frame);
 
+// The file the last Dump wrote ("" before any): the desync upload attaches it (netplay_desync.cpp).
+const char* LastDumpPath();
+
 }  // namespace fm2k::desync_ring

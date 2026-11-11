@@ -15,6 +15,9 @@
 #include "spectator_node.h"
 #include "nat_traversal.h"
 #include "upload_queue.h"
+#include "desync_ring.h"       // LastDumpPath: the forensics CSVs ride along with the desync upload
+#include "scriptrand_trace.h"
+#include "pool_delta_trace.h"
 #include "globals.h"
 #include "gekkonet.h"
 #include "../audio/sound_rollback.h"
@@ -192,6 +195,17 @@ void HandleDesyncDetected(int frame, uint32_t local_chk,
         mfst.file_paths.emplace_back(debug_path);
         mfst.file_paths.emplace_back(desync_path);
         mfst.file_paths.emplace_back(rng_path);
+        // The per-frame forensics that name the diverged object (pool slots, x/y, scripts, retirements): without
+        // them no production desync could be attributed (pkmncc 0.2.89 clusters, 2026-11-11). Their writers build
+        // ANSI paths; the names are ASCII, so each is re-rooted on the UTF-8 game folder (a non-UTF-8 path would
+        // get the whole manifest quarantined by the launcher).
+        for (const char* written : { fm2k::desync_ring::LastDumpPath(), fm2k::scriptrand_trace::LastDumpPath(),
+                                     fm2k::pool_delta_trace::LastDumpPath() }) {
+            if (!written || !*written) continue;
+            const char* base = std::strrchr(written, '\\');
+            base = base ? base + 1 : written;
+            mfst.file_paths.emplace_back(cwd_utf8 + "\\logs\\" + base);
+        }
         fm2k::upload_queue::Enqueue(mfst);
     }
 

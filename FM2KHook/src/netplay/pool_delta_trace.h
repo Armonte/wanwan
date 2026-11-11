@@ -90,6 +90,9 @@ uint32_t Note(uint32_t bitmap_out[kBitmapWords],
 //   0x413BCB                       -- the ScriptMainLoopError default case
 bool InstallRetireHook();
 void DumpRetires(const char* reason, int32_t desync_frame);
+
+// The file the last DumpRetires wrote ("" before any): the desync upload attaches it (netplay_desync.cpp).
+const char* LastDumpPath();
 // Set by the netplay layer so each retire can be stamped with its frame.
 void SetRetireFrame(uint32_t frame);
 

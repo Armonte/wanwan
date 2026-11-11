@@ -46,4 +46,7 @@ void Note(uint32_t frame, uint32_t value);
 // Write the ring next to the desync ring. Called from the desync handler.
 void Dump(const char* reason, int32_t desync_frame);
 
+// The file the last Dump wrote ("" before any): the desync upload attaches it (netplay_desync.cpp).
+const char* LastDumpPath();
+
 }  // namespace fm2k::scriptrand_trace

@@ -300,6 +300,8 @@ static bool RoundsRelatchOn() { return RoundsRelatch_Enabled(); }
 // true_agreement: the barrier reached REAL settings agreement (both digests
 // non-zero and equal), as opposed to one of EntryConfigGatePass's escape
 // hatches. Trap (c).
+extern "C" int Hooks_ReloadAgreedStage(int stage_idx);  // hooks_stage.cpp
+
 static void RederiveBattleEntryLatches(bool true_agreement) {
     if constexpr (FM2K::kIsFM2K) {
         // Latched sim values vs the config sources they are derived from.
@@ -394,17 +396,29 @@ static void RederiveBattleEntryLatches(bool true_agreement) {
                 latch_round, src_round, Netplay_MatchSettingsDigest());
         }
 
-        // Stage: DETECT ONLY, by the deliberate scope decision above.
+        // Stage: RELOAD the agreed one (FM2K_STAGE_BARRIER_RELOAD, default 1; 0 = the old detect-only behaviour).
+        // Supersedes the scope decision above, which stood only because the arm had never fired. pkmncc v17 fires it
+        // every match where the peers' local stage picks differ (2026-11-09..12, ~10 uploaded sessions, DESYNC f=1):
+        // the guest loaded its own pick before the host's arrived. Hooks_ReloadAgreedStage redoes the two stage
+        // writes of the battle-init step from the agreed id before the first battle frame (see hooks_stage.cpp).
         if (latch_stage != src_stage) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                "[ROUNDS-RELATCH] STAGE-LATCH MISMATCH latch_stage=%d "
-                "cfg_stage=%d -- the same race stranded g_active_stage_id, and "
-                "this peer has ALREADY LOADED the stale stage file "
-                "(g_active_stage_id = g_selected_stage; LoadStageFile(...) run "
-                "back to back at battle init). NOT corrected here: writing the "
-                "id without reloading the assets would only make the two halves "
-                "disagree. Expect a stage-driven divergence this match.",
-                latch_stage, src_stage);
+            static const bool s_reload = [] {
+                const char* v = std::getenv("FM2K_STAGE_BARRIER_RELOAD");
+                return !(v && v[0] == '0');
+            }();
+            const int rc = (s_reload && src_stage >= 0) ? Hooks_ReloadAgreedStage(src_stage) : -1;
+            if (rc == 0) {
+                SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "[ROUNDS-RELATCH] STAGE CORRECTED latch_stage=%d -> cfg_stage=%d: this peer loaded its own stage at "
+                    "battle init before the agreed one arrived; reloaded the agreed stage at the barrier",
+                    latch_stage, src_stage);
+            } else {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                    "[ROUNDS-RELATCH] STAGE-LATCH MISMATCH latch_stage=%d cfg_stage=%d -- %s. Expect a stage-driven "
+                    "divergence this match.", latch_stage, src_stage,
+                    s_reload ? "the agreed stage failed to load, the stale one stays" :
+                               "reload disabled (FM2K_STAGE_BARRIER_RELOAD=0)");
+            }
         }
 
         // GAME-SPEED SCALARS -- the same stale-latch bug, root-caused

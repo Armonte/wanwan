@@ -3686,7 +3686,9 @@ def main():
               "FM2K_POOL_DEADSLOT_RESTORE",
               # host-config unloaded-engine guard (netplay_control.cpp); 0 = negative control. ZERO_FIRST is the
               # test lever that makes the host's first HOST_CONFIG report an unloaded engine (the f=1 fall-to-title)
-              "FM2K_HOSTCFG_UNLOADED_GUARD", "FM2K_HOSTCFG_ZERO_FIRST"):
+              "FM2K_HOSTCFG_UNLOADED_GUARD", "FM2K_HOSTCFG_ZERO_FIRST",
+              # battle-entry agreed-stage reload (netplay_barriers.cpp); SKEW = guest loads its own stage (pkmncc v17)
+              "FM2K_STAGE_BARRIER_RELOAD", "FM2K_TEST_STAGE_SKEW"):
         if os.environ.get(k):
             common_env[k] = os.environ[k]
     # FM2K_TEST_ROUNDS_HOST_ONLY: suppresses the per-frame g_default_round force

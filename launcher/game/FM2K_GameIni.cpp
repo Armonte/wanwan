@@ -516,8 +516,13 @@ bool RestoreFromBackup(const std::filesystem::path& exe_path) {
     auto bak = BackupPathFor(ini);
     std::error_code ec;
     if (!std::filesystem::exists(bak, ec)) return true;  // no-op
-    std::filesystem::remove(ini, ec);
+    // ONE atomic step: libstdc++'s Windows rename is MoveFileExW(MOVEFILE_REPLACE_EXISTING), so it replaces the
+    // pinned ini in place. Never remove(ini) first: with two launchers on one game folder, the second one's remove
+    // landed AFTER the first one's rename and deleted the restored game.ini, and its own rename then found no backup
+    // -> the game folder lost its game.ini (pkmncc, 2026-11-12). A backup that vanished between the exists() check
+    // and here means another launcher already restored it.
     std::filesystem::rename(bak, ini, ec);
+    if (ec && !std::filesystem::exists(bak)) return true;
     if (ec) {
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
             "GameIni: restore failed: %s", ec.message().c_str());

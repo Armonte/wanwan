@@ -199,6 +199,39 @@ uint32_t Netplay_MatchSettingsDigest() {
 
 uint32_t Netplay_HostConfigRxCount() { return s_host_config_rx; }
 
+// An engine whose game.ini has not been read yet: game speed 0 (a real one is 1..20). The connect-time broadcast can
+// fire while the host's game is still booting; it then carried rounds=0 time=0 speed=0, the guest adopted those as the
+// match settings and latched them at its CSS->battle transition, and on battle frame 1 the guest's game fell to the
+// title (Intro.demo, game_mode 3000 -> 1000) while the host fought -> DESYNC f=1 (pkmncc, 2026-11-09..12: every such
+// session, all client versions). FM2K_HOSTCFG_UNLOADED_GUARD (default 1; 0 = the old behaviour, negative control):
+// the host sends "unset" for rounds/time/speed until its engine is loaded, and a guest ignores an unloaded host's.
+static bool HostCfgUnloadedGuard() {
+    static int s_on = -1;
+    if (s_on < 0) {
+        const char* v = std::getenv("FM2K_HOSTCFG_UNLOADED_GUARD");
+        s_on = (v && v[0] == '0') ? 0 : 1;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "[HOSTCFG-GUARD] unloaded-engine guard %s (FM2K_HOSTCFG_UNLOADED_GUARD=%d)",
+                    s_on ? "on" : "OFF", s_on);
+    }
+    return s_on == 1;
+}
+
+// TEST-ONLY lever FM2K_HOSTCFG_ZERO_FIRST=1 (host side, dark by default): the FIRST host-config broadcast reports the
+// engine as unloaded (rounds/time/speed 0), exactly what a host still booting sent. Reproduces the f=1 fall-to-title
+// on demand: with the guard off the guest adopts the zeros; with it on they never leave the host.
+static bool HostCfgZeroFirstLever() {
+    static int s_on = -1;
+    if (s_on < 0) {
+        const char* v = std::getenv("FM2K_HOSTCFG_ZERO_FIRST");
+        s_on = (v && v[0] == '1' && v[1] == '\0') ? 1 : 0;
+        if (s_on)
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "[HOSTCFG-ZERO-FIRST] TEST LEVER ARMED -- the first HOST_CONFIG "
+                        "reports an unloaded engine (rounds/time/speed 0)");
+    }
+    return s_on == 1;
+}
+static bool s_hostcfg_zero_first_spent = false;
+
 // Build the current HOST_CONFIG packet from live engine state. Shared
 // by Netplay_BroadcastHostConfig (fans to peer + all subs at battle-
 // start moments) and Netplay_SendHostConfigToSpec (one-shot push when a
@@ -219,6 +252,19 @@ CtrlPacket BuildHostConfigPacket() {
     pkt.data.host_config.round_time_sec  = *(uint32_t*)0x430114; // lParam
     pkt.data.host_config.round_count     = *(uint32_t*)0x430124; // g_default_round
     pkt.data.host_config.game_speed_pct  = *(uint32_t*)0x430104; // uValue
+    if (HostCfgZeroFirstLever() && !s_hostcfg_zero_first_spent) {
+        s_hostcfg_zero_first_spent = true;
+        pkt.data.host_config.round_time_sec = pkt.data.host_config.round_count = pkt.data.host_config.game_speed_pct = 0;
+    }
+    if (pkt.data.host_config.game_speed_pct == 0 && HostCfgUnloadedGuard()) {
+        // the engine has not read game.ini yet: these are not settings. "Unset" keeps the receiver's own until the
+        // battle-entry push (Netplay_SignalBattleEntry) carries the real ones and the digest barrier agrees on them.
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "[HOSTCFG-GUARD] host engine not loaded (rounds=%u time=%u speed=0) -- "
+                    "sending rounds/time/speed as unset", pkt.data.host_config.round_count,
+                    pkt.data.host_config.round_time_sec);
+        pkt.data.host_config.round_time_sec = pkt.data.host_config.round_count =
+            pkt.data.host_config.game_speed_pct = 0xFFFFFFFFu;
+    }
     } else {
     // FM95: rounds/time/game-speed globals are unmapped (RE-3 in
     // docs/FM95_Support_Status.md -- LoadIniSettings@0x402920 not yet RE'd).
@@ -727,6 +773,12 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
             // override". 0 IS a valid value for round_time_sec (= no
             // timer / infinite), which is why we can't use 0 as unset.
             if constexpr (FM2K::kIsFM2K) {
+                if (hc.game_speed_pct == 0 && HostCfgUnloadedGuard()) {
+                    // an unloaded host engine's zeros (HostCfgUnloadedGuard): not settings, keep our own
+                    SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "[HOSTCFG-GUARD] ignoring rounds=%u time=%u speed=0 from a "
+                                "host whose engine was not loaded yet -- keeping the local game.ini values",
+                                hc.round_count, hc.round_time_sec);
+                } else {
                 if (hc.round_time_sec != 0xFFFFFFFFu) {
                     *(uint32_t*)0x430114 = hc.round_time_sec;  // lParam (TIMER_SET)
                 }
@@ -735,6 +787,7 @@ void OnControlMessage(const CtrlPacket* packet, const sockaddr_in& from) {
                 }
                 if (hc.game_speed_pct != 0xFFFFFFFFu) {
                     *(uint32_t*)0x430104 = hc.game_speed_pct;  // uValue (GameSpeed)
+                }
                 }
             } else {
                 // FM95: rounds/time/game-speed globals unmapped (RE-3) --

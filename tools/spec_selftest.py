@@ -3683,7 +3683,10 @@ def main():
               # from one peer cannot be diffed.
               "FM2K_DESYNCRING_DUMP_AT", "FM2K_DIALOG_AUTO",
               # dead pool slots byte-exact across save/load (savestate_internal.h); 0 = negative control
-              "FM2K_POOL_DEADSLOT_RESTORE"):
+              "FM2K_POOL_DEADSLOT_RESTORE",
+              # host-config unloaded-engine guard (netplay_control.cpp); 0 = negative control. ZERO_FIRST is the
+              # test lever that makes the host's first HOST_CONFIG report an unloaded engine (the f=1 fall-to-title)
+              "FM2K_HOSTCFG_UNLOADED_GUARD", "FM2K_HOSTCFG_ZERO_FIRST"):
         if os.environ.get(k):
             common_env[k] = os.environ[k]
     # FM2K_TEST_ROUNDS_HOST_ONLY: suppresses the per-frame g_default_round force

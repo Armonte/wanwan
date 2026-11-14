@@ -778,7 +778,7 @@ void ControlChannel_SendDelayProposal() {
     pkt.data.delay_proposal.mode =
         (manual && manual[0]) ? DELAY_PROP_MANUAL
         : (g_delay_mode.load(std::memory_order_relaxed) == 1
-               ? DELAY_PROP_AUTO_SMOOTH : DELAY_PROP_AUTO);
+               ? DELAY_PROP_AUTO2_SMOOTH : DELAY_PROP_AUTO2);
     ControlChannel_Send(pkt);
     g_last_sent_delay_candidate.store(cand, std::memory_order_relaxed);
 }

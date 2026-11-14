@@ -293,7 +293,7 @@ bool Netplay_StartBattle() {
         // before: they asked for at least that much.
         const int rmode = ControlChannel_GetRemoteDelayMode();
         const bool remote_ok = remote_cand >= 0 && rmode >= 0 &&
-                               !DelayProposalIsLegacy((uint8_t)rmode);
+                               DelayProposalIsCurrent((uint8_t)rmode);   /* 0.2.89/0.2.90 auto: runs its own */
         //
         // Against an auto peer, our side of the min() is the value we last
         // PROPOSED, which the peer also holds -- so both evaluate the same

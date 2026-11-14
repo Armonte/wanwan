@@ -24,26 +24,26 @@ inline uint32_t PercentileFromWindow(const uint32_t* samples, int n, int pct) {
 }
 
 // ---------------------------------------------------------------------------
-// Split delay/rollback sizing (2026-11-08, docs/dev/auto_delay_plan_2026-11-08.md)
+// Delay/rollback sizing (2026-11-13; replaces the 2026-11-08 quarter-share split)
 //
-// The old formula, clamp(ceil(rtt/2 / 10), 2, 15) on the mean RTT, hid the
-// WHOLE one-way trip behind input delay and never used rollback. (0.2.85-0.2.87
-// made it worse: 2x(p90-p50) jitter on top and a 24 cap, which sized ordinary
-// links to 19-24 in the field.) Rollback is cheap here (~342 us per re-simulated frame,
-// see the prediction_window comment in netplay_battle.cpp), so auto now gives
-// input delay only a quarter-ish share of the trip and lets rollback cover the
-// rest, up to a cap:
+// L = ceil(p90_rtt/2 / 10) is the one-way trip in FM2K frames (10 ms).
+// The 11-08 split gave input delay only max(2, L/4) and planned rollback for
+// the rest, so a 160 ms link ran at 2 delay with 6 frames of rollback. The
+// field rejected it: at p90 120-240 ms most 0.2.89/0.2.90 players switched to
+// MANUAL and chose 7-8 (logs since 11-09), i.e. about the whole trip, and the
+// manual choices level off around 7-10 beyond that. So:
 //
-//   L = ceil(p90_rtt/2 / 10)            one-way trip in FM2K frames (10 ms)
-//   S = max(L <= 3 ? 1 : 2, (L+3)/4)    delay share
-//   R = clamp(L - S, 0, min(rcap, W-3)) planned rollback
-//   D = max(1, L - R) + max(0, 3 - (W - R))   (+ headroom only near the window)
+//   auto:               D = L up to 8 frames, then 8 + (L-8)/3; rollback covers the
+//                       rest, at most rcap (AUTO_RCAP) frames
+//   auto (less rollback): D = L (rcap 0: the 0.2.84 sizing, no planned rollback)
 //
-// p90 already contains the link's jitter, so there is no separate jitter
-// term. Past the rollback cap the rest of the trip is bought back as delay.
+//   R = clamp(L - D, 0, min(rcap, W-3)); D = max(1, L - R) + max(0, 3 - (W - R))
+//
+// p90 already contains the link's jitter, so there is no separate jitter term.
 // ---------------------------------------------------------------------------
-constexpr int AUTO_RCAP          = 8;   // "auto": up to 80 ms of rollback
-constexpr int AUTO_SMOOTH_RCAP   = 4;   // "auto (less rollback)"
+constexpr int AUTO_FULL_TRIP     = 8;   // auto delays the whole trip up to this many frames
+constexpr int AUTO_RCAP          = 8;   // "auto": at most 80 ms of planned rollback
+constexpr int AUTO_SMOOTH_RCAP   = 0;   // "auto (less rollback)": none planned
 constexpr int MAX_SPLIT_DELAY    = 24;  // only reached around 600 ms RTT
 constexpr int MIN_DELAY_SAMPLES  = 12;  // ~1.5 s of post-warm-up pings
 // The control-ping window is short (64 samples = 8 s at 8 Hz), so p90 rather
@@ -65,7 +65,7 @@ inline DelayPlan SplitDelay(uint32_t rtt_ms, int window, int rcap) {
         p.D = std::min(std::max(1, p.L), MAX_SPLIT_DELAY);
         return p;
     }
-    const int share = std::max(p.L <= 3 ? 1 : 2, (p.L + 3) / 4);
+    const int share = p.L <= AUTO_FULL_TRIP ? p.L : AUTO_FULL_TRIP + (p.L - AUTO_FULL_TRIP) / 3;
     const int rmax  = std::max(0, std::min(rcap, window - 3));
     p.R = std::min(std::max(p.L - share, 0), rmax);
     int d = std::max(1, p.L - p.R);

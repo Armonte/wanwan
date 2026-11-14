@@ -301,8 +301,17 @@ enum DelayProposalMode : uint8_t {
     DELAY_PROP_AUTO        = 2,
     DELAY_PROP_AUTO_SMOOTH = 3,
     DELAY_PROP_MANUAL      = 4,
+    // 2026-11-13 sizing (delay_math.h SplitDelay: the whole trip up to 8 frames, then a third of the rest). 2/3 are
+    // 0.2.89-0.2.90's quarter-share split, which sized a 160 ms link to 2 frames ("auto'd to 2 delay vs people I have
+    // no business being 2 delay against") -- a current build no longer folds those in, exactly like 0/1.
+    DELAY_PROP_AUTO2        = 5,
+    DELAY_PROP_AUTO2_SMOOTH = 6,
 };
 inline bool DelayProposalIsLegacy(uint8_t mode) { return mode < DELAY_PROP_AUTO; }
+// A peer's AUTO candidate this build folds into the shared delay: the current sizing only (and a manual pin)
+inline bool DelayProposalIsCurrent(uint8_t mode) {
+    return mode == DELAY_PROP_MANUAL || mode == DELAY_PROP_AUTO2 || mode == DELAY_PROP_AUTO2_SMOOTH;
+}
 
 constexpr uint32_t PING_INTERVAL_MS = 250;          // Ping every 250ms (4Hz)
 constexpr uint32_t PING_TIMEOUT_MS  = 1500;         // ~6 missed pings = disconnect

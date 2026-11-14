@@ -58,27 +58,27 @@ int main() {
     }
 
     // --- SplitDelay: the shipped table (W=32, auto rcap 8) ------------
-    //   p95 RTT   L   R   D      (0.2.84 delay / 0.2.87 delay)
-    CHECK(Plan(  20, 32, AUTO_RCAP,  1, 0,  1));   //  2 / 2
-    CHECK(Plan(  50, 32, AUTO_RCAP,  3, 2,  1));   //  3 / 3-7
-    CHECK(Plan( 100, 32, AUTO_RCAP,  5, 3,  2));   //  5 / 5-13
-    CHECK(Plan( 150, 32, AUTO_RCAP,  8, 6,  2));   //  8 / 8-18
-    CHECK(Plan( 200, 32, AUTO_RCAP, 10, 7,  3));   // 10 / 10-24
-    CHECK(Plan( 300, 32, AUTO_RCAP, 15, 8,  7));   // 15 / 15-24
-    CHECK(Plan( 400, 32, AUTO_RCAP, 20, 8, 12));   // 15 / 20-24
+    //   p90 RTT   L   R   D      (0.2.84 delay / 0.2.89-0.2.90 split delay)
+    CHECK(Plan(  20, 32, AUTO_RCAP,  1, 0,  1));   //  2 / 1
+    CHECK(Plan(  50, 32, AUTO_RCAP,  3, 0,  3));   //  3 / 1
+    CHECK(Plan( 100, 32, AUTO_RCAP,  5, 0,  5));   //  5 / 2
+    CHECK(Plan( 150, 32, AUTO_RCAP,  8, 0,  8));   //  8 / 2   (the field's manual pick: 7-8)
+    CHECK(Plan( 200, 32, AUTO_RCAP, 10, 2,  8));   // 10 / 3
+    CHECK(Plan( 300, 32, AUTO_RCAP, 15, 5, 10));   // 15 / 7
+    CHECK(Plan( 400, 32, AUTO_RCAP, 20, 8, 12));   // 15 / 12
     CHECK(Plan(1000, 32, AUTO_RCAP, 50, 8, MAX_SPLIT_DELAY));  // capped
 
-    // --- "auto (less rollback)": rcap 4 -------------------------------
-    CHECK(Plan( 100, 32, AUTO_SMOOTH_RCAP,  5, 3, 2));  // under the cap: same
-    CHECK(Plan( 200, 32, AUTO_SMOOTH_RCAP, 10, 4, 6));
-    CHECK(Plan( 300, 32, AUTO_SMOOTH_RCAP, 15, 4, 11));
+    // --- "auto (less rollback)": rcap 0 = the whole trip (0.2.84) ------
+    CHECK(Plan( 100, 32, AUTO_SMOOTH_RCAP,  5, 0,  5));
+    CHECK(Plan( 200, 32, AUTO_SMOOTH_RCAP, 10, 0, 10));
+    CHECK(Plan( 300, 32, AUTO_SMOOTH_RCAP, 15, 0, 15));
 
     // --- window interaction -------------------------------------------
     // W=0 is lockstep: no rollback, delay covers the whole trip.
     CHECK(Plan(200, 0, AUTO_RCAP, 10, 0, 10));
     // A small window caps R at W-3 and buys the rest back as delay.
     CHECK(Plan(300, 8, AUTO_RCAP, 15, 5, 10));
-    // W=4: R capped at 1; the 3-frame spike headroom kicks in (3-(4-1)=0).
+    // W=4: R capped at 1 (the plan wanted 2); the headroom term is 3-(4-1)=0.
     CHECK(Plan(200, 4, AUTO_RCAP, 10, 1, 9));
     // W=2: W-3 < 0, so no rollback is planned at all, plus 1 frame headroom.
     CHECK(Plan(200, 2, AUTO_RCAP, 10, 0, 11));
